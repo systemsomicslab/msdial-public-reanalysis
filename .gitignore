@@ -6,3 +6,7 @@ reports/*
 __pycache__/
 *.py[cod]
 
+# The cross-repository master prompt is canonical in the private repository
+# systemsomicslab/msdial-family-dev-context. It records licensed SDK install locations and private
+# MSP library paths, so it must never be committed to this public repository, not even by accident.
+prompts/00-msdial-family-development-master-prompt.md

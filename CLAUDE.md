@@ -4,6 +4,15 @@ This project uses Claude as a scientific workflow reviewer and orchestrator.
 Use the two local MCP servers rather than shell scripts for scientific workflow
 execution.
 
+When the task is software development across the MS-DIAL family rather than a
+single reanalysis run, first read the master prompt in the private repository
+`systemsomicslab/msdial-family-dev-context`, cloned alongside this
+one as `..\context\prompts\00-msdial-family-development-master-prompt.md`. It is the
+durable cross-repository handoff for local source, SDKs, demo data, scientific
+contracts, testing, and private-resource boundaries. It is private, and
+excluded by `.gitignore` here, because it records licensed SDK install
+locations and private MSP library paths.
+
 ## Mission
 
 Select technically compatible public repository analysis units, preserve their
