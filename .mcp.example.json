@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "msdial-interactive": {
+      "type": "stdio",
+      "command": "C:\\path\\to\\python.exe",
+      "args": [
+        "D:\\path\\to\\msdial_interactive_app\\scripts\\msdial-interactive-mcp.py"
+      ],
+      "env": {
+        "MSDIAL_REPOSITORY_WORKSPACE_ROOT": "D:\\path\\to\\reanalysis\\analysis"
+      }
+    },
+    "msdial-repository-catalog": {
+      "type": "stdio",
+      "command": "C:\\path\\to\\python.exe",
+      "args": [
+        "-m",
+        "msdial_repository_catalog.mcp_server"
+      ],
+      "env": {
+        "MSDIAL_REPOSITORY_CATALOG": "D:\\path\\to\\catalog.sqlite"
+      }
+    }
+  }
+}
+
