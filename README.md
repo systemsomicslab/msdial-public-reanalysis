@@ -14,6 +14,24 @@ directory and paste the contents of `prompts/01-compatibility-audit.md`. Use
 `prompts/03-mpst000007-end-to-end-smoke.md` for one confirmation-gated test run,
 then `prompts/02-mbpost-000001-000010-pilot.md` for a larger batch.
 
+For a new Codex task, Claude Code session, or additional development agent,
+start with the master prompt in the private repository
+`systemsomicslab/msdial-family-dev-context`. It records the
+cross-repository architecture, local SDK and demo-data map, scientific
+invariants, validation strategy, private-resource boundaries, and definition of
+done needed to continue MS-DIAL family development without relying on one long
+chat history. Clone it beside this repository:
+
+```text
+D:\13_MSDIAL_Public_Reanalysis\
+  code\      this repository (public)
+  context\   systemsomicslab/msdial-family-dev-context (private)
+  analysis\  reanalysis workspace, never committed
+```
+
+It is a separate private repository because it documents licensed vendor SDK
+install locations and private MSP library paths on the development machine.
+
 ## Current local paths
 
 - Claude workspace: `D:\13_MSDIAL_Public_Reanalysis\code`
