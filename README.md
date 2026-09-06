@@ -93,6 +93,31 @@ following actions require a separate explicit human confirmation:
 The default retention policy is `keep`. Never combine different analysis units
 in one MS-DIAL run. Never redistribute the laboratory's private MSP libraries.
 
+## Run gates
+
+Every stage of this pipeline reports success on its own terms. Several observed
+failures produced a complete, self-consistent, publishable result set that was
+not the study anybody approved: a tuning diagnostic that rewrote the production
+analysis CSV to one row, a QA verdict computed against an injection order
+synthesized from file order, an exported mzTab-M whose whole evidence section
+was one column wider than its header.
+
+`scripts/verify-run-invariants.py` checks the invariants those failures break.
+It reads the retained artifacts rather than tool responses, because the response
+that reports the same sample count is large enough to be truncated in transport
+and its `blockers` field arrives after the payload. A check it cannot evaluate
+reports `not_evaluable`, never `pass`.
+
+```powershell
+python .\scripts\verify-run-invariants.py <unit-workspace> --stage before-production
+python -m unittest discover -s tests -t tests
+```
+
+Stages are `before-production`, `after-run` and `before-publish`. Exit code 0
+means every evaluated check passed, 2 means at least one failed, 3 means the
+workspace is unusable. Run the gate; do not infer safety from a tool reporting
+no blockers.
+
 ## Codex pre-audit
 
 The local Python test suites passed on 2026-09-02 after the re-audit fixes:
