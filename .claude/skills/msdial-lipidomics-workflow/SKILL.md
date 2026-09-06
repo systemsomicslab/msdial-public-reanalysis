@@ -111,8 +111,17 @@ stand out.
 
 ```
 MSDIALCUI normalize -i <project.mddata> -s <standards.tsv> -o <output directory>
-                    -u pmol_per_microL_plasma
+                    -u pmol_per_microL_plasma --allow-unresolved-standards
 ```
+
+Pass the `.mddata`, not the `.mdproject` beside it — only the first holds the data.
+
+`--allow-unresolved-standards` is needed for any single-polarity standard set, because a
+positive run cannot annotate the negative-only standards and vice versa; without it the
+command refuses every time. It is legitimate exactly when the missing standards are the
+wrong-polarity ones, which the refusal names — read them before passing it. Rows in a
+class whose own standard did not resolve are written with **no concentration** and a
+Comment saying why, rather than being quantified against a standard of another class.
 
 It writes both matrices, `<alignment>_Height.txt` and `<alignment>_NormalizedHeight.txt`.
 A concentration is the raw measurement divided by a standard, and nobody can check the
@@ -137,8 +146,16 @@ choice is a rule table, not something the data decides:
 
 ```python
 from msdial_app.lipidome_merge import merge_pos_neg
-merge_pos_neg(positive_matrix, negative_matrix, rules_table, output)
+merge_pos_neg(positive_matrix, negative_matrix, quantification_rules, output)
 ```
+
+The rule table is the laboratory's **quantification** table — `targetadduct.txt`, the
+same content as the `3. Quant info` sheet — naming the one adduct each class is measured
+by. `resources/LbmQueries.txt` has the identical four columns and is the annotation
+*search* list: passing it is accepted and roughly doubles the lipidome. The result
+reports `selected_combinations`, `selected_classes` and `selected_by_ion_mode`; a
+selection list keeps about one adduct per class, a search list two or more. Check that
+before using the numbers.
 
 The merged table keeps one set of sample columns and pairs the polarities by position,
 so it refuses unless both describe the same samples in the same order. If it refuses,
