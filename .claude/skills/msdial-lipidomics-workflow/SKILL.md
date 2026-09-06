@@ -60,8 +60,19 @@ Ask, once, and record the answers in a named workset so later datasets inherit t
 - **Whether retention time is used for annotation.** A library with retention times
   for this chromatography is normally scored and filtered on them, with a tolerance of
   a couple of minutes; a library without them must not be. This is the person's
-  judgement about their own library, so ask rather than infer, and record the answer.
-- **Thread count.** Ask once; it is a property of their machine, not of the science.
+  judgement about their own library, so ask rather than infer. The guided plan raises
+  it as `use_retention_time_for_annotation` once a library has been named, and asks for
+  `retention_time_tolerance` only if the answer is yes.
+- **Thread count.** `number_of_threads`, asked once; a property of their machine, not
+  of the science.
+
+These three do not block the plan: unanswered, they leave annotation without retention
+time, which is the conservative reading of an unknown library. They appear in
+`advisory_questions`, and leaving one unasked is a choice to accept that default —
+so ask them, and say which defaults are standing if you do not.
+
+Save the agreed set with `msdial_save_workset` under a name the laboratory will
+recognise. The next dataset then starts from it and only has to confirm what changed.
 
 ## 4. Run each polarity
 
@@ -123,8 +134,6 @@ meaningful beside the count of everything that did not qualify.
 
 ## What is not automated yet
 
-- The retention-time settings in step 3 are not yet answer keys, so they are currently
-  written into the prepared `method.txt` before the run. Say when you have done this.
 - False-positive and false-negative review between steps 4 and 5 is still manual.
 
 ## Reporting
