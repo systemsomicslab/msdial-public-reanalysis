@@ -35,9 +35,12 @@ analyses that must later agree on their samples.
 
 ## 2. Agree the sample table
 
-The proposal derives Class from the file name and is often the matrix (`Plasma`) where
-the person means the biological factor (`SPF`, `GF`). Read the names, propose the
-grouping you believe is intended, show the whole table, and ask.
+The proposal reads Class from how the file names vary: a token identical in every name
+describes the study, one different in every name identifies the sample, and one taking
+a few values each shared by several files is the comparison. `class_proposal` carries
+the reasoning and the alternatives it rejected — the replicate index usually among
+them. Show the whole table with that reasoning and ask, because a file name only
+suggests the grouping and the person knows it.
 
 Show every column that will reach MS-DIAL: file name, type (Sample/Blank/QC), class,
 batch, analytical order, dilution factor. Two of these are silently consequential:
@@ -99,9 +102,13 @@ stand out.
 ## 6. Normalize to concentration
 
 ```
-MSDIALCUI normalize -i <project.mddata> -s <standards.tsv> -o <matrix.txt>
+MSDIALCUI normalize -i <project.mddata> -s <standards.tsv> -o <output directory>
                     -u pmol_per_microL_plasma
 ```
+
+It writes both matrices, `<alignment>_Height.txt` and `<alignment>_NormalizedHeight.txt`.
+A concentration is the raw measurement divided by a standard, and nobody can check the
+division with only one side of it, so both are kept and both are reported.
 
 The standards table maps each lipid class to the standard that quantifies it and the
 amount present: `StandardName`, `TargetClass`, `Concentration`, with `Any others`
