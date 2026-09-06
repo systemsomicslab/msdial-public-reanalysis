@@ -20,6 +20,10 @@ workset so the next dataset only has to confirm what changed.
   rebuild, because the run's recorded software version would otherwise describe a
   different binary.
 - Raw data and outputs stay off the C: drive and out of this repository.
+- **MS-DIAL writes its per-file intermediates beside the files it reads.** A run against
+  data where it sits adds `.dcl`, `.pai2` and tag files to that folder, and no output
+  setting prevents it. Say this before the run, and put the choice to the person through
+  `stage_inputs` — never copy hundreds of megabytes of their data on your own initiative.
 
 ## 1. Look at the data before asking anything
 
@@ -68,8 +72,12 @@ Ask, once, and record the answers in a named workset so later datasets inherit t
   `retention_time_tolerance` only if the answer is yes.
 - **Thread count.** `number_of_threads`, asked once; a property of their machine, not
   of the science.
+- **Whether to read the raw data in place.** `stage_inputs` copies it into the output
+  folder first, so the original folder is only read. Worth it for a shared or archival
+  location, wasteful for a working copy. The staged copy is kept after the run, so the
+  next analysis of the same data can reuse it.
 
-These three do not block the plan: unanswered, they leave annotation without retention
+These four do not block the plan: unanswered, they leave annotation without retention
 time, which is the conservative reading of an unknown library. They appear in
 `advisory_questions`, and leaving one unasked is a choice to accept that default —
 so ask them, and say which defaults are standing if you do not.
