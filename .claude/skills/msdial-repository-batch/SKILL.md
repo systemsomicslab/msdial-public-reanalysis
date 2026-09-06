@@ -95,14 +95,35 @@ payload, so a missing `blockers` and an empty `blockers` look identical.
 A check that cannot be evaluated reports `not_evaluable`, never `pass`. Treat
 `not_evaluable` on a stage's own artifacts as a reason to stop, not as consent.
 
+Run the gate even where the server now refuses the same thing. The two checks are
+independent on purpose: one is a property of the artifacts on disk, the other a
+property of the server that wrote them, and a server that stops enforcing a rule
+is exactly the case the gate exists to catch.
+
 What the gate cannot do:
 
-- It cannot prevent the diagnostic from overwriting the production analysis CSV,
-  only detect that it happened. Regenerate before production regardless.
-- It cannot prevent the server from deleting raw data on its own. Keep
-  `raw_retention_policy` at `keep` so that path is never reached.
 - It cannot establish which MS-DIAL Console binary produced the outputs. Record
-  the resolved binary path and its hash in the unit summary yourself.
+  the resolved binary path and its hash in the unit summary yourself. The run
+  manifest names only a version string, and that string did not change across a
+  Console export fix, so it does not identify a build.
+- It cannot see a unit that was never started. A batch's own state file is the
+  only record that a unit was selected; the server's job registry keeps only the
+  most recently updated jobs and downgrades running jobs on restart.
+
+Server-side state, as of the fixes on `feature/tiered-annotation-pipeline`:
+
+- The peak-count diagnostic writes to its own directory and no longer touches the
+  production analysis CSV, method file or run manifest. Verify the row count
+  anyway; that is what CNT-1 is for.
+- Raw data is never deleted without a separate explicit confirmation. Keeping
+  `raw_retention_policy` at `keep` is still the right default for an unattended
+  run, because it removes the decision rather than answering it.
+- A unit whose manifest says `execution_allowed` is not true is refused before
+  MS-DIAL starts, and so is a workflow whose polarity, output directory or input
+  set disagrees with the manifest.
+- A run that returns success without producing every planned export now fails.
+- A rejected tool call answers with `ok: false`, a `reason` and the backend's own
+  message instead of raising past the MCP boundary.
 
 ## Unattended operation
 
