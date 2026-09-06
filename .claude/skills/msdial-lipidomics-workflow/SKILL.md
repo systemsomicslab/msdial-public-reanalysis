@@ -8,8 +8,17 @@ description: Run a laboratory LC-MS/MS lipidomics workflow end to end - recognis
 A person hands over a folder of raw data and expects a quantified lipidome back. The
 work is mostly decisions, not computation: which library, which retention-time
 behaviour, which sample belongs to which group, which polarity quantifies which lipid
-class. Each of those is settled once, confirmed by the person, and then saved as a
-workset so the next dataset only has to confirm what changed.
+class.
+
+**Ask generously the first time.** A laboratory dataset has an analyst behind it who
+can answer in a word, and reaching a correct result safely matters more than reaching
+it in few turns. This is the opposite of repository reanalysis, which has to run
+systematically with nobody to ask.
+
+**Then save it.** Once the first dataset has run, the method settings become a workset
+and the second dataset only confirms what changed. What carries is the method; what
+does not carry is anyone's agreement about a particular set of files. Step 4 draws that
+line explicitly.
 
 ## Before starting
 
@@ -43,21 +52,30 @@ The proposal reads Class from how the file names vary: a token identical in ever
 describes the study, one different in every name identifies the sample, and one taking
 a few values each shared by several files is the comparison. `class_proposal` carries
 the reasoning and the alternatives it rejected — the replicate index usually among
-them. Show the whole table with that reasoning and ask, because a file name only
-suggests the grouping and the person knows it.
+them.
+
+**This one blocks.** `class_assignment_confirmed` is a required question on the
+laboratory path: no workflow is built until someone agrees the grouping or replaces it.
+Every comparison downstream is drawn along that axis and correcting it afterwards means
+running again, so it is worth one question. A repository reanalysis is exempt — its
+classes come from repository metadata and nobody is watching a systematic batch.
 
 Show every column that will reach MS-DIAL: file name, type (Sample/Blank/QC), class,
-batch, analytical order, dilution factor. Two of these are silently consequential:
+batch, analytical order, dilution factor. `sample_table_proposal` says where the last
+two came from, and both are worth reading aloud:
 
 - **Analytical order** decides what "injection order" means in every drift plot
-  downstream. If the file names carry a run number, say whether you used it.
-- **Dilution factor** is 1 unless the project says otherwise, and a wrong value scales
-  every concentration. Ask for it explicitly rather than assuming; if a metadata table
-  accompanies the data, read the factor from there and say where it came from.
+  downstream. It is read from a sequence number embedded in the file names when one
+  varies uniquely across the samples, and otherwise from the file listing; the proposal
+  says which, quotes the numbers it used, and says whether the two agree. Blanks carry
+  no sequence number and keep their listing place.
+- **Dilution factor** is 1 because nothing said otherwise, not because anything was
+  read. A wrong value scales every concentration. It is raised as `dilution_factor`;
+  if a metadata table accompanies the data, read the factor from there and say so.
 
 ## 3. Agree the analysis settings
 
-Ask, once, and record the answers in a named workset so later datasets inherit them:
+Ask each of these once; step 4 saves the answers.
 
 - **Which annotation library.** A laboratory usually has its own LBM2 carrying
   predicted retention times for its own chromatography. Pass it as
@@ -82,10 +100,27 @@ time, which is the conservative reading of an unknown library. They appear in
 `advisory_questions`, and leaving one unasked is a choice to accept that default —
 so ask them, and say which defaults are standing if you do not.
 
-Save the agreed set with `msdial_save_workset` under a name the laboratory will
-recognise. The next dataset then starts from it and only has to confirm what changed.
+## 4. Offer the workset
 
-## 4. Run each polarity
+The plan carries `workset_suggestion`: a proposed name, the settings that would carry,
+and — the half that matters — `not_reusable`, the answers deliberately left behind with
+the reason. Offer it, and read both halves out.
+
+A workset carries the method: project type, ion mode, omics, library, retention-time
+behaviour and tolerance, thread count, QA and reporting flags. It does **not** carry the
+Class confirmation, the dilution factor, or any path to this dataset. A confirmation
+that travelled would answer, for the next dataset, a question nobody was asked about
+it — so the second dataset inherits the settings and is still asked to confirm its own
+grouping. If `minimum_peak_height` came from a diagnostic, `caveats` says it was
+measured on these files rather than chosen.
+
+`msdial_save_workset(name=..., run_directory=<the run directory>)` saves what a finished
+run actually used: `guided-answers.json` is written beside the bundle at prepare time,
+because `workflow-settings.json` records the resolved parameters and cannot say which of
+them anyone decided. `worth_saving` is false when a workset is already in use and
+nothing changed — do not offer it again then.
+
+## 5. Run each polarity
 
 `msdial_prepare_guided_analysis` writes the reproducible bundle — analysis table,
 method file, command, manifest — without running anything. Show the command and the
@@ -95,7 +130,7 @@ Then `msdial_start_guided_analysis(confirmed=true)` and follow with
 `msdial_interactive_status` or `msdial_interactive_wait_for_completion`. A run of a few
 files takes minutes; say so rather than leaving silence.
 
-## 5. Check the internal standards were annotated
+## 6. Check the internal standards were annotated
 
 Normalization divides by an internal standard peak. If that peak was not annotated,
 the lipid class it covers cannot be quantified — and the failure is silent unless
@@ -107,7 +142,7 @@ report out. Standards absent for a good reason — the positive-mode standards a
 in a negative-mode run — are expected; say which those are, so the ones that matter
 stand out.
 
-## 6. Normalize to concentration
+## 7. Normalize to concentration
 
 ```
 MSDIALCUI normalize -i <project.mddata> -s <standards.tsv> -o <output directory>
@@ -139,7 +174,7 @@ comment column, and a concentration without a unit is not a concentration.
 Ignore any peak-ID column in a laboratory's lookup table. Those identify peaks in the
 alignment the table was written against and mean nothing in a new run.
 
-## 7. Merge the polarities
+## 8. Merge the polarities
 
 Each lipid class is quantified in whichever polarity and adduct measures it best. That
 choice is a rule table, not something the data decides:
@@ -166,7 +201,7 @@ meaningful beside the count of everything that did not qualify.
 
 ## What is not automated yet
 
-- False-positive and false-negative review between steps 4 and 5 is still manual.
+- False-positive and false-negative review between steps 5 and 6 is still manual.
 
 ## Reporting
 
