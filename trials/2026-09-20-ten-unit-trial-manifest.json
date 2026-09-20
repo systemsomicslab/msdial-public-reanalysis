@@ -18,7 +18,9 @@
     "approval_quantity": "required_bundle_gb",
     "why_the_two_figures_are_equal_here": "Three Metabolomics Workbench archives each serve two analysis units, the positive and the negative polarity of the same study (ST003038 x2, ST005052 x1). Only one polarity of each accession is selected, so no archive is counted twice. Selecting both polarities of ST003038 or ST005052 would make the naive sum overstate the requirement by the size of the shared archive.",
     "suggested_size_bound_gb": 20,
-    "disk_note": "Retention is keep, and MS-DIAL Interactive holds both the downloaded archive and its extraction. Budget roughly twice the bundle figure on disk: about 26 GB. The gate's DSK-1 check reports the real occupancy per unit."
+    "disk_note": "Retention is keep, and MS-DIAL Interactive holds both the downloaded archive and its extraction. Budget roughly twice the bundle figure on disk: about 26 GB. The gate's DSK-1 check reports the real occupancy per unit.",
+    "negative_control_gb": 0.81,
+    "total_with_control_gb": 13.88
   },
   "retention": {
     "raw_retention_policy": "keep",
@@ -464,11 +466,11 @@
     }
   ],
   "open_decisions_for_the_user": [
-    "The positive-mode MSP counterpart for the four positive units.",
-    "Whether the LBM lipid tier applies to the six metabolomics units, and what the annotation profile should then be called."
+    "Confirmation boundary 2: download MSMS-Public_all-pos-VS20.msp (378.6 MB, Zenodo 21901200).",
+    "Confirmation boundary 1: the raw-data download of the 11 units, 13.88 GB."
   ],
   "library": {
-    "decision": "as before: LBM2 plus MSP high-confidence plus MSP low-confidence",
+    "decision": "LBM2 on every unit, plus MSP high-confidence and MSP low-confidence in the unit's own polarity. User confirmed 2026-09-20: the LBM tier applies to the metabolomics units too.",
     "recovered_from": "analysis/mb_post/MPST000007/6f27431da49ec82f3734/output/workflow-settings.json and msp_annotator_settings.tsv",
     "annotation_pipeline_profile": "lipid-rule-msp-high-low-v1",
     "tiers": [
@@ -516,9 +518,66 @@
     ],
     "note_high_and_low_share_one_file": "Both MSP tiers point at the same MSP. The tiers are thresholds, not different libraries: high demands 3 matched peaks, a 0.05 MS2 tolerance and a 0.8 reverse dot product; low accepts 1 matched peak at 0.25 and 0.5. That matches the contract's separate evidence tiers: LBM rule-based, strict MSP, broad MSP candidate.",
     "open_for_this_trial": [
-      "The recovered MSP is the NEGATIVE-mode VS20 file. Four of the ten units are positive mode and need the positive counterpart.",
-      "Six of the ten units are metabolomics rather than lipidomics. The LBM tier is a lipid rule-based annotator; for those units it contributes little and the profile name lipid-rule-msp-high-low-v1 would misdescribe the run.",
-      "The VS20 MSP is a private local file. Its absolute path must not reach a bundle or a shared report. The gate's SEC-1 now fails exactly that, and the last real run leaked it 24 times."
-    ]
+      "Only one download is required: MSMS-Public_all-pos-VS20.msp, 378.6 MB. That is confirmation boundary 2 and has not been given."
+    ],
+    "lbm_on_metabolomics_units": {
+      "verified_it_works": "LcmsProcess.cs:82 constructs the LBM annotator with TargetOmics.Lipidomics HARD-CODED, independent of the project's own target omics, and LcmsProcess.cs:81 runs it whenever an LBM file loaded with more than zero records. So the lipid rule-based tier fires under target_omics=Metabolomics and keeps its lipid scoring.",
+      "interactive_side": "agent_workflow.py:659 populates the searched lipid classes when target_omics is Lipidomics OR an lbm_path is set, so this case was anticipated by the author rather than being a workaround.",
+      "what_still_needs_setting": "agent_workflow.py:816 resolves exactly ONE official library automatically - the LBM for Lipidomics, otherwise the polarity's MSP. The three tiers are not the guided default and must be configured explicitly per unit, exactly as the MPST000007 run did.",
+      "profile_name": "lipid-rule-msp-high-low-v1 misdescribes a metabolomics run. Proposed: rule-msp-high-low-v1, with target_omics recorded per unit."
+    },
+    "files": [
+      {
+        "tier": "LBM rule-based lipid annotation",
+        "priority": 3,
+        "applies_to": "all 11 units",
+        "filename": "Msp20250303164224_NCDK-TUAT-LC25_converted_dev.lbm2",
+        "zenodo_record": 21904324,
+        "doi": "10.5281/zenodo.21904324",
+        "concept_doi": "10.5281/zenodo.21904323",
+        "title_on_zenodo": "msdial_lipidms2lib",
+        "licence": "CC BY 4.0",
+        "published": "2026-08-12",
+        "size_bytes": 785186493,
+        "md5": "c54c577ec40d2e8fd6d4365daf4a8157",
+        "local_state": "PRESENT and verified byte-for-byte on 2026-09-20",
+        "download_needed": false
+      },
+      {
+        "tier": "MSP high quality + MSP low quality",
+        "priority": "2 and 1",
+        "applies_to": "the 6 negative-mode units",
+        "filename": "MSMS-Public_all-neg-VS20.msp",
+        "zenodo_record": 21904103,
+        "doi": "10.5281/zenodo.21904103",
+        "concept_doi": "10.5281/zenodo.21904102",
+        "title_on_zenodo": "msdial_ms2lib_neg",
+        "licence": "CC BY 4.0",
+        "published": "2026-08-12",
+        "size_bytes": 50818071,
+        "md5": "2cc3f3843d7c139e807611553b966202",
+        "local_state": "PRESENT and verified byte-for-byte on 2026-09-20",
+        "download_needed": false
+      },
+      {
+        "tier": "MSP high quality + MSP low quality",
+        "priority": "2 and 1",
+        "applies_to": "the 4 positive-mode units",
+        "filename": "MSMS-Public_all-pos-VS20.msp",
+        "zenodo_record": 21901200,
+        "doi": "10.5281/zenodo.21901200",
+        "concept_doi": "10.5281/zenodo.21901199",
+        "title_on_zenodo": "msdial_ms2lib_pos",
+        "licence": "CC BY 4.0",
+        "published": "2026-08-12",
+        "size_bytes": 396946829,
+        "md5": "53ab4d94cd98b6aecbac0eb73cb9f2e7",
+        "local_state": "ABSENT",
+        "download_needed": true,
+        "catalog_entry": "library_catalog.py id=metabolomics-positive; its recorded size and md5 match Zenodo exactly"
+      }
+    ],
+    "zenodo_note": "The positive library is NOT in the same Zenodo record as the negative one. They are three separate concept series: pos 21901200 (concept 21901199), neg 21904103 (concept 21904102), LBM 21904324 (concept 21904323). No single concept DOI yields both polarities, so all three record ids must be resolved independently.",
+    "private_library_note": "The previous run used these same public Zenodo libraries, not a private VS20. The path leaked into the publication bundle is a user-profile path to the DOWNLOADED public file, which the contract still forbids in a shared artifact. SEC-1 fails it; the fix is to identify the library by name, DOI and checksum instead."
   }
 }
