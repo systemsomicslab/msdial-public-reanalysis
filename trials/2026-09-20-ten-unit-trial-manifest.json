@@ -447,7 +447,7 @@
     {
       "boundary": 2,
       "what": "Official-library download",
-      "status": "not yet requested - the library for the trial has not been chosen"
+      "status": "GIVEN 2026-09-20; library downloaded and verified"
     },
     {
       "boundary": 3,
@@ -518,7 +518,7 @@
     ],
     "note_high_and_low_share_one_file": "Both MSP tiers point at the same MSP. The tiers are thresholds, not different libraries: high demands 3 matched peaks, a 0.05 MS2 tolerance and a 0.8 reverse dot product; low accepts 1 matched peak at 0.25 and 0.5. That matches the contract's separate evidence tiers: LBM rule-based, strict MSP, broad MSP candidate.",
     "open_for_this_trial": [
-      "Only one download is required: MSMS-Public_all-pos-VS20.msp, 378.6 MB. That is confirmation boundary 2 and has not been given."
+      "None. All three libraries are present and verified byte-for-byte against their published checksums."
     ],
     "lbm_on_metabolomics_units": {
       "verified_it_works": "LcmsProcess.cs:82 constructs the LBM annotator with TargetOmics.Lipidomics HARD-CODED, independent of the project's own target omics, and LcmsProcess.cs:81 runs it whenever an LBM file loaded with more than zero records. So the lipid rule-based tier fires under target_omics=Metabolomics and keeps its lipid scoring.",
@@ -572,9 +572,10 @@
         "published": "2026-08-12",
         "size_bytes": 396946829,
         "md5": "53ab4d94cd98b6aecbac0eb73cb9f2e7",
-        "local_state": "ABSENT",
-        "download_needed": true,
-        "catalog_entry": "library_catalog.py id=metabolomics-positive; its recorded size and md5 match Zenodo exactly"
+        "local_state": "PRESENT, downloaded and verified 2026-09-20T23:02+09:00",
+        "download_needed": false,
+        "catalog_entry": "library_catalog.py id=metabolomics-positive; its recorded size and md5 match Zenodo exactly",
+        "verified": "size 396,946,829 exact; md5 53ab4d94cd98b6aecbac0eb73cb9f2e7 exact; 501,264 NAME: records"
       }
     ],
     "zenodo_note": "The positive library is NOT in the same Zenodo record as the negative one. They are three separate concept series: pos 21901200 (concept 21901199), neg 21904103 (concept 21904102), LBM 21904324 (concept 21904323). No single concept DOI yields both polarities, so all three record ids must be resolved independently.",
@@ -587,5 +588,11 @@
       "applies_to": "production repository reanalysis, not this trial",
       "checksum": "to be recorded when production starts, alongside the record count and compound count from LibraryFingerprint"
     }
+  },
+  "known_risk_raw_download_does_not_resume": {
+    "established": "repository_reanalysis.py:134 opens the .part file with mode 'wb' and sends no HTTP Range header, so every attempt starts at byte 0; repository_reanalysis.py:151-152 unlinks the .part on any exception. A repository raw download that is interrupted loses everything already transferred.",
+    "contrast": "The LIBRARY download does resume from its .part - the job history says so and this trial used it, resuming from 25 MB after the backend stopped at 22:54.",
+    "why_it_matters_now": "The backend stopped once tonight during a 378 MB library transfer, and the job history holds three earlier 'The local backend stopped before this job completed' entries from 2026-09-06. Four units in this manifest arrive as ONE archive each: ST005052 1.80 GB, ST003399 1.60 GB, ST003044 1.30 GB, ST003075 1.00 GB. Each must complete in one unbroken connection or start again from zero.",
+    "least_exposed_unit": "MTBLS2207, 0.57 GB across 11 separate per-file endpoints of about 52 MB each, so an interruption costs one file rather than the unit."
   }
 }
