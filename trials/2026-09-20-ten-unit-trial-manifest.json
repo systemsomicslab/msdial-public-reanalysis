@@ -578,6 +578,14 @@
       }
     ],
     "zenodo_note": "The positive library is NOT in the same Zenodo record as the negative one. They are three separate concept series: pos 21901200 (concept 21901199), neg 21904103 (concept 21904102), LBM 21904324 (concept 21904323). No single concept DOI yields both polarities, so all three record ids must be resolved independently.",
-    "private_library_note": "The previous run used these same public Zenodo libraries, not a private VS20. The path leaked into the publication bundle is a user-profile path to the DOWNLOADED public file, which the contract still forbids in a shared artifact. SEC-1 fails it; the fix is to identify the library by name, DOI and checksum instead."
+    "private_library_note": "The previous run used these same public Zenodo libraries, not a private VS20. The path leaked into the publication bundle is a user-profile path to the DOWNLOADED public file, which the contract still forbids in a shared artifact. SEC-1 fails it; the fix is to identify the library by name, DOI and checksum instead.",
+    "why_the_public_library_for_this_trial": "The production annotation library is the private MSP pair MSMS-Private-pos-VS21.msp and MSMS-Private-neg-VS21.msp, held on the laboratory NAS. This trial deliberately uses the public Zenodo VS20 pair instead, because it is small, citable and costs nothing to re-download: a light test should not depend on the production library. Identified here by filename only. The NAS location is not recorded in this repository, which is public, and the contract requires a library to be identified by name and checksum rather than by path.",
+    "production_library": {
+      "positive": "MSMS-Private-pos-VS21.msp",
+      "negative": "MSMS-Private-neg-VS21.msp",
+      "location": "laboratory NAS, not recorded here",
+      "applies_to": "production repository reanalysis, not this trial",
+      "checksum": "to be recorded when production starts, alongside the record count and compound count from LibraryFingerprint"
+    }
   }
 }
