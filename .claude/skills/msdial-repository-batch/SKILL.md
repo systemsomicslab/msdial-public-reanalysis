@@ -80,12 +80,23 @@ reporting no blockers.
 
 ```powershell
 python D:\13_MSDIAL_Public_Reanalysis\code\scripts\verify-run-invariants.py `
-  <unit-workspace> --stage before-production
+  <unit-workspace> --stage before-production --strict
 ```
 
 `--stage` is `before-production`, `after-run` or `before-publish`. Exit code 0
 means every evaluated check passed, 2 means at least one failed, 3 means the
-workspace is unusable. `--json` emits the full report.
+workspace is unusable, and 4 (`--strict` only) means a check could not be
+evaluated because an artifact that stage was responsible for producing is
+absent. `--json` emits the full report.
+
+**Always pass `--strict`.** Without it a workspace where nothing has happened
+exits 0: `ok` means "no check FAILed", and a directory holding an empty
+`provenance/` and an empty `output/` produces no FAILs at all -- measured on
+2026-09-20, it returned 15 `not_evaluable` and exit 0. A unit nobody ran and a
+unit that ran correctly gave the same answer, which is the one answer an
+unattended loop must never get wrong. `--strict` exempts only the absences that
+are a correct state: a unit whose acquisition mode needed no header read, and a
+raw tree already released under the retention policy.
 
 The gate reads the retained artifacts, not tool responses. That is deliberate:
 the guided-plan response that reports the same sample count is large enough to
@@ -102,10 +113,12 @@ is exactly the case the gate exists to catch.
 
 What the gate cannot do:
 
-- It cannot establish which MS-DIAL Console binary produced the outputs. Record
-  the resolved binary path and its hash in the unit summary yourself. The run
-  manifest names only a version string, and that string did not change across a
-  Console export fix, so it does not identify a build.
+- It cannot establish which MS-DIAL Console binary produced the outputs. `BIN-1`
+  compares the version the run manifest recorded against the version the
+  mzTab-M attributes, which catches a batch split across two binaries, but
+  neither is a hash and a version string did not change across a Console export
+  fix. Record the resolved binary path and its hash in the unit summary
+  yourself.
 - It cannot see a unit that was never started. A batch's own state file is the
   only record that a unit was selected; the server's job registry keeps only the
   most recently updated jobs and downgrades running jobs on restart.
