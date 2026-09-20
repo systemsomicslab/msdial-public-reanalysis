@@ -27,7 +27,14 @@ Usage:
     --stage           before-production | after-run | before-publish | all   (default: all)
     --json            emit the full report as JSON on stdout
 
-Exit codes: 0 all evaluated checks passed, 2 at least one failed, 3 the workspace is unusable.
+Exit codes: 0 all evaluated checks passed, 2 at least one failed, 3 the workspace is unusable,
+4 (--strict only) a check could not be evaluated because an artifact the stage owed is absent.
+
+--strict exists because `ok` means "no check FAILed", and a workspace where nothing has happened
+produces no FAILs at all. Run against a directory holding an empty provenance/ and an empty
+output/, this file reported 15 not_evaluable, ok=True and exit 0, while the batch skill tells an
+agent that exit 0 "means every evaluated check passed". A unit nobody ran and a unit that ran
+correctly gave the same answer. Every unattended run must pass --strict.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ import csv
 import json
 import re
 import sys
+import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +56,15 @@ NOT_EVALUABLE = "not_evaluable"
 
 STAGES = ("before-production", "after-run", "before-publish")
 
+# A user-profile path inside an artifact built to be shared. Deliberately narrow: it
+# matches what this machine actually leaks (a Windows profile path) rather than trying to
+# recognise private data in general, which no pattern can do.
+PRIVATE_PATH_PATTERN = re.compile(
+    r"[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}[^\\/\s\"\',;]+"
+    r"|file:/{2,3}[A-Za-z]:/+Users/+[^\s\"\',;]+",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class Check:
@@ -57,6 +74,16 @@ class Check:
     status: str
     detail: str
     evidence: dict = field(default_factory=dict)
+    # Whether this stage was responsible for producing what the check reads. False marks the
+    # artifacts whose absence is a legitimate state of a correct run -- a unit whose acquisition
+    # mode was known without a header preflight, a unit whose raw tree has already been released.
+    # Everything else that cannot be evaluated is an artifact the stage should have produced, and
+    # under --strict its absence refuses the unit instead of being counted as "nothing to see".
+    required: bool = True
+
+    @property
+    def strict_failure(self) -> bool:
+        return self.status == NOT_EVALUABLE and self.required
 
     def as_dict(self) -> dict:
         return {
@@ -65,6 +92,7 @@ class Check:
             "title": self.title,
             "status": self.status,
             "detail": self.detail,
+            "required": self.required,
             "evidence": self.evidence,
         }
 
@@ -76,8 +104,9 @@ class Report:
 
     # Positional-only, so an evidence key may be named "status" or "detail" without colliding with
     # the parameters. Evidence keys come from the artifacts and are not ours to rename.
-    def add(self, check_id: str, stage: str, title: str, status: str, detail: str, /, **evidence) -> Check:
-        check = Check(check_id, stage, title, status, detail, evidence)
+    def add(self, check_id: str, stage: str, title: str, status: str, detail: str, /,
+            required: bool = True, **evidence) -> Check:
+        check = Check(check_id, stage, title, status, detail, evidence, required)
         self.checks.append(check)
         return check
 
@@ -88,11 +117,25 @@ class Report:
     def ok(self) -> bool:
         return not any(check.status == FAIL for check in self.checks)
 
+    @property
+    def strict_failures(self) -> list[Check]:
+        """Checks that could not be evaluated on an artifact this stage owed.
+
+        WHY THIS EXISTS. `ok` is "no check FAILed", and a workspace where nothing has happened
+        produces no FAILs at all: run against an empty directory holding an empty provenance/ and
+        an empty output/, this file returned 15 not_evaluable, ok=True and exit 0, while the batch
+        skill tells an agent that exit 0 "means every evaluated check passed". A unit nobody ran
+        and a unit that ran correctly were the same answer, which is the difference an unattended
+        loop exists to notice.
+        """
+        return [check for check in self.checks if check.strict_failure]
+
     def as_dict(self) -> dict:
         return {
             "workspace": str(self.workspace),
             "ok": self.ok,
             "counts": self.counts(),
+            "strict_failures": [check.check_id for check in self.strict_failures],
             "checks": [check.as_dict() for check in self.checks],
         }
 
@@ -203,8 +246,11 @@ def check_preflight_claim(report: Report, provenance: dict | None, reason: str) 
         return
     preflight = provenance.get("raw_metadata_preflight")
     if not isinstance(preflight, dict) or not preflight:
+        # Not required: a unit whose acquisition mode was already unambiguous in the repository
+        # metadata never needed a header read, and refusing it under --strict would refuse a
+        # correct run for not doing something it did not have to do.
         report.add("PRE-1", stage, "Header-confirmed acquisition claim is permitted", NOT_EVALUABLE,
-                   "No raw-header preflight is recorded in the manifest.")
+                   "No raw-header preflight is recorded in the manifest.", required=False)
         return
     summary = preflight.get("summary")
     exit_code = preflight.get("exit_code")
@@ -757,8 +803,11 @@ def check_storage_shape(report: Report, workspace: Path, stage: str) -> None:
     downloads = workspace / "raw" / "downloads"
     data = workspace / "raw" / "data"
     if not downloads.exists() and not data.exists():
+        # Not required: a released raw tree is the intended end state under the campaign's
+        # delete-after-validated-output policy, so its absence is a result, not a gap.
         report.add("DSK-1", stage, "Retained storage is accounted for", NOT_EVALUABLE,
-                   "No raw directory is present; the raw tree may already have been released.")
+                   "No raw directory is present; the raw tree may already have been released.",
+                   required=False)
         return
     archive = _tree_bytes(downloads) if downloads.exists() else 0
     extracted = _tree_bytes(data) if data.exists() else 0
@@ -781,6 +830,436 @@ def check_storage_shape(report: Report, workspace: Path, stage: str) -> None:
 # driver
 # --------------------------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------------------------
+# Checks added 2026-09-20, after an independent review measured that every record the pipeline had
+# gained since this file was written was read by nothing. Each one compares two facts written by
+# code paths that do not know about each other; a check that reads one artifact and trusts it is
+# worthless here, because the failure this programme keeps finding is a component staying
+# consistent with itself while disagreeing with everything else.
+# ---------------------------------------------------------------------------------------------
+
+
+def _class_proposal(provenance: dict | None) -> dict | None:
+    if not isinstance(provenance, dict):
+        return None
+    proposal = (provenance.get("project") or {}).get("class_proposal")
+    return proposal if isinstance(proposal, dict) and proposal else None
+
+
+def check_executed_class_matches_approved(
+    report: Report, provenance: dict | None, reason: str,
+    csv_rows: list[dict] | None, csv_reason: str,
+) -> None:
+    """CLS-2. The grouping MS-DIAL ran with is the grouping that was approved.
+
+    Two writers. The Catalog proposes and stores the assignments, which travel into the unit's
+    provenance manifest through a handoff; the Interactive preparer independently projects the
+    reviewed sample metadata into the analysis CSV the Console actually reads. Nothing has ever
+    compared them, and an approved proposal being received and then ignored -- the grouping
+    re-derived from an argument instead -- is a defect this project has already had once.
+
+    CLS-1 asks whether the executed grouping is stated and unambiguous. It is satisfied by a
+    perfectly clean grouping of the wrong thing.
+    """
+    stage = "before-production"
+    proposal = _class_proposal(provenance)
+    if proposal is None:
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved", NOT_EVALUABLE,
+                   reason or "The manifest carries no Class proposal.", required=False)
+        return
+    if csv_rows is None:
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved", NOT_EVALUABLE,
+                   csv_reason)
+        return
+    approved = {
+        str(item.get("sample_id", "")): str(item.get("class_label", ""))
+        for item in proposal.get("assignments") or []
+        if isinstance(item, dict)
+    }
+    if not approved:
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved", NOT_EVALUABLE,
+                   "The Class proposal carries no assignments.")
+        return
+    executed = {str(row.get("file_name", "")): str(row.get("class_id", "")) for row in csv_rows}
+    missing = sorted(set(approved) - set(executed))
+    extra = sorted(set(executed) - set(approved))
+    differing = sorted(
+        f"{name}: approved {approved[name]!r}, executed {executed[name]!r}"
+        for name in set(approved) & set(executed)
+        if approved[name] != executed[name]
+    )
+    if not missing and not extra and not differing:
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved", PASS,
+                   f"All {len(approved)} approved assignments appear in the analysis CSV with the "
+                   "same Class.", assignments=len(approved))
+        return
+    report.add(
+        "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
+        "The grouping the Console will read is not the grouping that was approved. "
+        f"{len(differing)} sample(s) carry a different Class, {len(missing)} approved sample(s) "
+        f"are absent from the CSV, {len(extra)} CSV row(s) were never approved.",
+        differing=differing[:10], missing=missing[:10], unapproved=extra[:10],
+    )
+
+
+def check_class_proposal_was_accepted(report: Report, provenance: dict | None, reason: str) -> None:
+    """CLS-3. A grouping was ratified, not merely suggested.
+
+    The contract requires an explicit user confirmation before a Class proposal is saved. The
+    confirmation is given in a conversation; what a later audit can read is the proposal's own
+    status. A proposal still reading "proposed" beside an executed, published run says the
+    ratification happened somewhere no artifact records -- which, for a machine-authored grouping,
+    is the whole of the safety argument.
+    """
+    stage = "before-production"
+    proposal = _class_proposal(provenance)
+    if proposal is None:
+        report.add("CLS-3", stage, "The executed grouping was ratified", NOT_EVALUABLE,
+                   reason or "The manifest carries no Class proposal.", required=False)
+        return
+    status = str(proposal.get("status") or "").strip().casefold()
+    model = str(proposal.get("model") or "")
+    warnings = [str(item) for item in proposal.get("warnings") or []]
+    if status in {"accepted", "confirmed", "approved"}:
+        report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
+                   f"Class proposal status is {status!r}.", status=status, model=model,
+                   warnings=warnings[:4])
+        return
+    report.add(
+        "CLS-3", stage, "The executed grouping was ratified", FAIL,
+        f"Class proposal status is {status or 'absent'!r}, not an accepted one. The grouping was "
+        f"authored by {model or 'an unrecorded author'} and no artifact records that anyone "
+        "ratified it.",
+        status=status, model=model, warnings=warnings[:4],
+    )
+
+
+def check_unit_reached_a_terminal_state(
+    report: Report, provenance: dict | None, reason: str
+) -> None:
+    """FIN-1. The unit finished, rather than stopping somewhere that looks finished.
+
+    finalize_download_lease is what validates the mzTab-M, records the retained-artifact inventory
+    and stamps finalized_at. A workspace can hold a complete mzTab-M, a publication bundle and
+    supplementary tables while its manifest still reads the status it had before the run, because
+    nothing compares the two. The publishable output is not evidence that the unit was finalised;
+    the finalisation record is.
+    """
+    stage = "before-publish"
+    if provenance is None:
+        report.add("FIN-1", stage, "The unit reached a recorded terminal state", NOT_EVALUABLE,
+                   reason)
+        return
+    status = str(provenance.get("status") or "")
+    finalized = provenance.get("finalized_at")
+    validation = provenance.get("mztab_validation")
+    if status == "mztab_validated" and finalized and isinstance(validation, dict):
+        report.add("FIN-1", stage, "The unit reached a recorded terminal state", PASS,
+                   f"status={status!r}, finalized at {finalized}.", status=status,
+                   finalized_at=str(finalized))
+        return
+    if status == "run_failed":
+        report.add("FIN-1", stage, "The unit reached a recorded terminal state", FAIL,
+                   "The unit recorded a failed run. Nothing here should be published.",
+                   status=status, run_failures=len(provenance.get("run_failures") or []))
+        return
+    report.add(
+        "FIN-1", stage, "The unit reached a recorded terminal state", FAIL,
+        f"status={status or 'absent'!r}, finalized_at={finalized!r}, mztab_validation "
+        f"{'present' if isinstance(validation, dict) else 'absent'}. The unit was never finalised, "
+        "whatever the output directory contains.",
+        status=status, finalized_at=str(finalized), has_validation=isinstance(validation, dict),
+    )
+
+
+def _method_threshold(output: Path) -> tuple[str | None, str]:
+    method = output / "method.txt"
+    if not method.is_file():
+        return None, f"{method.name} is absent"
+    try:
+        for line in method.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            key, sep, value = line.partition(":")
+            if sep and key.strip().casefold() == "minimum peak height":
+                return value.strip(), ""
+    except OSError as error:
+        return None, str(error)
+    return None, "method.txt states no Minimum peak height"
+
+
+def check_threshold_was_measured_on_this_unit(
+    report: Report, provenance: dict | None, reason: str, output: Path
+) -> None:
+    """PKH-1. The peak-detection threshold is one this unit's own diagnostic produced.
+
+    The contract mandates a zero-threshold diagnostic before every production repository run and
+    requires its method, representative sample, count, step and accepted threshold in provenance.
+    The diagnostic writes into the unit manifest; the threshold the Console will read is written
+    independently by the preparer into method.txt. Comparing them is the only way to distinguish a
+    threshold measured on this unit from one typed in, inherited from the previous unit, or left
+    at a default.
+
+    Compared as numbers, so 500 and 500.0 are the same threshold. Whether the Console can PARSE
+    that literal is MTH-1's question, not this one.
+    """
+    stage = "before-production"
+    if provenance is None:
+        report.add("PKH-1", stage, "The threshold was measured on this unit", NOT_EVALUABLE, reason)
+        return
+    diagnostics = provenance.get("peak_height_diagnostics")
+    written, written_reason = _method_threshold(output)
+    if not isinstance(diagnostics, list) or not diagnostics:
+        report.add(
+            "PKH-1", stage, "The threshold was measured on this unit", FAIL,
+            "No peak-count diagnostic is recorded for this unit. The contract requires one before "
+            f"every production run, and method.txt asks for {written or 'an unstated threshold'}.",
+            method_threshold=written,
+        )
+        return
+    if written is None:
+        report.add("PKH-1", stage, "The threshold was measured on this unit", NOT_EVALUABLE,
+                   written_reason)
+        return
+    measured = []
+    for item in diagnostics:
+        if isinstance(item, dict) and item.get("minimum_peak_height") is not None:
+            try:
+                measured.append(float(item["minimum_peak_height"]))
+            except (TypeError, ValueError):
+                continue
+    try:
+        executed = float(written)
+    except ValueError:
+        report.add("PKH-1", stage, "The threshold was measured on this unit", FAIL,
+                   f"method.txt states a Minimum peak height of {written!r}, which is not a number.",
+                   method_threshold=written, measured=measured)
+        return
+    if any(abs(executed - value) < 1e-9 for value in measured):
+        latest = diagnostics[-1] if isinstance(diagnostics[-1], dict) else {}
+        report.add(
+            "PKH-1", stage, "The threshold was measured on this unit", PASS,
+            f"method.txt asks for {written}, which this unit's diagnostic measured "
+            f"({latest.get('method', 'method unrecorded')}, "
+            f"{latest.get('diagnostic_peak_count', '?')} peaks at zero threshold, step "
+            f"{latest.get('threshold_step', '?')}).",
+            method_threshold=written, measured=measured,
+            representative=(latest.get("representative") or {}).get("file_name", ""),
+        )
+        return
+    report.add(
+        "PKH-1", stage, "The threshold was measured on this unit", FAIL,
+        f"method.txt asks for a Minimum peak height of {written}, and no diagnostic on this unit "
+        f"produced it. Measured here: {', '.join(str(value) for value in measured) or 'nothing'}.",
+        method_threshold=written, measured=measured,
+    )
+
+
+def check_method_file_reached_the_console(report: Report, output: Path, stage: str) -> None:
+    """MTH-1. Every parameter in the method file was one the Console could use.
+
+    Two writers again: the preparer writes method.txt, and the Console writes method.keys.json
+    beside it saying which keys it applied, which it did not recognise, and whose values it could
+    not read. The last of those is the dangerous one -- the key is spelled correctly, so nobody
+    reading the method file would suspect it -- and it is how every threshold this campaign chose
+    was discarded before the fix of 2026-09-20.
+
+    An unrecognised key is a WARN, not a FAIL. The shipped lipidomics template contains 27 of them;
+    failing on those would refuse every method file in existence, including MS-DIAL's own.
+    """
+    if stage == "before-production":
+        return
+    record = output / "method.keys.json"
+    if not record.is_file():
+        report.add("MTH-1", stage, "Every method-file parameter reached the Console", NOT_EVALUABLE,
+                   "method.keys.json is absent. The Console that ran predates the key record, so "
+                   "which parameters took effect cannot be read from this workspace.")
+        return
+    parsed, reason = _read_json(record)
+    if parsed is None:
+        report.add("MTH-1", stage, "Every method-file parameter reached the Console", NOT_EVALUABLE,
+                   reason)
+        return
+    unusable = [str(item) for item in parsed.get("unusable") or []]
+    unrecognised = [str(item) for item in parsed.get("unrecognised") or []]
+    applied = [str(item) for item in parsed.get("applied") or []]
+    if unusable:
+        report.add(
+            "MTH-1", stage, "Every method-file parameter reached the Console", FAIL,
+            f"{len(unusable)} parameter(s) named a value the Console could not read. Each kept its "
+            "built-in default while the retained method file says otherwise.",
+            unusable=unusable[:10], unrecognised_count=len(unrecognised),
+            applied_count=len(applied),
+        )
+        return
+    if unrecognised:
+        report.add(
+            "MTH-1", stage, "Every method-file parameter reached the Console", WARN,
+            f"{len(applied)} parameter(s) applied; {len(unrecognised)} key(s) no reader claimed "
+            "and which therefore had no effect.",
+            unrecognised=unrecognised[:10], applied_count=len(applied),
+        )
+        return
+    report.add("MTH-1", stage, "Every method-file parameter reached the Console", PASS,
+               f"All {len(applied)} parameter(s) in the method file were applied.",
+               applied_count=len(applied))
+
+
+def check_retention_policy_was_acted_on(
+    report: Report, provenance: dict | None, reason: str, workspace: Path
+) -> None:
+    """RET-1. The retention decision and the disk agree.
+
+    The policy is chosen once, at download, by the person who approved the download, and written
+    into the unit's manifest. Whether the raw tree is still there is a fact about the filesystem.
+    Nothing compared them, so a unit could carry a complete audit record asserting a retention
+    decision it never carried out, in either direction.
+    """
+    stage = "before-publish"
+    if provenance is None:
+        report.add("RET-1", stage, "The retention decision matches the disk", NOT_EVALUABLE, reason)
+        return
+    policy = provenance.get("raw_retention_policy")
+    raw = workspace / "raw"
+    present = raw.is_dir() and any(raw.iterdir())
+    if policy is None:
+        report.add(
+            "RET-1", stage, "The retention decision matches the disk", FAIL,
+            "The manifest records no raw_retention_policy. The deletion preview reads this field, "
+            "so a person confirming an irreversible deletion would be shown a blank where the "
+            "intent should be.", raw_present=present,
+        )
+        return
+    policy = str(policy)
+    status = str(provenance.get("status") or "")
+    if policy == "keep":
+        verdict = PASS if present else WARN
+        report.add("RET-1", stage, "The retention decision matches the disk", verdict,
+                   f"Policy is {policy!r} and the raw tree is {'present' if present else 'gone'}.",
+                   policy=policy, raw_present=present)
+        return
+    if policy == "delete_after_validated_output":
+        if present and status == "mztab_validated":
+            report.add("RET-1", stage, "The retention decision matches the disk", WARN,
+                       "Policy is delete_after_validated_output, the output is validated, and the "
+                       "raw tree is still present. Deletion needs its own confirmation and has "
+                       "not been given one.", policy=policy, raw_present=present, status=status)
+            return
+        report.add("RET-1", stage, "The retention decision matches the disk", PASS,
+                   f"Policy is {policy!r}; raw tree {'present' if present else 'released'}, "
+                   f"status {status!r}.", policy=policy, raw_present=present, status=status)
+        return
+    report.add("RET-1", stage, "The retention decision matches the disk", FAIL,
+               f"The manifest records a retention policy of {policy!r}, which is neither 'keep' "
+               "nor 'delete_after_validated_output'. It cannot have been acted on.",
+               policy=policy, raw_present=present)
+
+
+def check_binary_identity_is_recorded(
+    report: Report, run_manifest: dict | None, output: Path, stage: str
+) -> None:
+    """BIN-1. The software the mzTab-M attributes is the software the run recorded.
+
+    The mzTab's software line is written by the C# binary from its own assembly attributes. The
+    run manifest's version is written by the Python layer from a --version subprocess against
+    whatever path console_path named at the time, and the publication report re-probes it again
+    later. A rebuild or a repointed console between one unit and the next splits a batch across
+    two binaries with nothing in any artifact to say so.
+    """
+    if stage == "before-production":
+        return
+    mztab_files = sorted(output.glob("*.mzTab"))
+    if not isinstance(run_manifest, dict) or not mztab_files:
+        report.add("BIN-1", stage, "Recorded and attributed software agree", NOT_EVALUABLE,
+                   "The run manifest or the mzTab-M is absent.")
+        return
+    recorded = str(run_manifest.get("msdial_console_version") or "").strip()
+    attributed = ""
+    try:
+        for line in mztab_files[0].read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 3 and parts[0] == "MTD" and parts[1] == "software[1]":
+                attributed = parts[2].strip()
+                break
+    except OSError as error:
+        report.add("BIN-1", stage, "Recorded and attributed software agree", NOT_EVALUABLE,
+                   str(error))
+        return
+    if not recorded or not attributed:
+        report.add("BIN-1", stage, "Recorded and attributed software agree", NOT_EVALUABLE,
+                   f"recorded={recorded!r}, attributed={attributed!r}.")
+        return
+    if recorded in attributed:
+        report.add("BIN-1", stage, "Recorded and attributed software agree", PASS,
+                   f"The manifest records {recorded} and the mzTab-M attributes {attributed}.",
+                   recorded=recorded, attributed=attributed)
+        return
+    report.add(
+        "BIN-1", stage, "Recorded and attributed software agree", FAIL,
+        f"The manifest records MS-DIAL {recorded}; the mzTab-M attributes {attributed}. One of "
+        "them is not the binary that produced these results.",
+        recorded=recorded, attributed=attributed,
+    )
+
+
+def check_no_private_path_in_a_shared_artifact(report: Report, output: Path, stage: str) -> None:
+    """SEC-1. Nothing meant for sharing carries a path from this machine.
+
+    The contract forbids private library files and their paths from reaching bundles, logs,
+    repositories or shared reports, and requires a library to be identified by name and checksum
+    instead. The publication bundle is the artifact built to leave the machine, and a check that
+    reads only its member NAMES passes it while its members carry the path.
+
+    A PASS here means no known pattern matched. It is not a statement that the bundle contains no
+    private data, and it must never be read as one.
+    """
+    if stage != "before-publish":
+        return
+    candidates = [
+        output / "MS_DIAL_publication_reporting_bundle.zip",
+        output / "MS_DIAL_publication_report.json",
+        output / "Supplementary_Table_MS_DIAL.tsv",
+        output / "MS_DIAL_Materials_and_Methods.txt",
+    ]
+    present = [path for path in candidates if path.is_file()]
+    if not present:
+        report.add("SEC-1", stage, "No private path in a shared artifact", NOT_EVALUABLE,
+                   "No publication artifact has been generated.", required=False)
+        return
+    hits: list[str] = []
+    for path in present:
+        for member, payload in _readable_members(path):
+            for match in PRIVATE_PATH_PATTERN.findall(payload):
+                hits.append(f"{path.name}:{member}: {match}")
+    if hits:
+        report.add(
+            "SEC-1", stage, "No private path in a shared artifact", FAIL,
+            f"{len(hits)} occurrence(s) of a user-profile path inside an artifact built to be "
+            "shared. Identify the library by name and checksum instead.",
+            occurrences=sorted(set(hits))[:10], scanned=[path.name for path in present],
+        )
+        return
+    report.add("SEC-1", stage, "No private path in a shared artifact", PASS,
+               f"No user-profile path matched in {len(present)} shared artifact(s). This says no "
+               "known pattern matched, not that no private data is present.",
+               scanned=[path.name for path in present])
+
+
+def _readable_members(path: Path) -> list[tuple[str, str]]:
+    """Every text member of an artifact, so a zip is scanned by content and not by filename."""
+    try:
+        if path.suffix.casefold() == ".zip":
+            members = []
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    try:
+                        members.append((name, archive.read(name).decode("utf-8", "replace")))
+                    except (OSError, ValueError):
+                        continue
+            return members
+        return [(path.name, path.read_text(encoding="utf-8", errors="replace"))]
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return []
+
+
 def verify(workspace: Path, stage: str) -> Report:
     report = Report(workspace)
     provenance_path = workspace / "provenance" / "run-manifest.json"
@@ -801,6 +1280,9 @@ def verify(workspace: Path, stage: str) -> Report:
         check_preflight_claim(report, provenance, provenance_reason)
         check_checksum_coverage(report, provenance, provenance_reason)
         check_class_distribution(report, csv_rows, csv_reason, "before-production")
+        check_executed_class_matches_approved(report, provenance, provenance_reason, csv_rows, csv_reason)
+        check_class_proposal_was_accepted(report, provenance, provenance_reason)
+        check_threshold_was_measured_on_this_unit(report, provenance, provenance_reason, output)
         check_analytical_order_is_real(report, csv_rows, csv_reason, "before-production")
         approved = check_sample_count_invariant(
             report, provenance, provenance_reason, csv_rows, csv_reason,
@@ -819,12 +1301,17 @@ def verify(workspace: Path, stage: str) -> Report:
         check_expected_exports_present(report, run_manifest, output, "after-run")
         check_mztab_structure(report, output, "after-run")
         check_mztab_run_count(report, output, approved, "after-run")
+        check_method_file_reached_the_console(report, output, "after-run")
+        check_binary_identity_is_recorded(report, run_manifest, output, "after-run")
 
     if "before-publish" in stages:
         check_no_metric_rests_on_a_synthetic_order(report, output, csv_rows, "before-publish")
         check_library_provenance_contradiction(report, output, "before-publish")
         check_qa_prose_matches_assessment(report, output, "before-publish")
         check_storage_shape(report, workspace, "before-publish")
+        check_unit_reached_a_terminal_state(report, provenance, provenance_reason)
+        check_retention_policy_was_acted_on(report, provenance, provenance_reason, workspace)
+        check_no_private_path_in_a_shared_artifact(report, output, "before-publish")
     return report
 
 
@@ -837,6 +1324,12 @@ def render(report: Report) -> str:
     counts = report.counts()
     lines.append("")
     lines.append("  ".join(f"{key}={value}" for key, value in sorted(counts.items())))
+    strict = report.strict_failures
+    if strict:
+        lines.append(
+            "UNEVALUABLE ON ARTIFACTS THIS STAGE OWED: "
+            + ", ".join(check.check_id for check in strict)
+        )
     lines.append("VERDICT: " + ("ok" if report.ok else "REFUSE"))
     return "\n".join(lines)
 
@@ -846,6 +1339,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("workspace", help="the analysis-unit workspace directory")
     parser.add_argument("--stage", choices=(*STAGES, "all"), default="all")
     parser.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "refuse (exit 4) when a check could not be evaluated because an artifact this stage "
+            "was responsible for producing is absent. Without it, a workspace where nothing "
+            "happened exits 0."
+        ),
+    )
     args = parser.parse_args(argv)
 
     workspace = Path(args.workspace).expanduser()
@@ -858,7 +1360,12 @@ def main(argv: list[str]) -> int:
         print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
     else:
         print(render(report))
-    return 0 if report.ok else 2
+    if not report.ok:
+        return 2
+    # A FAIL outranks a strict refusal, because a fact established beats a fact missing.
+    if args.strict and report.strict_failures:
+        return 4
+    return 0
 
 
 if __name__ == "__main__":

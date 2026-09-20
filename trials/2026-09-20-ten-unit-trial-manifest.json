@@ -1,0 +1,272 @@
+{
+  "schema": "msdial-public-reanalysis-trial-manifest.v1",
+  "trial_id": "2026-09-20-ten-unit",
+  "prepared_at": "2026-09-20T22:30:00+09:00",
+  "status": "awaiting_user_approval",
+  "purpose_of_the_trial": "Exercise every branch of the repository reanalysis pipeline against real public data, and have the result judged by a layer that did not run it. This is a pipeline test, not a biological study.",
+
+  "destination": {
+    "workspace_root": "D:\\13_MSDIAL_Public_Reanalysis\\analysis",
+    "layout": "<workspace_root>\\<repository>\\<accession>\\<analysis_unit_id>\\{raw,provenance,output}",
+    "note": "The mandatory default from CLAUDE.md, passed explicitly as workspace_root to every plan and download call. No raw data or MS-DIAL output on C:, in a user profile, in a code checkout, or in a temporary directory."
+  },
+
+  "size": {
+    "selected_unit_bytes": 14036452147,
+    "selected_unit_gb": 13.07,
+    "required_bundle_bytes": 14036452147,
+    "required_bundle_gb": 13.07,
+    "distinct_download_urls": 660,
+    "approval_quantity": "required_bundle_gb",
+    "why_the_two_figures_are_equal_here": "Three Metabolomics Workbench archives each serve two analysis units, the positive and the negative polarity of the same study (ST003038 x2, ST005052 x1). Only one polarity of each accession is selected, so no archive is counted twice. Selecting both polarities of ST003038 or ST005052 would make the naive sum overstate the requirement by the size of the shared archive.",
+    "suggested_size_bound_gb": 20,
+    "disk_note": "Retention is keep, and MS-DIAL Interactive holds both the downloaded archive and its extraction. Budget roughly twice the bundle figure on disk: about 26 GB. The gate's DSK-1 check reports the real occupancy per unit."
+  },
+
+  "retention": {
+    "raw_retention_policy": "keep",
+    "confirmed_by_user": "2026-09-20",
+    "rationale": "A trial exists to be re-examined. An independent evaluator reading only the retained artifacts must be able to go back to the raw files when an artifact looks wrong. The campaign policy for a full-repository reanalysis remains delete_after_validated_output.",
+    "boundary_5_note": "Raw deletion is NOT exercised by this trial. The report must say so rather than leave it implied."
+  },
+
+  "analysis_purpose": {
+    "text": "Perform systematic annotation of peaks derived from the analytical data, following a standardised workflow. Define a biological comparison only where the submitter declared an experimental factor; where none was declared, run with no contrast and record that.",
+    "authored_by": "user",
+    "same_for_every_unit": true,
+    "consequence_for_the_gate": "PUR-1 (compare the manifest's analysis_purpose against the Class proposal's purpose) is NOT added for this trial. With one deliberately uniform purpose it would be trivially satisfiable and could not detect the failure it was designed for - unit 1's purpose carried verbatim into units 2-10. A green light that means nothing is worse than no check.",
+    "what_analysis_purpose_actually_drives": "Measured in msdial_interactive_app/msdial_app/mcp_server.py:224-236: it gates the download on being non-empty and is stored. Nothing branches on its content. It selects no library, sets no threshold, chooses no Class field and changes no QA criterion."
+  },
+
+  "scope": {
+    "campaign_scope": "LC-MS/MS only, untargeted DDA or DIA/AIF/SWATH with an MS1 survey and product-ion spectra, one project type, ion mode, acquisition mode, chromatography regime and ion mobility regime per MS-DIAL run.",
+    "eligible_pool_measured": {
+      "total_units_in_catalog": 9855,
+      "campaign_eligible_lcms_untargeted": 963,
+      "eligible_with_a_declared_experimental_factor": 127,
+      "eligible_reporting_zero_bytes": 153
+    },
+    "selection_principle": "Not ten arbitrary accessions. Ten units chosen so that every branch of the pipeline is exercised at least twice: three repositories, three acquisition modes, both polarities, five vendor formats, both download shapes, ion mobility on and off, Class decided and Class abstained, and a sample count spanning 11 to 168."
+  },
+
+  "units": [
+    {
+      "n": 1,
+      "unit_id": "9ff6e00c161c",
+      "repository": "metabolomics_workbench",
+      "accession": "ST003038",
+      "title": "Untargeted lipidomics of WT and Cyp2c44(-/-) mice liver.",
+      "acquisition_mode": "DDA", "ion_mode": "Positive", "ion_mobility": "Unknown",
+      "instrument": "Thermo Q Exactive HF hybrid",
+      "samples": 20, "file_rows": 2, "download_urls": 2, "raw_format": ".zip",
+      "gb": 0.88,
+      "class_decision": "declared", "class_fields": ["Factor"],
+      "class_levels": {"Factor": {"2c44KO": 10, "WT": 10}},
+      "what_it_tests": "The positive control. A clean, balanced two-group design, 10 and 10. If this unit does not come out right, no other result is worth reading."
+    },
+    {
+      "n": 2,
+      "unit_id": "64bd6e110bac",
+      "repository": "metabobank",
+      "accession": "MTBKS236",
+      "title": "Lipidome analysis of the muscles from skeletal muscle-specific GDE5 deficient mice",
+      "acquisition_mode": "DIA", "ion_mode": "Negative", "ion_mobility": "Unknown",
+      "instrument": "Nexera X2 (Shimadzu) LC, SCIEX MS",
+      "samples": 37, "file_rows": 74, "download_urls": 74, "raw_format": ".wiff + .wiff.scan",
+      "gb": 1.18,
+      "class_decision": "declared",
+      "class_fields": ["Factor Value[genotype]", "Factor Value[treatment]"],
+      "class_levels": {
+        "Factor Value[genotype]": {"control": 24, "GDE5 skeletal muscle KO": 7, "Dmd mutation": 6},
+        "Factor Value[treatment]": {"no treatment": 31, "Denervation": 6}
+      },
+      "what_it_tests": "The two-factor crossing, and the .wiff.scan sidecar role normalisation: 37 samples carry 74 file rows, half of which are sidecars that name no sample of their own."
+    },
+    {
+      "n": 3,
+      "unit_id": "5b635e6fc36e",
+      "repository": "metabobank",
+      "accession": "MTBKS217",
+      "title": "A lipidome atlas in MS-DIAL 4 (Plants study)",
+      "acquisition_mode": "DIA", "ion_mode": "Positive", "ion_mobility": "Enabled",
+      "instrument": "Waters Acquity UPLC, Waters MS",
+      "samples": 12, "file_rows": 477, "download_urls": 477, "raw_format": ".dat + .idx + .sts (MassLynx .raw directory)",
+      "gb": 1.29,
+      "class_decision": "declared", "class_fields": ["Factor Value[organism]"],
+      "class_levels": {"Factor Value[organism]": {"Arabidopsis thaliana": 3, "Oryza sativa": 3, "Solanum melongena": 3}},
+      "what_it_tests": "Ion mobility enabled, and the Waters directory format flattened into 477 file rows for 12 samples. This is the user's own published MS-DIAL 4 lipidome atlas data, so the expected answer is known independently of the pipeline."
+    },
+    {
+      "n": 4,
+      "unit_id": "715e280dade2",
+      "repository": "metabolomics_workbench",
+      "accession": "ST003399",
+      "title": "Chemical Biology Meets Metabolomics: The Response of Barley Seedlings",
+      "acquisition_mode": "AIF", "ion_mode": "Negative", "ion_mobility": "Unknown",
+      "instrument": "Waters Synapt G1",
+      "samples": 61, "file_rows": 1, "download_urls": 1, "raw_format": ".zip",
+      "gb": 1.60,
+      "class_decision": "declared", "class_fields": ["Factor"],
+      "class_levels": {"Factor": {"ElimC12h": 9, "ElimC24h": 9, "ElimC36h": 9, "ElimDCAA12h": 9, "ElimDCAA24h": 9, "ElimDCAA36h": 9}},
+      "what_it_tests": "AIF, the third acquisition mode, and single-archive delivery: one URL for 61 samples."
+    },
+    {
+      "n": 5,
+      "unit_id": "a22083b091a0",
+      "repository": "metabolights",
+      "accession": "MTBLS2207",
+      "title": "Improving Metabolite Identification with DecoID for Database-Assisted Deconvolution",
+      "acquisition_mode": "DIA", "ion_mode": "Negative", "ion_mobility": "Unknown",
+      "instrument": "Thermo Scientific Orbitrap",
+      "samples": 11, "file_rows": 11, "download_urls": 11, "raw_format": ".mzML",
+      "gb": 0.57,
+      "class_decision": "declared", "class_fields": ["Factor Value[Sample origin]"],
+      "class_levels": {"Factor Value[Sample origin]": {"Biological": 7, "Chemical": 4}},
+      "what_it_tests": "The smallest unit, open mzML, and per-file endpoint delivery: 11 samples, 11 separate URLs. The counterpart to the single-archive units for the download byte accounting."
+    },
+    {
+      "n": 6,
+      "unit_id": "b78db9265dcb",
+      "repository": "metabolomics_workbench",
+      "accession": "ST005052",
+      "title": "Untargeted fecal metabolomics reveals persistent host species-associated metabolites",
+      "acquisition_mode": "DDA", "ion_mode": "Negative", "ion_mobility": "Unknown",
+      "instrument": "Thermo Q Exactive HF-X Orbitrap",
+      "samples": 168, "file_rows": 1, "download_urls": 1, "raw_format": ".zip",
+      "gb": 1.80,
+      "class_decision": "declared", "class_fields": ["Factor Group"],
+      "class_levels": {"Factor Group": {"Donkey": 52, "Camel": 44, "Horse": 32, "Yak": 22, "QC": 18}},
+      "what_it_tests": "Scale: 168 samples, the largest unit. Also the bare `Factor Group` declaration shape, and the sample-type warning, because 18 QC samples become their own Class beside the four host species."
+    },
+    {
+      "n": 7,
+      "unit_id": "dae9b6ebc8ed",
+      "repository": "metabolights",
+      "accession": "MTBLS417",
+      "title": "Customized Consensus Spectral Library Building for Untargeted Quantitative Metabolomics",
+      "acquisition_mode": "DDA", "ion_mode": "Positive", "ion_mobility": "Unknown",
+      "instrument": "AB SCIEX TripleTOF 5600+",
+      "samples": 60, "file_rows": 60, "download_urls": 60, "raw_format": ".mzXML",
+      "gb": 1.58,
+      "class_decision": "abstained", "class_reason": "no_usable_declared_factor",
+      "class_refused": ["Factor Value[Sample group] (no_contrast: every sample carries the same value)"],
+      "what_it_tests": "Abstention. A declared factor exists and has one level, so it defines no comparison. The unit must run with no contrast and record why, rather than falling back to some other column."
+    },
+    {
+      "n": 8,
+      "unit_id": "3fc479e62d31",
+      "repository": "metabobank",
+      "accession": "MTBKS157",
+      "title": "Untargeted metabolome analysis of foods using LC-MS (1)",
+      "acquisition_mode": "DDA", "ion_mode": "Negative", "ion_mobility": "Unknown",
+      "instrument": "Agilent 1100 HPLC, Agilent TOF",
+      "samples": 16, "file_rows": 32, "download_urls": 32, "raw_format": ".mzXML + .raw for the same samples",
+      "gb": 1.87,
+      "class_decision": "abstained", "class_reason": "no_usable_declared_factor",
+      "class_refused": ["Factor Value[food] (identifier: every sample has its own value)"],
+      "what_it_tests": "Duplicate formats: each of 16 samples is present as both .raw and .mzXML, so the file-role normalisation must not analyse the same sample twice. Also abstention on an identifier-shaped factor."
+    },
+    {
+      "n": 9,
+      "unit_id": "684d548639b7",
+      "repository": "metabolomics_workbench",
+      "accession": "ST003044",
+      "title": "A High-Fat Eucaloric Diet Induces Reprometabolic Syndrome of Obesity",
+      "acquisition_mode": "DDA", "ion_mode": "Positive", "ion_mobility": "Unknown",
+      "instrument": "Thermo Q Exactive Orbitrap",
+      "samples": 50, "file_rows": 1, "download_urls": 1, "raw_format": ".zip",
+      "gb": 1.30,
+      "class_decision": "declared", "class_fields": ["Factor"],
+      "class_levels": {"Factor": {"On-diet": 18, "Pre-diet": 18, "Post-diet": 14}},
+      "what_it_tests": "A three-level ordered design. The timepoint must stay three groups and not be treated as a continuous variable."
+    },
+    {
+      "n": 10,
+      "unit_id": "6e6f84ae2257",
+      "repository": "metabolomics_workbench",
+      "accession": "ST003075",
+      "title": "HZV029 Lipidomics",
+      "acquisition_mode": "DDA", "ion_mode": "Negative", "ion_mobility": "Unknown",
+      "instrument": "Thermo Orbitrap ID-X Tribrid",
+      "samples": 140, "file_rows": 1, "download_urls": 1, "raw_format": ".zip",
+      "gb": 1.00,
+      "class_decision": "abstained", "class_reason": "no_usable_declared_factor",
+      "class_refused": ["Factor (too_sparse: most samples carry no value)"],
+      "what_it_tests": "Abstention at scale: 140 samples, a declared factor too sparse to group them. The abstention must not become quieter because the unit is large."
+    }
+  ],
+
+  "negative_control": {
+    "include": "recommended",
+    "unit_id": "1d50a9a72710",
+    "repository": "metabolights",
+    "accession": "MTBLS1572",
+    "title": "Comparison of Full-Scan, Data-Dependent, and Data-Independent Acquisition Modes",
+    "catalogued_as": {"acquisition_mode": "DIA", "ion_mode": "Negative", "separation": "LC-MS"},
+    "measured_contents": {"DDA": 7, "DIA": 7, "Full-scan": 7},
+    "gb": 0.81,
+    "expected_outcome": "REFUSED, or split into three units before any run. The campaign accepts one acquisition mode per MS-DIAL run and this catalogued DIA unit holds 21 files of which 7 are DIA.",
+    "why_it_matters": "If all ten selected units are expected to succeed, the trial cannot distinguish a pipeline that correctly accepted ten from a pipeline that accepts anything. This is the only unit in the manifest whose correct result is a refusal.",
+    "secondary_finding": "The Class selector adopted Factor Value[Data acquisition mode] until 2026-09-20, which would have reported the acquisition method as the biology. Now refused as nuisance, and the selector falls through to Factor Value[Dilution] - which is a real grouping, and still does not make the unit runnable."
+  },
+
+  "coverage": {
+    "repositories": {"metabolomics_workbench": 5, "metabobank": 3, "metabolights": 2},
+    "acquisition_modes": {"DDA": 6, "DIA": 3, "AIF": 1},
+    "ion_modes": {"Positive": 4, "Negative": 6},
+    "raw_formats": [".zip archive", ".mzML", ".mzXML", ".wiff + .wiff.scan", "Waters .dat/.idx/.sts", ".mzXML + .raw duplicates"],
+    "ion_mobility": {"Enabled": 1, "Unknown": 9},
+    "download_shapes": {"single_archive": 4, "two_archives": 1, "per_file_endpoints": 5},
+    "class_outcomes": {"declared_single_factor": 5, "declared_crossed": 1, "declared_with_sample_type_level": 1, "abstained": 3},
+    "sample_counts": [11, 12, 16, 20, 37, 50, 60, 61, 140, 168],
+    "instrument_vendors": ["Thermo", "SCIEX", "Waters", "Agilent", "Shimadzu LC"]
+  },
+
+  "preconditions": [
+    {
+      "id": "P1",
+      "state": "met",
+      "what": "The MS-DIAL Console the pipeline resolves was rebuilt from feature/annotation-evidence-record at 9cbf058cd99d5e1e5b3e6578d020c49d075cb735, binary sha256 5d11bdf90e13c7b771f3e7b451bd52348003e4f19c21c9f52ebfb72a88186778, with msdial-console-build-provenance.json beside it.",
+      "verified": "Minimum peak height: 500.0 now reads as applied; method.keys.json is written; applied 126 / unrecognised 29 / unusable 0 / blank 14 on the real method file."
+    },
+    {
+      "id": "P2",
+      "state": "met",
+      "what": "The invariant gate refuses a workspace where nothing happened (--strict, exit 4) and carries the seven cross-artifact checks.",
+      "verified": "Against the one real unit workspace: 8 FAIL / 4 WARN / 10 PASS / 1 not_evaluable, exit 2."
+    },
+    {
+      "id": "P3",
+      "state": "open",
+      "what": "Six pull requests are open and unmerged. The trial will run the code on these branches, not on main.",
+      "detail": "msdial-public-reanalysis#4, MsdialWorkbench#800, msdial-interactive-app#23, msdial_repository_catalog#6 and #7, msdial_spectrum_catalog#2. In particular #6, the download-approval byte counting, is NOT on the branch the catalog MCP server runs. It does not change this manifest's figure - verified, both figures are 13.07 GB, because only one polarity per accession is selected - but the tool's own preview would overstate the requirement for any manifest that selected both."
+    },
+    {
+      "id": "P4",
+      "state": "open",
+      "what": "Two method-file keys are written by Interactive and read by no MS-DIAL Console branch: Height matrix export and Annotation pipeline profile.",
+      "detail": "Now visible in method.keys.json as unrecognised, and reported by the gate as MTH-1 WARN. Each needs a decision: implement the reader, or stop writing the key."
+    },
+    {
+      "id": "P5",
+      "state": "open",
+      "what": "Three records the pipeline writes are still read by no invariant: the Evidence source column, the MSP EVIDENCE= comment and name parity, and the library fingerprint.",
+      "detail": "Severity medium after adversarial review. They do not block the trial; they mean those three facts are unverified in its results."
+    }
+  ],
+
+  "confirmations_required_before_execution": [
+    {"boundary": 1, "what": "Raw-data download", "shown_here": ["destination", "size bound", "selected units", "retention policy"], "status": "awaiting"},
+    {"boundary": 2, "what": "Official-library download", "status": "not yet requested - the library for the trial has not been chosen"},
+    {"boundary": 3, "what": "Saving each Class proposal", "status": "awaiting, per unit; seven units have a proposal, three abstain and have nothing to save"},
+    {"boundary": 4, "what": "Starting each production MS-DIAL run", "status": "awaiting, per unit; cannot be batched because the command and the peak-count diagnostic do not exist until after the download"},
+    {"boundary": 5, "what": "Raw-data deletion", "status": "not exercised - retention is keep"}
+  ],
+
+  "open_decisions_for_the_user": [
+    "Ten units or five. Ten gives the coverage above; five halves the number of per-run confirmations and drops one branch of the matrix.",
+    "Whether to include the negative control MTBLS1572. Without a unit whose correct outcome is a refusal, the trial cannot show that the scope check works.",
+    "Which spectral library. It is chosen once and carried into every unit, so a library fault is a campaign-wide fault, and no artifact currently contradicts a silently empty load.",
+    "Whether to merge msdial_repository_catalog#6 before the download, so the tool's own byte figure is computed the same way as this manifest's."
+  ]
+}

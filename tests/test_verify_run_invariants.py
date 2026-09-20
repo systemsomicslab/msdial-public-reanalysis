@@ -330,6 +330,380 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(verifier.WARN, _status(report, "QA-1"))
 
 
+class StrictModeTests(unittest.TestCase):
+    """A workspace where nothing happened must not answer the same as one that ran correctly.
+
+    `ok` is "no check FAILed", and an empty workspace produces no FAILs at all: run against a
+    directory holding an empty provenance/ and an empty output/, the gate reported 15
+    not_evaluable, ok=True and exit 0, while the batch skill tells an agent that exit 0 "means
+    every evaluated check passed". That is the one answer an unattended loop must never get wrong.
+    """
+
+    def test_an_empty_workspace_is_refused_under_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = WorkspaceBuilder(Path(temporary)).root
+
+            report = verifier.verify(workspace, "all")
+
+            self.assertTrue(report.ok, "no check FAILed, which is exactly the problem")
+            self.assertTrue(report.strict_failures, "and every one of them was unevaluable")
+            self.assertEqual(4, verifier.main([str(workspace), "--strict"]))
+
+    def test_without_strict_the_old_answer_is_unchanged(self) -> None:
+        """Deliberate. Existing callers keep their exit codes until they opt in."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = WorkspaceBuilder(Path(temporary)).root
+
+            self.assertEqual(0, verifier.main([str(workspace)]))
+
+    def test_an_absence_that_is_a_correct_state_does_not_refuse(self) -> None:
+        """A released raw tree is the intended end state, not a gap in the evidence."""
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = WorkspaceBuilder(Path(temporary))
+            report = verifier.verify(builder.root, "before-publish")
+
+        unevaluable = {check.check_id for check in report.strict_failures}
+        self.assertNotIn("DSK-1", unevaluable)
+
+
+class ExecutedClassTests(unittest.TestCase):
+    """CLS-2 and CLS-3. The grouping that ran, and whether anyone ratified it."""
+
+    def _workspace(self, temporary: str, *, assignments: list[dict], rows: list[dict],
+                   status: str = "accepted") -> Path:
+        builder = WorkspaceBuilder(Path(temporary)).provenance(inputs=len(rows))
+        manifest_path = builder.root / "provenance" / "run-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["project"]["class_proposal"] = {
+            "proposal_id": "p1", "status": status, "model": "catalog-declared-factor-selection",
+            "selected_fields": ["Factor Value[Treatment]"], "assignments": assignments,
+            "warnings": ["Class was chosen by the catalog without a person reading the study."],
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        builder.analysis_csv(rows)
+        return builder.root
+
+    def test_a_grouping_that_matches_its_proposal_passes(self) -> None:
+        rows = _samples(4)
+        assignments = [
+            {"sample_id": row["file_name"], "class_label": row["class_id"]} for row in rows
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, assignments=assignments, rows=rows)
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.PASS, _status(report, "CLS-2"))
+
+    def test_a_relabelled_sample_is_caught(self) -> None:
+        """THE DEFECT. An approved proposal received and then ignored, the grouping re-derived."""
+        rows = _samples(4)
+        assignments = [
+            {"sample_id": row["file_name"], "class_label": row["class_id"]} for row in rows
+        ]
+        assignments[0]["class_label"] = "something nobody approved"
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, assignments=assignments, rows=rows)
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "CLS-2"))
+
+    def test_a_sample_the_proposal_never_covered_is_caught(self) -> None:
+        rows = _samples(4)
+        assignments = [
+            {"sample_id": row["file_name"], "class_label": row["class_id"]} for row in rows[:3]
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, assignments=assignments, rows=rows)
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "CLS-2"))
+
+    def test_an_unratified_proposal_is_refused(self) -> None:
+        """A machine-authored grouping's whole safety argument is that somebody ratified it."""
+        rows = _samples(4)
+        assignments = [
+            {"sample_id": row["file_name"], "class_label": row["class_id"]} for row in rows
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, assignments=assignments, rows=rows, status="proposed")
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "CLS-3"))
+        self.assertEqual(verifier.PASS, _status(report, "CLS-2"),
+                         "the grouping is faithful; nobody agreed to it")
+
+
+class ThresholdProvenanceTests(unittest.TestCase):
+    """PKH-1. The threshold the Console reads is one this unit's own diagnostic produced."""
+
+    def _workspace(self, temporary: str, *, diagnostics: list[dict] | None,
+                   written: str | None) -> Path:
+        builder = WorkspaceBuilder(Path(temporary)).provenance()
+        manifest_path = builder.root / "provenance" / "run-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if diagnostics is not None:
+            manifest["peak_height_diagnostics"] = diagnostics
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        if written is not None:
+            (builder.output / "method.txt").write_text(
+                f"Smoothing method: LinearWeightedMovingAverage\nMinimum peak height: {written}\n",
+                encoding="utf-8")
+        return builder.root
+
+    def test_a_measured_threshold_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary,
+                diagnostics=[{"minimum_peak_height": 500, "diagnostic_peak_count": 41230,
+                              "threshold_step": 100, "method": "quantized height-range search",
+                              "representative": {"file_name": "QC_05.mzML"}}],
+                written="500")
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.PASS, _status(report, "PKH-1"))
+
+    def test_the_same_threshold_written_as_a_real_number_is_the_same_threshold(self) -> None:
+        """500 and 500.0 are one threshold. Whether the Console can parse it is MTH-1's question."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, diagnostics=[{"minimum_peak_height": 500}], written="500.0")
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.PASS, _status(report, "PKH-1"))
+
+    def test_a_threshold_no_diagnostic_produced_is_refused(self) -> None:
+        """Typed in, inherited from the previous unit, or left at a default: all look like this."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, diagnostics=[{"minimum_peak_height": 500}], written="1000")
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "PKH-1"))
+
+    def test_no_diagnostic_at_all_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, diagnostics=None, written="500")
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "PKH-1"))
+
+    def test_a_zero_threshold_is_a_threshold(self) -> None:
+        """The contract keeps 0 when the diagnostic count is at most 6,000."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, diagnostics=[{"minimum_peak_height": 0}], written="0")
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.PASS, _status(report, "PKH-1"))
+
+
+class MethodKeyTests(unittest.TestCase):
+    """MTH-1. Every parameter in the method file was one the Console could use."""
+
+    def _workspace(self, temporary: str, record: dict | None) -> Path:
+        builder = WorkspaceBuilder(Path(temporary)).provenance()
+        builder.analysis_csv(_samples(6))
+        builder.run_manifest(_samples(6))
+        builder.mztab()
+        if record is not None:
+            (builder.output / "method.keys.json").write_text(json.dumps(record), encoding="utf-8")
+        return builder.root
+
+    def test_a_value_the_console_could_not_read_is_refused(self) -> None:
+        """How every threshold this campaign chose was discarded before 2026-09-20."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, {
+                "schema": "msdial-method-file-keys.v1", "applied": ["Mass slice width"],
+                "unusable": ["Minimum peak height: 500.0"], "unrecognised": [], "blank": [],
+            })
+            report = verifier.verify(workspace, "after-run")
+
+        self.assertEqual(verifier.FAIL, _status(report, "MTH-1"))
+
+    def test_an_unrecognised_key_warns_rather_than_refusing(self) -> None:
+        """The shipped lipidomics template has 27 of them; failing would refuse every method file."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, {
+                "applied": ["Minimum peak height"], "unusable": [],
+                "unrecognised": ["Sigma window value", "Process option"], "blank": [],
+            })
+            report = verifier.verify(workspace, "after-run")
+
+        self.assertEqual(verifier.WARN, _status(report, "MTH-1"))
+
+    def test_an_older_console_that_wrote_no_record_is_not_a_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, None)
+            report = verifier.verify(workspace, "after-run")
+
+        self.assertEqual(verifier.NOT_EVALUABLE, _status(report, "MTH-1"))
+
+
+class PrivatePathTests(unittest.TestCase):
+    """SEC-1. Nothing meant for sharing carries a path from this machine.
+
+    The first version of this check PASSED the real publication bundle on disk, whose supplementary
+    table carries the private VS20 library path twenty-four times, because its character class had
+    lost a backslash and could match no Windows path at all. A check that reports PASS on an
+    artifact it cannot read is worse than no check, so the pattern is asserted directly here rather
+    than only through a workspace.
+    """
+
+    def test_the_pattern_matches_the_shapes_that_actually_leak(self) -> None:
+        pattern = verifier.PRIVATE_PATH_PATTERN
+        self.assertTrue(pattern.findall(r"path\tC:\Users\Someone\AppData\Local\lib.msp"))
+        self.assertTrue(pattern.findall(r'"path": "C:\\Users\\Someone\\AppData\\lib.msp"'))
+        self.assertTrue(pattern.findall("MTD\tdatabase[1]-uri\tfile://C:/Users/A%20B/lib.msp"))
+        self.assertTrue(pattern.findall("D:/Users/someone/libraries/private.msp"))
+
+    def test_a_library_named_by_name_and_checksum_is_not_a_hit(self) -> None:
+        """What the contract asks for instead must not itself trip the check."""
+        clean = "MSMS-Public_all-neg-VS20.msp  sha256:0123456789abcdef  41230 records"
+        self.assertEqual([], verifier.PRIVATE_PATH_PATTERN.findall(clean))
+
+    def test_a_bundle_carrying_the_path_inside_a_member_is_refused(self) -> None:
+        """Scanned by content. A check reading member NAMES passes this bundle."""
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = WorkspaceBuilder(Path(temporary)).provenance()
+            bundle = builder.output / "MS_DIAL_publication_reporting_bundle.zip"
+            with zipfile.ZipFile(bundle, "w") as archive:
+                archive.writestr("MS_DIAL_Materials_and_Methods.txt", "MS-DIAL 5.5 was used.")
+                archive.writestr(
+                    "Supplementary_Table_MS_DIAL.tsv",
+                    "Library provenance\tLibrary 2\tpath\t"
+                    r"C:\Users\Someone\AppData\Local\libraries\private-VS20.msp",
+                )
+            report = verifier.verify(builder.root, "before-publish")
+
+        self.assertEqual(verifier.FAIL, _status(report, "SEC-1"))
+
+    def test_a_clean_bundle_passes_and_says_what_the_pass_means(self) -> None:
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = WorkspaceBuilder(Path(temporary)).provenance()
+            bundle = builder.output / "MS_DIAL_publication_reporting_bundle.zip"
+            with zipfile.ZipFile(bundle, "w") as archive:
+                archive.writestr(
+                    "Supplementary_Table_MS_DIAL.tsv",
+                    "Library provenance\tLibrary 2\tname\tprivate-VS20.msp\tsha256\tabc123",
+                )
+            report = verifier.verify(builder.root, "before-publish")
+
+        check = [item for item in report.checks if item.check_id == "SEC-1"][0]
+        self.assertEqual(verifier.PASS, check.status)
+        self.assertIn("not that no private data is present", check.detail)
+
+
+class TerminalStateAndRetentionTests(unittest.TestCase):
+    """FIN-1 and RET-1. A finished unit, and a retention decision the disk agrees with."""
+
+    def _workspace(self, temporary: str, **manifest_extra) -> Path:
+        builder = WorkspaceBuilder(Path(temporary)).provenance()
+        manifest_path = builder.root / "provenance" / "run-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(manifest_extra)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return builder.root
+
+    def test_a_finalised_unit_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, status="mztab_validated", finalized_at="2026-09-20T10:00:00+09:00",
+                mztab_validation={"summary": {"failed": 0}}, raw_retention_policy="keep")
+            (workspace / "raw").mkdir()
+            (workspace / "raw" / "data.bin").write_bytes(b"0")
+            report = verifier.verify(workspace, "before-publish")
+
+        self.assertEqual(verifier.PASS, _status(report, "FIN-1"))
+        self.assertEqual(verifier.PASS, _status(report, "RET-1"))
+
+    def test_a_publishable_output_beside_an_unfinalised_manifest_is_refused(self) -> None:
+        """The output directory is not evidence of finalisation; the finalisation record is."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, status="preflight_unavailable")
+            report = verifier.verify(workspace, "before-publish")
+
+        self.assertEqual(verifier.FAIL, _status(report, "FIN-1"))
+
+    def test_a_failed_run_is_refused_at_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, status="run_failed", run_failures=[{"reason": "exit 1"}])
+            report = verifier.verify(workspace, "before-publish")
+
+        self.assertEqual(verifier.FAIL, _status(report, "FIN-1"))
+
+    def test_a_missing_retention_policy_is_refused(self) -> None:
+        """The deletion preview reads this field and would show a blank where the intent should be."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, status="mztab_validated")
+            report = verifier.verify(workspace, "before-publish")
+
+        self.assertEqual(verifier.FAIL, _status(report, "RET-1"))
+
+    def test_a_policy_nobody_can_act_on_is_refused(self) -> None:
+        """"delete" is not a policy this codebase has; it normalises to keep and warns."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, raw_retention_policy="delete")
+            report = verifier.verify(workspace, "before-publish")
+
+        self.assertEqual(verifier.FAIL, _status(report, "RET-1"))
+
+    def test_a_validated_unit_that_asked_for_deletion_and_still_holds_its_raw_warns(self) -> None:
+        """Not a failure. Deletion needs its own confirmation, which may not have been given yet."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, status="mztab_validated",
+                raw_retention_policy="delete_after_validated_output")
+            (workspace / "raw").mkdir()
+            (workspace / "raw" / "data.bin").write_bytes(b"0")
+            report = verifier.verify(workspace, "before-publish")
+
+        self.assertEqual(verifier.WARN, _status(report, "RET-1"))
+
+
+class BinaryIdentityTests(unittest.TestCase):
+    """BIN-1. The software the mzTab-M attributes is the software the run recorded."""
+
+    def _workspace(self, temporary: str, *, recorded: str, attributed: str) -> Path:
+        builder = WorkspaceBuilder(Path(temporary)).provenance()
+        rows = _samples(6)
+        builder.analysis_csv(rows)
+        builder.run_manifest(rows)
+        manifest_path = builder.output / "run-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["msdial_console_version"] = recorded
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        builder.mztab()
+        mztab = builder.output / "AlignResult-1.mzTab"
+        mztab.write_text(
+            f"MTD\tsoftware[1]\t[MS, MS:1003082, MS-DIAL, {attributed}]\n"
+            + mztab.read_text(encoding="ascii"),
+            encoding="ascii")
+        return builder.root
+
+    def test_agreement_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, recorded="5.5.260916", attributed="Msdial console 5.5.260916")
+            report = verifier.verify(workspace, "after-run")
+
+        self.assertEqual(verifier.PASS, _status(report, "BIN-1"))
+
+    def test_a_batch_split_across_two_binaries_is_caught(self) -> None:
+        """A rebuild or a repointed console between one unit and the next looks exactly like this."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, recorded="5.5.241113", attributed="Msdial console 5.5.260916")
+            report = verifier.verify(workspace, "after-run")
+
+        self.assertEqual(verifier.FAIL, _status(report, "BIN-1"))
+
+
 class AbsenceTests(unittest.TestCase):
     def test_an_empty_workspace_never_reports_pass(self):
         # The property that makes the checker safe to run at any point: an artifact that is not
