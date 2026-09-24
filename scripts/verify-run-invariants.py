@@ -846,6 +846,36 @@ def _class_proposal(provenance: dict | None) -> dict | None:
     return proposal if isinstance(proposal, dict) and proposal else None
 
 
+def _files_of_samples(provenance: dict | None, samples: set[str], csv_names: set[str]) -> dict[str, list[str]]:
+    """The analysis-CSV rows each approved sample is, by name or through its recorded raw file.
+
+    A sample whose id is itself a CSV file_name maps to that row. Otherwise every raw_file the
+    unit's sample metadata records for it is reduced to the name the CSV uses (the file name
+    without its extension) and kept if the CSV has it. A sample that maps to nothing is absent.
+    """
+    recorded: dict[str, list[str]] = {}
+    for row in ((provenance or {}).get("project") or {}).get("sample_metadata") or []:
+        if not isinstance(row, dict):
+            continue
+        sample = str(row.get("sample_id") or "")
+        raw = str(row.get("raw_file") or "").replace("\\", "/").rsplit("/", 1)[-1]
+        if sample and raw:
+            recorded.setdefault(sample, []).append(raw)
+    result: dict[str, list[str]] = {}
+    for sample in samples:
+        if sample in csv_names:
+            result[sample] = [sample]
+            continue
+        names = []
+        for raw in recorded.get(sample, []):
+            for candidate in (raw, raw.rsplit(".", 1)[0] if "." in raw else raw):
+                if candidate in csv_names and candidate not in names:
+                    names.append(candidate)
+                    break
+        result[sample] = names
+    return result
+
+
 def check_executed_class_matches_approved(
     report: Report, provenance: dict | None, reason: str,
     csv_rows: list[dict] | None, csv_reason: str,
@@ -881,17 +911,34 @@ def check_executed_class_matches_approved(
                    "The Class proposal carries no assignments.")
         return
     executed = {str(row.get("file_name", "")): str(row.get("class_id", "")) for row in csv_rows}
-    missing = sorted(set(approved) - set(executed))
-    extra = sorted(set(executed) - set(approved))
-    differing = sorted(
-        f"{name}: approved {approved[name]!r}, executed {executed[name]!r}"
-        for name in set(approved) & set(executed)
-        if approved[name] != executed[name]
-    )
+    # A Class is assigned to a SAMPLE and the CSV has a row per FILE. Where a repository names its
+    # samples after their files the two keys coincide, which is all this check used to handle.
+    # MetaboLights does not: MTBLS2207's "DDA E. coli" is the file M3T-Std_Ecoli_neg_DDA_1mz, and
+    # joining on equal strings called all six approved samples absent and all six rows unapproved
+    # while every one carried its approved Class. The repository's own sample-to-file record
+    # (sample_metadata raw_file) is the link; it is neither of the two writers being compared.
+    files_of_sample = _files_of_samples(provenance, set(approved), set(executed))
+    mapped: set[str] = set()
+    missing = []
+    differing = []
+    for sample, label in sorted(approved.items()):
+        files = files_of_sample.get(sample) or []
+        if not files:
+            missing.append(sample)
+            continue
+        for name in files:
+            mapped.add(name)
+            if executed[name] != label:
+                differing.append(
+                    f"{sample}{'' if name == sample else f' ({name})'}: approved {label!r}, "
+                    f"executed {executed[name]!r}"
+                )
+    extra = sorted(set(executed) - mapped)
+    joined_by_file = sum(1 for sample, files in files_of_sample.items() if files and files != [sample])
     if not missing and not extra and not differing:
         report.add("CLS-2", stage, "Executed Class is the Class that was approved", PASS,
                    f"All {len(approved)} approved assignments appear in the analysis CSV with the "
-                   "same Class.", assignments=len(approved))
+                   "same Class.", assignments=len(approved), joined_through_raw_file=joined_by_file)
         return
     report.add(
         "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,

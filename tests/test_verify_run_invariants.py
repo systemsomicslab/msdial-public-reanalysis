@@ -370,10 +370,12 @@ class ExecutedClassTests(unittest.TestCase):
     """CLS-2 and CLS-3. The grouping that ran, and whether anyone ratified it."""
 
     def _workspace(self, temporary: str, *, assignments: list[dict], rows: list[dict],
-                   status: str = "accepted") -> Path:
+                   status: str = "accepted", sample_metadata: list[dict] | None = None) -> Path:
         builder = WorkspaceBuilder(Path(temporary)).provenance(inputs=len(rows))
         manifest_path = builder.root / "provenance" / "run-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if sample_metadata is not None:
+            manifest["project"]["sample_metadata"] = sample_metadata
         manifest["project"]["class_proposal"] = {
             "proposal_id": "p1", "status": status, "model": "catalog-declared-factor-selection",
             "selected_fields": ["Factor Value[Treatment]"], "assignments": assignments,
@@ -414,6 +416,51 @@ class ExecutedClassTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temporary:
             workspace = self._workspace(temporary, assignments=assignments, rows=rows)
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "CLS-2"))
+
+    def _named_apart(self, rows: list[dict]) -> tuple[list[dict], list[dict]]:
+        """MetaboLights' shape: a sample is named for what it is, and its file is named otherwise."""
+        metadata = [
+            {"sample_id": f"Sample {index}", "raw_file": f"FILES/{row['file_name']}.mzML"}
+            for index, row in enumerate(rows)
+        ]
+        assignments = [
+            {"sample_id": f"Sample {index}", "class_label": row["class_id"]}
+            for index, row in enumerate(rows)
+        ]
+        return metadata, assignments
+
+    def test_samples_named_apart_from_their_files_are_joined_through_raw_file(self) -> None:
+        """MTBLS2207: "DDA E. coli" is M3T-Std_Ecoli_neg_DDA_1mz, and every Class was right."""
+        rows = _samples(4)
+        metadata, assignments = self._named_apart(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, assignments=assignments, rows=rows, sample_metadata=metadata)
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.PASS, _status(report, "CLS-2"))
+
+    def test_a_relabel_is_still_caught_through_raw_file(self) -> None:
+        rows = _samples(4)
+        metadata, assignments = self._named_apart(rows)
+        assignments[2]["class_label"] = "something nobody approved"
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, assignments=assignments, rows=rows, sample_metadata=metadata)
+            report = verifier.verify(workspace, "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "CLS-2"))
+
+    def test_a_sample_whose_file_is_not_in_the_csv_is_absent(self) -> None:
+        rows = _samples(4)
+        metadata, assignments = self._named_apart(rows)
+        metadata[1]["raw_file"] = "FILES/a_file_nobody_prepared.mzML"
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(
+                temporary, assignments=assignments, rows=rows, sample_metadata=metadata)
             report = verifier.verify(workspace, "before-production")
 
         self.assertEqual(verifier.FAIL, _status(report, "CLS-2"))
