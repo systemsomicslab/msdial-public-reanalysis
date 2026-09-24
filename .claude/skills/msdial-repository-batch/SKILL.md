@@ -49,16 +49,28 @@ For a repository range:
    `msdial_download_repository_raw` with the same `analysis_unit_handoff_path` for
    each approved unit. For accession-bundle downloads, verify the resulting
    manifest admits only allow-listed paths into the analysis CSV.
-11. Before production, run `msdial_start_peak_count_diagnostic` without an
-   explicit representative so Interactive selects a mid-run QC or non-blank
-   sample. Call `msdial_estimate_peak_height` for the default 3,000-6,000 range,
-   add the accepted threshold to the answers, and preserve
-   `TimeBasedLinearWeightedMovingAverage`.
-12. Run the `before-production` gate (see below) and stop the unit on a refusal.
-   The diagnostic in step 11 rewrites `analysis_files.csv`, `method.txt` and
-   `run-manifest.json` in the production output directory with its own
-   single-file parameters. Regenerate the reviewed analysis metadata before
-   starting production, then run the gate against the regenerated files.
+11. Before production, run `msdial_start_peak_count_diagnostic` on a mid-run QC,
+   or the non-blank Sample nearest the run-order midpoint when there is no QC.
+   Interactive picks one itself only from `analytical_order`; when the guided
+   plan reports `analytical_order` as `derived_from: "listing"`, that order is
+   the file names, not the run. Order the files by the raw headers'
+   `acquisitionStartTime` instead, and pass the choice as
+   `representative_file`. A `file_type` Standard is not a Sample. Call
+   `msdial_estimate_peak_height` for the default 3,000-6,000 range with the
+   step for the instrument: the inspection calls every mzML `QTOF`, so pass
+   `threshold_step=1000` when the raw header or sample metadata shows
+   Fourier-transform data (Orbitrap, FT-ICR). Add the accepted threshold to the
+   answers and preserve `TimeBasedLinearWeightedMovingAverage`.
+12. Write the production bundle with `msdial_prepare_guided_analysis`, with the
+   accepted `minimum_peak_height` in the answers, then run the
+   `before-production` gate (see below) against it and stop the unit on a
+   refusal. The gate reads `output\method.txt`, so it cannot run before this.
+   The diagnostic in step 11 does not touch the production files: it writes its
+   own single-file `analysis_files.csv`, `method.txt` and `run-manifest.json`
+   under `<workspace>\diagnostics\<diagnostic-job-id>`, and
+   `msdial_estimate_peak_height` appends the measurement to
+   `peak_height_diagnostics` in `provenance\run-manifest.json`. PKH-1 fails a
+   `method.txt` whose threshold no recorded diagnostic produced.
 13. Execute approved units sequentially, retaining the exact job ID and
    artifact inventory for each unit.
 14. Run the `after-run` gate. Validate mzTab-M and generate only scientifically
@@ -123,11 +135,15 @@ What the gate cannot do:
   only record that a unit was selected; the server's job registry keeps only the
   most recently updated jobs and downgrades running jobs on restart.
 
-Server-side state, as of the fixes on `feature/tiered-annotation-pipeline`:
+Server-side state on `msdial_interactive_app` `main`:
 
-- The peak-count diagnostic writes to its own directory and no longer touches the
-  production analysis CSV, method file or run manifest. Verify the row count
-  anyway; that is what CNT-1 is for.
+- The peak-count diagnostic writes to `<workspace>\diagnostics\<job>` (PR #16)
+  and does not touch `output\analysis_files.csv`, `output\method.txt` or
+  `output\run-manifest.json`. Seen on real data on 2026-09-25 (MTBLS2207): the
+  production CSV kept its rows, the estimate landed in
+  `provenance\run-manifest.json`, and the Console left its `.dcl`, `.pai2` and
+  `_tags.xml` beside the representative raw file, as it does on every run.
+  Verify the row count anyway; that is what CNT-1 is for.
 - Raw data is never deleted without a separate explicit confirmation. Keeping
   `raw_retention_policy` at `keep` is still the right default for an unattended
   run, because it removes the decision rather than answering it.

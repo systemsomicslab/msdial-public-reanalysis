@@ -162,9 +162,9 @@ def _status(report, check_id: str) -> str:
 
 class SampleCountTests(unittest.TestCase):
     def test_a_truncated_analysis_csv_is_refused(self):
-        # The failure this whole file exists for: the tuning diagnostic rewrites the production
-        # analysis CSV to its single representative, and every later stage is self-consistent about
-        # the wrong study.
+        # The failure this whole file exists for: the tuning diagnostic used to rewrite the
+        # production analysis CSV to its single representative (fixed in Interactive PR #16), and
+        # every later stage was self-consistent about the wrong study.
         with tempfile.TemporaryDirectory() as directory:
             rows = _samples(6)
             builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6)
