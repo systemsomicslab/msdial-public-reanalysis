@@ -597,10 +597,10 @@
   "preconditions": [
     {
       "id": "P1",
-      "state": "met",
-      "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master 9ee32dd241ebdd00f7afdc78f2aa03a3b077bd29 in the MsdialWorkbench-master-baseline worktree, binary sha256 351ef4e4c34b9a79ed8cd7b5ea0db03f0407d43cdd03114549f773c572ab8b53, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-25.",
-      "verified": "This build wrote method.keys.json for the MTBLS2207 DDA peak-height diagnostic (read_at 2026-09-25T00:25+09:00), and its method_file_sha256 matches that diagnostic's method.txt: applied 126 / unrecognised 29 / unusable 0 / blank 14.",
-      "detail": "The saved Console setting resolves to a different binary: MsdialWorkbench's own build output, sha256 21586b8d7be965c8e2c95a1a165d3c99d1779b97a662b284bd760977f4641305, built 2026-09-25T09:23:48+09:00 from a working tree with uncommitted changes (it carries the unmerged automatic alignment RT correction of MsdialWorkbench#810). A call that omits console_path runs that binary, so every production call passes it. Met earlier, on 2026-09-20, by feature/annotation-evidence-record at 9cbf058cd99d5e1e5b3e6578d020c49d075cb735, sha256 5d11bdf90e13c7b771f3e7b451bd52348003e4f19c21c9f52ebfb72a88186778."
+      "state": "open",
+      "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master 31dea2b3913d58db27c318159380b02d7aeac4eb (9ee32dd24 plus MsdialWorkbench#808) in the MsdialWorkbench-console-31dea2b39 worktree, binary sha256 80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a, --version 5.5.260926, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-26. Open until both runs are prepared with it: their guided answers still name the 9ee32dd24 build, and the gate does not read the Console, so each run's output/run-manifest.json is checked by hand for this sha256 and version before boundary 4.",
+      "verified": "2026-09-26, read-only. IL comparison of the two builds: 10 of 18,156 methods differ, all in Common.dll and one per #808 hunk; the other 11 project assemblies differ only in build stamps (commit, MVID, PDB path, build date, Splash's 1.0.* version); all 113 other files, vendor readers included, are byte-identical. The build record omits the toolchain, which changed: .NET SDK 10.0.401 with Roslyn 5.9.0 (baseline SDK 10.0.301, Roslyn 5.6.0), with no effect on the IL outside #808. Before/after on the FastLC demo (SCIEX, negative, DDA, the same Zenodo 21904324 LBM and 204-entry searched lipid class list as MTBLS2207): every peak-detection column identical in all 13,193 .mdpeak rows, aligned spots and heights identical, 20 annotation rows changed, all Cer_EBDS, Cer_EODS or Cer_EOS. Not exercised: Thermo mzML, DIA, the MSP tiers.",
+      "detail": "The 9ee32dd24 build (sha256 351ef4e4c34b9a79ed8cd7b5ea0db03f0407d43cdd03114549f773c572ab8b53) is kept unchanged at its path in MsdialWorkbench-master-baseline: both MTBLS2207 peak-height diagnostics were measured with it. The saved Console setting still resolves to a third binary, MsdialWorkbench's own build output, sha256 21586b8d7be965c8e2c95a1a165d3c99d1779b97a662b284bd760977f4641305, built from a working tree with uncommitted changes (it carries the unmerged MsdialWorkbench#810); a call that omits console_path runs it. A rebuild of the same commit gives a different sha256 (embedded worktree path, build date, Splash), so the worktree is not rebuilt until both runs finish. Met earlier by 9ee32dd24 (2026-09-25) and by feature/annotation-evidence-record at 9cbf058cd99d5e1e5b3e6578d020c49d075cb735 (2026-09-20)."
     },
     {
       "id": "P2",
@@ -663,7 +663,7 @@
   "open_decisions_for_the_user": [
     "Whether to confirm the agent's implementation of decision A: the SUM-1 WARN only for repositories recorded as publishing no checksums (MetaboLights), every input covered by a download-time sha256, and SUM-2 at publication (see decisions, proposed). Includes whether a SUM-2 WARN - a matching sentence set aside by a rule - should hold a run from counting as completed until a person has read it and that is recorded.",
     "How a unit whose Class decision abstained reaches B3: record an abstention in the unit manifest, or exempt B3 for units recorded here as class_decision abstained (see evaluation.known_gaps).",
-    "Whether the runs use a Console that includes MsdialWorkbench#808 (merged 2026-09-25T06:16Z), the one commit between the production Console 9ee32dd24 and master 31dea2b39. It changes rule-based lipid characterization only (MsScanMatching, Lipidomics, MsmsCharacterization): TG [M+Na]+, negative-mode Cer_EBDS, a double-bond counting rule, SPhex and SPGhex. MTBLS2207 is negative mode with the LBM tier on. Either rebuild the Console at 31dea2b39 before the runs, or run on 9ee32dd24 and record that #808 is not in these results.",
+    "Whether both MTBLS2207 peak-height diagnostics are measured again with the 31dea2b39 Console when the runs are prepared under 0.5.0, or the thresholds (DDA 9000, job 3162f313; DIA 0, job 1ab3e745) stand with a recorded amendment that they were measured with 9ee32dd24. #808 changes no peak-detection code (IL comparison) and the FastLC demo's peak columns were identical, so the counts are expected to reproduce, but that is an inference on this data. Measuring again is two single-file runs that write .dcl, .pai2 and _tags.xml beside the raw files. The gate reads neither choice: PKH-1 compares numbers only.",
     "Boundary 4, per run, for each MTBLS2207 run once 0.5.0 is running."
   ],
   "library": {
@@ -835,6 +835,10 @@
       "at": "2026-09-26T01:02+09:00",
       "by": "user, relayed through Codex's session",
       "decision": "Codex's in-progress Interactive work (fix/mzxml-and-agent-contracts, msdial-interactive-app#31) ships inside 0.5.0, with agent API 0.5, rather than as 0.4.8 before it. This answers the open question of that name, which commit 6d85bb1 removed without recording the answer."
+    },
+    {
+      "at": "2026-09-26",
+      "decision": "MsdialWorkbench#808 is in the MTBLS2207 results: the production Console is rebuilt at master 31dea2b39 (see P1). #808 changes rule-based lipid characterization only. For these negative-mode runs: Cer_EBDS [M+HCOO]- and [M+CH3COO]- matches can be gained, renamed or lost; Cer_EOS and Cer_EODS can only be lost or renamed; HexCer_EOS can be gained or drop from chain to class level; TG [M+Na]+ (positive only) and SPEHex/SPGHex (signature only) do not change. Where an LBM match changes, the representative annotation, isotope and adduct flags, near-duplicate spot choice and alignment ID order can follow it."
     }
   ]
 }
