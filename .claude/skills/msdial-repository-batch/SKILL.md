@@ -32,6 +32,11 @@ For a repository range:
 5. Classify units as eligible, excluded, or requiring review using the supported
    scope in `CLAUDE.md`: untargeted LC-MS/MS acquired by DDA or DIA/AIF/SWATH.
    If acquisition is unknown, require raw-header preflight; never guess DDA.
+   mzML is an input. mzXML and mzData are `requires_conversion`: MS-DIAL has no
+   reader for them, so the unit is excluded before download until a reviewed
+   ProteoWizard conversion has produced an mzML manifest with its own
+   provenance. The exclusion is unit-wide: one listed file or one sample naming
+   an `.mzXML` excludes the unit, even when its other inputs are readable.
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
@@ -49,11 +54,19 @@ For a repository range:
    `msdial_download_repository_raw` with the same `analysis_unit_handoff_path` for
    each approved unit. For accession-bundle downloads, verify the resulting
    manifest admits only allow-listed paths into the analysis CSV.
+   When raw-header preflight reports `Mixed`, the unit holds more than one
+   acquisition mode and cannot run as one. Preview `msdial_split_repository_unit`
+   with `confirmed=false`, show the parts, and split only on an explicit
+   confirmation. Never run the Mixed parent. Each part is its own run, with its
+   own workspace, preflight, diagnostic, gates and boundary-4 confirmation; the
+   parts share the parent's `raw\`, and the parent stays the raw owner.
 11. Before production, run `msdial_start_peak_count_diagnostic` on a mid-run QC,
    or the non-blank Sample nearest the run-order midpoint when there is no QC.
    Interactive picks one itself only from `analytical_order`; when the guided
-   plan reports `analytical_order` as `derived_from: "listing"`, that order is
-   the file names, not the run. Order the files by the raw headers'
+   plan reports `analytical_order` as `derived_from: "listing"` or
+   `"embedded"`, that order is the file listing or a number read out of the file
+   names (with every Blank and QC placed after the samples), not the run. Order
+   the files by the raw headers'
    `acquisitionStartTime` instead, and pass the choice as
    `representative_file`. A `file_type` Standard is not a Sample. Call
    `msdial_estimate_peak_height` for the default 3,000-6,000 range with the
@@ -146,7 +159,13 @@ Server-side state on `msdial_interactive_app` `main`:
   Verify the row count anyway; that is what CNT-1 is for.
 - Raw data is never deleted without a separate explicit confirmation. Keeping
   `raw_retention_policy` at `keep` is still the right default for an unattended
-  run, because it removes the decision rather than answering it.
+  run, because it removes the decision rather than answering it. An accepted
+  retention policy records intent and is not that confirmation: preview
+  `msdial_cleanup_repository_raw`, show the exact directory and the retained
+  inventory, and ask immediately before deleting. A split unit cannot be
+  cleaned up yet: its parts share the parent's raw tree, which lies outside a
+  part's workspace, and the parent is not a completed run, so the tool refuses
+  both. Its raw data stay until split-parent cleanup exists.
 - A unit whose manifest says `execution_allowed` is not true is refused before
   MS-DIAL starts, and so is a workflow whose polarity, output directory or input
   set disagrees with the manifest.
