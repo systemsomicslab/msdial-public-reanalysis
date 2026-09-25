@@ -576,6 +576,198 @@ class ProgressTests(unittest.TestCase):
         self.assertIn("SPL-1", payload["checks_by_stage"]["B2"])
 
 
+class SecondReviewTests(unittest.TestCase):
+    """The second adversarial round: each case a reviewer showed the fixes getting wrong."""
+
+    def _declared_unit(self, temporary: str, *, files: list[str], inputs: list[str],
+                       downloads: list[str] | None = None, extracted: list[str] | None = None) -> Path:
+        root = Path(temporary) / "declared"
+        data = root / "raw" / "data"
+        (root / "output").mkdir(parents=True)
+        data.mkdir(parents=True)
+        paths = []
+        for name in inputs:
+            path = data / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+            paths.append(str(path))
+        _write(root / "provenance" / "run-manifest.json", {
+            "project": {"analysis_unit_id": "declared", "repository": "mb_post",
+                        "files": [{"name": name, "checksum": "ab" * 16} for name in files]},
+            "input_directory": str(data),
+            "input_candidates": paths,
+            "downloads": [{"path": str(root / "raw" / "downloads" / name), "sha256": "cd" * 32}
+                          for name in downloads or []],
+            "extracted_files": [str(data / name) for name in extracted or []],
+            "allowlist_checksum_validation": {"required": True, "verified": len(files), "skipped": 0},
+        })
+        return root
+
+    def test_an_input_no_declared_checksum_covers_is_refused(self) -> None:
+        """Every declared file verified is not every input checked."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._declared_unit(temporary, files=["a.lcd", "b.lcd"], inputs=["a.lcd", "b.lcd", "c.mzML"])
+            report = verifier.verify(root, "before-production")
+
+        check = _check(report, "SUM-1")
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual(1, check.evidence["inputs_without_verified_checksum"])
+
+    def test_verified_files_with_no_input_recorded_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._declared_unit(temporary, files=["a.lcd"], inputs=[])
+            report = verifier.verify(root, "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "SUM-1"))
+
+    def test_inputs_inside_an_extracted_folder_are_traced_to_their_declarations(self) -> None:
+        """MPST000007's shape: declared 0555_1_neg.lcd, analysed MB-POST_files_MPST000007.0/0555_1_neg.lcd."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._declared_unit(temporary, files=["0555_1_neg.lcd", "0555_2_neg.lcd"],
+                                       inputs=["MB-POST_files.0/0555_1_neg.lcd", "MB-POST_files.0/0555_2_neg.lcd"])
+            report = verifier.verify(root, "before-production")
+
+        self.assertEqual(verifier.PASS, _status(report, "SUM-1"))
+
+    def test_a_vendor_directory_whose_members_are_declared_is_covered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._declared_unit(temporary, files=["S1.raw/_FUNC001.DAT", "S1.raw/_extern.inf"],
+                                       inputs=["S1.raw"])
+            report = verifier.verify(root, "before-production")
+
+        self.assertEqual(verifier.PASS, _status(report, "SUM-1"))
+
+    def test_inputs_from_a_declared_verified_archive_are_covered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._declared_unit(temporary, files=["study.zip"], inputs=["study/a.mzML", "study/b.mzML"])
+            report = verifier.verify(root, "before-production")
+
+        self.assertEqual(verifier.PASS, _status(report, "SUM-1"))
+
+    def test_a_metabolights_archive_unit_rests_on_the_archive_hash(self) -> None:
+        """The allow-list names the archive, so extracted_files is empty; the archive's sha256 covers it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "zip"
+            data = root / "raw" / "data"
+            data.mkdir(parents=True)
+            (root / "output").mkdir()
+            inputs = []
+            for name in ("a.mzML", "b.mzML"):
+                (data / name).write_bytes(b"x")
+                inputs.append(str(data / name))
+            _write(root / "provenance" / "run-manifest.json", {
+                "project": {"analysis_unit_id": "zip", "repository": "metabolights",
+                            "files": [{"name": "FILES/study.zip", "checksum": ""}]},
+                "input_directory": str(data),
+                "input_candidates": inputs,
+                "downloads": [{"path": str(root / "raw" / "downloads" / "study.zip"), "sha256": "cd" * 32,
+                               "declared_checksum": ""}],
+                "extracted_files": [],
+                "allowlist_checksum_validation": {"required": False, "verified": 0, "skipped": 1},
+            })
+            report = verifier.verify(root, "before-production")
+
+        self.assertEqual(verifier.WARN, _status(report, "SUM-1"))
+
+    def test_extracted_files_that_are_not_a_list_do_not_crash_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = SplitFixture(Path(temporary))
+            _edit(fixture.parent_manifest, extracted_files=7)
+            report = fixture.gate(0, "all")
+
+        self.assertIn(_status(report, "SUM-1"), (verifier.WARN, verifier.FAIL))
+
+    def _published(self, temporary: str, sentence: str):
+        fixture = SplitFixture(Path(temporary))
+        output = fixture.part_roots[0] / "output"
+        (output / "MS_DIAL_Materials_and_Methods.txt").write_text(sentence, encoding="utf-8")
+        return fixture.gate(0, "before-publish")
+
+    def test_every_common_way_of_claiming_a_verification_is_caught(self) -> None:
+        claims = [
+            "Raw files were checksum-verified.",
+            "All MD5 checksums verified.",
+            "Checksums were verified for every raw file.",
+            "The downloader verified checksums for every raw file.",
+            "Checksum verification: passed (11/11).",
+            "File integrity was verified before processing.",
+            "MD5 checksums were verified against the repository.",
+            "All raw files passed checksum verification.",
+            "Raw file integrity was verified.",
+            "File integrity was confirmed by MD5 checksum comparison.",
+            "Each file's checksum was validated against MetaboLights.",
+            "Inputs were verified using SHA-256 checksums.",
+        ]
+        for sentence in claims:
+            with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
+                self.assertEqual(verifier.FAIL, _status(self._published(temporary, sentence), "SUM-2"))
+
+    def test_an_honest_disclosure_or_a_library_statement_is_not_a_claim(self) -> None:
+        disclosures = [
+            "MetaboLights publishes no checksums, so the inputs were not checksum-verified; integrity "
+            "rests on the sha256 recorded at download.",
+            "Raw files were not checksum-verified, because MetaboLights publishes no checksums.",
+            "Input integrity was not verified against published checksums.",
+            "No input could be verified against the repository checksum, since none is published.",
+            "These inputs are not integrity-verified.",
+            "No artifact may describe these inputs as checksum-verified.",
+            "The library file was MD5-verified against its Zenodo record.",
+            "An md5-verified download from Zenodo supplied the MSP.",
+        ]
+        for sentence in disclosures:
+            with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
+                self.assertEqual(verifier.PASS, _status(self._published(temporary, sentence), "SUM-2"))
+
+    def test_a_recorded_failure_is_named_as_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _fixture, workspace = _prepared(temporary)
+            _edit(workspace / "provenance" / "run-manifest.json", status="run_failed",
+                  run_failures=[{"exit_code": 3}])
+            report = verifier.verify(workspace, "after-run")
+
+        self.assertIn("recorded as failed", _check(report, "EXP-1").detail)
+        self.assertIn("last exit code 3", _check(report, "EXP-1").detail)
+        self.assertIn("recorded as failed", _check(report, "MTH-1").detail)
+        self.assertNotIn("reported success", _check(report, "EXP-1").detail)
+
+    def test_a_part_whose_owner_cannot_be_read_has_no_known_raw_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = SplitFixture(Path(temporary))
+            fixture.parent_manifest.unlink()
+            report = fixture.gate(0, "before-publish")
+
+        check = _check(report, "RET-1")
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status)
+        self.assertTrue(check.required)
+
+    def test_a_deletion_awaiting_confirmation_is_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "pending"
+            (root / "output").mkdir(parents=True)
+            (root / "raw").mkdir()
+            (root / "raw" / "data.bin").write_bytes(b"0")
+            _write(root / "provenance" / "run-manifest.json", {
+                "project": {"analysis_unit_id": "pending"},
+                "status": "cleanup_pending_confirmation", "raw_retention_policy": "delete_after_validated_output",
+            })
+            report = verifier.verify(root, "before-publish")
+
+        self.assertEqual(verifier.WARN, _status(report, "RET-1"))
+
+    def test_raw_data_discarded_after_a_failed_validation_is_not_a_release(self) -> None:
+        for status, failed, released in (("discarded", 1, False), ("mztab_validated", 0, True)):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                fixture, workspace = _prepared(temporary)
+                # The owner's policy is the one that decides; the part's copy says the same here.
+                _edit(fixture.parent_manifest, raw_retention_policy="delete_after_validated_output")
+                _edit(workspace / "provenance" / "run-manifest.json", status=status,
+                      finalized_at="2026-09-25T10:00:00+09:00", mztab_validation={"summary": {"failed": failed}},
+                      retained_artifact_inventory=[], raw_retention_policy="delete_after_validated_output")
+                shutil.rmtree(Path(temporary) / "unit" / "raw")
+                report = verifier.verify(workspace, "all")
+                self.assertEqual(released, report.progress["stages"]["B1"])
+
+
 class TrialManifestMirrorsTheGateTests(unittest.TestCase):
     """The trial manifest describes the stages; the gate defines them. They must not drift."""
 

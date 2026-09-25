@@ -5,8 +5,8 @@
   "status": "Units approved 2026-09-20. Only MTBLS2207 has been downloaded (2026-09-23) and split into a DDA and a DIA run (2026-09-24). No production run has been asked for. How far each run has got is not recorded here: run scripts/verify-run-invariants.py <run workspace> --stage all --strict --json (progress, checks_by_stage). Production runs are held by the agent's decision, which the user permitted on 2026-09-25: Codex's uncommitted edits sit in the Interactive checkout the MCP server and backend import from, so a backend started now would run them.",
   "purpose_of_the_trial": "Exercise every branch of the repository reanalysis pipeline against real public data, and have the result judged by a layer that did not run it. This is a pipeline test, not a biological study.",
   "evaluation": {
-    "rule": "Two verdicts, reported separately and never combined. Part A says whether the pipeline is ready to be judged. Part B says how far each run got on real data. The gate derives it from the artifacts on disk, including the fields the provenance manifest records, and never from a status string or from this file; the stages are defined by COMPLETION_STAGES in scripts/verify-run-invariants.py, which part_b_stages mirrors (a test holds them equal). A stage is reached when its artifacts exist, whether or not they are right; whether they are right is the gate's verdict, reported beside it by stage (checks_by_stage). A run is completed on real data when it reaches B10 and its gate, run with --stage all --strict, exits 0. A unit is completed when every one of its runs is. A negative control is completed when it stops where its expected_stage says, for the reason it names.",
-    "runs_rule": "A unit without a runs key has exactly one run, whose run_id is its analysis_unit_id. A split unit's runs are listed under runs. Its parent is the raw owner and is not a run; once all its runs are complete, the parent is gated at before-publish for DSK-1, the storage check its runs defer to it. A run whose workspace does not exist is not_started.",
+    "rule": "Two verdicts, reported separately and never combined. Part A says whether the pipeline is ready to be judged. Part B says how far each run got on real data. The gate derives it from the artifacts on disk and from fields the provenance manifest records, each paired with an artifact where one exists (B1 downloads, status and the owner's retention policy; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics and its directory; B7 status, finalized_at and mztab_validation with an mzTab-M; B10 raw_retention_policy and retained_artifact_inventory). It never reads a stage written by hand, here or anywhere. The stages are defined by COMPLETION_STAGES in scripts/verify-run-invariants.py, which part_b_stages mirrors (a test holds them equal). A stage is reached when its artifacts exist, whether or not they are right; whether they are right is the gate's verdict, reported beside it by stage (checks_by_stage). A run is completed on real data when it reaches B10 and its gate, run with --stage all --strict, exits 0. A unit is completed when every one of its runs is. A negative control is completed when it stops where its expected_stage says, for the reason it names.",
+    "runs_rule": "A unit without a runs key has exactly one run, whose run_id is its analysis_unit_id. A split unit's runs are listed under runs. Its parent is the raw owner and is not a run: once all its runs are complete, read DSK-1, the storage check its runs defer to it, from the parent's before-publish report. That report's exit code is not a verdict on the parent, which owes no run artifacts. A run whose workspace does not exist is not_started.",
     "part_a_infrastructure": [
       {
         "id": "A1",
@@ -158,11 +158,12 @@
       }
     ],
     "known_gaps": [
-      "A Class abstention leaves no artifact, so B3 cannot tell abstained from never saved.",
+      "A unit with no Class proposal can never reach B3, so the three units whose Class decision abstained (7 MTBLS417, 8 MTBKS157, 10 ST003075) can never count as completed however correct their runs are. Open for the user: record an abstention in the unit manifest and let B3 accept it, or exempt B3 for units recorded here as class_decision abstained.",
       "QA persists only in the publication report, so QA-1 can judge B8 only once B9 exists.",
       "Boundary 4 is a conversation fact; no artifact proves it was given.",
       "ORD-2 treats an interleaved listing order as a real run order; ORD-1's WARN is the only signal.",
-      "Nothing on disk marks that a production run began before its first artifact: a run that failed before writing anything and was not recorded looks like one never started. The Interactive should write a run-start record (job_id, started_at) into the unit manifest before launching the Console."
+      "Nothing on disk marks that a production run began before its first artifact: a run that failed before writing anything and was not recorded looks like one never started. The Interactive should write a run-start record (job_id, started_at) into the unit manifest before launching the Console.",
+      "SUM-2 recognises checksum-verification phrasing by pattern. A sentence with a negation before the phrase, or about the spectral library and not the inputs, is not counted, and every such sentence is listed in its evidence; a claim phrased in a way no pattern knows passes."
     ]
   },
   "destination": {
@@ -807,7 +808,12 @@
     },
     {
       "at": "2026-09-25",
-      "decision": "A repository that publishes no checksum for any file is a SUM-1 WARN, not a FAIL: integrity rests on the sha256 recorded at download, and no artifact may call such inputs checksum-verified (enforced at publication by SUM-2). A partial declaration stays a FAIL, and so does an input with no download-time sha256. The gate grants the WARN only to repositories recorded as publishing none (MetaboLights); elsewhere an empty record is a declaration lost on the way in, and a FAIL."
+      "decision": "A repository that publishes no checksum for any file is a SUM-1 WARN, not a FAIL: integrity rests on the sha256 recorded at download, and no artifact may call such inputs checksum-verified. A partial declaration stays a FAIL."
+    },
+    {
+      "at": "2026-09-25",
+      "by": "agent, offered for the user's confirmation",
+      "decision": "How the gate applies it. The WARN is granted only to repositories recorded as publishing none, today MetaboLights: in the Catalog all 1,973 MetaboLights LC-MS units carry no checksum and every mb_post, MetaboBank and Metabolomics Workbench unit is fully declared, so elsewhere an empty record is a declaration lost on the way in, and a FAIL. Every input must also be covered by a download-time sha256, directly or through the hashed archive it came from. SUM-2 enforces the second clause at publication."
     },
     {
       "at": "2026-09-25",
