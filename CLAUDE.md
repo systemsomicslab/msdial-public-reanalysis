@@ -60,6 +60,9 @@ Require explicit confirmation before using any different absolute path.
 - This public-repository campaign accepts LC-MS/MS only.
 - Acquisition must be untargeted DDA or DIA/AIF/SWATH with an MS1 survey and
   product-ion spectra.
+- mzML is supported. mzXML and mzData are not MS-DIAL inputs; classify them as
+  `requires_conversion`, stop before download/execution, and require a reviewed
+  ProteoWizard-to-mzML conversion with new provenance.
 - One project type, ion mode, acquisition mode, chromatography regime, and ion
   mobility regime per MS-DIAL run.
 - GC-MS, SRM/MRM, SIM, DI-MS, imaging MS, product-ion-only
@@ -104,6 +107,10 @@ current conversation:
 4. Starting each production MS-DIAL run after showing the exact plan/command.
 5. Raw-data deletion after validated output and retained-artifact inventory.
 
+An accepted raw-retention policy records intent but is not deletion approval.
+Preview `msdial_cleanup_repository_raw` and obtain a separate confirmation for
+the exact raw directory immediately before deletion.
+
 Dry-run previews must use `confirmed=false`. Default raw retention is `keep`.
 The preview must report both selected-unit bytes and actual required bundle
 bytes. The latter is the download approval and safety-limit quantity.
@@ -115,6 +122,11 @@ record. Enumerate every analysis unit, explain exclusions, estimate bytes, and
 ask the user to approve the final run manifest. Process approved units
 sequentially at first. Use a unique output directory and exact `job_id` for each
 run. A failure in one unit must not erase or mutate another unit's artifacts.
+
+When raw preflight reports `Mixed`, preview and explicitly confirm
+`msdial_split_repository_unit`. Never execute the Mixed parent. Preflight every
+generated child independently and proceed only with children whose DDA or
+DIA/AIF/SWATH mode is resolved and accepted.
 
 ## Annotation and private resources
 

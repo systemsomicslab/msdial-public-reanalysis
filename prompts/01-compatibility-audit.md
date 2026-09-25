@@ -28,6 +28,8 @@ Evaluate whether a future request such as "reanalyze MB-POST repositories 1 to
    acquisition mode requires raw-header review instead of defaulting to DDA.
    Confirm that a missing `analysis_purpose` is client-visible and blocks
    download readiness; use a clearly labeled audit-only purpose for later dry runs.
+   Confirm that mzML is accepted while mzXML/mzData are reported as
+   `requires_conversion` and cannot enter a download or MS-DIAL input manifest.
 6. For one simple unit and one mixed accession, create Catalog reanalysis
    handoffs without saving Class decisions. Use the returned `handoff_path` with
    Interactive; do not inline or truncate the external file/sample manifests.
@@ -74,7 +76,12 @@ Evaluate whether a future request such as "reanalyze MB-POST repositories 1 to
    completion, mzTab-M validation, QA, and publication tools are present, but do
    not run an analysis.
 12. Assess confirmation boundaries, raw retention, output isolation, failure
-    recovery, private MSP handling, and provenance completeness.
+    recovery, private MSP handling, and provenance completeness. Confirm that a
+    retention-policy choice cannot authorize deletion: cleanup must first return
+    a preview and then require a separate explicit confirmation.
+    Confirm that a `Mixed` raw-preflight result cannot execute directly, can be
+    preview-split with `msdial_split_repository_unit`, and requires independent
+    preflight of every child.
 13. Inspect the repository `answer_seed` without running MS-DIAL. Confirm that it
     requests `auto_peak_range`, 3,000-6,000 peaks, and
     `TimeBasedLinearWeightedMovingAverage`, and that the tuning tools expose QC
