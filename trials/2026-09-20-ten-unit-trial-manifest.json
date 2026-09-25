@@ -660,7 +660,6 @@
     }
   ],
   "open_decisions_for_the_user": [
-    "Whether Codex's in-progress Interactive work (fix/mzxml-and-agent-contracts, bumping to 0.4.8) ships inside 0.5.0 or as 0.4.8 before it.",
     "Whether to confirm the agent's implementation of decision A: the SUM-1 WARN only for repositories recorded as publishing no checksums (MetaboLights), every input covered by a download-time sha256, and SUM-2 at publication (see decisions, proposed). Includes whether a SUM-2 WARN - a matching sentence set aside by a rule - should hold a run from counting as completed until a person has read it and that is recorded.",
     "How a unit whose Class decision abstained reaches B3: record an abstention in the unit manifest, or exempt B3 for units recorded here as class_decision abstained (see evaluation.known_gaps).",
     "Boundary 4, per run, for each MTBLS2207 run once 0.5.0 is running."
