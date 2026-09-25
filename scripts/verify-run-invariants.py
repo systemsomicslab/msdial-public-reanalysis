@@ -48,6 +48,7 @@ import sys
 import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 PASS = "pass"
@@ -619,12 +620,36 @@ def _recorded_failure(provenance: dict | None) -> str:
     and then ran again is not failed: only a run_failed status says the latest attempt failed.
     """
     record = provenance if isinstance(provenance, dict) else {}
-    if str(record.get("status") or "") != "run_failed":
-        return ""
     failures = _run_failures(record)
+    if str(record.get("status") or "") != "run_failed" and not _failure_is_latest(record, failures):
+        return ""
     code = (failures[-1] if failures else {}).get("exit_code")
     return (f"The run was recorded as failed ({len(failures)} failure(s) recorded"
             + (f", last exit code {code}" if code is not None else "") + ")")
+
+
+def _instant(value: object):
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _failure_is_latest(record: dict, failures: list[dict]) -> bool:
+    """Whether the last recorded failure came after the last finalisation (or there was none).
+
+    A preflight rewrites status, so a unit that failed and was preflighted again carries
+    preflight_passed over a failure nothing has since superseded. Timestamps carry offsets and are
+    compared as instants, not as strings.
+    """
+    if not failures:
+        return False
+    failed_at = _instant(failures[-1].get("recorded_at"))
+    finalized_at = _instant(record.get("finalized_at")) if record.get("finalized_at") else None
+    if finalized_at is None:
+        return True
+    return failed_at is not None and failed_at > finalized_at
 
 
 def _earlier_failures(provenance: dict | None) -> str:
@@ -1373,7 +1398,13 @@ CHECKSUM_CLAIM = re.compile(
 )
 # A negation governs a phrase only within its own clause, and "no file failed verification" asserts
 # that every file passed: a negation with a failure word is the claim, not its denial.
-CLAIM_NEGATION = re.compile(r"\b(?:not|no|never|cannot|none|neither|nor)\b|could\s+not|n['\u2019]t", re.IGNORECASE)
+CLAIM_NEGATION = re.compile(r"\b(?:not|no|never|cannot|without|none|neither|nor)\b|could\s+not|n['\u2019]t", re.IGNORECASE)
+# A phrase denied after it: "checksum verification was not performed", "checksum validation: not done".
+NEGATED_AFTER = re.compile(
+    r"^\s*(?::|(?:was|were|is|are|has\s+been|have\s+been))\s*(?:not|never)\s+"
+    r"(?:performed|possible|done|carried\s+out|attempted|applicable|available)\b",
+    re.IGNORECASE,
+)
 CLAUSE_BOUNDARY = re.compile(r"[,:]|\b(?:and|but|while|whereas|although|though|however|yet)\b", re.IGNORECASE)
 FAILURE_WORD = re.compile(r"\bfail(?:ed|s|ure|ures)?\b", re.IGNORECASE)
 # A sentence about the spectral library alone is the library identification the contract asks for.
@@ -1387,7 +1418,9 @@ INPUT_SUBJECT = re.compile(
 SENTENCE = re.compile(r"(?:[^.;!?\n]|(?<=\d)\.(?=\d))+")
 
 
-def _claim_is_negated(sentence: str, start: int) -> bool:
+def _claim_is_negated(sentence: str, start: int, end: int | None = None) -> bool:
+    if end is not None and NEGATED_AFTER.match(sentence[end:]):
+        return True
     before = sentence[:start]
     boundaries = list(CLAUSE_BOUNDARY.finditer(before))
     clause = before[boundaries[-1].end():] if boundaries else before
@@ -1428,7 +1461,7 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
             for sentence in SENTENCE.findall(text):
                 for match in CHECKSUM_CLAIM.finditer(sentence):
                     where = f"{path.name}:{member}: {sentence.strip()[:160]!r}"
-                    if _claim_is_negated(sentence, match.start()):
+                    if _claim_is_negated(sentence, match.start(), match.end()):
                         skipped.append(f"negated: {where}")
                     elif LIBRARY_SUBJECT.search(sentence) and not INPUT_SUBJECT.search(sentence):
                         skipped.append(f"about the library: {where}")
@@ -1877,8 +1910,8 @@ def verify(workspace: Path, stage: str) -> Report:
 # Part B, and it is derived here from the artifacts on disk -- never from a stage written into a
 # manifest by hand, because that is the record that could say "done" for a unit whose gates and
 # records exist and which never ran. Some stages do read fields the provenance manifest records,
-# and each is paired with an artifact where one exists: B1 downloads, status and the owner's
-# retention policy; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics
+# and each is paired with an artifact where one exists: B1 downloads, input_candidates and the
+# unit's or its owner's status; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics
 # with its directory on disk; B7 status, finalized_at and mztab_validation with an mzTab-M on disk;
 # B10 raw_retention_policy and retained_artifact_inventory.
 #
@@ -1889,7 +1922,8 @@ def verify(workspace: Path, stage: str) -> Report:
 # it, and reported by stage in the JSON.
 COMPLETION_STAGES = (
     ("B1", "downloaded",
-     "the raw owner's manifest lists its downloads, and every input is on disk or was released under the policy",
+     "the raw owner's manifest lists its downloads, and every input is on disk or the raw tree was released "
+     "by the confirmed cleanup (status raw_cleaned)",
      ("SUM-1",)),
     ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1")),
     ("B3", "class_settled", "a ratified Class proposal (accepted, confirmed or approved)", ("CLS-3",)),
@@ -1934,8 +1968,8 @@ def completion_progress(workspace: Path, provenance: dict | None, output: Path) 
         status == "raw_cleaned" or str((raw_owner or {}).get("status") or "") == "raw_cleaned"
     )
     facts = {
-        # Downloaded, and either still on disk or released under the policy after a validated run:
-        # a confirmed deletion is the campaign's intended end state, not a lost download.
+        # Downloaded, and either still on disk or released by the confirmed cleanup: a confirmed
+        # deletion is the campaign's intended end state, not a lost download.
         "B1": bool(owner and owner.get("downloads")) and bool(candidates)
         and (all(path.exists() for path in candidates) or raw_released),
         "B2": record.get("execution_allowed") is True,

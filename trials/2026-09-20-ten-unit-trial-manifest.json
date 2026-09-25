@@ -5,7 +5,7 @@
   "status": "Units approved 2026-09-20. Only MTBLS2207 has been downloaded (2026-09-23) and split into a DDA and a DIA run (2026-09-24). No production run has been asked for. How far each run has got is not recorded here: run scripts/verify-run-invariants.py <run workspace> --stage all --strict --json (progress, checks_by_stage). Production runs are held by the agent's decision, which the user permitted on 2026-09-25: Codex's uncommitted edits sit in the Interactive checkout the MCP server and backend import from, so a backend started now would run them.",
   "purpose_of_the_trial": "Exercise every branch of the repository reanalysis pipeline against real public data, and have the result judged by a layer that did not run it. This is a pipeline test, not a biological study.",
   "evaluation": {
-    "rule": "Two verdicts, reported separately and never combined. Part A says whether the pipeline is ready to be judged. Part B says how far each run got on real data. The gate derives it from the artifacts on disk and from fields the provenance manifest records, each paired with an artifact where one exists (B1 downloads, status and the owner's retention policy; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics and its directory; B7 status, finalized_at and mztab_validation with an mzTab-M; B10 raw_retention_policy and retained_artifact_inventory). It never reads a stage written by hand, here or anywhere. The stages are defined by COMPLETION_STAGES in scripts/verify-run-invariants.py, which part_b_stages mirrors (a test holds them equal). A stage is reached when its artifacts exist, whether or not they are right; whether they are right is the gate's verdict, reported beside it by stage (checks_by_stage). A run is completed on real data when it reaches B10 and its gate, run with --stage all --strict, exits 0. A unit is completed when every one of its runs is. A negative control is completed when it stops where its expected_stage says, for the reason it names.",
+    "rule": "Two verdicts, reported separately and never combined. Part A says whether the pipeline is ready to be judged. Part B says how far each run got on real data. The gate derives it from the artifacts on disk and from fields the provenance manifest records, each paired with an artifact where one exists (B1 downloads, input_candidates and the unit's or its owner's status; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics and its directory; B7 status, finalized_at and mztab_validation with an mzTab-M; B10 raw_retention_policy and retained_artifact_inventory). It never reads a stage written by hand, here or anywhere. The stages are defined by COMPLETION_STAGES in scripts/verify-run-invariants.py, which part_b_stages mirrors (a test holds them equal). A stage is reached when its artifacts exist, whether or not they are right; whether they are right is the gate's verdict, reported beside it by stage (checks_by_stage). A run is completed on real data when it reaches B10 and its gate, run with --stage all --strict, exits 0. A unit is completed when every one of its runs is. A negative control is completed when it stops where its expected_stage says, for the reason it names.",
     "runs_rule": "A unit without a runs key has exactly one run, whose run_id is its analysis_unit_id. A split unit's runs are listed under runs. Its parent is the raw owner and is not a run: once all its runs are complete, read DSK-1, the storage check its runs defer to it, from the parent's before-publish report. That report's exit code is not a verdict on the parent, which owes no run artifacts. A run whose workspace does not exist is not_started.",
     "part_a_infrastructure": [
       {
@@ -61,7 +61,7 @@
       {
         "id": "B1",
         "stage": "downloaded",
-        "artifacts": "every input candidate on disk, or released under the policy after a validated run; the raw owner's manifest lists its downloads",
+        "artifacts": "every input candidate on disk, or the raw tree released by the confirmed cleanup (status raw_cleaned); the raw owner's manifest lists its downloads",
         "judged_by": [
           "SUM-1"
         ],
@@ -163,7 +163,7 @@
       "Boundary 4 is a conversation fact; no artifact proves it was given.",
       "ORD-2 treats an interleaved listing order as a real run order; ORD-1's WARN is the only signal.",
       "Nothing on disk marks that a production run began before its first artifact: a run that failed before writing anything and was not recorded looks like one never started. The Interactive should write a run-start record (job_id, started_at) into the unit manifest before launching the Console.",
-      "SUM-2 recognises checksum-verification phrasing by pattern, clause by clause. A phrasing no pattern knows passes. A matching sentence it sets aside as a negation or as a statement about the spectral library is reported as a WARN with the sentences quoted, for a person to read. A negation separated from its phrase by a comma, as in 'not, under that policy, checksum-verified', is read as a claim: the conservative error."
+      "SUM-2 recognises checksum-verification phrasing by pattern, clause by clause. A phrasing no pattern knows passes. A matching sentence it sets aside as a negation (before the phrase, or 'was not performed' after it) or as a statement about the spectral library is reported as a WARN with the sentences quoted. A WARN does not change the exit code, so nothing yet makes a person read them before a run counts as completed; that is part of the open decision on decision A. A negation separated from its phrase by a comma, as in 'not, under that policy, checksum-verified', is read as a claim: the conservative error."
     ]
   },
   "destination": {
@@ -661,7 +661,7 @@
   ],
   "open_decisions_for_the_user": [
     "Whether Codex's in-progress Interactive work (fix/mzxml-and-agent-contracts, bumping to 0.4.8) ships inside 0.5.0 or as 0.4.8 before it.",
-    "Whether to confirm the agent's implementation of decision A: the SUM-1 WARN only for repositories recorded as publishing no checksums (MetaboLights), every input covered by a download-time sha256, and SUM-2 at publication (see decisions, proposed).",
+    "Whether to confirm the agent's implementation of decision A: the SUM-1 WARN only for repositories recorded as publishing no checksums (MetaboLights), every input covered by a download-time sha256, and SUM-2 at publication (see decisions, proposed). Includes whether a SUM-2 WARN - a matching sentence set aside by a rule - should hold a run from counting as completed until a person has read it and that is recorded.",
     "How a unit whose Class decision abstained reaches B3: record an abstention in the unit manifest, or exempt B3 for units recorded here as class_decision abstained (see evaluation.known_gaps).",
     "Boundary 4, per run, for each MTBLS2207 run once 0.5.0 is running."
   ],

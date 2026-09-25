@@ -745,6 +745,10 @@ class SecondReviewTests(unittest.TestCase):
             "The library file was MD5-verified against its Zenodo record.",
             "An md5-verified download from Zenodo supplied the MSP.",
             "The inputs weren\u2019t checksum-verified.",
+            "Raw files were analysed without checksum verification, as MetaboLights publishes none.",
+            "The inputs were used without checksum validation.",
+            "Checksum verification was not performed because MetaboLights publishes none.",
+            "Checksum verification was not possible for these inputs.",
         ]
         for sentence in disclosures:
             with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
@@ -785,6 +789,16 @@ class SecondReviewTests(unittest.TestCase):
         self.assertIn("skipped silently", detail)
         self.assertIn("1 earlier failed attempt(s) are recorded", detail)
         self.assertNotIn("recorded as failed", _check(report, "MTH-1").detail)
+
+    def test_a_failure_preflighted_over_is_still_the_latest_outcome(self) -> None:
+        """A preflight rewrites status; a failure after the last finalisation is still the last word."""
+        with tempfile.TemporaryDirectory() as temporary:
+            _fixture, workspace = _prepared(temporary)
+            _edit(workspace / "provenance" / "run-manifest.json", status="preflight_passed",
+                  run_failures=[{"exit_code": 1, "recorded_at": "2026-09-25T10:00:00+09:00"}])
+            report = verifier.verify(workspace, "after-run")
+
+        self.assertIn("recorded as failed", _check(report, "EXP-1").detail)
 
     def test_a_run_failures_field_that_is_not_a_list_does_not_crash_the_gate(self) -> None:
         for value in (1, -1, 1.5, True):
