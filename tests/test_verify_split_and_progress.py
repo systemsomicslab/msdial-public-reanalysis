@@ -637,12 +637,23 @@ class SecondReviewTests(unittest.TestCase):
 
         self.assertEqual(verifier.PASS, _status(report, "SUM-1"))
 
-    def test_inputs_from_a_declared_verified_archive_are_covered(self) -> None:
+    def test_a_declared_archive_does_not_vouch_for_what_lies_beside_it(self) -> None:
+        """The validator checks a declared archive only where it sits unextracted: nothing came out."""
         with tempfile.TemporaryDirectory() as temporary:
-            root = self._declared_unit(temporary, files=["study.zip"], inputs=["study/a.mzML", "study/b.mzML"])
+            root = self._declared_unit(temporary, files=["a.lcd", "notes.zip"], inputs=["a.lcd", "c.lcd"])
             report = verifier.verify(root, "before-production")
 
-        self.assertEqual(verifier.PASS, _status(report, "SUM-1"))
+        self.assertEqual(verifier.FAIL, _status(report, "SUM-1"))
+
+    def test_a_declared_name_does_not_vouch_for_a_deeper_file_of_the_same_name(self) -> None:
+        """A tar holding ROOT/a.lcd and ROOT/neg/a.lcd: only the first was checked."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._declared_unit(temporary, files=["a.lcd"], inputs=["ROOT/a.lcd", "ROOT/neg/a.lcd"])
+            report = verifier.verify(root, "before-production")
+
+        check = _check(report, "SUM-1")
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual(1, check.evidence["inputs_without_verified_checksum"])
 
     def test_a_metabolights_archive_unit_rests_on_the_archive_hash(self) -> None:
         """The allow-list names the archive, so extracted_files is empty; the archive's sha256 covers it."""
@@ -702,6 +713,26 @@ class SecondReviewTests(unittest.TestCase):
             with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
                 self.assertEqual(verifier.FAIL, _status(self._published(temporary, sentence), "SUM-2"))
 
+    def test_a_claim_is_caught_however_a_clause_before_it_is_phrased(self) -> None:
+        """The third review: a negation elsewhere in the sentence must not excuse the claim."""
+        claims = [
+            "No raw file failed checksum verification.",
+            "Although MetaboLights does not publish checksums for every study, all raw files here were checksum-verified.",
+            "None of the 11 input files failed MD5 checksum validation.",
+            "All files, including the MSP library, were checksum-verified.",
+            "Raw data were downloaded without modification and their MD5 checksums were verified.",
+            "No download errors occurred, and all checksums were verified.",
+            "The inputs were not only downloaded from MetaboLights but also checksum-verified.",
+            "The library checksum was not compared, but every raw file checksum was verified.",
+            "Neither blanks nor QCs were excluded, and the input checksums were verified against the repository.",
+            "Raw files were not checksum-verified by MetaboLights, but their integrity was verified by the downloader.",
+            "Don't read too much into it: every checksum was verified.",
+            "All downloaded files and the spectral library were checksum-verified.",
+        ]
+        for sentence in claims:
+            with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
+                self.assertEqual(verifier.FAIL, _status(self._published(temporary, sentence), "SUM-2"))
+
     def test_an_honest_disclosure_or_a_library_statement_is_not_a_claim(self) -> None:
         disclosures = [
             "MetaboLights publishes no checksums, so the inputs were not checksum-verified; integrity "
@@ -713,10 +744,20 @@ class SecondReviewTests(unittest.TestCase):
             "No artifact may describe these inputs as checksum-verified.",
             "The library file was MD5-verified against its Zenodo record.",
             "An md5-verified download from Zenodo supplied the MSP.",
+            "The inputs weren\u2019t checksum-verified.",
         ]
         for sentence in disclosures:
             with self.subTest(sentence=sentence), tempfile.TemporaryDirectory() as temporary:
-                self.assertEqual(verifier.PASS, _status(self._published(temporary, sentence), "SUM-2"))
+                check = _check(self._published(temporary, sentence), "SUM-2")
+                # Not refused, and not passed either: a rule set it aside, so a person reads it.
+                self.assertEqual(verifier.WARN, check.status)
+                self.assertIn("read them", check.detail)
+
+    def test_publication_with_no_checksum_phrasing_at_all_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            check = _check(self._published(temporary, "Peaks were aligned across 6 samples."), "SUM-2")
+
+        self.assertEqual(verifier.PASS, check.status)
 
     def test_a_recorded_failure_is_named_as_one(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -730,6 +771,28 @@ class SecondReviewTests(unittest.TestCase):
         self.assertIn("recorded as failed", _check(report, "MTH-1").detail)
         self.assertNotIn("reported success", _check(report, "EXP-1").detail)
 
+    def test_a_retried_unit_is_not_called_failed_by_its_history(self) -> None:
+        """run_failures is appended to and never cleared; only run_failed says the latest run failed."""
+        with tempfile.TemporaryDirectory() as temporary:
+            _fixture, workspace = _prepared(temporary)
+            (workspace / "output" / "s0.mdpeak").write_text("Peak ID\n", encoding="ascii")
+            _edit(workspace / "provenance" / "run-manifest.json", status="mztab_validated",
+                  finalized_at="2026-09-25T10:00:00+09:00", mztab_validation={"summary": {"failed": 0}},
+                  run_failures=[{"exit_code": 3}])
+            report = verifier.verify(workspace, "after-run")
+
+        detail = _check(report, "EXP-1").detail
+        self.assertIn("skipped silently", detail)
+        self.assertIn("1 earlier failed attempt(s) are recorded", detail)
+        self.assertNotIn("recorded as failed", _check(report, "MTH-1").detail)
+
+    def test_a_run_failures_field_that_is_not_a_list_does_not_crash_the_gate(self) -> None:
+        for value in (1, -1, 1.5, True):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temporary:
+                _fixture, workspace = _prepared(temporary)
+                _edit(workspace / "provenance" / "run-manifest.json", run_failures=value)
+                verifier.verify(workspace, "all")
+
     def test_a_part_whose_owner_cannot_be_read_has_no_known_raw_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             fixture = SplitFixture(Path(temporary))
@@ -739,6 +802,20 @@ class SecondReviewTests(unittest.TestCase):
         check = _check(report, "RET-1")
         self.assertEqual(verifier.NOT_EVALUABLE, check.status)
         self.assertTrue(check.required)
+
+    def test_a_tree_gone_without_a_confirmed_cleanup_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "gone"
+            (root / "output").mkdir(parents=True)
+            _write(root / "provenance" / "run-manifest.json", {
+                "project": {"analysis_unit_id": "gone"},
+                "status": "cleanup_pending_confirmation", "raw_retention_policy": "delete_after_validated_output",
+            })
+            report = verifier.verify(root, "before-publish")
+
+        check = _check(report, "RET-1")
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertIn("no confirmed cleanup is recorded", check.detail)
 
     def test_a_deletion_awaiting_confirmation_is_visible(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -755,7 +832,9 @@ class SecondReviewTests(unittest.TestCase):
         self.assertEqual(verifier.WARN, _status(report, "RET-1"))
 
     def test_raw_data_discarded_after_a_failed_validation_is_not_a_release(self) -> None:
-        for status, failed, released in (("discarded", 1, False), ("mztab_validated", 0, True)):
+        # Only the confirmed cleanup, which records raw_cleaned, releases a tree; a validated unit
+        # whose tree simply vanished went without the confirmation deletion needs.
+        for status, failed, released in (("discarded", 1, False), ("mztab_validated", 0, False)):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
                 fixture, workspace = _prepared(temporary)
                 # The owner's policy is the one that decides; the part's copy says the same here.

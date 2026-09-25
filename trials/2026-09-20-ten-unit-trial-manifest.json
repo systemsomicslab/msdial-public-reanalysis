@@ -163,7 +163,7 @@
       "Boundary 4 is a conversation fact; no artifact proves it was given.",
       "ORD-2 treats an interleaved listing order as a real run order; ORD-1's WARN is the only signal.",
       "Nothing on disk marks that a production run began before its first artifact: a run that failed before writing anything and was not recorded looks like one never started. The Interactive should write a run-start record (job_id, started_at) into the unit manifest before launching the Console.",
-      "SUM-2 recognises checksum-verification phrasing by pattern. A sentence with a negation before the phrase, or about the spectral library and not the inputs, is not counted, and every such sentence is listed in its evidence; a claim phrased in a way no pattern knows passes."
+      "SUM-2 recognises checksum-verification phrasing by pattern, clause by clause. A phrasing no pattern knows passes. A matching sentence it sets aside as a negation or as a statement about the spectral library is reported as a WARN with the sentences quoted, for a person to read. A negation separated from its phrase by a comma, as in 'not, under that policy, checksum-verified', is read as a claim: the conservative error."
     ]
   },
   "destination": {
@@ -661,6 +661,8 @@
   ],
   "open_decisions_for_the_user": [
     "Whether Codex's in-progress Interactive work (fix/mzxml-and-agent-contracts, bumping to 0.4.8) ships inside 0.5.0 or as 0.4.8 before it.",
+    "Whether to confirm the agent's implementation of decision A: the SUM-1 WARN only for repositories recorded as publishing no checksums (MetaboLights), every input covered by a download-time sha256, and SUM-2 at publication (see decisions, proposed).",
+    "How a unit whose Class decision abstained reaches B3: record an abstention in the unit manifest, or exempt B3 for units recorded here as class_decision abstained (see evaluation.known_gaps).",
     "Boundary 4, per run, for each MTBLS2207 run once 0.5.0 is running."
   ],
   "library": {
@@ -812,8 +814,9 @@
     },
     {
       "at": "2026-09-25",
-      "by": "agent, offered for the user's confirmation",
-      "decision": "How the gate applies it. The WARN is granted only to repositories recorded as publishing none, today MetaboLights: in the Catalog all 1,973 MetaboLights LC-MS units carry no checksum and every mb_post, MetaboBank and Metabolomics Workbench unit is fully declared, so elsewhere an empty record is a declaration lost on the way in, and a FAIL. Every input must also be covered by a download-time sha256, directly or through the hashed archive it came from. SUM-2 enforces the second clause at publication."
+      "by": "agent",
+      "decision": "How the gate applies it. The WARN is granted only to repositories recorded as publishing none, today MetaboLights: in the Catalog all 1,973 MetaboLights LC-MS units carry no checksum and every mb_post, MetaboBank and Metabolomics Workbench unit is fully declared, so elsewhere an empty record is a declaration lost on the way in, and a FAIL. Every input must also be covered by a download-time sha256, directly or through the hashed archive it came from. SUM-2 enforces the second clause at publication: a sentence claiming a verification fails it, and a matching sentence set aside as a negation or a library statement is a WARN for a person to read, never a pass.",
+      "state": "proposed, awaiting the user's confirmation"
     },
     {
       "at": "2026-09-25",

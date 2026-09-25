@@ -339,9 +339,20 @@ def _relative_name(path_text: object, root_text: object) -> str:
         return path.name.casefold()
 
 
+def _name_forms(relative: str) -> tuple[str, ...]:
+    """The names a declared file may carry for this input, as the Interactive resolves them.
+
+    The Interactive's validator and allow-list compare a declared name with the input's path relative
+    to the data directory, or with that path less its first component (the folder an archive unpacks
+    into, such as MB-POST_files_MPST000007.0). Nothing deeper: a declared a.lcd does not vouch for
+    neg/a.lcd, which is a different file the validator never checked.
+    """
+    parts = relative.split("/")
+    return (relative,) if len(parts) < 2 else (relative, "/".join(parts[1:]))
+
+
 def _names_cover(relative: str, declared: str) -> bool:
-    """Whether a declared name is this input: equal, or equal on its trailing path components."""
-    return relative == declared or relative.endswith("/" + declared) or declared.endswith("/" + relative)
+    return declared in _name_forms(relative)
 
 
 def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
@@ -364,7 +375,6 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
     skipped = validation.get("skipped") if isinstance(validation, dict) else None
     declared = [item for item in files if str(item.get("checksum") or "").strip()]
     declared_names = [_declared_name(item.get("name")) for item in declared]
-    declared_archive = any(name.endswith(ARCHIVE_SUFFIXES) for name in declared_names)
     declared_at_download = [item for item in downloads if str(item.get("declared_checksum") or "").strip()]
     hashed_downloads = [item for item in downloads if str(item.get("sha256") or "").strip()]
     hashed = {_path_key(item.get("path")) for item in hashed_downloads}
@@ -384,12 +394,11 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
         relative = _relative_name(item, input_directory) if input_directory else Path(item).name.casefold()
         if any(_names_cover(relative, name) for name in declared_names):
             return True
-        # A vendor directory (.d, .raw) is one input whose files are declared one by one.
-        component = "/" + Path(item).name.casefold() + "/"
-        if any(component in "/" + name for name in declared_names):
-            return True
-        # An input extracted from a declared, verified archive is covered by the archive's checksum.
-        return declared_archive and under_input_directory(item)
+        # A vendor directory (.d, .raw) is one input whose files are declared one by one, under it.
+        # No clause lets a declared archive vouch for whatever lies under the data directory: the
+        # validator checks an archive only where it sits unextracted, and nothing then came out of it.
+        prefixes = tuple(form + "/" for form in _name_forms(relative))
+        return any(name.startswith(prefixes) for name in declared_names)
 
     def download_cover(item: str) -> bool:
         if _path_key(item) in hashed:
@@ -591,22 +600,36 @@ def _production_started(output: Path, provenance: dict | None = None) -> bool:
         return True
     record = provenance if isinstance(provenance, dict) else {}
     return bool(
-        record.get("run_failures")
+        _run_failures(record)
         or record.get("finalized_at")
         or str(record.get("status") or "") in ATTEMPTED_STATUSES
     )
 
 
-def _recorded_failure(provenance: dict | None) -> str:
-    """The manifest's own account of a failed run, or "" when it records none."""
+def _run_failures(provenance: dict | None) -> list[dict]:
     record = provenance if isinstance(provenance, dict) else {}
-    failures = [item for item in record.get("run_failures") or [] if isinstance(item, dict)]
-    if not failures and str(record.get("status") or "") != "run_failed":
+    failures = record.get("run_failures")
+    return [item for item in failures if isinstance(item, dict)] if isinstance(failures, list) else []
+
+
+def _recorded_failure(provenance: dict | None) -> str:
+    """The manifest's account of the latest run as failed, or "" when the latest run did not fail.
+
+    run_failures is a history the Interactive appends to and never clears, so a unit that failed once
+    and then ran again is not failed: only a run_failed status says the latest attempt failed.
+    """
+    record = provenance if isinstance(provenance, dict) else {}
+    if str(record.get("status") or "") != "run_failed":
         return ""
-    last = failures[-1] if failures else {}
-    code = last.get("exit_code")
+    failures = _run_failures(record)
+    code = (failures[-1] if failures else {}).get("exit_code")
     return (f"The run was recorded as failed ({len(failures)} failure(s) recorded"
             + (f", last exit code {code}" if code is not None else "") + ")")
+
+
+def _earlier_failures(provenance: dict | None) -> str:
+    count = len(_run_failures(provenance))
+    return f" {count} earlier failed attempt(s) are recorded." if count and not _recorded_failure(provenance) else ""
 
 
 NOT_STARTED = (
@@ -733,7 +756,8 @@ def check_expected_exports_present(
         (f"{failure} after producing {len(expected) - len(absent)} of {len(expected)} planned exports."
          if failure else
          "MS-DIAL reported success without producing every export the run planned. A file it could "
-         "not read is skipped silently, and the exit code does not reflect it."),
+         "not read is skipped silently, and the exit code does not reflect it."
+         + _earlier_failures(provenance)),
         expected=len(expected), absent_count=len(absent), absent=absent[:10],
     )
 
@@ -1144,8 +1168,9 @@ def check_storage_shape(report: Report, workspace: Path, stage: str,
         # every part would double the unit, and calling it released would be false.
         report.add("DSK-1", stage, "Retained storage is accounted for", NOT_EVALUABLE,
                    f"The raw tree is owned by {provenance.get('raw_owned_by') or 'its parent'} and "
-                   "is accounted there: gate the raw owner at before-publish once all its runs are "
-                   "done.", required=False, raw_owned_by=str(provenance.get("raw_owned_by") or ""))
+                   "is accounted there: once all its runs are done, read DSK-1 from the raw owner's "
+                   "before-publish report, whose exit code is not a verdict on the owner.",
+                   required=False, raw_owned_by=str(provenance.get("raw_owned_by") or ""))
         return
     downloads = workspace / "raw" / "downloads"
     data = workspace / "raw" / "data"
@@ -1346,12 +1371,27 @@ CHECKSUM_CLAIM = re.compile(
     r"|(?:md5|sha-?256|sha-?1)[- ](?:verified|checked|validated)",
     re.IGNORECASE,
 )
-# A sentence that negates the claim is the disclosure decision A asks for, not the claim.
-CLAIM_NEGATION = re.compile(r"\b(?:not|no|never|cannot|without|none|neither|nor)\b|could\s+not|n't", re.IGNORECASE)
-# A sentence about the spectral library is the library identification the contract asks for.
+# A negation governs a phrase only within its own clause, and "no file failed verification" asserts
+# that every file passed: a negation with a failure word is the claim, not its denial.
+CLAIM_NEGATION = re.compile(r"\b(?:not|no|never|cannot|none|neither|nor)\b|could\s+not|n['\u2019]t", re.IGNORECASE)
+CLAUSE_BOUNDARY = re.compile(r"[,:]|\b(?:and|but|while|whereas|although|though|however|yet)\b", re.IGNORECASE)
+FAILURE_WORD = re.compile(r"\bfail(?:ed|s|ure|ures)?\b", re.IGNORECASE)
+# A sentence about the spectral library alone is the library identification the contract asks for.
 LIBRARY_SUBJECT = re.compile(r"\b(?:msp|lbm2?|librar(?:y|ies)|zenodo)\b", re.IGNORECASE)
-INPUT_SUBJECT = re.compile(r"\b(?:raw|input|inputs|data\s+files?|mzml|spectra\s+files?)\b", re.IGNORECASE)
-SENTENCE = re.compile(r"[^.;!?\n]+")
+INPUT_SUBJECT = re.compile(
+    r"\b(?:raw|input|inputs|data\s+files?|mzml|spectra\s+files?)\b"
+    r"|\b(?:all|every|each)\s+(?:\w+\s+){0,2}(?:files?|downloads?|checksums?)\b",
+    re.IGNORECASE,
+)
+# A sentence ends at . ; ! ? or a newline, but not at the point of a decimal such as 5.5.
+SENTENCE = re.compile(r"(?:[^.;!?\n]|(?<=\d)\.(?=\d))+")
+
+
+def _claim_is_negated(sentence: str, start: int) -> bool:
+    before = sentence[:start]
+    boundaries = list(CLAUSE_BOUNDARY.finditer(before))
+    clause = before[boundaries[-1].end():] if boundaries else before
+    return bool(CLAIM_NEGATION.search(clause)) and not FAILURE_WORD.search(clause)
 PUBLICATION_ARTIFACTS = (
     "MS_DIAL_publication_report.json", "MS_DIAL_Materials_and_Methods.txt", "MS_DIAL_QA_Results.txt",
     "Supplementary_Table_MS_DIAL.tsv", "MS_DIAL_publication_reporting_bundle.zip",
@@ -1386,26 +1426,34 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     for path in present:
         for member, text in _readable_members(path):
             for sentence in SENTENCE.findall(text):
-                match = CHECKSUM_CLAIM.search(sentence)
-                if not match:
-                    continue
-                where = f"{path.name}:{member}: {sentence.strip()[:160]!r}"
-                if CLAIM_NEGATION.search(sentence[:match.start()]):
-                    skipped.append(f"negated: {where}")
-                elif LIBRARY_SUBJECT.search(sentence) and not INPUT_SUBJECT.search(sentence):
-                    skipped.append(f"about the library: {where}")
-                else:
-                    claims.append(where)
+                for match in CHECKSUM_CLAIM.finditer(sentence):
+                    where = f"{path.name}:{member}: {sentence.strip()[:160]!r}"
+                    if _claim_is_negated(sentence, match.start()):
+                        skipped.append(f"negated: {where}")
+                    elif LIBRARY_SUBJECT.search(sentence) and not INPUT_SUBJECT.search(sentence):
+                        skipped.append(f"about the library: {where}")
+                    else:
+                        claims.append(where)
     if claims:
         report.add("SUM-2", stage, title, FAIL,
                    "A published artifact calls these inputs checksum-verified, but the repository "
                    "published no checksum and none was compared.",
-                   claims=claims[:10], not_counted=skipped[:10])
+                   claims=claims[:10], claim_count=len(claims),
+                   not_counted=skipped[:50], not_counted_count=len(skipped))
+        return
+    if skipped:
+        # A phrasing matched and was set aside by a rule, not by a reader. That is for a person to
+        # read, and the report says so instead of passing it.
+        report.add("SUM-2", stage, title, WARN,
+                   f"{len(skipped)} checksum-verification phrasing(s) matched and were not counted as "
+                   "claims, as negations or statements about the library; read them: "
+                   + " | ".join(skipped[:3]),
+                   artifacts=len(present), not_counted=skipped[:50], not_counted_count=len(skipped))
         return
     report.add("SUM-2", stage, title, PASS,
                f"No known checksum-verification phrasing matched in {len(present)} publication "
                "artifact(s). This is not a statement that no such claim is made.",
-               artifacts=len(present), not_counted=skipped[:10])
+               artifacts=len(present))
 
 
 def check_unit_reached_a_terminal_state(
@@ -1635,6 +1683,15 @@ def check_retention_policy_was_acted_on(
                        "Policy is delete_after_validated_output, the output is validated, and the "
                        "raw tree is still present. Deletion needs its own confirmation and has "
                        "not been given one.", policy=policy, raw_present=present, status=status)
+            return
+        owner_status = str(owner.get("status") or "")
+        if not present and owner_status != "raw_cleaned" and status != "raw_cleaned":
+            # The Interactive has one deletion path, and it records raw_cleaned. A tree gone without
+            # it went without the confirmation that deletion needs.
+            report.add("RET-1", stage, "The retention decision matches the disk", WARN,
+                       "Policy is delete_after_validated_output and the raw tree is gone, but no "
+                       f"confirmed cleanup is recorded (status {owner_status or status!r}).",
+                       policy=policy, raw_present=present, status=status)
             return
         report.add("RET-1", stage, "The retention decision matches the disk", PASS,
                    f"Policy is {policy!r}; raw tree {'present' if present else 'released'}, "
@@ -1872,14 +1929,9 @@ def completion_progress(workspace: Path, provenance: dict | None, output: Path) 
     )
     raw_path, raw_owner, _unknown = _raw_directory(record, workspace)
     status = str(record.get("status") or "")
+    # Released only by the confirmed cleanup, the one deletion path, which records raw_cleaned.
     raw_released = raw_path is not None and not raw_path.exists() and (
-        status == "raw_cleaned"
-        or (
-            (raw_owner or {}).get("raw_retention_policy") == "delete_after_validated_output"
-            and status in VALIDATED_STATUSES
-            and isinstance(validation, dict) and not validation_failed
-            and isinstance(record.get("retained_artifact_inventory"), list)
-        )
+        status == "raw_cleaned" or str((raw_owner or {}).get("status") or "") == "raw_cleaned"
     )
     facts = {
         # Downloaded, and either still on disk or released under the policy after a validated run:
