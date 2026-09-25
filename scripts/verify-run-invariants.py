@@ -42,11 +42,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 PASS = "pass"
@@ -136,6 +138,8 @@ class Report:
             "ok": self.ok,
             "counts": self.counts(),
             "strict_failures": [check.check_id for check in self.strict_failures],
+            "progress": getattr(self, "progress", None),
+            "checks_by_stage": _checks_by_stage(self),
             "checks": [check.as_dict() for check in self.checks],
         }
 
@@ -145,9 +149,14 @@ def _read_json(path: Path) -> tuple[dict | None, str]:
     if not path.exists():
         return None, f"{path.name} is absent"
     try:
-        return json.loads(path.read_text(encoding="utf-8")), ""
+        parsed = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return None, f"{path.name} could not be read: {exc}"
+    if not isinstance(parsed, dict):
+        # Every record this gate reads is an object. A list or a bare value would otherwise reach a
+        # check as if it were one and end the gate with a traceback, which is not a verdict.
+        return None, f"{path.name} is not a JSON object"
+    return parsed, ""
 
 
 def _read_csv_rows(path: Path) -> tuple[list[dict] | None, str]:
@@ -219,6 +228,16 @@ def check_execution_allowed(report: Report, provenance: dict | None, reason: str
         report.add("ELIG-1", stage, "Manifest permits execution", NOT_EVALUABLE, reason)
         return
     allowed = provenance.get("execution_allowed")
+    if provenance.get("status") == "split_by_acquisition":
+        parts = [str(item.get("analysis_unit_id") or "") for item in provenance.get("split_into") or []
+                 if isinstance(item, dict)]
+        report.add(
+            "ELIG-1", stage, "Manifest permits execution", FAIL,
+            "This unit was split by acquisition mode and is the raw owner of its parts, not a run. "
+            f"Gate the parts instead: {', '.join(parts) or 'none recorded'}.",
+            execution_allowed=allowed, status=provenance.get("status"), parts=parts,
+        )
+        return
     if allowed is True:
         report.add("ELIG-1", stage, "Manifest permits execution", PASS,
                    "execution_allowed is true.", status=provenance.get("status"))
@@ -269,36 +288,280 @@ def check_preflight_claim(report: Report, provenance: dict | None, reason: str) 
     )
 
 
-def check_checksum_coverage(report: Report, provenance: dict | None, reason: str) -> None:
-    """Every admitted input must have had its declared checksum verified.
+def _raw_owner_manifest(provenance: dict | None) -> tuple[dict | None, str]:
+    """The manifest of the unit that downloaded this unit's raw data.
 
-    required is reported true when at least one file carried a checksum, so {"required": true,
-    "verified": 1, "skipped": 29} reads to a boolean scan exactly like full coverage.
+    That is the unit itself, except for a part split from another unit: a part downloaded nothing,
+    and its inputs were verified, or not, when its parent was downloaded. A part whose split record
+    names no parent manifest has an unknown owner; it never falls back to its own record, which
+    holds no download to judge.
+    """
+    if not isinstance(provenance, dict):
+        return None, ""
+    split_from = provenance.get("split_from")
+    if isinstance(split_from, dict):
+        if not str(split_from.get("manifest_path") or "").strip():
+            return None, "split_from names no manifest_path"
+        return _read_json(Path(str(split_from["manifest_path"])))
+    return provenance, ""
+
+
+def _same_path(left: object, right: object) -> bool:
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+
+
+def _path_key(value: object) -> str:
+    return os.path.normcase(os.path.normpath(str(value)))
+
+
+# Repositories recorded as publishing no checksum for any file. For these, and only these, a unit
+# whose record holds no checksum is not a declaration lost on the way in. MetaboLights builds every
+# file entry without one; Metabolomics Workbench, MetaboBank and MB-POST publish them.
+REPOSITORIES_WITHOUT_CHECKSUMS = frozenset({"metabolights"})
+
+
+ARCHIVE_SUFFIXES = (".zip", ".tar", ".tgz", ".tar.gz", ".gz", ".7z", ".rar", ".bz2", ".xz")
+
+
+def _declared_name(value: object) -> str:
+    """A file-list name as the Interactive resolves it: separators unified, a leading FILES/ dropped."""
+    name = str(value or "").replace("\\", "/").lstrip("/")
+    if name.casefold().startswith("files/"):
+        name = name[6:]
+    return name.casefold()
+
+
+def _relative_name(path_text: object, root_text: object) -> str:
+    """A path's name relative to the unit's input directory, in the form _declared_name produces."""
+    path = Path(os.path.normpath(str(path_text)))
+    try:
+        return path.relative_to(Path(os.path.normpath(str(root_text)))).as_posix().casefold()
+    except ValueError:
+        return path.name.casefold()
+
+
+def _name_forms(relative: str) -> tuple[str, ...]:
+    """The names a declared file may carry for this input, as the Interactive resolves them.
+
+    The Interactive's validator and allow-list compare a declared name with the input's path relative
+    to the data directory, or with that path less its first component (the folder an archive unpacks
+    into, such as MB-POST_files_MPST000007.0). Nothing deeper: a declared a.lcd does not vouch for
+    neg/a.lcd, which is a different file the validator never checked.
+    """
+    parts = relative.split("/")
+    return (relative,) if len(parts) < 2 else (relative, "/".join(parts[1:]))
+
+
+def _names_cover(relative: str, declared: str) -> bool:
+    return declared in _name_forms(relative)
+
+
+def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
+    """How this unit's inputs are known to be intact: (kind, detail, evidence).
+
+    kind is "verified" (every declared file was checked against its published checksum, and every
+    input is one of them, lies in a declared vendor directory, or came out of a declared archive),
+    "download_sha256" (the repository publishes none, and every input rests on a sha256 recorded at
+    download), or "insufficient" (anything else).
+    """
+    validation = owner.get("allowlist_checksum_validation")
+    files = [item for item in (owner.get("project") or {}).get("files") or [] if isinstance(item, dict)]
+    downloads = [item for item in owner.get("downloads") or [] if isinstance(item, dict)]
+    raw_candidates = owner.get("input_candidates")
+    candidates = [str(item) for item in raw_candidates] if isinstance(raw_candidates, list) else []
+    raw_extracted = owner.get("extracted_files")
+    extracted = {_path_key(item) for item in raw_extracted} if isinstance(raw_extracted, list) else set()
+    input_directory = str(owner.get("input_directory") or "")
+    verified = validation.get("verified") if isinstance(validation, dict) else None
+    skipped = validation.get("skipped") if isinstance(validation, dict) else None
+    declared = [item for item in files if str(item.get("checksum") or "").strip()]
+    declared_names = [_declared_name(item.get("name")) for item in declared]
+    declared_at_download = [item for item in downloads if str(item.get("declared_checksum") or "").strip()]
+    hashed_downloads = [item for item in downloads if str(item.get("sha256") or "").strip()]
+    hashed = {_path_key(item.get("path")) for item in hashed_downloads}
+    hashed_archive = any(str(item.get("path") or "").casefold().endswith(ARCHIVE_SUFFIXES)
+                         for item in hashed_downloads)
+    all_downloads_hashed = bool(downloads) and len(hashed_downloads) == len(downloads)
+    repository = str((owner.get("project") or {}).get("repository") or "").strip().casefold()
+    counts_known = isinstance(verified, int) and isinstance(skipped, int)
+
+    def under_input_directory(item: str) -> bool:
+        if not input_directory:
+            return False
+        root = _path_key(input_directory)
+        return _path_key(item).startswith(root + os.sep)
+
+    def declared_cover(item: str) -> bool:
+        relative = _relative_name(item, input_directory) if input_directory else Path(item).name.casefold()
+        if any(_names_cover(relative, name) for name in declared_names):
+            return True
+        # A vendor directory (.d, .raw) is one input whose files are declared one by one, under it.
+        # No clause lets a declared archive vouch for whatever lies under the data directory: the
+        # validator checks an archive only where it sits unextracted, and nothing then came out of it.
+        prefixes = tuple(form + "/" for form in _name_forms(relative))
+        return any(name.startswith(prefixes) for name in declared_names)
+
+    def download_cover(item: str) -> bool:
+        if _path_key(item) in hashed:
+            return True
+        if not all_downloads_hashed:
+            return False
+        # Extracted from a hashed archive: the archive's hash covers what came out of it.
+        return _path_key(item) in extracted or (hashed_archive and under_input_directory(item))
+
+    evidence = {
+        "verified": verified, "skipped": skipped, "inputs": len(candidates), "files": len(files),
+        "any_checksum_verified": validation.get("required") if isinstance(validation, dict) else None,
+        "declared_checksums": len(declared), "downloads_with_sha256": len(hashed_downloads),
+        "repository": repository,
+    }
+    if counts_known and files and skipped == 0 and verified == len(files):
+        # The validator raises on a mismatch or on a file it cannot resolve, so a count equal to the
+        # declared files means every one was checked. Sidecars such as .wiff.scan are declared and
+        # verified but are not inputs, so the files are not compared with the inputs by count; each
+        # input is instead traced to a verified declaration.
+        uncovered = [item for item in candidates if not declared_cover(item)]
+        evidence["inputs_without_verified_checksum"] = len(uncovered)
+        if not candidates:
+            return ("insufficient", "No input candidate is recorded, so nothing ties the verified files "
+                    "to what is analysed.", evidence)
+        if uncovered:
+            return ("insufficient", f"Every declared file was verified, but {len(uncovered)} input(s) "
+                    "carry no declared checksum: they were admitted without being checked.", evidence)
+        return ("verified", f"All {verified} declared files verified, none skipped, covering all "
+                f"{len(candidates)} inputs.", evidence)
+    uncovered = [item for item in candidates if not download_cover(item)]
+    evidence["inputs_without_download_sha256"] = len(uncovered)
+    if (
+        repository in REPOSITORIES_WITHOUT_CHECKSUMS
+        and counts_known and verified == 0 and files and skipped == len(files)
+        and not declared and not declared_at_download
+        and candidates and not uncovered
+    ):
+        return (
+            "download_sha256",
+            f"{repository} publishes no checksum for any file, so nothing could be compared with a "
+            f"source value. Integrity rests on the sha256 recorded at download, which covers all "
+            f"{len(candidates)} inputs. No artifact may describe these inputs as checksum-verified.",
+            evidence,
+        )
+    if counts_known and not declared and not declared_at_download and repository not in REPOSITORIES_WITHOUT_CHECKSUMS:
+        detail = (
+            f"No checksum is recorded for any file of this unit, and {repository or 'its repository'} "
+            "is not recorded as a repository that publishes none: the declaration was lost on the way "
+            "in, and nothing was checked."
+        )
+    elif uncovered and not declared:
+        detail = (
+            f"{len(uncovered)} input(s) are not traced to a hashed download."
+            if hashed_downloads else
+            f"{len(uncovered)} input(s) have neither a verified checksum nor a sha256 recorded at "
+            "download, so their integrity rests on nothing."
+        )
+    elif not candidates:
+        detail = "No input candidate is recorded."
+    elif not counts_known:
+        detail = "The checksum validation record does not say how many files it verified and skipped."
+    else:
+        detail = (
+            "Checksum coverage is partial. The integrity claim in the published audit trail would "
+            "overstate what was actually checked."
+        )
+    return "insufficient", detail, evidence
+
+
+def check_checksum_coverage(report: Report, provenance: dict | None, reason: str) -> None:
+    """SUM-1. Every admitted input had its declared checksum verified.
+
+    The record's own "required" is true when at least one file carried a checksum, so
+    {"required": true, "verified": 1, "skipped": 29} reads to a boolean scan exactly like full
+    coverage. It is reported here as any_checksum_verified, which is what it means.
+
+    A REPOSITORY THAT DECLARES NO CHECKSUM AT ALL is a WARN, not a FAIL. MetaboLights publishes
+    none: all eleven MTBLS2207 files came with an empty declared checksum. As a FAIL this refused
+    every MetaboLights unit for a property of the repository rather than of the run. The user
+    decided on 2026-09-25 that such a unit proceeds on the sha256 recorded at download, with the
+    warning saying so, and that no artifact may then call its inputs checksum-verified. A partial
+    declaration is still a FAIL: some files could be compared and the rest were not.
+
+    A split part carries its raw owner's verdict. Read on the part alone, the record is absent
+    and a FAIL on the parent would become a mere absence on the part.
     """
     stage = "before-production"
+    title = "Every input's checksum was verified"
     if provenance is None:
-        report.add("SUM-1", stage, "Every input's checksum was verified", NOT_EVALUABLE, reason)
+        report.add("SUM-1", stage, title, NOT_EVALUABLE, reason)
         return
-    validation = provenance.get("allowlist_checksum_validation")
-    candidates = provenance.get("input_candidates")
-    if not isinstance(validation, dict) or not isinstance(candidates, list):
-        report.add("SUM-1", stage, "Every input's checksum was verified", NOT_EVALUABLE,
-                   "The manifest records no checksum validation block or no input candidates.")
+    owner, owner_reason = _raw_owner_manifest(provenance)
+    inherited_from = ""
+    if owner is not provenance:
+        if owner is None:
+            report.add("SUM-1", stage, title, NOT_EVALUABLE,
+                       f"This unit was split from another, whose manifest cannot be used: {owner_reason}")
+            return
+        inherited_from = str((provenance.get("split_from") or {}).get("analysis_unit_id") or "")
+    if not isinstance(owner.get("allowlist_checksum_validation"), dict) or not isinstance(
+        owner.get("input_candidates"), list
+    ):
+        report.add("SUM-1", stage, title, NOT_EVALUABLE,
+                   "The manifest records no checksum validation block or no input candidates.",
+                   inherited_from=inherited_from)
         return
-    verified = validation.get("verified")
-    skipped = validation.get("skipped")
-    expected = len(candidates)
-    if verified == expected and skipped == 0:
-        report.add("SUM-1", stage, "Every input's checksum was verified", PASS,
-                   f"All {expected} inputs verified, none skipped.",
-                   verified=verified, skipped=skipped, inputs=expected)
+    kind, detail, evidence = _checksum_basis(owner)
+    status = {"verified": PASS, "download_sha256": WARN}.get(kind, FAIL)
+    report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, **evidence)
+
+
+def check_split_part_partitions_its_parent(report: Report, provenance: dict | None, reason: str) -> None:
+    """SPL-1. A split part is one of a set of parts that hold exactly the parent's inputs, once each.
+
+    Each part can pass every other check on its own. What none of them can see is a file that went
+    into two parts or into none; the parent's split_into and each part's input_candidates are the
+    two records that must agree.
+    """
+    stage = "before-production"
+    title = "A split part partitions its parent's inputs"
+    split_from = (provenance or {}).get("split_from")
+    if not isinstance(split_from, dict):
+        report.add("SPL-1", stage, title, NOT_EVALUABLE,
+                   reason or "This unit was not split from another.", required=False)
         return
-    report.add(
-        "SUM-1", stage, "Every input's checksum was verified", FAIL,
-        "Checksum coverage is partial. The integrity claim in the published audit trail would "
-        "overstate what was actually checked.",
-        verified=verified, skipped=skipped, inputs=expected, required=validation.get("required"),
-    )
+    parent, parent_reason = _raw_owner_manifest(provenance)
+    if parent is None:
+        report.add("SPL-1", stage, title, NOT_EVALUABLE, parent_reason)
+        return
+    own_id = str((provenance.get("project") or {}).get("analysis_unit_id") or "")
+    parts = [item for item in parent.get("split_into") or [] if isinstance(item, dict)]
+    own = next((item for item in parts if item.get("analysis_unit_id") == own_id), None)
+    parent_inputs = sorted(_path_key(item) for item in parent.get("input_candidates") or [])
+    claimed = sorted(_path_key(path) for item in parts for path in item.get("input_candidates") or [])
+    own_inputs = sorted(_path_key(item) for item in provenance.get("input_candidates") or [])
+    problems = []
+    if parent.get("status") != "split_by_acquisition" or parent.get("execution_allowed") is not False:
+        problems.append("the parent is not recorded as split and held from execution")
+    if own is None:
+        problems.append(f"the parent's split_into does not name {own_id or 'this part'}")
+    elif sorted(_path_key(item) for item in own.get("input_candidates") or []) != own_inputs:
+        problems.append("this part's input_candidates differ from the parent's record of it")
+    if claimed != parent_inputs:
+        problems.append(f"the parts hold {len(claimed)} inputs, {len(set(claimed))} distinct, "
+                        f"against the parent's {len(parent_inputs)}")
+    # The part reads its raw tree through raw_owned_by and raw_directory, which RET-1 and DSK-1
+    # follow. They must name the same parent as split_from, or those checks judge another unit's disk.
+    if not _same_path(provenance.get("raw_owned_by") or "", split_from.get("manifest_path") or ""):
+        problems.append("raw_owned_by does not name the parent that split_from names")
+    parent_raw = parent.get("raw_directory")
+    if not parent_raw or not _same_path(provenance.get("raw_directory") or "", parent_raw):
+        problems.append("raw_directory is not the parent's raw directory")
+    elif any(not _path_key(item).startswith(_path_key(parent_raw) + os.sep) for item in own_inputs):
+        problems.append("some of this part's inputs lie outside the parent's raw directory")
+    if problems:
+        report.add("SPL-1", stage, title, FAIL, "; ".join(problems) + ".",
+                   parent=split_from.get("analysis_unit_id"), part=own_id)
+        return
+    report.add("SPL-1", stage, title, PASS,
+               f"{own_id} is one of {len(parts)} parts holding the parent's {len(parent_inputs)} "
+               "inputs exactly once.", parent=split_from.get("analysis_unit_id"), parts=len(parts))
 
 
 # --------------------------------------------------------------------------------------------
@@ -307,6 +570,98 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
 
 def _mdpeak_count(output: Path) -> int:
     return len(list(output.glob("*.mdpeak")))
+
+
+# Statuses the Interactive writes only after a production run was attempted.
+ATTEMPTED_STATUSES = frozenset({
+    "run_failed", "validation_failed", "mztab_validated", "completed",
+    "cleanup_pending_confirmation", "raw_cleaned",
+})
+VALIDATED_STATUSES = frozenset({"mztab_validated", "completed", "cleanup_pending_confirmation", "raw_cleaned"})
+
+
+def _production_started(output: Path, provenance: dict | None = None) -> bool:
+    """Whether a production run was attempted in this workspace.
+
+    The Console writes method.keys.json when it reads the method file and a .mdpeak per file it
+    processed; a finished run adds an mzTab-M and the publication report. The manifest records an
+    attempt too: a failure record, a finalisation, or a status only a run can produce. A Console
+    that crashed before writing anything leaves the output empty and the failure in the manifest,
+    and that is a failed run, not one that never started.
+
+    With none of these, a check owed by a later stage has nothing to judge: that is a stage not
+    reached, not two records disagreeing. It stays required, so --strict still refuses the unit.
+    """
+    if (
+        (output / "method.keys.json").is_file()
+        or _mdpeak_count(output) > 0
+        or any(output.glob("*.mzTab"))
+        or (output / "MS_DIAL_publication_report.json").is_file()
+    ):
+        return True
+    record = provenance if isinstance(provenance, dict) else {}
+    return bool(
+        _run_failures(record)
+        or record.get("finalized_at")
+        or str(record.get("status") or "") in ATTEMPTED_STATUSES
+    )
+
+
+def _run_failures(provenance: dict | None) -> list[dict]:
+    record = provenance if isinstance(provenance, dict) else {}
+    failures = record.get("run_failures")
+    return [item for item in failures if isinstance(item, dict)] if isinstance(failures, list) else []
+
+
+def _recorded_failure(provenance: dict | None) -> str:
+    """The manifest's account of the latest run as failed, or "" when the latest run did not fail.
+
+    run_failures is a history the Interactive appends to and never clears, so a unit that failed once
+    and then ran again is not failed: only a run_failed status says the latest attempt failed.
+    """
+    record = provenance if isinstance(provenance, dict) else {}
+    failures = _run_failures(record)
+    if str(record.get("status") or "") != "run_failed" and not _failure_is_latest(record, failures):
+        return ""
+    code = (failures[-1] if failures else {}).get("exit_code")
+    return (f"The run was recorded as failed ({len(failures)} failure(s) recorded"
+            + (f", last exit code {code}" if code is not None else "") + ")")
+
+
+def _instant(value: object):
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _failure_is_latest(record: dict, failures: list[dict]) -> bool:
+    """Whether the last recorded failure came after the last finalisation (or there was none).
+
+    A preflight rewrites status, so a unit that failed and was preflighted again carries
+    preflight_passed over a failure nothing has since superseded. Timestamps carry offsets and are
+    compared as instants, not as strings.
+    """
+    if not failures:
+        return False
+    failed_at = _instant(failures[-1].get("recorded_at"))
+    finalized_at = _instant(record.get("finalized_at")) if record.get("finalized_at") else None
+    if finalized_at is None:
+        return True
+    return failed_at is not None and failed_at > finalized_at
+
+
+def _earlier_failures(provenance: dict | None) -> str:
+    count = len(_run_failures(provenance))
+    return f" {count} earlier failed attempt(s) are recorded." if count and not _recorded_failure(provenance) else ""
+
+
+NOT_STARTED = (
+    "No production-run artifact is present (no method.keys.json, .mdpeak, mzTab-M or publication "
+    "report) and the manifest records no attempt: no run has started here, or one failed before "
+    "writing anything and was not recorded."
+)
 
 
 def _mztab_run_count(mztab: Path) -> tuple[int | None, str]:
@@ -365,6 +720,10 @@ def check_sample_count_invariant(
         counts["run_manifest.source_files"] = len(run_manifest["source_files"])
 
     if stage in ("after-run", "before-publish"):
+        if not _production_started(output, provenance):
+            report.add("CNT-1", stage, "The approved sample count survived every stage",
+                       NOT_EVALUABLE, NOT_STARTED, counts=counts)
+            return None
         counts[".mdpeak files produced"] = _mdpeak_count(output)
         if run_manifest is not None and isinstance(run_manifest.get("expected_analysis_exports"), list):
             counts["run_manifest.expected_analysis_exports"] = len(run_manifest["expected_analysis_exports"])
@@ -392,7 +751,8 @@ def check_sample_count_invariant(
 
 
 def check_expected_exports_present(
-    report: Report, run_manifest: dict | None, output: Path, stage: str
+    report: Report, run_manifest: dict | None, output: Path, stage: str,
+    provenance: dict | None = None,
 ) -> None:
     """Every file the run said it would produce must exist.
 
@@ -405,16 +765,24 @@ def check_expected_exports_present(
         report.add("EXP-1", stage, "Every expected export exists", NOT_EVALUABLE,
                    "The run manifest records no expected_analysis_exports.")
         return
+    if not _production_started(output, provenance):
+        report.add("EXP-1", stage, "Every expected export exists", NOT_EVALUABLE, NOT_STARTED,
+                   expected=len(run_manifest["expected_analysis_exports"]))
+        return
     expected = [Path(item) for item in run_manifest["expected_analysis_exports"]]
     absent = [str(path) for path in expected if not path.exists()]
     if not absent:
         report.add("EXP-1", stage, "Every expected export exists", PASS,
                    f"All {len(expected)} expected exports are present.", expected=len(expected))
         return
+    failure = _recorded_failure(provenance)
     report.add(
         "EXP-1", stage, "Every expected export exists", FAIL,
-        "MS-DIAL reported success without producing every export the run planned. A file it could "
-        "not read is skipped silently, and the exit code does not reflect it.",
+        (f"{failure} after producing {len(expected) - len(absent)} of {len(expected)} planned exports."
+         if failure else
+         "MS-DIAL reported success without producing every export the run planned. A file it could "
+         "not read is skipped silently, and the exit code does not reflect it."
+         + _earlier_failures(provenance)),
         expected=len(expected), absent_count=len(absent), absent=absent[:10],
     )
 
@@ -796,9 +1164,38 @@ def _tree_bytes(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def check_storage_shape(report: Report, workspace: Path, stage: str) -> None:
+def _raw_directory(provenance: dict | None, workspace: Path) -> tuple[Path | None, dict | None, str]:
+    """The raw tree this unit reads, the manifest that owns it, and why either is unknown.
+
+    A split part owns none and reads its parent's, named in the parent's own manifest. Looking only
+    under the part's workspace reports its raw data as released while it is on disk, so a part whose
+    owner cannot be read has no known tree at all rather than its own empty one. SPL-1 checks that
+    the part's raw_owned_by and raw_directory agree with its split_from.
+    """
+    if isinstance(provenance, dict) and isinstance(provenance.get("split_from"), dict):
+        owner, reason = _raw_owner_manifest(provenance)
+        if owner is None:
+            return None, None, reason or "the raw owner's manifest cannot be read"
+        raw = owner.get("raw_directory")
+        if not raw:
+            return None, owner, "the raw owner's manifest names no raw_directory"
+        return Path(str(raw)), owner, ""
+    return workspace / "raw", provenance, ""
+
+
+def check_storage_shape(report: Report, workspace: Path, stage: str,
+                        provenance: dict | None = None) -> None:
     """Report what the unit actually occupies, against what a transfer figure would suggest."""
     if stage != "before-publish":
+        return
+    if isinstance(provenance, dict) and isinstance(provenance.get("split_from"), dict):
+        # A split part owns no raw tree. Its storage is counted once, at the owner: counting it in
+        # every part would double the unit, and calling it released would be false.
+        report.add("DSK-1", stage, "Retained storage is accounted for", NOT_EVALUABLE,
+                   f"The raw tree is owned by {provenance.get('raw_owned_by') or 'its parent'} and "
+                   "is accounted there: once all its runs are done, read DSK-1 from the raw owner's "
+                   "before-publish report, whose exit code is not a verdict on the owner.",
+                   required=False, raw_owned_by=str(provenance.get("raw_owned_by") or ""))
         return
     downloads = workspace / "raw" / "downloads"
     data = workspace / "raw" / "data"
@@ -837,6 +1234,13 @@ def check_storage_shape(report: Report, workspace: Path, stage: str) -> None:
 # worthless here, because the failure this programme keeps finding is a component staying
 # consistent with itself while disagreeing with everything else.
 # ---------------------------------------------------------------------------------------------
+
+
+RATIFIED_STATUSES = frozenset({"accepted", "confirmed", "approved"})
+
+
+def _ratified(proposal: dict | None) -> bool:
+    return str((proposal or {}).get("status") or "").strip().casefold() in RATIFIED_STATUSES
 
 
 def _class_proposal(provenance: dict | None) -> dict | None:
@@ -967,7 +1371,7 @@ def check_class_proposal_was_accepted(report: Report, provenance: dict | None, r
     status = str(proposal.get("status") or "").strip().casefold()
     model = str(proposal.get("model") or "")
     warnings = [str(item) for item in proposal.get("warnings") or []]
-    if status in {"accepted", "confirmed", "approved"}:
+    if status in RATIFIED_STATUSES:
         report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
                    f"Class proposal status is {status!r}.", status=status, model=model,
                    warnings=warnings[:4])
@@ -981,8 +1385,112 @@ def check_class_proposal_was_accepted(report: Report, provenance: dict | None, r
     )
 
 
+CHECKSUM_CLAIM = re.compile(
+    r"checksums?[- ]?(?:were\s+|was\s+|are\s+|is\s+|have\s+been\s+|has\s+been\s+)?"
+    r"(?:verified|validated|confirmed|matched|checked)"
+    r"|(?:verified|validated|confirmed|checked)\s+(?:by|against|with|using)\s+[^.;]{0,60}?checksums?"
+    r"|verified\s+(?:the\s+|their\s+|its\s+|all\s+)?(?:md5\s+|sha-?256\s+)?checksums?"
+    r"|checksum\s+(?:verification|validation|comparison|check)"
+    r"|integrity[- ](?:was\s+|were\s+|is\s+|has\s+been\s+)?(?:verified|confirmed|validated|checked)"
+    r"|integrity\s+(?:was|were|is|has\s+been)\s+(?:verified|confirmed|validated|checked)"
+    r"|(?:md5|sha-?256|sha-?1)[- ](?:verified|checked|validated)",
+    re.IGNORECASE,
+)
+# A negation governs a phrase only within its own clause, and "no file failed verification" asserts
+# that every file passed: a negation with a failure word is the claim, not its denial.
+CLAIM_NEGATION = re.compile(r"\b(?:not|no|never|cannot|without|none|neither|nor)\b|could\s+not|n['\u2019]t", re.IGNORECASE)
+# A phrase denied after it: "checksum verification was not performed", "checksum validation: not done".
+NEGATED_AFTER = re.compile(
+    r"^\s*(?::|(?:was|were|is|are|has\s+been|have\s+been))\s*(?:not|never)\s+"
+    r"(?:performed|possible|done|carried\s+out|attempted|applicable|available)\b",
+    re.IGNORECASE,
+)
+CLAUSE_BOUNDARY = re.compile(r"[,:]|\b(?:and|but|while|whereas|although|though|however|yet)\b", re.IGNORECASE)
+FAILURE_WORD = re.compile(r"\bfail(?:ed|s|ure|ures)?\b", re.IGNORECASE)
+# A sentence about the spectral library alone is the library identification the contract asks for.
+LIBRARY_SUBJECT = re.compile(r"\b(?:msp|lbm2?|librar(?:y|ies)|zenodo)\b", re.IGNORECASE)
+INPUT_SUBJECT = re.compile(
+    r"\b(?:raw|input|inputs|data\s+files?|mzml|spectra\s+files?)\b"
+    r"|\b(?:all|every|each)\s+(?:\w+\s+){0,2}(?:files?|downloads?|checksums?)\b",
+    re.IGNORECASE,
+)
+# A sentence ends at . ; ! ? or a newline, but not at the point of a decimal such as 5.5.
+SENTENCE = re.compile(r"(?:[^.;!?\n]|(?<=\d)\.(?=\d))+")
+
+
+def _claim_is_negated(sentence: str, start: int, end: int | None = None) -> bool:
+    if end is not None and NEGATED_AFTER.match(sentence[end:]):
+        return True
+    before = sentence[:start]
+    boundaries = list(CLAUSE_BOUNDARY.finditer(before))
+    clause = before[boundaries[-1].end():] if boundaries else before
+    return bool(CLAIM_NEGATION.search(clause)) and not FAILURE_WORD.search(clause)
+PUBLICATION_ARTIFACTS = (
+    "MS_DIAL_publication_report.json", "MS_DIAL_Materials_and_Methods.txt", "MS_DIAL_QA_Results.txt",
+    "Supplementary_Table_MS_DIAL.tsv", "MS_DIAL_publication_reporting_bundle.zip",
+)
+
+
+def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, output: Path) -> None:
+    """SUM-2. No published artifact calls inputs checksum-verified that were not.
+
+    The second clause of the user's decision of 2026-09-25: a unit whose inputs rest on the sha256
+    recorded at download proceeds past SUM-1 with a WARN, and no artifact may then describe its
+    inputs as checksum-verified. SUM-1 can only say so; this is where the claim would be made.
+    """
+    stage = "before-publish"
+    title = "No artifact calls unverified inputs checksum-verified"
+    owner, owner_reason = _raw_owner_manifest(provenance)
+    if owner is None:
+        report.add("SUM-2", stage, title, NOT_EVALUABLE, owner_reason or "The manifest is absent.")
+        return
+    kind, _detail, _evidence = _checksum_basis(owner)
+    if kind != "download_sha256":
+        report.add("SUM-2", stage, title, NOT_EVALUABLE,
+                   "The inputs were checksum-verified, or SUM-1 refused them; there is no unearned "
+                   "claim to look for.", required=False, basis=kind)
+        return
+    present = [output / name for name in PUBLICATION_ARTIFACTS if (output / name).is_file()]
+    if not present:
+        report.add("SUM-2", stage, title, NOT_EVALUABLE, "No publication artifact is present.")
+        return
+    claims = []
+    skipped = []
+    for path in present:
+        for member, text in _readable_members(path):
+            for sentence in SENTENCE.findall(text):
+                for match in CHECKSUM_CLAIM.finditer(sentence):
+                    where = f"{path.name}:{member}: {sentence.strip()[:160]!r}"
+                    if _claim_is_negated(sentence, match.start(), match.end()):
+                        skipped.append(f"negated: {where}")
+                    elif LIBRARY_SUBJECT.search(sentence) and not INPUT_SUBJECT.search(sentence):
+                        skipped.append(f"about the library: {where}")
+                    else:
+                        claims.append(where)
+    if claims:
+        report.add("SUM-2", stage, title, FAIL,
+                   "A published artifact calls these inputs checksum-verified, but the repository "
+                   "published no checksum and none was compared.",
+                   claims=claims[:10], claim_count=len(claims),
+                   not_counted=skipped[:50], not_counted_count=len(skipped))
+        return
+    if skipped:
+        # A phrasing matched and was set aside by a rule, not by a reader. That is for a person to
+        # read, and the report says so instead of passing it.
+        report.add("SUM-2", stage, title, WARN,
+                   f"{len(skipped)} checksum-verification phrasing(s) matched and were not counted as "
+                   "claims, as negations or statements about the library; read them: "
+                   + " | ".join(skipped[:3]),
+                   artifacts=len(present), not_counted=skipped[:50], not_counted_count=len(skipped))
+        return
+    report.add("SUM-2", stage, title, PASS,
+               f"No known checksum-verification phrasing matched in {len(present)} publication "
+               "artifact(s). This is not a statement that no such claim is made.",
+               artifacts=len(present))
+
+
 def check_unit_reached_a_terminal_state(
-    report: Report, provenance: dict | None, reason: str
+    report: Report, provenance: dict | None, reason: str, output: Path | None = None
 ) -> None:
     """FIN-1. The unit finished, rather than stopping somewhere that looks finished.
 
@@ -1000,7 +1508,7 @@ def check_unit_reached_a_terminal_state(
     status = str(provenance.get("status") or "")
     finalized = provenance.get("finalized_at")
     validation = provenance.get("mztab_validation")
-    if status == "mztab_validated" and finalized and isinstance(validation, dict):
+    if status in VALIDATED_STATUSES and finalized and isinstance(validation, dict):
         report.add("FIN-1", stage, "The unit reached a recorded terminal state", PASS,
                    f"status={status!r}, finalized at {finalized}.", status=status,
                    finalized_at=str(finalized))
@@ -1009,6 +1517,15 @@ def check_unit_reached_a_terminal_state(
         report.add("FIN-1", stage, "The unit reached a recorded terminal state", FAIL,
                    "The unit recorded a failed run. Nothing here should be published.",
                    status=status, run_failures=len(provenance.get("run_failures") or []))
+        return
+    if status == "validation_failed":
+        report.add("FIN-1", stage, "The unit reached a recorded terminal state", FAIL,
+                   "The unit was finalised and its mzTab-M failed validation. Nothing here should be "
+                   "published.", status=status, finalized_at=str(finalized))
+        return
+    if output is not None and not _production_started(output, provenance):
+        report.add("FIN-1", stage, "The unit reached a recorded terminal state", NOT_EVALUABLE,
+                   NOT_STARTED, status=status)
         return
     report.add(
         "FIN-1", stage, "The unit reached a recorded terminal state", FAIL,
@@ -1100,7 +1617,8 @@ def check_threshold_was_measured_on_this_unit(
     )
 
 
-def check_method_file_reached_the_console(report: Report, output: Path, stage: str) -> None:
+def check_method_file_reached_the_console(report: Report, output: Path, stage: str,
+                                          provenance: dict | None = None) -> None:
     """MTH-1. Every parameter in the method file was one the Console could use.
 
     Two writers again: the preparer writes method.txt, and the Console writes method.keys.json
@@ -1116,9 +1634,13 @@ def check_method_file_reached_the_console(report: Report, output: Path, stage: s
         return
     record = output / "method.keys.json"
     if not record.is_file():
+        failure = _recorded_failure(provenance)
         report.add("MTH-1", stage, "Every method-file parameter reached the Console", NOT_EVALUABLE,
-                   "method.keys.json is absent. The Console that ran predates the key record, so "
-                   "which parameters took effect cannot be read from this workspace.")
+                   (f"method.keys.json is absent. {failure} before the Console wrote it."
+                    if failure else
+                    "method.keys.json is absent: no production run has started here, or the Console "
+                    "that ran predates the key record. Which parameters took effect cannot be read "
+                    "from this workspace."))
         return
     parsed, reason = _read_json(record)
     if parsed is None:
@@ -1164,8 +1686,13 @@ def check_retention_policy_was_acted_on(
     if provenance is None:
         report.add("RET-1", stage, "The retention decision matches the disk", NOT_EVALUABLE, reason)
         return
-    policy = provenance.get("raw_retention_policy")
-    raw = workspace / "raw"
+    raw, owner, unknown = _raw_directory(provenance, workspace)
+    if raw is None or owner is None:
+        report.add("RET-1", stage, "The retention decision matches the disk", NOT_EVALUABLE,
+                   f"This unit reads its raw tree from another unit, and {unknown}.")
+        return
+    # The owner's policy decides the owner's tree; a part's copy of it was taken at split time.
+    policy = owner.get("raw_retention_policy")
     present = raw.is_dir() and any(raw.iterdir())
     if policy is None:
         report.add(
@@ -1184,11 +1711,20 @@ def check_retention_policy_was_acted_on(
                    policy=policy, raw_present=present)
         return
     if policy == "delete_after_validated_output":
-        if present and status == "mztab_validated":
+        if present and status in VALIDATED_STATUSES - {"raw_cleaned"}:
             report.add("RET-1", stage, "The retention decision matches the disk", WARN,
                        "Policy is delete_after_validated_output, the output is validated, and the "
                        "raw tree is still present. Deletion needs its own confirmation and has "
                        "not been given one.", policy=policy, raw_present=present, status=status)
+            return
+        owner_status = str(owner.get("status") or "")
+        if not present and owner_status != "raw_cleaned" and status != "raw_cleaned":
+            # The Interactive has one deletion path, and it records raw_cleaned. A tree gone without
+            # it went without the confirmation that deletion needs.
+            report.add("RET-1", stage, "The retention decision matches the disk", WARN,
+                       "Policy is delete_after_validated_output and the raw tree is gone, but no "
+                       f"confirmed cleanup is recorded (status {owner_status or status!r}).",
+                       policy=policy, raw_present=present, status=status)
             return
         report.add("RET-1", stage, "The retention decision matches the disk", PASS,
                    f"Policy is {policy!r}; raw tree {'present' if present else 'released'}, "
@@ -1323,6 +1859,7 @@ def verify(workspace: Path, stage: str) -> Report:
 
     if "before-production" in stages:
         check_unit_identity(report, provenance, provenance_reason)
+        check_split_part_partitions_its_parent(report, provenance, provenance_reason)
         check_execution_allowed(report, provenance, provenance_reason)
         check_preflight_claim(report, provenance, provenance_reason)
         check_checksum_coverage(report, provenance, provenance_reason)
@@ -1345,21 +1882,165 @@ def verify(workspace: Path, stage: str) -> Report:
             run_manifest, output, "after-run",
         )
         approved = found if found is not None else approved
-        check_expected_exports_present(report, run_manifest, output, "after-run")
+        check_expected_exports_present(report, run_manifest, output, "after-run", provenance)
         check_mztab_structure(report, output, "after-run")
         check_mztab_run_count(report, output, approved, "after-run")
-        check_method_file_reached_the_console(report, output, "after-run")
+        check_method_file_reached_the_console(report, output, "after-run", provenance)
         check_binary_identity_is_recorded(report, run_manifest, output, "after-run")
 
     if "before-publish" in stages:
         check_no_metric_rests_on_a_synthetic_order(report, output, csv_rows, "before-publish")
         check_library_provenance_contradiction(report, output, "before-publish")
         check_qa_prose_matches_assessment(report, output, "before-publish")
-        check_storage_shape(report, workspace, "before-publish")
-        check_unit_reached_a_terminal_state(report, provenance, provenance_reason)
+        check_storage_shape(report, workspace, "before-publish", provenance)
+        check_unit_reached_a_terminal_state(report, provenance, provenance_reason, output)
+        check_no_unearned_checksum_claim(report, provenance, output)
         check_retention_policy_was_acted_on(report, provenance, provenance_reason, workspace)
         check_no_private_path_in_a_shared_artifact(report, output, "before-publish")
+    report.progress = completion_progress(workspace, provenance, output)
     return report
+
+
+# ---------------------------------------------------------------------------------------------
+# progress: how far a run got on real data, kept apart from whether it was right
+# ---------------------------------------------------------------------------------------------
+#
+# The ten-unit trial is judged twice, and the two verdicts are never combined (user decision,
+# 2026-09-25). Whether the pipeline is ready is Part A in the trial manifest. How far each run got is
+# Part B, and it is derived here from the artifacts on disk -- never from a stage written into a
+# manifest by hand, because that is the record that could say "done" for a unit whose gates and
+# records exist and which never ran. Some stages do read fields the provenance manifest records,
+# and each is paired with an artifact where one exists: B1 downloads, input_candidates and the
+# unit's or its owner's status; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics
+# with its directory on disk; B7 status, finalized_at and mztab_validation with an mzTab-M on disk;
+# B10 raw_retention_policy and retained_artifact_inventory.
+#
+# A stage is reached when its artifacts exist, whether or not they are right. Correctness is the
+# checks' business, and a stage walk that stopped at the first FAIL would report a downloaded,
+# preflighted and diagnosed unit as "B0 none" on account of one refused check, which is the very
+# conflation this separation exists to prevent. The checks that judge each stage are listed beside
+# it, and reported by stage in the JSON.
+COMPLETION_STAGES = (
+    ("B1", "downloaded",
+     "the raw owner's manifest lists its downloads, and every input is on disk or the raw tree was released "
+     "by the confirmed cleanup (status raw_cleaned)",
+     ("SUM-1",)),
+    ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1")),
+    ("B3", "class_settled", "a ratified Class proposal (accepted, confirmed or approved)", ("CLS-3",)),
+    ("B4", "diagnostic_done", "a recorded peak-height diagnostic whose absolute directory exists", ("PKH-1",)),
+    ("B5", "production_prepared", "output holds analysis_files.csv, method.txt and run-manifest.json",
+     ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production")),
+    ("B6", "production_run_done", "at least one .mdpeak in output", ("EXP-1", "CNT-1@after-run", "MTH-1")),
+    ("B7", "mztab_validated",
+     "a validated terminal status, a validation record with no failure, and an mzTab-M in output",
+     ("TAB-1", "TAB-2", "BIN-1", "FIN-1")),
+    ("B8", "qa_produced", "a QA matrix (*.qa.tsv) exists", ("QA-1", "ORD-2")),
+    ("B9", "publication_artifacts",
+     "the publication report, Materials and Methods and supplementary table exist",
+     ("LIB-1", "SEC-1", "SUM-2")),
+    ("B10", "retention_recorded", "the retention policy and the retained-artifact inventory are recorded",
+     ("RET-1", "DSK-1")),
+)
+
+
+def completion_progress(workspace: Path, provenance: dict | None, output: Path) -> dict:
+    """The furthest stage whose artifacts all exist, walking B1..B10 in order.
+
+    Stages present beyond the first gap are listed as out of order: a publication bundle beside an
+    unfinalised manifest is exactly the state FIN-1 exists for, and hiding it behind the gap would
+    lose it.
+    """
+    record = provenance if isinstance(provenance, dict) else {}
+    owner, _ = _raw_owner_manifest(record) if record else (None, "")
+    candidates = [Path(str(item)) for item in record.get("input_candidates") or []]
+    diagnostics = [item for item in record.get("peak_height_diagnostics") or [] if isinstance(item, dict)]
+    diagnostic_directory = str((diagnostics[-1] if diagnostics else {}).get("diagnostic_run_directory") or "")
+    validation = record.get("mztab_validation")
+    validation_failed = (
+        isinstance(validation, dict)
+        and isinstance(validation.get("summary"), dict)
+        and bool(validation["summary"].get("failed"))
+    )
+    raw_path, raw_owner, _unknown = _raw_directory(record, workspace)
+    status = str(record.get("status") or "")
+    # Released only by the confirmed cleanup, the one deletion path, which records raw_cleaned.
+    raw_released = raw_path is not None and not raw_path.exists() and (
+        status == "raw_cleaned" or str((raw_owner or {}).get("status") or "") == "raw_cleaned"
+    )
+    facts = {
+        # Downloaded, and either still on disk or released by the confirmed cleanup: a confirmed
+        # deletion is the campaign's intended end state, not a lost download.
+        "B1": bool(owner and owner.get("downloads")) and bool(candidates)
+        and (all(path.exists() for path in candidates) or raw_released),
+        "B2": record.get("execution_allowed") is True,
+        "B3": _ratified(_class_proposal(record)),
+        "B4": bool(diagnostic_directory) and Path(diagnostic_directory).is_absolute()
+        and Path(diagnostic_directory).is_dir(),
+        "B5": all((output / name).is_file() for name in ("analysis_files.csv", "method.txt", "run-manifest.json")),
+        # The .mdpeak files are the run's own output; whether the Console also wrote its key record
+        # is MTH-1's to judge.
+        "B6": _mdpeak_count(output) > 0,
+        "B7": str(record.get("status") or "") in VALIDATED_STATUSES
+        and bool(record.get("finalized_at")) and isinstance(validation, dict) and not validation_failed
+        and any(output.glob("*.mzTab")),
+        "B8": any(output.glob("*.qa.tsv")),
+        "B9": all((output / name).is_file() for name in (
+            "MS_DIAL_publication_report.json", "MS_DIAL_Materials_and_Methods.txt",
+            "Supplementary_Table_MS_DIAL.tsv")),
+        "B10": bool(record.get("raw_retention_policy"))
+        and isinstance(record.get("retained_artifact_inventory"), list),
+    }
+    reached = "B0 none"
+    next_stage = None
+    for code, name, meaning, _checks in COMPLETION_STAGES:
+        if not facts[code]:
+            next_stage = (code, name, meaning)
+            break
+        reached = f"{code} {name}"
+    gap = next_stage[0] if next_stage else None
+    later = []
+    if gap:
+        seen_gap = False
+        for code, name, _meaning, _checks in COMPLETION_STAGES:
+            seen_gap = seen_gap or code == gap
+            if seen_gap and code != gap and facts[code]:
+                later.append(f"{code} {name}")
+    return {
+        "stage_reached": reached,
+        "next_stage": f"{next_stage[0]} {next_stage[1]}" if next_stage else "",
+        "next_stage_needs": next_stage[2] if next_stage else "",
+        "present_out_of_order": later,
+        "stages": facts,
+    }
+
+
+def _severity(check: "Check") -> int:
+    if check.status == FAIL:
+        return 4
+    if check.status == NOT_EVALUABLE and check.required:
+        return 3
+    if check.status == WARN:
+        return 2
+    if check.status == NOT_EVALUABLE:
+        return 1
+    return 0
+
+
+def _checks_by_stage(report: "Report") -> dict[str, dict[str, str]]:
+    """Each stage's checks and their verdict. A check that ran more than once -- TAB-1 and TAB-2 run
+    once per mzTab-M -- is reported by its worst instance, so a FAIL is never shown as a pass."""
+    result: dict[str, dict[str, str]] = {}
+    for code, _name, _meaning, keys in COMPLETION_STAGES:
+        entries: dict[str, str] = {}
+        for key in keys:
+            check_id, _, stage = key.partition("@")
+            matching = [check for check in report.checks
+                        if check.check_id == check_id and (not stage or check.stage == stage)]
+            if matching:
+                entries[key] = max(matching, key=_severity).status
+        if entries:
+            result[code] = entries
+    return result
 
 
 def render(report: Report) -> str:
@@ -1377,6 +2058,14 @@ def render(report: Report) -> str:
             "UNEVALUABLE ON ARTIFACTS THIS STAGE OWED: "
             + ", ".join(check.check_id for check in strict)
         )
+    progress = getattr(report, "progress", None)
+    if progress:
+        line = f"PROGRESS (from artifacts, not a verdict): {progress['stage_reached']}"
+        if progress["next_stage"]:
+            line += f"; next {progress['next_stage']} needs {progress['next_stage_needs']}"
+        if progress["present_out_of_order"]:
+            line += f"; present out of order: {', '.join(progress['present_out_of_order'])}"
+        lines.append(line)
     lines.append("VERDICT: " + ("ok" if report.ok else "REFUSE"))
     return "\n".join(lines)
 
