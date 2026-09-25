@@ -109,14 +109,24 @@ and its `blockers` field arrives after the payload. A check it cannot evaluate
 reports `not_evaluable`, never `pass`.
 
 ```powershell
-python .\scripts\verify-run-invariants.py <unit-workspace> --stage before-production
+python .\scripts\verify-run-invariants.py <unit-workspace> --stage before-production --strict
 python -m unittest discover -s tests -t tests
 ```
 
-Stages are `before-production`, `after-run` and `before-publish`. Exit code 0
-means every evaluated check passed, 2 means at least one failed, 3 means the
-workspace is unusable. Run the gate; do not infer safety from a tool reporting
-no blockers.
+Stages are `before-production`, `after-run` and `before-publish`, or `all`. Exit
+code 0 means every evaluated check passed, 2 means at least one failed, 3 means
+the workspace is unusable, and 4 (`--strict` only) means an artifact that stage
+owed is absent. Always pass `--strict`: without it a workspace where nothing has
+happened exits 0. Run the gate; do not infer safety from a tool reporting no
+blockers.
+
+The report also prints a `PROGRESS` line: the furthest stage, B1-B10, whose
+artifacts exist, derived from the disk and never from a manifest's account of
+itself. Progress is not a verdict. A unit can have reached B5 and still be
+refused, and a stage it has not reached is reported as not reached, not as two
+records disagreeing. The trial manifest's `evaluation` block defines the stages
+and which checks judge each; `--json` reports both under `progress` and
+`checks_by_stage`.
 
 ## Codex pre-audit
 

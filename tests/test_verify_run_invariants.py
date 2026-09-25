@@ -672,6 +672,9 @@ class TerminalStateAndRetentionTests(unittest.TestCase):
         """The output directory is not evidence of finalisation; the finalisation record is."""
         with tempfile.TemporaryDirectory() as temporary:
             workspace = self._workspace(temporary, status="preflight_unavailable")
+            # MPST000007's state: a complete mzTab-M and publication report, never finalised.
+            (workspace / "output" / "AlignResult-1.mzTab").write_text("MTD\n", encoding="ascii")
+            (workspace / "output" / "MS_DIAL_publication_report.json").write_text("{}", encoding="ascii")
             report = verifier.verify(workspace, "before-publish")
 
         self.assertEqual(verifier.FAIL, _status(report, "FIN-1"))

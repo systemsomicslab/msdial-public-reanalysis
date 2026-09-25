@@ -2,12 +2,172 @@
   "schema": "msdial-public-reanalysis-trial-manifest.v1",
   "trial_id": "2026-09-20-ten-unit",
   "prepared_at": "2026-09-20T22:30:00+09:00",
-  "status": "units approved 2026-09-20; library and download awaiting confirmation",
+  "status": "units approved 2026-09-20; boundaries 1 and 2 given 2026-09-20. MTBLS2207 downloaded 2026-09-23, split into a DDA and a DIA run 2026-09-24, both runs at B5 production_prepared 2026-09-25. Production runs held until Interactive 0.5.0 is released on top of Codex's in-progress work, by the user's instruction to wait when development collides.",
   "purpose_of_the_trial": "Exercise every branch of the repository reanalysis pipeline against real public data, and have the result judged by a layer that did not run it. This is a pipeline test, not a biological study.",
+  "evaluation": {
+    "rule": "Two verdicts, reported separately and never combined. Part A says whether the pipeline is ready to be judged. Part B says how far each run got on real data, derived from the artifacts on disk by scripts/verify-run-invariants.py (the PROGRESS line, and progress in --json) and never recorded by hand in this file. A stage is reached when its artifacts exist, whether or not they are right; whether they are right is the gate's verdict, reported beside it by stage (checks_by_stage). A run is completed on real data when it reaches B10 and its gate, run with --stage all --strict, exits 0. A unit is completed when every one of its runs is.",
+    "runs_rule": "A unit without a runs key has exactly one run, whose run_id is its analysis_unit_id. A split unit's runs are listed under runs; its parent is the raw owner and is not a run. A run whose workspace does not exist is not_started.",
+    "part_a_infrastructure": [
+      {
+        "id": "A1",
+        "criterion": "The Console that runs is built from a recorded commit with a recorded binary sha256",
+        "evidence": "msdial-console-build-provenance.json beside the binary; decisions 2026-09-25",
+        "state": "met"
+      },
+      {
+        "id": "A2",
+        "criterion": "The gate refuses a workspace where nothing happened",
+        "evidence": "precondition P2; tests/test_verify_run_invariants.py",
+        "state": "met"
+      },
+      {
+        "id": "A3",
+        "criterion": "The gate judges a split run: SPL-1, the raw owner for SUM-1, RET-1 and DSK-1, stages not reached, and progress",
+        "evidence": "tests/test_verify_split_and_progress.py",
+        "state": "met"
+      },
+      {
+        "id": "A4",
+        "criterion": "Every suite passes on the commits its server actually runs",
+        "evidence": "Interactive 362 tests OK on this machine at cb7c74f; the suite does not complete without the optional mcp extra, and a hang seen in the Codex environment is unexplained",
+        "state": "open"
+      },
+      {
+        "id": "A5",
+        "criterion": "Every library the trial names matches its published size and md5",
+        "evidence": "library.files[].md5 and local_state",
+        "state": "met"
+      },
+      {
+        "id": "A6",
+        "criterion": "Every record the pipeline writes is read by some check, or is listed as unverified",
+        "evidence": "preconditions P4 and P5",
+        "state": "open"
+      },
+      {
+        "id": "A7",
+        "criterion": "The documented gate command is the one that refuses an empty workspace",
+        "evidence": "README.md and the batch skill both pass --strict",
+        "state": "met"
+      },
+      {
+        "id": "A8",
+        "criterion": "A run's recorded Interactive version identifies the code that ran",
+        "evidence": "Every run from 2026-09-03 to 2026-09-25 recorded 0.4.7 across different code states; 0.5.0 pending, and runs still record no Interactive commit",
+        "state": "open"
+      }
+    ],
+    "part_b_stages": [
+      {
+        "id": "B1",
+        "stage": "downloaded",
+        "artifacts": "every input candidate on disk; the raw owner's manifest lists its downloads",
+        "judged_by": [
+          "SUM-1"
+        ],
+        "boundary": 1
+      },
+      {
+        "id": "B2",
+        "stage": "preflight_passed",
+        "artifacts": "execution_allowed true in provenance/run-manifest.json",
+        "judged_by": [
+          "ID-1",
+          "SPL-1",
+          "ELIG-1",
+          "PRE-1"
+        ]
+      },
+      {
+        "id": "B3",
+        "stage": "class_settled",
+        "artifacts": "project.class_proposal.status accepted. An abstention leaves no artifact yet",
+        "judged_by": [
+          "CLS-3"
+        ],
+        "boundary": 3
+      },
+      {
+        "id": "B4",
+        "stage": "diagnostic_done",
+        "artifacts": "peak_height_diagnostics recorded and its diagnostics/<job> directory present",
+        "judged_by": [
+          "PKH-1"
+        ]
+      },
+      {
+        "id": "B5",
+        "stage": "production_prepared",
+        "artifacts": "output/analysis_files.csv, method.txt and run-manifest.json",
+        "judged_by": [
+          "CLS-1",
+          "CLS-2",
+          "ORD-1",
+          "CNT-1@before-production"
+        ]
+      },
+      {
+        "id": "B6",
+        "stage": "production_run_done",
+        "artifacts": "output/method.keys.json and at least one .mdpeak",
+        "judged_by": [
+          "EXP-1",
+          "CNT-1@after-run",
+          "MTH-1"
+        ],
+        "boundary": 4
+      },
+      {
+        "id": "B7",
+        "stage": "mztab_validated",
+        "artifacts": "finalized_at and mztab_validation in provenance, and an mzTab-M in output",
+        "judged_by": [
+          "TAB-1",
+          "TAB-2",
+          "BIN-1",
+          "FIN-1"
+        ]
+      },
+      {
+        "id": "B8",
+        "stage": "qa_produced",
+        "artifacts": "a QA matrix, output/*.qa.tsv",
+        "judged_by": [
+          "QA-1",
+          "ORD-2"
+        ]
+      },
+      {
+        "id": "B9",
+        "stage": "publication_artifacts",
+        "artifacts": "MS_DIAL_publication_report.json, MS_DIAL_Materials_and_Methods.txt, Supplementary_Table_MS_DIAL.tsv",
+        "judged_by": [
+          "LIB-1",
+          "SEC-1"
+        ]
+      },
+      {
+        "id": "B10",
+        "stage": "retention_recorded",
+        "artifacts": "raw_retention_policy and retained_artifact_inventory in provenance",
+        "judged_by": [
+          "RET-1",
+          "DSK-1"
+        ]
+      }
+    ],
+    "known_gaps": [
+      "A Class abstention leaves no artifact, so B3 cannot tell abstained from never saved.",
+      "QA persists only in the publication report, so QA-1 can judge B8 only once B9 exists.",
+      "Boundary 4 is a conversation fact; no artifact proves it was given.",
+      "ORD-2 treats an interleaved listing order as a real run order; ORD-1's WARN is the only signal."
+    ]
+  },
   "destination": {
     "workspace_root": "D:\\13_MSDIAL_Public_Reanalysis\\analysis",
     "layout": "<workspace_root>\\<repository>\\<accession>\\<analysis_unit_id>\\{raw,provenance,output}",
-    "note": "The mandatory default from CLAUDE.md, passed explicitly as workspace_root to every plan and download call. No raw data or MS-DIAL output on C:, in a user profile, in a code checkout, or in a temporary directory."
+    "note": "The mandatory default from CLAUDE.md, passed explicitly as workspace_root to every plan and download call. No raw data or MS-DIAL output on C:, in a user profile, in a code checkout, or in a temporary directory.",
+    "split_layout": "A split run's workspace is <analysis_unit_id>-<mode> beside its parent and holds provenance and output only. Its raw tree stays in the parent's workspace, named by raw_directory and raw_owned_by in the run's manifest. The parent is the raw owner and is not a run."
   },
   "size": {
     "selected_unit_bytes": 14036452147,
@@ -49,6 +209,7 @@
     {
       "n": 1,
       "unit_id": "9ff6e00c161c",
+      "analysis_unit_id": "9ff6e00c161c41e76866",
       "repository": "metabolomics_workbench",
       "accession": "ST003038",
       "title": "Untargeted lipidomics of WT and Cyp2c44(-/-) mice liver.",
@@ -76,6 +237,7 @@
     {
       "n": 2,
       "unit_id": "64bd6e110bac",
+      "analysis_unit_id": "64bd6e110bace91d7e66",
       "repository": "metabobank",
       "accession": "MTBKS236",
       "title": "Lipidome analysis of the muscles from skeletal muscle-specific GDE5 deficient mice",
@@ -109,6 +271,7 @@
     {
       "n": 3,
       "unit_id": "5b635e6fc36e",
+      "analysis_unit_id": "5b635e6fc36ea3042e2e",
       "repository": "metabobank",
       "accession": "MTBKS217",
       "title": "A lipidome atlas in MS-DIAL 4 (Plants study)",
@@ -137,6 +300,7 @@
     {
       "n": 4,
       "unit_id": "715e280dade2",
+      "analysis_unit_id": "715e280dade241035254",
       "repository": "metabolomics_workbench",
       "accession": "ST003399",
       "title": "Chemical Biology Meets Metabolomics: The Response of Barley Seedlings",
@@ -168,6 +332,44 @@
     {
       "n": 5,
       "unit_id": "a22083b091a0",
+      "analysis_unit_id": "a22083b091a0ccd04489",
+      "split": {
+        "by": "raw_header_acquisition_mode",
+        "at": "2026-09-24T14:58:16Z",
+        "record": "split_into in the parent's provenance/run-manifest.json",
+        "note": "Not predicted here: the catalog says DIA, and the raw headers read 6 DDA and 5 DIA files. The parent carries status split_by_acquisition and execution_allowed false."
+      },
+      "raw_owner": "a22083b091a0ccd04489",
+      "runs": [
+        {
+          "run_id": "a22083b091a0ccd04489-dda",
+          "acquisition_mode": "DDA",
+          "samples": 6,
+          "class_levels": {
+            "Factor Value[Sample origin]": {
+              "Biological": 4,
+              "Chemical": 2
+            }
+          },
+          "minimum_peak_height": 9000,
+          "diagnostic_peak_count": 9866,
+          "representative": "M3T-Std_Plasma_neg_DDA_1mz"
+        },
+        {
+          "run_id": "a22083b091a0ccd04489-dia",
+          "acquisition_mode": "DIA",
+          "samples": 5,
+          "class_levels": {
+            "Factor Value[Sample origin]": {
+              "Biological": 3,
+              "Chemical": 2
+            }
+          },
+          "minimum_peak_height": 0,
+          "diagnostic_peak_count": 4875,
+          "representative": "M3T-Std_Yeast_neg_DIA_20mz"
+        }
+      ],
       "repository": "metabolights",
       "accession": "MTBLS2207",
       "title": "Improving Metabolite Identification with DecoID for Database-Assisted Deconvolution",
@@ -195,6 +397,7 @@
     {
       "n": 6,
       "unit_id": "b78db9265dcb",
+      "analysis_unit_id": "b78db9265dcb6ebf1c2a",
       "repository": "metabolomics_workbench",
       "accession": "ST005052",
       "title": "Untargeted fecal metabolomics reveals persistent host species-associated metabolites",
@@ -225,6 +428,7 @@
     {
       "n": 7,
       "unit_id": "dae9b6ebc8ed",
+      "analysis_unit_id": "dae9b6ebc8eda7234d32",
       "repository": "metabolights",
       "accession": "MTBLS417",
       "title": "Customized Consensus Spectral Library Building for Untargeted Quantitative Metabolomics",
@@ -247,6 +451,7 @@
     {
       "n": 8,
       "unit_id": "3fc479e62d31",
+      "analysis_unit_id": "3fc479e62d314a971d60",
       "repository": "metabobank",
       "accession": "MTBKS157",
       "title": "Untargeted metabolome analysis of foods using LC-MS (1)",
@@ -269,6 +474,7 @@
     {
       "n": 9,
       "unit_id": "684d548639b7",
+      "analysis_unit_id": "684d548639b7160bb6b6",
       "repository": "metabolomics_workbench",
       "accession": "ST003044",
       "title": "A High-Fat Eucaloric Diet Induces Reprometabolic Syndrome of Obesity",
@@ -297,6 +503,7 @@
     {
       "n": 10,
       "unit_id": "6e6f84ae2257",
+      "analysis_unit_id": "6e6f84ae2257d563fc51",
       "repository": "metabolomics_workbench",
       "accession": "ST003075",
       "title": "HZV029 Lipidomics",
@@ -320,6 +527,7 @@
   "negative_control": {
     "include": "yes, user approved 2026-09-20",
     "unit_id": "1d50a9a72710",
+    "analysis_unit_id": "1d50a9a72710f5843669",
     "repository": "metabolights",
     "accession": "MTBLS1572",
     "title": "Comparison of Full-Scan, Data-Dependent, and Data-Independent Acquisition Modes",
@@ -336,6 +544,7 @@
     },
     "file_naming": "21 distinct mzXML named _DDA1..3, _DIA1..3, _Full2Hz_1..3 across UrineHigh (Undiluted) and UrineLow (Diluted), plus one blank per mode. A 3 acquisition x 2 dilution x 3 replicate design with 3 blanks.",
     "expected_outcome": "REVIEW, not refusal. Corrected 2026-09-20 after the user challenged the earlier claim; both of their doubts were right.",
+    "expected_stage": "Completed for this trial when its run-manifest.json records status preflight_mixed_acquisition: stage B2 not passed, for the right reason. Its runs are listed here only after the user chooses to split it, and each is then judged against B1-B10 like any other run.",
     "correction_1_the_catalog": "The DIA label has NO evidence behind it. This unit carries three analysis_unit_evidence rows (assay filename, Scan polarity, Instrument), each method=declared confidence=1.0, and none is acquisition mode. Measured across the catalog: 2773 units state an acquisition_mode and 0 have an evidence row for that field, including all 963 campaign-eligible units.",
     "correction_2_msdial_can_analyse_it": "AcquisitionType is a property of the ANALYSIS FILE, not the project. Ms2Dec.cs:112, SpectrumDeconvolutionProcess.cs:27 and PeakAligner.cs:136-137 read analysisFile.AcquisitionType; the project-level check at Ms2Dec.cs:103 is commented out. Each file is deconvoluted by its own acquisition type, so DDA, SWATH/AIF and MS1-only files coexist correctly in one project.",
     "what_the_campaign_rule_actually_is": "One acquisition mode per run is a POLICY about interpretability, not an MS-DIAL limitation. Mixing modes gives an alignment whose MS2 evidence differs systematically by mode, which is exactly what this study is about.",
@@ -442,7 +651,7 @@
         "selected units",
         "retention policy"
       ],
-      "status": "awaiting"
+      "status": "GIVEN 2026-09-20 for the trial's raw download, as the second of the two open decisions the user approved together. Executed so far for MTBLS2207 only (downloaded 2026-09-23, retention keep)."
     },
     {
       "boundary": 2,
@@ -452,12 +661,12 @@
     {
       "boundary": 3,
       "what": "Saving each Class proposal",
-      "status": "awaiting, per unit; seven units have a proposal, three abstain and have nothing to save"
+      "status": "Per unit. MTBLS2207's proposal d4f176c3e03e46b1b2d4 was saved and accepted before its download; its split runs carry it restricted to their own samples. The other six proposals are not yet saved; three units abstain and have nothing to save."
     },
     {
       "boundary": 4,
       "what": "Starting each production MS-DIAL run",
-      "status": "awaiting, per unit; cannot be batched because the command and the peak-count diagnostic do not exist until after the download"
+      "status": "Per run. MTBLS2207's two runs are prepared (B5) and pass before-production --strict; neither has been asked for or given. Held until Interactive 0.5.0."
     },
     {
       "boundary": 5,
@@ -466,8 +675,8 @@
     }
   ],
   "open_decisions_for_the_user": [
-    "Confirmation boundary 2: download MSMS-Public_all-pos-VS20.msp (378.6 MB, Zenodo 21901200).",
-    "Confirmation boundary 1: the raw-data download of the 11 units, 13.88 GB."
+    "Whether Codex's in-progress Interactive work (fix/mzxml-and-agent-contracts, bumping to 0.4.8) ships inside 0.5.0 or as 0.4.8 before it.",
+    "Boundary 4, per run, for each MTBLS2207 run once 0.5.0 is running."
   ],
   "library": {
     "decision": "LBM2 on every unit, plus MSP high-confidence and MSP low-confidence in the unit's own polarity. User confirmed 2026-09-20: the LBM tier applies to the metabolomics units too.",
@@ -590,9 +799,43 @@
     }
   },
   "known_risk_raw_download_does_not_resume": {
-    "established": "repository_reanalysis.py:134 opens the .part file with mode 'wb' and sends no HTTP Range header, so every attempt starts at byte 0; repository_reanalysis.py:151-152 unlinks the .part on any exception. A repository raw download that is interrupted loses everything already transferred.",
-    "contrast": "The LIBRARY download does resume from its .part - the job history says so and this trial used it, resuming from 25 MB after the backend stopped at 22:54.",
-    "why_it_matters_now": "The backend stopped once tonight during a 378 MB library transfer, and the job history holds three earlier 'The local backend stopped before this job completed' entries from 2026-09-06. Four units in this manifest arrive as ONE archive each: ST005052 1.80 GB, ST003399 1.60 GB, ST003044 1.30 GB, ST003075 1.00 GB. Each must complete in one unbroken connection or start again from zero.",
-    "least_exposed_unit": "MTBLS2207, 0.57 GB across 11 separate per-file endpoints of about 52 MB each, so an interruption costs one file rather than the unit."
-  }
+    "state": "resolved",
+    "resolved_by": "msdial-interactive-app PR #24: a repository raw download resumes from its .part with an HTTP Range request, a short read is an error that keeps the .part, and the manifest records resumed_from_bytes for each download.",
+    "was": {
+      "established": "repository_reanalysis.py:134 opens the .part file with mode 'wb' and sends no HTTP Range header, so every attempt starts at byte 0; repository_reanalysis.py:151-152 unlinks the .part on any exception. A repository raw download that is interrupted loses everything already transferred.",
+      "contrast": "The LIBRARY download does resume from its .part - the job history says so and this trial used it, resuming from 25 MB after the backend stopped at 22:54.",
+      "why_it_matters_now": "The backend stopped once tonight during a 378 MB library transfer, and the job history holds three earlier 'The local backend stopped before this job completed' entries from 2026-09-06. Four units in this manifest arrive as ONE archive each: ST005052 1.80 GB, ST003399 1.60 GB, ST003044 1.30 GB, ST003075 1.00 GB. Each must complete in one unbroken connection or start again from zero.",
+      "least_exposed_unit": "MTBLS2207, 0.57 GB across 11 separate per-file endpoints of about 52 MB each, so an interruption costs one file rather than the unit."
+    }
+  },
+  "decisions": [
+    {
+      "at": "2026-09-20",
+      "decision": "Library tiers: LBM rule-based, MSP high, MSP low; public VS20 for this light test."
+    },
+    {
+      "at": "2026-09-24",
+      "decision": "Split MTBLS2207 by raw-header acquisition mode into a DDA and a DIA run."
+    },
+    {
+      "at": "2026-09-25",
+      "decision": "MTBLS2207's two runs are untargeted (MS1 survey and MS2 in every file, no SRM/SIM)."
+    },
+    {
+      "at": "2026-09-25",
+      "decision": "A repository that declares no checksum for any file is a SUM-1 WARN, not a FAIL. Integrity rests on the sha256 recorded at download; no artifact may call such inputs checksum-verified."
+    },
+    {
+      "at": "2026-09-25",
+      "decision": "Production Console: MS-DIAL master 9ee32dd241ebdd00f7afdc78f2aa03a3b077bd29, built clean in the MsdialWorkbench-master-baseline worktree, binary sha256 351ef4e4c34b9a79ed8cd7b5ea0db03f0407d43cdd03114549f773c572ab8b53, passed per run as console_path. The saved Console setting is left alone because Codex builds into the checkout it names."
+    },
+    {
+      "at": "2026-09-25",
+      "decision": "MS-DIAL Interactive is released as 0.5.0 with agent API 0.5."
+    },
+    {
+      "at": "2026-09-25",
+      "decision": "The trial is evaluated in two parts reported separately (the evaluation block below)."
+    }
+  ]
 }
