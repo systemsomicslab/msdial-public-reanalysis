@@ -841,13 +841,50 @@ def check_class_distribution(report: Report, csv_rows: list[dict] | None, reason
                classes=dict(classes), file_types=dict(file_types))
 
 
-def check_analytical_order_is_real(report: Report, csv_rows: list[dict] | None, reason: str, stage: str) -> None:
+HEADER_ORDER_SOURCE = "raw_header_acquisition_start_time"
+
+
+def _header_order_agreement(provenance: dict | None, csv_rows: list[dict] | None) -> tuple[bool, list[str]] | None:
+    """Whether the CSV carries the order the unit manifest says the raw headers gave.
+
+    None when the manifest records no header-derived order. Otherwise (agrees, mismatches),
+    compared file by file on the name without its extension, as Interactive records it.
+    """
+    record = (provenance or {}).get("analytical_order") or {}
+    if record.get("derived_from") != HEADER_ORDER_SOURCE or not csv_rows:
+        return None
+    recorded = {}
+    for item in record.get("files") or []:
+        try:
+            recorded[Path(str(item.get("file", ""))).stem.casefold()] = int(item.get("analytical_order"))
+        except (TypeError, ValueError):
+            continue
+    mismatches = []
+    for row in csv_rows:
+        name = str(row.get("file_name", "")).strip().casefold()
+        value = str(row.get("analytical_order", "")).strip()
+        if name not in recorded or not value.isdigit() or int(value) != recorded[name]:
+            mismatches.append(str(row.get("file_name", "")))
+    if len(recorded) != len(csv_rows):
+        mismatches.append(f"{len(recorded)} recorded against {len(csv_rows)} CSV rows")
+    return (not mismatches, mismatches)
+
+
+def check_analytical_order_is_real(
+    report: Report, csv_rows: list[dict] | None, reason: str, stage: str,
+    provenance: dict | None = None,
+) -> None:
     """Decide whether the recorded injection order is a measurement or a row number.
 
     When a repository records no injection sequence, the order is synthesized from CSV row order,
     which is grouped by class. A run-order drift statistic computed against it is perfectly
     confounded with the biological factor, and a near-zero correlation is an artifact of an order
     that does not exist rather than evidence of analytical stability.
+
+    An order Interactive ranked from the raw headers' acquisition start times is a measurement,
+    and the unit manifest says so with every file's time. It passes when the CSV carries exactly
+    that order and fails when it does not, whatever the numbers look like: a header order can
+    happen to equal the row order, and a row order can happen not to.
     """
     if stage != "before-production":
         return
@@ -858,6 +895,18 @@ def check_analytical_order_is_real(report: Report, csv_rows: list[dict] | None, 
     if not all(value.isdigit() for value in raw) or not raw:
         report.add("ORD-1", stage, "Recorded analytical order is a measurement", NOT_EVALUABLE,
                    "analytical_order is absent or not numeric on every row.")
+        return
+    agreement = _header_order_agreement(provenance, csv_rows)
+    if agreement is not None:
+        agrees, mismatches = agreement
+        if agrees:
+            report.add("ORD-1", stage, "Recorded analytical order is a measurement", PASS,
+                       f"analytical_order is the acquisition order the raw headers record for all "
+                       f"{len(csv_rows)} files.", samples=len(csv_rows), source=HEADER_ORDER_SOURCE)
+        else:
+            report.add("ORD-1", stage, "Recorded analytical order is a measurement", FAIL,
+                       "The unit manifest records an order ranked from the raw headers, but "
+                       "analysis_files.csv carries a different one.", mismatches=mismatches[:10])
         return
     order = [int(value) for value in raw]
     sequential = order == list(range(1, len(order) + 1))
@@ -896,8 +945,11 @@ def check_analytical_order_is_real(report: Report, csv_rows: list[dict] | None, 
                "analytical_order is not a restatement of row order.", samples=len(order))
 
 
-def _order_is_synthesized(csv_rows: list[dict] | None) -> bool:
+def _order_is_synthesized(csv_rows: list[dict] | None, provenance: dict | None = None) -> bool:
     if not csv_rows:
+        return False
+    agreement = _header_order_agreement(provenance, csv_rows)
+    if agreement is not None and agreement[0]:
         return False
     raw = [str(row.get("analytical_order", "")).strip() for row in csv_rows]
     if not all(value.isdigit() for value in raw):
@@ -915,7 +967,8 @@ def _order_is_synthesized(csv_rows: list[dict] | None) -> bool:
 
 
 def check_no_metric_rests_on_a_synthetic_order(
-    report: Report, output: Path, csv_rows: list[dict] | None, stage: str
+    report: Report, output: Path, csv_rows: list[dict] | None, stage: str,
+    provenance: dict | None = None,
 ) -> None:
     """A drift statistic must not be reported against an order that was never recorded.
 
@@ -934,7 +987,7 @@ def check_no_metric_rests_on_a_synthetic_order(
                    "The analysis CSV is absent, so whether the run order was recorded or "
                    "synthesized cannot be established.")
         return
-    if not _order_is_synthesized(csv_rows):
+    if not _order_is_synthesized(csv_rows, provenance):
         report.add("ORD-2", stage, "No reported metric rests on a synthesized run order", PASS,
                    "The run order is not a restatement of file order, so a drift metric computed "
                    "from it is meaningful.")
@@ -1867,7 +1920,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_executed_class_matches_approved(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_class_proposal_was_accepted(report, provenance, provenance_reason)
         check_threshold_was_measured_on_this_unit(report, provenance, provenance_reason, output)
-        check_analytical_order_is_real(report, csv_rows, csv_reason, "before-production")
+        check_analytical_order_is_real(report, csv_rows, csv_reason, "before-production", provenance)
         approved = check_sample_count_invariant(
             report, provenance, provenance_reason, csv_rows, csv_reason,
             run_manifest, output, "before-production",
@@ -1889,7 +1942,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_binary_identity_is_recorded(report, run_manifest, output, "after-run")
 
     if "before-publish" in stages:
-        check_no_metric_rests_on_a_synthetic_order(report, output, csv_rows, "before-publish")
+        check_no_metric_rests_on_a_synthetic_order(report, output, csv_rows, "before-publish", provenance)
         check_library_provenance_contradiction(report, output, "before-publish")
         check_qa_prose_matches_assessment(report, output, "before-publish")
         check_storage_shape(report, workspace, "before-publish", provenance)

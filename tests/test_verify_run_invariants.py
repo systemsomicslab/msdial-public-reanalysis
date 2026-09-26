@@ -239,7 +239,50 @@ class IdentityAndEligibilityTests(unittest.TestCase):
             self.assertEqual(verifier.WARN, _status(report, "PRE-1"))
 
 
+def _record_header_order(builder: "WorkspaceBuilder", orders: dict[str, int]) -> None:
+    """Add the analytical_order record Interactive writes when it ranks files by header time."""
+    path = builder.root / "provenance" / "run-manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["analytical_order"] = {
+        "derived_from": "raw_header_acquisition_start_time",
+        "files": [
+            {"file": f"{name}.lcd", "acquisition_start_time": f"2020-01-{order:02d}T00:00:00+00:00",
+             "analytical_order": order}
+            for name, order in orders.items()
+        ],
+    }
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 class RunOrderTests(unittest.TestCase):
+    def test_a_header_order_passes_even_when_it_looks_like_row_order(self):
+        # Ranked from the raw headers, it happens to equal the row order and to keep classes in
+        # blocks, which the row-number heuristic alone would have called synthesized.
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, {row["file_name"]: int(row["analytical_order"]) for row in rows})
+            report = verifier.verify(builder.root, "before-production")
+            self.assertEqual(verifier.PASS, _status(report, "ORD-1"))
+
+    def test_a_csv_that_departs_from_the_recorded_header_order_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            recorded = {row["file_name"]: 7 - int(row["analytical_order"]) for row in rows}
+            _record_header_order(builder, recorded)
+            report = verifier.verify(builder.root, "before-production")
+            self.assertEqual(verifier.FAIL, _status(report, "ORD-1"))
+
+    def test_a_drift_metric_on_a_header_order_is_not_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, {row["file_name"]: int(row["analytical_order"]) for row in rows})
+            builder.publication(run_order_status="pass")
+            report = verifier.verify(builder.root, "before-publish")
+            self.assertEqual(verifier.PASS, _status(report, "ORD-2"))
+
     def test_a_synthesized_order_warns_but_does_not_stop_the_run(self):
         with tempfile.TemporaryDirectory() as directory:
             rows = _samples(6, classes=2, grouped=True)
