@@ -663,7 +663,6 @@
   "open_decisions_for_the_user": [
     "Whether to confirm the agent's implementation of decision A: the SUM-1 WARN only for repositories recorded as publishing no checksums (MetaboLights), every input covered by a download-time sha256, and SUM-2 at publication (see decisions, proposed). Includes whether a SUM-2 WARN - a matching sentence set aside by a rule - should hold a run from counting as completed until a person has read it and that is recorded.",
     "How a unit whose Class decision abstained reaches B3: record an abstention in the unit manifest, or exempt B3 for units recorded here as class_decision abstained (see evaluation.known_gaps).",
-    "Whether both MTBLS2207 peak-height diagnostics are measured again with the 31dea2b39 Console when the runs are prepared under 0.5.0, or the thresholds (DDA 9000, job 3162f313; DIA 0, job 1ab3e745) stand with a recorded amendment that they were measured with 9ee32dd24. #808 changes no peak-detection code (IL comparison) and the FastLC demo's peak columns were identical, so the counts are expected to reproduce, but that is an inference on this data. Measuring again is two single-file runs that write .dcl, .pai2 and _tags.xml beside the raw files. The gate reads neither choice: PKH-1 compares numbers only.",
     "Boundary 4, per run, for each MTBLS2207 run once 0.5.0 is running."
   ],
   "library": {
@@ -839,6 +838,10 @@
     {
       "at": "2026-09-26",
       "decision": "MsdialWorkbench#808 is in the MTBLS2207 results: the production Console is rebuilt at master 31dea2b39 (see P1). #808 changes rule-based lipid characterization only. For these negative-mode runs: Cer_EBDS [M+HCOO]- and [M+CH3COO]- matches can be gained, renamed or lost; Cer_EOS and Cer_EODS can only be lost or renamed; HexCer_EOS can be gained or drop from chain to class level; TG [M+Na]+ (positive only) and SPEHex/SPGHex (signature only) do not change. Where an LBM match changes, the representative annotation, isotope and adduct flags, near-duplicate spot choice and alignment ID order can follow it."
+    },
+    {
+      "at": "2026-09-26",
+      "decision": "Both MTBLS2207 peak-height diagnostics are measured again with the 31dea2b39 Console, when the runs are prepared under Interactive 0.5.0, so that diagnostic, preparation and run share one Console and one Interactive version. The 9ee32dd24 measurements (DDA 9000, job 3162f313; DIA 0, job 1ab3e745) stay in the provenance record; PKH-1 accepts a match against any recorded diagnostic, so the prepared threshold is checked by hand against the newest one."
     }
   ]
 }
