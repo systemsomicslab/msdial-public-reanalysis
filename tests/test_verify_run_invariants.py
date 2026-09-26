@@ -239,14 +239,16 @@ class IdentityAndEligibilityTests(unittest.TestCase):
             self.assertEqual(verifier.WARN, _status(report, "PRE-1"))
 
 
-def _record_header_order(builder: "WorkspaceBuilder", orders: dict[str, int]) -> None:
+def _record_header_order(builder: "WorkspaceBuilder", orders: dict[str, int],
+                         times: dict[str, str] | None = None, record=None) -> None:
     """Add the analytical_order record Interactive writes when it ranks files by header time."""
     path = builder.root / "provenance" / "run-manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    manifest["analytical_order"] = {
+    manifest["analytical_order"] = record if record is not None else {
         "derived_from": "raw_header_acquisition_start_time",
         "files": [
-            {"file": f"{name}.lcd", "acquisition_start_time": f"2020-01-{order:02d}T00:00:00+00:00",
+            {"file": f"{name}.lcd",
+             "acquisition_start_time": (times or {}).get(name, f"2020-01-{order:02d}T00:00:00+00:00"),
              "analytical_order": order}
             for name, order in orders.items()
         ],
@@ -273,6 +275,46 @@ class RunOrderTests(unittest.TestCase):
             _record_header_order(builder, recorded)
             report = verifier.verify(builder.root, "before-production")
             self.assertEqual(verifier.FAIL, _status(report, "ORD-1"))
+
+    def test_a_record_whose_times_order_nothing_is_judged_by_shape(self):
+        # Every header at one time: the ranks are the listing, so this is still a synthesized
+        # order, and a drift metric on it is still refused.
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            _record_header_order(builder, orders, times={name: "1970-01-01T00:00:00+00:00" for name in orders})
+            builder.publication(run_order_status="pass")
+            self.assertEqual(verifier.WARN, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-publish"), "ORD-2"))
+
+    def test_a_record_that_contradicts_its_own_times_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            times = {name: f"2020-01-{7 - order:02d}T00:00:00+00:00" for name, order in orders.items()}
+            _record_header_order(builder, orders, times=times)
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+
+    def test_a_duplicated_row_and_a_missing_file_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=False)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            rows[5] = dict(rows[0])
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, orders)
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+
+    def test_a_malformed_record_is_a_verdict_not_a_traceback(self):
+        for record in ("not an object", {"derived_from": "raw_header_acquisition_start_time", "files": ["a.lcd"]}):
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as directory:
+                rows = _samples(6, classes=2, grouped=False)
+                builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+                _record_header_order(builder, {}, record=record)
+                builder.publication(run_order_status="pass")
+                self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+                verifier.verify(builder.root, "before-publish")
 
     def test_a_drift_metric_on_a_header_order_is_not_refused(self):
         with tempfile.TemporaryDirectory() as directory:

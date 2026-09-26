@@ -844,29 +844,71 @@ def check_class_distribution(report: Report, csv_rows: list[dict] | None, reason
 HEADER_ORDER_SOURCE = "raw_header_acquisition_start_time"
 
 
+def _parse_header_time(value) -> "datetime | None":
+    from datetime import datetime
+
+    text = str(value or "").strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    text = re.sub(r"(T\d{2}:\d{2}:\d{2})\.(\d+)",
+                  lambda match: match.group(1) + "." + (match.group(2) + "000000")[:6], text, count=1)
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def _header_order_agreement(provenance: dict | None, csv_rows: list[dict] | None) -> tuple[bool, list[str]] | None:
     """Whether the CSV carries the order the unit manifest says the raw headers gave.
 
-    None when the manifest records no header-derived order. Otherwise (agrees, mismatches),
-    compared file by file on the name without its extension, as Interactive records it.
+    None when the manifest records no header-derived order, or when the headers order nothing
+    the listing did not decide: every file at one time, or files of different Classes at one
+    time. Then the row-order heuristic judges it as before. Otherwise (agrees, mismatches):
+    the record's ranks must follow from its own times, and the CSV must carry each recorded
+    file exactly once at its rank, compared on the name without its extension, as Interactive
+    records it. A record of the wrong shape is a mismatch, never a traceback.
     """
-    record = (provenance or {}).get("analytical_order") or {}
+    record = (provenance or {}).get("analytical_order")
+    if record is None:
+        return None
+    if not isinstance(record, dict):
+        return (False, ["analytical_order in the unit manifest is not an object"])
     if record.get("derived_from") != HEADER_ORDER_SOURCE or not csv_rows:
         return None
-    recorded = {}
-    for item in record.get("files") or []:
-        try:
-            recorded[Path(str(item.get("file", ""))).stem.casefold()] = int(item.get("analytical_order"))
-        except (TypeError, ValueError):
+    files = record.get("files") if isinstance(record.get("files"), list) else []
+    entries = [item for item in files if isinstance(item, dict)]
+    mismatches = [] if len(entries) == len(files) else ["a recorded file entry is not an object"]
+    row_index = {str(row.get("file_name", "")).strip().casefold(): index for index, row in enumerate(csv_rows)}
+    class_of = {str(row.get("file_name", "")).strip().casefold(): str(row.get("class_id", "")).strip()
+                for row in csv_rows}
+    timed = []
+    for item in entries:
+        stem = Path(str(item.get("file", ""))).stem.casefold()
+        when = _parse_header_time(item.get("acquisition_start_time"))
+        if when is None:
+            mismatches.append(f"{item.get('file')}: no readable recorded time")
             continue
-    mismatches = []
+        timed.append((when, row_index.get(stem, len(csv_rows)), stem, item.get("analytical_order")))
+    groups: dict = {}
+    for when, _, stem, _ in timed:
+        groups.setdefault(when, []).append(stem)
+    if len(timed) > 1 and len(groups) == 1:
+        return None
+    if any(len(stems) > 1 and len({class_of.get(stem, "") for stem in stems}) > 1 for stems in groups.values()):
+        return None
+    for rank, (_, _, stem, stored) in enumerate(sorted(timed, key=lambda entry: (entry[0], entry[1])), start=1):
+        if str(stored).strip() != str(rank):
+            mismatches.append(f"{stem}: recorded as {stored}, but its time ranks it {rank}")
+    recorded = Counter(Path(str(item.get("file", ""))).stem.casefold() for item in entries)
+    in_csv = Counter(str(row.get("file_name", "")).strip().casefold() for row in csv_rows)
+    for stem in sorted(set(recorded) | set(in_csv)):
+        if recorded[stem] != 1 or in_csv[stem] != 1:
+            mismatches.append(f"{stem}: {recorded[stem]} recorded, {in_csv[stem]} in the CSV")
+    ranks = {stem: str(stored).strip() for _, _, stem, stored in timed}
     for row in csv_rows:
         name = str(row.get("file_name", "")).strip().casefold()
-        value = str(row.get("analytical_order", "")).strip()
-        if name not in recorded or not value.isdigit() or int(value) != recorded[name]:
-            mismatches.append(str(row.get("file_name", "")))
-    if len(recorded) != len(csv_rows):
-        mismatches.append(f"{len(recorded)} recorded against {len(csv_rows)} CSV rows")
+        if name in ranks and str(row.get("analytical_order", "")).strip() != ranks[name]:
+            mismatches.append(f"{row.get('file_name')}: CSV {row.get('analytical_order')}, recorded {ranks[name]}")
     return (not mismatches, mismatches)
 
 
