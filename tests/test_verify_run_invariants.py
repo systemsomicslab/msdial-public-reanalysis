@@ -316,6 +316,60 @@ class RunOrderTests(unittest.TestCase):
                 self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
                 verifier.verify(builder.root, "before-publish")
 
+    def test_files_of_different_classes_at_one_time_are_judged_by_shape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            times = {name: f"2020-01-{order:02d}T00:00:00+00:00" for name, order in orders.items()}
+            times["sample_4"] = times["sample_3"]  # the last Strain1 and the first Strain2
+            _record_header_order(builder, orders, times=times)
+            builder.publication(run_order_status="pass")
+            self.assertEqual(verifier.WARN, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-publish"), "ORD-2"))
+
+    def test_tied_rows_in_either_order_and_padded_ranks_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=False)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            times = {name: f"2020-01-{order:02d}T00:00:00+00:00" for name, order in orders.items()}
+            times["sample_2"] = times["sample_4"] = "2020-01-02T00:00:00+00:00"  # same class, one time
+            orders["sample_2"], orders["sample_3"], orders["sample_4"] = 3, 4, 2
+            times["sample_3"] = "2020-01-03T00:00:00+00:00"
+            for row in rows:
+                row["analytical_order"] = f"{orders[row['file_name']]:02d}"
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, orders, times=times)
+            self.assertEqual(verifier.PASS, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+
+    def test_a_missing_file_is_found_even_when_it_shares_a_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            times = {name: f"2020-01-{order:02d}T00:00:00+00:00" for name, order in orders.items()}
+            times["sample_6"] = times["sample_5"]
+            rows = [row for row in rows if row["file_name"] != "sample_5"]
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, orders, times=times)
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+
+    def test_mixed_offsets_and_partly_malformed_records_are_refused(self):
+        rows = _samples(4, classes=2, grouped=False)
+        orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+        tied = {name: "2020-01-01T00:00:00+00:00" for name in orders}
+        cases = {
+            "mixed offsets": dict(times={**{n: f"2020-01-0{o}T00:00:00+00:00" for n, o in orders.items()},
+                                          "sample_1": "2020-01-01T00:00:00"}),
+            "unreadable time among ties": dict(times={**tied, "sample_1": "yesterday"}),
+        }
+        for name, options in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                builder = WorkspaceBuilder(Path(directory)).provenance(inputs=4).analysis_csv(rows)
+                _record_header_order(builder, orders, **options)
+                builder.publication(run_order_status="pass")
+                self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+                verifier.verify(builder.root, "before-publish")
+
     def test_a_drift_metric_on_a_header_order_is_not_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             rows = _samples(6, classes=2, grouped=True)
