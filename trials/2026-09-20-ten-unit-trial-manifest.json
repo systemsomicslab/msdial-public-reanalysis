@@ -2,7 +2,7 @@
   "schema": "msdial-public-reanalysis-trial-manifest.v1",
   "trial_id": "2026-09-20-ten-unit",
   "prepared_at": "2026-09-20T22:30:00+09:00",
-  "status": "Units approved 2026-09-20. Only MTBLS2207 has been downloaded (2026-09-23) and split into a DDA and a DIA run (2026-09-24). No production run has been asked for. How far each run has got is not recorded here: run scripts/verify-run-invariants.py <run workspace> --stage all --strict --json (progress, checks_by_stage). Production runs are held until Interactive 0.5.0 (msdial-interactive-app#31) is merged and is the code the MCP server runs (precondition P3); the server now runs main cb7c74f, which reports 0.4.7. A run prepared before then is prepared again under 0.5.0 before boundary 4 is asked for it.",
+  "status": "Units approved 2026-09-20. Only MTBLS2207 has been downloaded (2026-09-23) and split into a DDA and a DIA run (2026-09-24). Both runs were run in production under Interactive 0.5.2 with the 31dea2b39 Console on 2026-09-27, each after its own boundary-4 confirmation; the DDA run had run once before, on 2026-09-26, and that run is superseded (units[n=5].runs). No other unit has been downloaded. How far each run has got is not recorded here: run scripts/verify-run-invariants.py <run workspace> --stage all --strict --json (progress, checks_by_stage). What a run's record below says the gate returned is an observation on the date it names, not a stage.",
   "purpose_of_the_trial": "Exercise every branch of the repository reanalysis pipeline against real public data, and have the result judged by a layer that did not run it. This is a pipeline test, not a biological study.",
   "evaluation": {
     "rule": "Two verdicts, reported separately and never combined. Part A says whether the pipeline is ready to be judged. Part B says how far each run got on real data. The gate derives it from the artifacts on disk and from fields the provenance manifest records, each paired with an artifact where one exists (B1 downloads, input_candidates and the unit's or its owner's status; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics and its directory; B7 status, finalized_at and mztab_validation with an mzTab-M; B10 raw_retention_policy and retained_artifact_inventory). It never reads a stage written by hand, here or anywhere. The stages are defined by COMPLETION_STAGES in scripts/verify-run-invariants.py, which part_b_stages mirrors (a test holds them equal). A stage is reached when its artifacts exist, whether or not they are right; whether they are right is the gate's verdict, reported beside it by stage (checks_by_stage). A run is completed on real data when it reaches B10 and its gate, run with --stage all --strict, exits 0. A unit is completed when every one of its runs is. A negative control is completed when it stops where its expected_stage says, for the reason it names.",
@@ -53,7 +53,7 @@
       {
         "id": "A8",
         "criterion": "A run's recorded Interactive version identifies the code that ran",
-        "evidence": "Every run from 2026-09-03 to 2026-09-25 recorded 0.4.7 across different code states; 0.5.0 pending, and runs still record no Interactive commit",
+        "evidence": "Every run from 2026-09-03 to 2026-09-25 recorded 0.4.7 across different code states. 0.5.0, 0.5.1 and 0.5.2 were merged on 2026-09-26 and 2026-09-27, and both MTBLS2207 production runs record 0.5.2, which names one merged code state. Runs still record no Interactive commit.",
         "state": "open"
       }
     ],
@@ -347,12 +347,63 @@
         {
           "run_id": "a22083b091a0ccd04489-dda",
           "acquisition_mode": "DDA",
-          "workspace": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dda"
+          "workspace": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dda",
+          "production": {
+            "job_id": "1544889c25f44e48ba2ec88e94694097",
+            "finalized_at": "2026-09-27T08:42:27Z",
+            "interactive": "0.5.2",
+            "console_sha256": "80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a",
+            "minimum_peak_height": 9000,
+            "peak_height_diagnostic": "c8f2be9661634eedb55845bf5a36fca1",
+            "analytical_order": "raw_header_acquisition_start_time: NIST1950 (2019-12-18), IROA (2020-01-17), M3T-Std, M3T-Std_Plasma, M3T-Std_Yeast (2020-09-16), M3T-Std_Ecoli (2020-09-17)",
+            "alignment_spots": 8634,
+            "evidence_source_column": {
+              "ReferenceSpectrum": 434,
+              "RuleBased": 65,
+              "WeakSpectrumMatch": 351,
+              "UnmatchedSpectrum": 139,
+              "PrecursorOnly": 3342,
+              "null": 4303
+            },
+            "msms_matched_spots": 499,
+            "qa": "review. Run-order/intensity r = -0.377 against |r| <= 0.3 fails; the other 6 of 7 criteria are not assessable (no QC, no blank).",
+            "gate_observed": "2026-09-27, --stage all --strict: exit 0, VERDICT ok, WARN SUM-1, MTH-1 and QA-1, DSK-1 deferred to the raw owner. An observation on that date, not a stage; run the gate again for the current verdict."
+          },
+          "superseded": [
+            {
+              "job_id": "770075627f414a56a1e64fadbde2935e",
+              "ran": "2026-09-26, Interactive 0.5.0, the same Console",
+              "snapshot": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dda\\superseded\\run-770075627f414a56a1e64fadbde2935e, with output.sha256 and README.txt",
+              "why": "Its analysis CSV carried the file-listing order, not the header acquisition order. Its publication report was also refused by LIB-1, fixed in Interactive 0.5.1.",
+              "compared_with_the_rerun": "Every per-file .mdpeak is byte-identical, and the spot count and Evidence source counts are equal: the Console does not use the analytical order for peak picking, alignment or annotation. What the order changes is where it is written: the mzTab-M injection-sequence labels, the matrices' injection-order row and the QA run-order metric."
+            }
+          ]
         },
         {
           "run_id": "a22083b091a0ccd04489-dia",
           "acquisition_mode": "DIA",
-          "workspace": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dia"
+          "workspace": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dia",
+          "production": {
+            "job_id": "c151c7356cb942869551e070f83e57ce",
+            "finalized_at": "2026-09-27T09:17:25Z",
+            "interactive": "0.5.2",
+            "console_sha256": "80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a",
+            "acquisition_type": "SWATH",
+            "minimum_peak_height": 0,
+            "peak_height_diagnostic": "712a9c53f9884a6897ecfff6531400d3",
+            "analytical_order": "raw_header_acquisition_start_time: IROA (2020-02-07), M3T-Std_Plasma, M3T-Std_Yeast, M3T-Std (2020-09-16), M3T-Std_Ecoli (2020-09-17)",
+            "alignment_spots": 18098,
+            "evidence_source_column": {
+              "ReferenceSpectrum": 575,
+              "RuleBased": 335,
+              "WeakSpectrumMatch": 4284,
+              "UnmatchedSpectrum": 1777,
+              "null": 11127
+            },
+            "msms_matched_spots": 910,
+            "qa": "review. Run-order/intensity r = -0.499 against |r| <= 0.3 fails; the other 6 of 7 criteria are not assessable (no QC, no blank).",
+            "gate_observed": "2026-09-27, --stage all --strict: exit 0, VERDICT ok, 21 PASS, WARN SUM-1, MTH-1 and QA-1, DSK-1 deferred to the raw owner. An observation on that date, not a stage; run the gate again for the current verdict."
+          }
         }
       ],
       "repository": "metabolights",
@@ -377,7 +428,13 @@
           "Chemical": 4
         }
       },
-      "what_it_tests": "The smallest unit, open mzML, and per-file endpoint delivery: 11 samples, 11 separate URLs. The counterpart to the single-archive units for the download byte accounting."
+      "what_it_tests": "The smallest unit, open mzML, and per-file endpoint delivery: 11 samples, 11 separate URLs. The counterpart to the single-archive units for the download byte accounting.",
+      "raw_owner_observed": "2026-09-27, before-publish report of a22083b091a0ccd04489 after both runs: DSK-1 PASS, 0.96 GB; RET-1 PASS, keep, raw tree present. The report's exit code is not a verdict on the parent. An observation on that date, not a stage; run the gate again for the current verdict.",
+      "evidence_source_note": "evidence_source_column counts the Evidence source column of each run's height matrix; null is a spot with no annotation. No PrecursorOnly appears in the DIA run, where every spot carries a deconvoluted MS/MS spectrum. P5 still applies: no invariant reads this column.",
+      "qa_reading": {
+        "by": "agent; an inference, not accepted by the user (see open_decisions_for_the_user)",
+        "reading": "In both runs the one evaluable QA criterion, the run-order/intensity correlation, fails (DDA -0.377, DIA -0.499). It is not read as instrument drift. The header order spans three acquisition periods (December 2019 in DDA only, January to February 2020 for IROA, and 16-17 September 2020), and run order coincides with sample type: NIST SRM 1950 plasma (DDA only) and the IROA library first, then the files named M3T-Std, M3T-Std_Plasma, M3T-Std_Yeast and M3T-Std_Ecoli. A correlation with run order is therefore also one with period and sample type, and five or six injections without QC cannot separate them."
+      }
     },
     {
       "n": 6,
@@ -597,10 +654,11 @@
   "preconditions": [
     {
       "id": "P1",
-      "state": "open",
-      "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master 31dea2b3913d58db27c318159380b02d7aeac4eb (9ee32dd24 plus MsdialWorkbench#808) in the MsdialWorkbench-console-31dea2b39 worktree, binary sha256 80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a, --version 5.5.260926, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-26. Open until both runs are prepared with it: their guided answers still name the 9ee32dd24 build, and the gate does not read the Console, so each run's output/run-manifest.json is checked by hand for this sha256 and version before boundary 4.",
+      "state": "met",
+      "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master 31dea2b3913d58db27c318159380b02d7aeac4eb (9ee32dd24 plus MsdialWorkbench#808) in the MsdialWorkbench-console-31dea2b39 worktree, binary sha256 80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a, --version 5.5.260926, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-26.",
       "verified": "2026-09-26, read-only. IL comparison of the two builds: 10 of 18,156 methods differ, all in Common.dll and one per #808 hunk; the other 11 project assemblies differ only in build stamps (commit, MVID, PDB path, build date, Splash's 1.0.* version); all 113 other files, vendor readers included, are byte-identical. The build record omits the toolchain, which changed: .NET SDK 10.0.401 with Roslyn 5.9.0 (baseline SDK 10.0.301, Roslyn 5.6.0), with no effect on the IL outside #808. Before/after on the FastLC demo (SCIEX, negative, DDA, the same Zenodo 21904324 LBM and 204-entry searched lipid class list as MTBLS2207): every peak-detection column identical in all 13,193 .mdpeak rows, aligned spots and heights identical, 20 annotation rows changed, all Cer_EBDS, Cer_EODS or Cer_EOS. Not exercised: Thermo mzML, DIA, the MSP tiers.",
-      "detail": "The 9ee32dd24 build (sha256 351ef4e4c34b9a79ed8cd7b5ea0db03f0407d43cdd03114549f773c572ab8b53) is kept unchanged at its path in MsdialWorkbench-master-baseline: both MTBLS2207 peak-height diagnostics were measured with it. The saved Console setting still resolves to a third binary, MsdialWorkbench's own build output, sha256 21586b8d7be965c8e2c95a1a165d3c99d1779b97a662b284bd760977f4641305, built from a working tree with uncommitted changes (it carries the unmerged MsdialWorkbench#810); a call that omits console_path runs it. A rebuild of the same commit gives a different sha256 (embedded worktree path, build date, Splash), so the worktree is not rebuilt until both runs finish. Met earlier by 9ee32dd24 (2026-09-25) and by feature/annotation-evidence-record at 9cbf058cd99d5e1e5b3e6578d020c49d075cb735 (2026-09-20)."
+      "detail": "The 9ee32dd24 build (sha256 351ef4e4c34b9a79ed8cd7b5ea0db03f0407d43cdd03114549f773c572ab8b53) is kept unchanged at its path in MsdialWorkbench-master-baseline: both MTBLS2207 peak-height diagnostics were measured with it. The saved Console setting still resolves to a third binary, MsdialWorkbench's own build output, sha256 21586b8d7be965c8e2c95a1a165d3c99d1779b97a662b284bd760977f4641305, built from a working tree with uncommitted changes (it carries the unmerged MsdialWorkbench#810); a call that omits console_path runs it. A rebuild of the same commit gives a different sha256 (embedded worktree path, build date, Splash), so the worktree is not rebuilt until both runs finish. Met earlier by 9ee32dd24 (2026-09-25) and by feature/annotation-evidence-record at 9cbf058cd99d5e1e5b3e6578d020c49d075cb735 (2026-09-20). Both runs have finished. The binary is still not rebuilt: it measured the production diagnostics and ran both runs, so it stays as it is, and the next production Console is built in its own worktree named by its commit.",
+      "met": "2026-09-27. The output/run-manifest.json of both production runs records this binary (sha256 80469d6c..., --version 5.5.260926, git_head 31dea2b3913d58db27c318159380b02d7aeac4eb, git_dirty false) with software_provenance_status verified, and BIN-1 reads MS-DIAL 5.5.260926+31dea2b3 from each mzTab-M. The superseded first DDA run used it too. Both peak-height diagnostics the runs use were measured with it (decision 2026-09-26)."
     },
     {
       "id": "P2",
@@ -610,9 +668,10 @@
     },
     {
       "id": "P3",
-      "state": "open",
+      "state": "met",
       "what": "Every repository is on its merged main/master, and the MCP server runs that code.",
-      "detail": "Open until msdial-interactive-app#31 (Interactive 0.5.0, agent API 0.5) is merged and the MCP server is restarted onto it; the server embeds the backend and does not reload changed source. Checked 2026-09-26: Interactive main cb7c74f (reports 0.4.7), catalog main 27932c0, MsdialWorkbench master 31dea2b39, all clean. The production Console is 9ee32dd24, one commit behind master (see the #808 open decision). Met on 2026-09-20: six pull requests merged at 13:28Z and the Console rebuilt from clean master 817407a25a0f85cd4672458b97df363239f8d4ec, binary sha256 ea2fe049869d67d4."
+      "detail": "Was open until msdial-interactive-app#31 (Interactive 0.5.0, agent API 0.5) is merged and the MCP server is restarted onto it; the server embeds the backend and does not reload changed source. Checked 2026-09-26: Interactive main cb7c74f (reports 0.4.7), catalog main 27932c0, MsdialWorkbench master 31dea2b39, all clean. The production Console is 9ee32dd24, one commit behind master (see the #808 open decision). Met on 2026-09-20: six pull requests merged at 13:28Z and the Console rebuilt from clean master 817407a25a0f85cd4672458b97df363239f8d4ec, binary sha256 ea2fe049869d67d4.",
+      "met": "2026-09-27. Interactive main 6d164c6 (0.5.2, agent API 0.5; msdial-interactive-app#31, #33 and #34 merged), this repository main 6d7fa19 (#9 merged), catalog main 27932c0, MsdialWorkbench master 31dea2b39, each clean. The desktop app, and with it the MCP server, was restarted after the last of those merges; the backend that ran both runs was started from the 6d164c6 checkout, and both runs record Interactive 0.5.2."
     },
     {
       "id": "P4",
@@ -652,7 +711,7 @@
     {
       "boundary": 4,
       "what": "Starting each production MS-DIAL run",
-      "status": "Per run, after the exact plan and command are shown. Not yet asked for any run."
+      "status": "Per run, after the exact plan and command are shown. Given for MTBLS2207's DDA run on 2026-09-26 (job 770075627f414a56a1e64fadbde2935e, superseded), again for its re-run on 2026-09-27 (job 1544889c25f44e48ba2ec88e94694097), and for its DIA run on 2026-09-27 (job c151c7356cb942869551e070f83e57ce). Not asked for any other unit."
     },
     {
       "boundary": 5,
@@ -663,7 +722,7 @@
   "open_decisions_for_the_user": [
     "Whether to confirm the agent's implementation of decision A: the SUM-1 WARN only for repositories recorded as publishing no checksums (MetaboLights), every input covered by a download-time sha256, and SUM-2 at publication (see decisions, proposed). Includes whether a SUM-2 WARN - a matching sentence set aside by a rule - should hold a run from counting as completed until a person has read it and that is recorded.",
     "How a unit whose Class decision abstained reaches B3: record an abstention in the unit manifest, or exempt B3 for units recorded here as class_decision abstained (see evaluation.known_gaps).",
-    "Boundary 4, per run, for each MTBLS2207 run once 0.5.0 is running."
+    "Whether to accept the agent's reading of MTBLS2207's QA (units[n=5].qa_reading): the one evaluable criterion fails in both runs, and the agent reads it as confounded with acquisition period and sample type rather than as drift. Until then a report states the failure and names the confound as an inference."
   ],
   "library": {
     "decision": "LBM2 on every unit, plus MSP high-confidence and MSP low-confidence in the unit's own polarity. User confirmed 2026-09-20: the LBM tier applies to the metabolomics units too.",
@@ -841,7 +900,18 @@
     },
     {
       "at": "2026-09-26",
-      "decision": "Both MTBLS2207 peak-height diagnostics are measured again with the 31dea2b39 Console, when the runs are prepared under Interactive 0.5.0, so that diagnostic, preparation and run share one Console and one Interactive version. The 9ee32dd24 measurements (DDA 9000, job 3162f313; DIA 0, job 1ab3e745) stay in the provenance record; PKH-1 accepts a match against any recorded diagnostic, so the prepared threshold is checked by hand against the newest one."
+      "decision": "Both MTBLS2207 peak-height diagnostics are measured again with the 31dea2b39 Console, when the runs are prepared under Interactive 0.5.0, so that diagnostic, preparation and run share one Console and one Interactive version. The 9ee32dd24 measurements (DDA 9000, job 3162f313; DIA 0, job 1ab3e745) stay in the provenance record; PKH-1 accepts a match against any recorded diagnostic, so the prepared threshold is checked by hand against the newest one.",
+      "result": "2026-09-26. DDA: job c8f2be9661634eedb55845bf5a36fca1, M3T-Std_Plasma_neg_DDA_1mz, 9866 peaks at zero threshold, threshold 9000 in steps of 1000. DIA: job 712a9c53f9884a6897ecfff6531400d3, M3T-Std_Yeast_neg_DIA_20mz, 4875 peaks, threshold 0. Each representative's .mdpeak is byte-identical to the 9ee32dd24 measurement's. Under the header order the automatic rule (a Sample nearest the analytical-order midpoint) picks the same two files. Both production runs use these thresholds."
+    },
+    {
+      "at": "2026-09-27",
+      "by": "user",
+      "decision": "A run's analytical order is the acquisition order its raw headers record (the mzML run startTimeStamp), not the order its files are listed in; the user had assumed so from the start. Interactive 0.5.2 (msdial-interactive-app#34) ranks the files by that time, records the order in the unit manifest, and refuses when the headers leave it undecided; gate ORD-1 (#9) passes a CSV only when it carries that record. A run prepared with the listing order is repeated."
+    },
+    {
+      "at": "2026-09-27",
+      "by": "user",
+      "decision": "MTBLS2207's first DDA run is superseded and the run repeated with the header order. Its output was moved out of output\\ into a snapshot, with a hash list, before the re-run (units[n=5].runs[0].superseded)."
     }
   ]
 }
