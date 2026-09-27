@@ -239,7 +239,146 @@ class IdentityAndEligibilityTests(unittest.TestCase):
             self.assertEqual(verifier.WARN, _status(report, "PRE-1"))
 
 
+def _record_header_order(builder: "WorkspaceBuilder", orders: dict[str, int],
+                         times: dict[str, str] | None = None, record=None) -> None:
+    """Add the analytical_order record Interactive writes when it ranks files by header time."""
+    path = builder.root / "provenance" / "run-manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["analytical_order"] = record if record is not None else {
+        "derived_from": "raw_header_acquisition_start_time",
+        "files": [
+            {"file": f"{name}.lcd",
+             "acquisition_start_time": (times or {}).get(name, f"2020-01-{order:02d}T00:00:00+00:00"),
+             "analytical_order": order}
+            for name, order in orders.items()
+        ],
+    }
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 class RunOrderTests(unittest.TestCase):
+    def test_a_header_order_passes_even_when_it_looks_like_row_order(self):
+        # Ranked from the raw headers, it happens to equal the row order and to keep classes in
+        # blocks, which the row-number heuristic alone would have called synthesized.
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, {row["file_name"]: int(row["analytical_order"]) for row in rows})
+            report = verifier.verify(builder.root, "before-production")
+            self.assertEqual(verifier.PASS, _status(report, "ORD-1"))
+
+    def test_a_csv_that_departs_from_the_recorded_header_order_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            recorded = {row["file_name"]: 7 - int(row["analytical_order"]) for row in rows}
+            _record_header_order(builder, recorded)
+            report = verifier.verify(builder.root, "before-production")
+            self.assertEqual(verifier.FAIL, _status(report, "ORD-1"))
+
+    def test_a_record_whose_times_order_nothing_is_judged_by_shape(self):
+        # Every header at one time: the ranks are the listing, so this is still a synthesized
+        # order, and a drift metric on it is still refused.
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            _record_header_order(builder, orders, times={name: "1970-01-01T00:00:00+00:00" for name in orders})
+            builder.publication(run_order_status="pass")
+            self.assertEqual(verifier.WARN, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-publish"), "ORD-2"))
+
+    def test_a_record_that_contradicts_its_own_times_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            times = {name: f"2020-01-{7 - order:02d}T00:00:00+00:00" for name, order in orders.items()}
+            _record_header_order(builder, orders, times=times)
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+
+    def test_a_duplicated_row_and_a_missing_file_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=False)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            rows[5] = dict(rows[0])
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, orders)
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+
+    def test_a_malformed_record_is_a_verdict_not_a_traceback(self):
+        for record in ("not an object", {"derived_from": "raw_header_acquisition_start_time", "files": ["a.lcd"]}):
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as directory:
+                rows = _samples(6, classes=2, grouped=False)
+                builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+                _record_header_order(builder, {}, record=record)
+                builder.publication(run_order_status="pass")
+                self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+                verifier.verify(builder.root, "before-publish")
+
+    def test_files_of_different_classes_at_one_time_are_judged_by_shape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            times = {name: f"2020-01-{order:02d}T00:00:00+00:00" for name, order in orders.items()}
+            times["sample_4"] = times["sample_3"]  # the last Strain1 and the first Strain2
+            _record_header_order(builder, orders, times=times)
+            builder.publication(run_order_status="pass")
+            self.assertEqual(verifier.WARN, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-publish"), "ORD-2"))
+
+    def test_tied_rows_in_either_order_and_padded_ranks_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=False)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            times = {name: f"2020-01-{order:02d}T00:00:00+00:00" for name, order in orders.items()}
+            times["sample_2"] = times["sample_4"] = "2020-01-02T00:00:00+00:00"  # same class, one time
+            orders["sample_2"], orders["sample_3"], orders["sample_4"] = 3, 4, 2
+            times["sample_3"] = "2020-01-03T00:00:00+00:00"
+            for row in rows:
+                row["analytical_order"] = f"{orders[row['file_name']]:02d}"
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, orders, times=times)
+            self.assertEqual(verifier.PASS, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+
+    def test_a_missing_file_is_found_even_when_it_shares_a_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+            times = {name: f"2020-01-{order:02d}T00:00:00+00:00" for name, order in orders.items()}
+            times["sample_6"] = times["sample_5"]
+            rows = [row for row in rows if row["file_name"] != "sample_5"]
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, orders, times=times)
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+
+    def test_mixed_offsets_and_partly_malformed_records_are_refused(self):
+        rows = _samples(4, classes=2, grouped=False)
+        orders = {row["file_name"]: int(row["analytical_order"]) for row in rows}
+        tied = {name: "2020-01-01T00:00:00+00:00" for name in orders}
+        cases = {
+            "mixed offsets": dict(times={**{n: f"2020-01-0{o}T00:00:00+00:00" for n, o in orders.items()},
+                                          "sample_1": "2020-01-01T00:00:00"}),
+            "unreadable time among ties": dict(times={**tied, "sample_1": "yesterday"}),
+        }
+        for name, options in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                builder = WorkspaceBuilder(Path(directory)).provenance(inputs=4).analysis_csv(rows)
+                _record_header_order(builder, orders, **options)
+                builder.publication(run_order_status="pass")
+                self.assertEqual(verifier.FAIL, _status(verifier.verify(builder.root, "before-production"), "ORD-1"))
+                verifier.verify(builder.root, "before-publish")
+
+    def test_a_drift_metric_on_a_header_order_is_not_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = _samples(6, classes=2, grouped=True)
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+            _record_header_order(builder, {row["file_name"]: int(row["analytical_order"]) for row in rows})
+            builder.publication(run_order_status="pass")
+            report = verifier.verify(builder.root, "before-publish")
+            self.assertEqual(verifier.PASS, _status(report, "ORD-2"))
+
     def test_a_synthesized_order_warns_but_does_not_stop_the_run(self):
         with tempfile.TemporaryDirectory() as directory:
             rows = _samples(6, classes=2, grouped=True)

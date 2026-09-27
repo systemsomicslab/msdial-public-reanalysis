@@ -62,12 +62,16 @@ For a repository range:
    parts share the parent's `raw\`, and the parent stays the raw owner.
 11. Before production, run `msdial_start_peak_count_diagnostic` on a mid-run QC,
    or the non-blank Sample nearest the run-order midpoint when there is no QC.
-   Interactive picks one itself only from `analytical_order`; when the guided
-   plan reports `analytical_order` as `derived_from: "listing"` or
-   `"embedded"`, that order is the file listing or a number read out of the file
-   names (with every Blank and QC placed after the samples), not the run. Order
-   the files by the raw headers'
-   `acquisitionStartTime` instead, and pass the choice as
+   Interactive picks one itself only from `analytical_order`. Since 0.5.2,
+   `msdial_prepare_repository_reanalysis` ranks a unit's files by the
+   acquisition start time each raw header records, whenever every file has one,
+   and records it as `analytical_order` in the unit's run manifest; the guided
+   plan then reports `derived_from: "raw_header_acquisition_start_time"`, and
+   ORD-1 passes only if the CSV carries exactly that order. When the plan
+   instead reports `"listing"` or `"embedded"`, the order is the file listing or
+   a number read out of the file names (with every Blank and QC placed after the
+   samples), not the run: say so, order the files by the raw headers'
+   `acquisitionStartTime` yourself, and pass the choice as
    `representative_file`. A `file_type` Standard is not a Sample. Call
    `msdial_estimate_peak_height` for the default 3,000-6,000 range with the
    step for the instrument: the inspection calls every mzML `QTOF`, so pass
