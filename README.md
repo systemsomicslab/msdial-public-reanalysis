@@ -114,9 +114,12 @@ python -m unittest discover -s tests -t tests
 ```
 
 Stages are `before-production`, `after-run` and `before-publish`, or `all`. Exit
-code 0 means every evaluated check passed, 2 means at least one failed, 3 means
+code 0 means no evaluated check failed, 2 means at least one failed, 3 means
 the workspace is unusable, and 4 (`--strict` only) means an artifact that stage
-owed is absent. Always pass `--strict`: without it a workspace where nothing has
+owed is absent. Exit 0 includes WARNs, which a person reads before publishing.
+QA-1 passes only when the QA texts carry Interactive's own statement for the
+assessment and nothing else; any QA sentence edited or added is a WARN that
+quotes it. Always pass `--strict`: without it a workspace where nothing has
 happened exits 0. The one report whose exit code is not a verdict is a split
 unit's raw owner at `before-publish`: it is not a run and owes no run artifacts,
 so read its DSK-1 from it and ignore its exit code. Run the gate; do not infer

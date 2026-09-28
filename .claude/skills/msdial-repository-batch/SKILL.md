@@ -113,10 +113,13 @@ python D:\13_MSDIAL_Public_Reanalysis\code\scripts\verify-run-invariants.py `
 ```
 
 `--stage` is `before-production`, `after-run` or `before-publish`. Exit code 0
-means every evaluated check passed, 2 means at least one failed, 3 means the
+means no evaluated check failed, 2 means at least one failed, 3 means the
 workspace is unusable, and 4 (`--strict` only) means a check could not be
 evaluated because an artifact that stage was responsible for producing is
-absent. `--json` emits the full report.
+absent. `--json` emits the full report. Exit 0 includes WARNs: report them, and
+do not call a unit ready to publish while QA-1 WARNs. QA-1 passes only when the
+QA texts carry Interactive's own statement for the assessment and nothing else;
+its WARN quotes every other QA sentence for a person to read.
 
 **Always pass `--strict`.** Without it a workspace where nothing has happened
 exits 0: `ok` means "no check FAILed", and a directory holding an empty

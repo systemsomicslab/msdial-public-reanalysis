@@ -27,8 +27,10 @@ Usage:
     --stage           before-production | after-run | before-publish | all   (default: all)
     --json            emit the full report as JSON on stdout
 
-Exit codes: 0 all evaluated checks passed, 2 at least one failed, 3 the workspace is unusable,
+Exit codes: 0 no evaluated check failed, 2 at least one failed, 3 the workspace is unusable,
 4 (--strict only) a check could not be evaluated because an artifact the stage owed is absent.
+A WARN exits 0 and is for a person to read before publishing: QA-1's, for one, quotes every QA
+sentence that is not Interactive's own statement for the assessment.
 
 --strict exists because `ok` means "no check FAILed", and a workspace where nothing has happened
 produces no FAILs at all. Run against a directory holding an empty provenance/ and an empty
@@ -41,7 +43,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
+import math
 import os
 import re
 import sys
@@ -150,8 +154,9 @@ def _read_json(path: Path) -> tuple[dict | None, str]:
         return None, f"{path.name} is absent"
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return None, f"{path.name} could not be read: {exc}"
+    except (OSError, ValueError, RecursionError) as exc:
+        # RecursionError: a document nested deeper than the parser's stack, which is not a record.
+        return None, f"{path.name} could not be read: {type(exc).__name__}: {exc}"
     if not isinstance(parsed, dict):
         # Every record this gate reads is an object. A list or a bare value would otherwise reach a
         # check as if it were one and end the gate with a traceback, which is not a verdict.
@@ -165,7 +170,7 @@ def _read_csv_rows(path: Path) -> tuple[list[dict] | None, str]:
     try:
         with path.open(encoding="utf-8-sig", newline="") as handle:
             return list(csv.DictReader(handle)), ""
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, csv.Error) as exc:  # csv.Error: a field past csv.field_size_limit
         return None, f"{path.name} could not be read: {exc}"
 
 
@@ -1237,40 +1242,978 @@ def check_library_provenance_contradiction(
                libraries=sorted(identifiers), warnings=len(warnings))
 
 
+# QA-1 reads what a reader of the paper reads. The assessment in the publication report is the
+# record; the Methods, the QA results and the Supplementary Table repeat it. Until Interactive 0.5.1
+# a run with no QC and no Blank was written up as "assessed ... using ... QC precision and detection
+# rate, blank separation and carryover, PCA topology" and "1 of 1 evaluable prespecified QA criteria
+# were met": the six criteria that were not assessed recited as used, and left out of the count.
+#
+# What can be established is what Interactive's own sentences say, because their wording is fixed,
+# and what the table and the record say, because they are structured. Those are compared, and a
+# contradiction is a FAIL. Interactive's QA text is nothing but those sentences, so anything else in
+# it was written by someone else: English the gate cannot parse reliably, and for a person to read
+# (WARN). A PASS therefore means a text carries Interactive's statement for this assessment, it and
+# the table agree with the record, and nothing else was written about QA. Before the Methods' QA
+# section, which describes processing, QA-1 can only look for QA vocabulary.
+QA_PROSE_FILES = ("MS_DIAL_Materials_and_Methods.txt", "MS_DIAL_QA_Results.txt")
+QA_METHODS_FILE = QA_PROSE_FILES[0]
+QA_TABLE_FILE = "Supplementary_Table_MS_DIAL.tsv"
+QA_WORKBOOK_FILE = "Supplementary_Table_MS_DIAL.xlsx"
+QA_REPORT_FILE = "MS_DIAL_publication_report.json"
+QA_BUNDLE_FILE = "MS_DIAL_publication_reporting_bundle.zip"
+QA_TITLE = "QA prose matches the assessment it summarizes"
+QA_TEXT_LIMIT = 1024 * 1024          # one prose text; Interactive's are a few KB
+QA_TABLE_LIMIT = 8 * 1024 * 1024     # the table; Interactive's grows with the files, ~72 KB for five
+QA_BUNDLE_LIMIT = 12 * 1024 * 1024   # all the bundle's QA members together
+QA_LABEL_LIMIT = 300
+QA_STATUSES = ("pass", "fail", "not_assessed")
+QA_QC_METRICS = {"median_qc_rsd_percent", "qc_features_rsd_le_30_percent", "median_qc_detection_rate",
+                 "qc_pca_relative_dispersion"}
+QA_BLANK_METRICS = {"sample_blank_ratio_ge_3", "median_blank_carryover_ratio"}
+QA_SECTION_HEADING = re.compile(r"^[ \t]*Quality assurance[ \t]*$", re.MULTILINE)
+
+
+def _qa_template(pattern: str) -> "re.Pattern":
+    # Interactive's wording, its case included: "the other 2 (...)" in a person's sentence is not it.
+    return re.compile(pattern)
+
+
+# A template sentence starts a sentence: "Of 3 criteria for blanks, the other 2 ..." is not one.
+_QA_START = r"(?:^|(?<=[.!?]\s)|(?<=\|\s)|(?<=Quality\sassurance\s))"
+# The sentences Interactive 0.5.1 and later write (materials_methods._qa_criteria_sentence,
+# _qa_methods_sentence and _results_text), exactly, with any whitespace between their words.
+QA_T_OF = _qa_template(_QA_START + r"Of\s+(\d{1,9})\s+prespecified\s+QA\s+criteria\s*,\s+(\d{1,9})\s+could\s+be\s+"
+                       r"evaluated\s*\(([^()]{0,2000})\)\s*,\s+and\s+(\d{1,9})\s+of\s+them\s+(?:was|were)\s+met\s*\.")
+QA_T_NONE = _qa_template(_QA_START + r"None\s+of\s+the\s+(\d{1,9})\s+prespecified\s+QA\s+criteria\s+could\s+be\s+"
+                         r"evaluated\s*\.")
+QA_T_OTHER = _qa_template(_QA_START + r"The\s+other\s+(\d{1,9})\s*\(([^()]{0,2000})\)\s*could\s+not\s+be\s+assessed"
+                          r"(?:\s+because\s+the\s+run\s+had\s+(?:(\d{1,9})\s+QC\s+injection\(s\)\s*,\s+where\s+at\s+least\s+"
+                          r"three\s+are\s+needed(\s+and\s+no\s+Blank\s+files)?|(no\s+Blank\s+files)))?\s*\.")
+QA_T_REVIEW = _qa_template(_QA_START + r"Criteria\s+requiring\s+review\s+were\s*:\s*([^.]{0,1000}?)\s*\.(?=\s|$)")
+QA_T_FILES = _qa_template(_QA_START + r"Analytical\s+quality\s+was\s+assessed\s+from\s+(\d{1,9})\s+files?\s*\(\s*(\d{1,9})"
+                          r"\s+study\s+samples?\s*,\s+(\d{1,9})\s+pooled\s+QC\s+samples?\s*,\s+and\s+(\d{1,9})\s+blanks?"
+                          r"\s*\)\s*\.")
+QA_T_INJECTIONS = _qa_template(_QA_START + r"Quality\s+assessment\s+included\s+(\d{1,9})\s+injections\s+and\s+(\d{1,9})"
+                               r"\s+aligned\s+features\s*\.")
+QA_T_NO_MATRIX = _qa_template(_QA_START + r"(?:No\s+LC-MS\s+quality-assurance\s+matrix\s+was\s+supplied\s+when\s+this\s+"
+                              r"report\s+was\s+generated\s*;\s+QA\s+claims\s+should\s+be\s+added\s+after\s+assessment"
+                              r"|Quality-assurance\s+results\s+were\s+not\s+generated\s+because\s+no\s+LC-MS\s+QA\s+matrix"
+                              r"\s+was\s+supplied)\s*\.")
+QA_T_TABLE_NOTE = _qa_template(_QA_START + r"Individual\s+criteria\s+and\s+outcomes\s+are\s+reported\s+in\s+Supplementary"
+                               r"\s+Table\s+S1\s*\.")
+# The value sentences _results_text prints for a value that is not None: metric, sentence, scale.
+QA_T_VALUES = (
+    ("median_qc_rsd_percent", _qa_template(_QA_START + r"The\s+median\s+feature\s+RSD\s+among\s+QC\s+injections\s+was\s+"
+                                           r"(\S{1,40}?)%\s*\."), 1.0),
+    ("median_qc_detection_rate", _qa_template(_QA_START + r"The\s+median\s+QC\s+detection\s+rate\s+was\s+(\S{1,40}?)%"
+                                              r"\s*\."), 100.0),
+    ("qc_pca_relative_dispersion", _qa_template(_QA_START + r"QC\s+relative\s+dispersion\s+in\s+the\s+first\s+two\s+PCA"
+                                                r"\s+dimensions\s+was\s+(\S{1,40})\s+compared\s+with\s+all\s+displayed\s+"
+                                                r"samples\s*\."), 1.0),
+)
+# The sentences Interactive wrote before 0.5.1 (git 442d1af~1), exactly.
+QA_L_BATTERY = _qa_template(r"\busing\s+feature-intensity\s+distributions\s*,\s+QC\s+precision\s+and\s+detection\s+rate\s*,"
+                            r"\s+blank\s+separation\s+and\s+carryover\s*,\s+PCA\s+topology\s*,\s+analytical-order\s+drift\s*,"
+                            r"\s+MS/MS\s+acquisition\s*,\s+raw\s+signal-to-noise\s+ratios\s*,\s+and\s+internal-standard\s+"
+                            r"mass\s+and\s+retention-time\s+errors\s+where\s+available\s*\.")
+QA_L_FILES = _qa_template(_QA_START + r"Analytical\s+quality\s+was\s+assessed\s+from\s+(\d{1,9})\s+files?\s*\(\s*(\d{1,9})"
+                          r"\s+study\s+samples?\s*,\s+(\d{1,9})\s+pooled\s+QC\s+samples?\s*,\s+and\s+(\d{1,9})\s+blanks?"
+                          r"\s*\)\s+(?=using\s+feature-intensity)")
+QA_L_COUNT = _qa_template(_QA_START + r"(?:Overall\s*,\s+)?(\d{1,9})\s+of\s+(\d{1,9})\s+(?:prespecified\s*,\s+evaluable\s+"
+                          r"QA\s+criteria\s+were\s+met\s*;\s+individual\s+criteria\s+and\s+outcomes\s+are\s+reported\s+in\s+"
+                          r"Supplementary\s+Table\s+S1|evaluable\s+prespecified\s+QA\s+criteria\s+were\s+met)\s*\.")
+QA_L_NONE = _qa_template(_QA_START + r"Prespecified\s+QA\s+criteria\s+could\s+not\s+be\s+evaluated\s+from\s+the\s+"
+                         r"available\s+sample\s+types\s*\.")
+QA_TEMPLATES = (QA_T_OF, QA_T_NONE, QA_T_OTHER, QA_T_REVIEW, QA_T_FILES, QA_T_INJECTIONS, QA_T_NO_MATRIX,
+                QA_T_TABLE_NOTE, QA_L_BATTERY, QA_L_FILES, QA_L_COUNT, QA_L_NONE) + tuple(item[1] for item in QA_T_VALUES)
+
+# Before the Methods' QA section: what names QA, or one of the criteria. Interactive's processing
+# and annotation paragraphs use none of it; raw-file and library names, which may, are set aside first.
+QA_VOCABULARY = re.compile(
+    r"\bQA\b|\bQCs?\b|quality|\bprespecified\b|\bcriteri(?:a|on)\b|\bacceptance\b|\bRSDs?\b|\bCVs?\b"
+    r"|coefficients?\s+of\s+variation|\bprecision\b|reproducib|repeatab|\bdrift|contaminat|carry[- ]?over"
+    r"|blank\s+separation|sample\s*(?:/|-?\s*to\s*-?)\s*blank|\bPCA\b|dispersion|topology",
+    re.IGNORECASE)
+QA_FILE_NAMES = re.compile(
+    r"\S+\.(?:mzML|mzXML|mzData|raw|RAW|wiff2?|lcd|abf|ibf|mgf|msp|lbm2?|d)\b"
+    # The automatic RT-correction paragraph names its reference file, often a pooled QC ("QC-01").
+    r"|\breference\s+file\s+.{1,300}?(?=,\s+which\s+defines|\s+only\s+where|;\s+per-file)")
+# A whole sentence that says one thing of one criterion: the only English QA-1 reads as a claim.
+QA_SAID = (
+    ("met", r"(?:was|were|is|has\s+been)\s+(?:met|passed|satisfied)"),
+    ("not met", r"(?:(?:was|were|is|has\s+been)\s+not\s+(?:met|passed|satisfied)|failed)"),
+    ("not assessed", r"(?:could\s+not\s+be|cannot\s+be|was\s+not|were\s+not)\s+(?:assessed|evaluated)"),
+    ("value", r"was\s+([-+\u2212]?\d[\d,]{0,20}(?:\.\d{1,20})?(?:[eE][-+]?\d{1,3})?\s*%?)"),
+)
+
+
+def _qa_space(text: str) -> str:
+    # A hard wrap after a hyphen ("run-" at a line end) joins without the space the newline becomes.
+    text = text.replace("\u00ad", "").replace("\u2010", "-").replace("\u2011", "-").replace("\u00a0", " ")
+    return re.sub(r"\s+", " ", re.sub(r"(?<=\w)-[ \t]*\r?\n\s*(?=\w)", "-", text)).strip()
+
+
+def _qa_criteria_count(count: int) -> str:
+    return f"{count} {'criterion' if count == 1 else 'criteria'}"
+
+
+def _qa_short(text, limit: int = 160) -> str:
+    text = _qa_space(str(text))
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _qa_int(value) -> "int | None":
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number != int(number) or abs(number) > 1e12:
+        return None
+    return int(number)
+
+
+def _qa_float(value) -> "float | None":
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _qa_number(text: str) -> "tuple[float, float, bool] | None":
+    """(number, the tolerance its printed digits allow, whether it carried a %), or None if unreadable.
+
+    "1,234" could be a thousand or a decimal comma, so it is unreadable; "0,812" and "1.234,5" are not.
+    """
+    cleaned = _qa_space(str(text)).replace("\u2212", "-").replace(" ", "")
+    percent = cleaned.endswith("%")
+    cleaned = cleaned.rstrip("%")
+    if re.fullmatch(r"[-+]?[1-9]\d{0,2},\d{3}", cleaned):
+        return None
+    if re.fullmatch(r"[-+]?\d{1,30},\d{1,30}", cleaned):
+        cleaned = cleaned.replace(",", ".")          # a decimal comma
+    elif re.fullmatch(r"[-+]?\d{1,3}(?:,\d{3}){2,10}(?:\.\d{0,30})?|[-+]?\d{1,3},\d{3}\.\d{0,30}", cleaned):
+        cleaned = cleaned.replace(",", "")           # thousands
+    match = re.fullmatch(r"([-+]?(?:\d{1,30}(?:\.(\d{0,30}))?|\.(\d{1,30})))(?:[eE]([-+]?\d{1,3}))?", cleaned)
+    if not match:
+        return None
+    exponent = int(match.group(4) or 0)
+    if abs(exponent) > 300:
+        return None
+    try:
+        number = float(cleaned)
+        decimals = len(match.group(2) or match.group(3) or "")
+        tolerance = 0.5 * 10.0 ** (exponent - decimals) + 1e-12 * abs(number)
+    except (OverflowError, ValueError):
+        return None
+    if not (math.isfinite(number) and math.isfinite(tolerance)):
+        return None
+    return number, tolerance, percent
+
+
+def _qa_agrees(printed: str, recorded, *, scale: float = 1.0, unit: str = "", absolute: bool = False) -> "bool | None":
+    """Whether a printed number is the recorded one as far as its digits say; None if unreadable.
+
+    A fraction may be printed as a percent; an absolute criterion's value may be printed unsigned.
+    """
+    parsed, value = _qa_number(printed), _qa_float(recorded)
+    if parsed is None or value is None:
+        return None
+    number, tolerance, percent = parsed
+    if percent and scale == 1.0 and unit and unit != "%":
+        number, tolerance = number / 100.0, tolerance / 100.0
+    target = value * scale
+    if absolute:
+        number, target = abs(number), abs(target)
+    return abs(number - target) <= tolerance + 1e-12
+
+
+def _qa_label_pattern(label: str) -> "re.Pattern | None":
+    words = _qa_space(label).split()
+    if not words:
+        return None
+    return re.compile(r"(?<![\w/])" + r"[\s-]+".join(re.escape(word) for word in words) + r"(?!\w)", re.IGNORECASE)
+
+
+def _qa_fold(text: str) -> str:
+    return re.sub(r"[\s-]+", " ", text.casefold()).strip()
+
+
+def _qa_items(listing: str) -> list[str]:
+    """The names in a criteria list: separated by ';' as Interactive writes, or ',' and 'and'."""
+    text = _qa_space(listing).replace("\u2264", "<=").replace("\u2265", ">=")
+    text = re.sub(r"\s*(<=|>=)\s*", r" \1", text)
+    parts = re.split(r"\s*;\s*", text) if ";" in text else re.split(r"\s*,\s*(?:and\s+)?|\s+and\s+", text)
+    return [re.sub(r"^(?:the|a|an)\s+", "", part.strip(), flags=re.IGNORECASE).casefold() for part in parts if part.strip()]
+
+
+def _qa_listing(listing: str, expected: list[dict], criteria: list[dict]) -> "tuple[str, str]":
+    """('agrees' | 'contradicts' | 'unread', what differs), for a list against the criteria it should name."""
+    names = _qa_items(listing)
+    if len(names) == 1 and names[0] in ("none", "no criteria"):
+        names = []
+    known = {}
+    for item in criteria:
+        for name in item["names"]:
+            known[re.sub(r"\s*(<=|>=)\s*", r" \1", name)] = item
+    matched, unread = [], []
+    for name in names:
+        item = known.get(name)
+        (matched.append(item) if item is not None else unread.append(name))
+    wanted = {id(item) for item in expected}
+    got = [id(item) for item in matched]
+    wrong = [item["label"] for item in matched if id(item) not in wanted]
+    absent = [item["label"] for item in expected if id(item) not in got]
+    if wrong or (absent and not unread):
+        return "contradicts", "; ".join(filter(None, [
+            f"names {', '.join(wrong)}, which it should not" if wrong else "",
+            f"leaves out {', '.join(absent)}" if absent else ""]))
+    if unread:
+        return "unread", f"names {', '.join(unread)}, which QA-1 cannot match to a criterion"
+    if len(got) != len(set(got)):
+        return "unread", "names a criterion twice"
+    return "agrees", ""
+
+
+def _qa_sentences(text: str) -> list[str]:
+    parts = re.split(r"\s*\|\s*|(?<=[.!?])\s+", text)
+    return [part.strip() for part in parts if re.search(r"[^\s|]", part)]
+
+
+def _qa_duplicate_keys(path: Path) -> list[str]:
+    """Keys that appear twice in one object of a JSON file, which a reader resolves by keeping the last."""
+    repeated: list[str] = []
+
+    def hook(pairs):
+        seen = set()
+        for key, _ in pairs:
+            if key in seen:
+                repeated.append(key)
+            seen.add(key)
+        return dict(pairs)
+
+    try:
+        json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=hook)
+    except (OSError, ValueError, RecursionError):
+        pass
+    return repeated
+
+
+class _QaRecord:
+    """The assessment and the QA matrix summary behind it, and whether QA-1 could read them."""
+
+    def __init__(self, report_json: dict) -> None:
+        self.notes: list[str] = []
+        self.unreadable: list[str] = []
+        self.contradictions: list[str] = []
+        assessment = report_json.get("qa_assessment")
+        checks = assessment.get("checks") if isinstance(assessment, dict) else None
+        self.assessment = assessment if isinstance(assessment, dict) else {}
+        self.criteria: list[dict] = []
+        for index, item in enumerate(checks if isinstance(checks, list) else []):
+            if not isinstance(item, dict):
+                self.unreadable.append(f"entry {index + 1} is not an object")
+                continue
+            metric = item.get("metric") if isinstance(item.get("metric"), str) else ""
+            label = item.get("label") if isinstance(item.get("label"), str) else ""
+            status = item.get("status") if isinstance(item.get("status"), str) else None
+            metric, label = metric.strip(), _qa_space(label)
+            if not label or len(label) > QA_LABEL_LIMIT:
+                self.unreadable.append(f"entry {index + 1} ({metric[:40] or 'no metric'}) has no usable label")
+                continue
+            if ";" in label:
+                self.unreadable.append(f"{label!r} has a ';', which separates the names in a list")
+            if status not in QA_STATUSES:
+                self.unreadable.append(f"{label!r} has status {status!r}, not one of {', '.join(QA_STATUSES)}")
+                continue
+            words = r"[\s-]+".join(re.escape(word) for word in label.split())
+            operator = item.get("operator") if isinstance(item.get("operator"), str) else ""
+            self.criteria.append({
+                "metric": metric, "label": label, "status": status, "value": item.get("value"),
+                "operator": operator, "threshold": item.get("threshold"),
+                "absolute": operator.replace(" ", "").startswith("abs"),
+                "unit": item.get("unit") if isinstance(item.get("unit"), str) else "",
+                "names": {name.casefold() for name in (label, metric) if name},
+                "fold": _qa_fold(label),
+                "pattern": _qa_label_pattern(label),
+                "claims": [(kind, re.compile(r"(?:the\s+)?" + words + r"\s+" + said + r"\s*[.!]?", re.IGNORECASE))
+                           for kind, said in QA_SAID],
+            })
+        labels = Counter(item["label"].casefold() for item in self.criteria)
+        for label, count in labels.items():
+            if count > 1:
+                self.unreadable.append(f"{count} criteria share the label {label!r}")
+        self.assessed = [item for item in self.criteria if item["status"] != "not_assessed"]
+        self.missing = [item for item in self.criteria if item["status"] == "not_assessed"]
+        self.failed = [item for item in self.criteria if item["status"] == "fail"]
+        self.passed = sum(1 for item in self.criteria if item["status"] == "pass")
+        for field in ("evaluated", "passed"):
+            if field in self.assessment and _qa_int(self.assessment.get(field)) is None:
+                self.notes.append(f"qa_assessment.{field} is {_qa_short(self.assessment.get(field), 40)!r}, not a count, "
+                                  "and was not compared")
+        evaluated, passed = _qa_int(self.assessment.get("evaluated")), _qa_int(self.assessment.get("passed"))
+        if (evaluated is not None and evaluated != len(self.assessed)) or (passed is not None and passed != self.passed):
+            self.contradictions.append(f"the assessment records {evaluated} evaluated and {passed} passed, but its "
+                                       f"checks give {len(self.assessed)} and {self.passed}")
+        status = self.assessment.get("status")
+        derived = "not_assessed" if not self.assessed else ("pass" if self.passed == len(self.assessed) else "review")
+        if isinstance(status, str) and status.strip() and status.strip() != derived:
+            self.contradictions.append(f"the assessment's status is {status.strip()!r}, but its checks give {derived!r}")
+
+        qa_report = report_json.get("qa_report")
+        summary = qa_report.get("summary") if isinstance(qa_report, dict) else None
+        self.summary = summary if isinstance(summary, dict) else {}
+        self.present = bool(self.summary)
+        counts = self.summary.get("category_counts")
+        if counts is not None and not isinstance(counts, dict):
+            self.notes.append("qa_report.summary.category_counts is not an object and was not read")
+        self.categories = counts if isinstance(counts, dict) else {}
+        self.files = self._count(self.summary, "sample_count", "qa_report.summary.sample_count")
+        self.features = self._count(self.summary, "alignment_spot_count", "qa_report.summary.alignment_spot_count")
+        self.sample = self._count(self.categories, "Sample", "category_counts.Sample")
+        self.qc = self._count(self.categories, "QC", "category_counts.QC")
+        self.blank = self._count(self.categories, "Blank", "category_counts.Blank")
+        if self.assessed and not self.present:
+            self.notes.append(f"the report carries no QA matrix summary, although {len(self.assessed)} criteria were "
+                              "evaluated; the counts the texts give were not compared")
+        # Interactive judges each criterion on the summary's value of the same name.
+        for item in self.criteria:
+            if not self.present or item["metric"] not in self.summary:
+                continue
+            summary_value = self.summary.get(item["metric"])
+            if summary_value is None and item["status"] != "not_assessed":
+                self.contradictions.append(f"{item['label']!r} is {item['status']!r}, but the QA matrix summary "
+                                           "records no value for it")
+            elif summary_value is not None and _qa_float(summary_value) is not None:
+                recorded = _qa_float(item["value"])
+                if item["status"] == "not_assessed" or recorded is None:
+                    self.contradictions.append(f"{item['label']!r} is {item['status']!r} with no value, but the QA "
+                                               f"matrix summary records {_qa_short(summary_value, 40)}")
+                elif abs(recorded - float(summary_value)) > 1e-9 * max(1.0, abs(recorded)):
+                    self.contradictions.append(f"{item['label']!r} records {recorded}, but the QA matrix summary "
+                                               f"records {_qa_short(summary_value, 40)}")
+
+    def _count(self, mapping: dict, key: str, name: str) -> "int | None":
+        if key not in mapping:
+            return None
+        value = _qa_int(mapping.get(key))
+        if value is None or value < 0:
+            self.notes.append(f"{name} is {_qa_short(mapping.get(key), 40)!r}, not a count, and was not compared")
+            return None
+        return value
+
+
+def _qa_claim(sentence: str, criteria: list[dict]) -> str:
+    """A whole sentence that says one thing of one criterion against its status, or ''."""
+    folded = _qa_fold(sentence)
+    for item in criteria:
+        if not (folded.startswith(item["fold"]) or folded.startswith("the " + item["fold"])):
+            continue
+        for kind, pattern in item["claims"]:
+            match = pattern.fullmatch(sentence)
+            if not match:
+                continue
+            status = item["status"]
+            if kind == "met" and status != "pass":
+                return f"says {item['label']!r} was met; the assessment {'failed it' if status == 'fail' else 'did not assess it'}"
+            if kind == "not met" and status != "fail":
+                return f"says {item['label']!r} was not met; the assessment {'passed it' if status == 'pass' else 'did not assess it'}"
+            if kind == "not assessed" and status != "not_assessed":
+                return f"says {item['label']!r} could not be assessed; the assessment {'passed' if status == 'pass' else 'failed'} it"
+            if kind == "value":
+                if status == "not_assessed":
+                    return f"gives a value for {item['label']!r}, which was not assessed"
+                if _qa_agrees(match.group(1), item["value"], unit=item["unit"], absolute=item["absolute"]) is False:
+                    return f"gives {_qa_space(match.group(1))} for {item['label']!r}; the assessment records {item['value']}"
+    return ""
+
+
+def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) -> dict:
+    """What one text says of the assessment."""
+    fails: list[str] = []
+    warns: list[str] = []
+    criteria, assessed, missing, failed = record.criteria, record.assessed, record.missing, record.failed
+    total, passed = len(criteria), record.passed
+    heading = QA_SECTION_HEADING.search(text) if methods else None
+    flat = _qa_space(text[heading.end():] if heading else text)
+    before = _qa_space(text[:heading.start()]) if heading else ""
+    if methods and not heading:
+        first = min((match.start() for pattern in QA_TEMPLATES for match in [pattern.search(flat)] if match),
+                    default=None)
+        before, flat = (flat[:first], flat[first:]) if first is not None else (flat, "")
+        before = re.sub(r"\bQuality\s+assurance\s*$", "", before).strip()
+        if flat:
+            warns.append(f"{source}: has no 'Quality assurance' heading; its QA text was taken to start at "
+                         f"{_qa_short(flat, 60)!r}")
+
+    def uncompared(what: str) -> None:
+        warns.append(f"{source}: gives {what}, which the report has no figure to compare with")
+
+    spans: list[tuple[int, int]] = []
+    forms: list[str] = []
+    contradicted = False
+    reasons: list[str] = []
+    for match in QA_T_OF.finditer(flat):
+        spans.append(match.span())
+        stated = (int(match.group(1)), int(match.group(2)), int(match.group(4)))
+        if stated != (total, len(assessed), passed):
+            contradicted = True
+            fails.append(f"{source}: says {stated[1]} of {stated[0]} prespecified criteria could be evaluated and "
+                         f"{stated[2]} met; the assessment has {len(assessed)} of {total} and {passed} met")
+        verdict, detail = _qa_listing(match.group(3), assessed, criteria)
+        if verdict == "contradicts":
+            contradicted = True
+            fails.append(f"{source}: lists {_qa_short(match.group(3))!r} as evaluated, which {detail}")
+        elif verdict == "unread":
+            contradicted = True
+            warns.append(f"{source}: its list of evaluated criteria {detail}")
+        forms.append("statement")
+    for match in QA_T_NONE.finditer(flat):
+        spans.append(match.span())
+        if int(match.group(1)) != total or assessed:
+            contradicted = True
+            fails.append(f"{source}: says none of {match.group(1)} prespecified criteria could be evaluated; the "
+                         f"assessment evaluated {len(assessed)} of {total}")
+        forms.append("statement")
+    others = list(QA_T_OTHER.finditer(flat))
+    for match in others:
+        spans.append(match.span())
+        if int(match.group(1)) != len(missing):
+            contradicted = True
+            fails.append(f"{source}: says the other {match.group(1)} could not be assessed; the assessment could "
+                         f"not assess {len(missing)}")
+        verdict, detail = _qa_listing(match.group(2), missing, criteria)
+        if verdict == "contradicts":
+            contradicted = True
+            fails.append(f"{source}: lists {_qa_short(match.group(2))!r} as not assessed, which {detail}")
+        elif verdict == "unread":
+            contradicted = True
+            warns.append(f"{source}: its list of criteria not assessed {detail}")
+        stated_qc, blank_after_qc, blank_alone = match.group(3), match.group(4), match.group(5)
+        says_no_blank = bool(blank_after_qc or blank_alone)
+        if stated_qc is not None:
+            if record.qc is None:
+                uncompared(f"{stated_qc} QC injection(s) as the reason")
+            elif int(stated_qc) != record.qc:
+                fails.append(f"{source}: gives {stated_qc} QC injection(s) as the reason; the QA matrix records {record.qc}")
+            elif record.qc >= 3:
+                fails.append(f"{source}: gives {stated_qc} QC injection(s), 'where at least three are needed', as the reason")
+        if says_no_blank:
+            if record.blank is None:
+                uncompared("'no Blank files' as the reason")
+            elif record.blank:
+                fails.append(f"{source}: gives 'no Blank files' as the reason; the QA matrix records {record.blank}")
+        if stated_qc is None and not says_no_blank:
+            warns.append(f"{source}: does not say why {_qa_criteria_count(len(missing))} could not be assessed")
+        else:
+            reasons.append(_qa_space(match.group(0)[match.group(0).find("because"):].rstrip(".")))
+        if stated_qc is not None and not any(item["metric"] in QA_QC_METRICS for item in missing):
+            warns.append(f"{source}: gives the QC count as the reason, but no QC-based criterion is among those not assessed")
+        if says_no_blank and not any(item["metric"] in QA_BLANK_METRICS for item in missing):
+            warns.append(f"{source}: gives the missing blanks as the reason, but no blank-based criterion is among "
+                         "those not assessed")
+        if record.qc is not None and record.qc < 3 and stated_qc is None and any(
+                item["metric"] in QA_QC_METRICS for item in missing):
+            warns.append(f"{source}: does not give the QC count as a reason, although the run had {record.qc} QC")
+        if record.blank == 0 and not says_no_blank and any(item["metric"] in QA_BLANK_METRICS for item in missing):
+            warns.append(f"{source}: does not give the missing blanks as a reason, although the run had no Blank files")
+    for match in QA_T_REVIEW.finditer(flat):
+        spans.append(match.span())
+        verdict, detail = _qa_listing(match.group(1), failed, criteria)
+        if verdict == "contradicts":
+            fails.append(f"{source}: lists {_qa_short(match.group(1))!r} as requiring review, which {detail}")
+        elif verdict == "unread":
+            warns.append(f"{source}: its list of criteria requiring review {detail}")
+    for pattern in (QA_T_FILES, QA_L_FILES):
+        for match in pattern.finditer(flat):
+            spans.append(match.span())
+            stated = [int(group) for group in match.groups()]
+            recorded = [record.files, record.sample, record.qc, record.blank]
+            if any(want is not None and got != want for got, want in zip(stated, recorded)):
+                fails.append(f"{source}: says {stated[0]} files ({stated[1]} study samples, {stated[2]} QC, {stated[3]} "
+                             f"blanks); the QA matrix records {recorded[0]} ({recorded[1]}, {recorded[2]}, {recorded[3]})")
+            elif any(want is None for want in recorded):
+                uncompared(f"{stated[0]} files ({stated[1]} study samples, {stated[2]} QC, {stated[3]} blanks)")
+    for match in QA_T_INJECTIONS.finditer(flat):
+        spans.append(match.span())
+        stated = [int(group) for group in match.groups()]
+        recorded = [record.files, record.features]
+        if any(want is not None and got != want for got, want in zip(stated, recorded)):
+            fails.append(f"{source}: says {stated[0]} injections and {stated[1]} aligned features; the QA matrix "
+                         f"records {recorded[0]} and {recorded[1]}")
+        elif any(want is None for want in recorded):
+            uncompared(f"{stated[0]} injections and {stated[1]} aligned features")
+    for match in QA_T_NO_MATRIX.finditer(flat):
+        spans.append(match.span())
+        if record.present:
+            fails.append(f"{source}: says no QA matrix was supplied; the report carries its summary")
+        elif assessed:
+            fails.append(f"{source}: says no QA matrix was supplied; the assessment evaluated {len(assessed)} criteria")
+        forms.append("no matrix")
+    for match in QA_T_TABLE_NOTE.finditer(flat):
+        spans.append(match.span())
+    by_metric = {item["metric"]: item for item in criteria}
+    for metric, pattern, scale in QA_T_VALUES:
+        for match in pattern.finditer(flat):
+            spans.append(match.span())
+            item = by_metric.get(metric)
+            if item is None:
+                warns.append(f"{source}: gives a value for {metric}, which the assessment does not list")
+                continue
+            agrees = _qa_agrees(match.group(1), item["value"], scale=scale)
+            if item["status"] == "not_assessed":
+                if _qa_number(match.group(1)) is None:
+                    warns.append(f"{source}: prints {_qa_short(match.group(1), 40)!r} as the value of {item['label']!r}, "
+                                 "which was not assessed")
+                else:
+                    fails.append(f"{source}: gives {match.group(1)} as the value of {item['label']!r}, which was not assessed")
+            elif agrees is False:
+                fails.append(f"{source}: gives {match.group(1)} as the value of {item['label']!r}; the assessment "
+                             f"records {item['value']}")
+            elif agrees is None:
+                warns.append(f"{source}: gives {_qa_short(match.group(1), 40)!r} as the value of {item['label']!r}, "
+                             "which QA-1 cannot read as a number")
+
+    # The sentences Interactive wrote before 0.5.1.
+    if (QA_L_BATTERY.search(flat) or QA_L_BATTERY.search(before)) and missing:
+        fails.append(f"{source}: says quality was assessed using the whole battery, but {len(missing)} of the "
+                     f"criteria it names {'was' if len(missing) == 1 else 'were'} not assessed "
+                     f"({'; '.join(item['label'] for item in missing)})")
+    for match in QA_L_BATTERY.finditer(flat):
+        spans.append(match.span())
+    legacy_counts = list(QA_L_COUNT.finditer(flat))
+    for match in legacy_counts:
+        spans.append(match.span())
+        if (int(match.group(1)), int(match.group(2))) != (passed, len(assessed)):
+            contradicted = True
+            fails.append(f"{source}: says {match.group(1)} of {match.group(2)} evaluable criteria were met; the "
+                         f"assessment has {passed} of {len(assessed)}")
+        forms.append("evaluable count")
+    for match in QA_L_NONE.finditer(flat):
+        spans.append(match.span())
+        if assessed:
+            contradicted = True
+            fails.append(f"{source}: says no prespecified criterion could be evaluated; the assessment evaluated "
+                         f"{len(assessed)}")
+        forms.append("none from the sample types")
+
+    # What is left of the QA text once Interactive's sentences are taken out.
+    kept, position = [], 0
+    for low, high in sorted(spans):
+        if low > position:
+            kept.append(flat[position:low])
+        position = max(position, high)
+    kept.append(flat[position:])
+    residue = _qa_sentences(" | ".join(kept))
+    for sentence in residue:
+        claim = _qa_claim(sentence, criteria)
+        if claim:
+            fails.append(f"{source}: {claim}: {_qa_short(sentence)!r}")
+    if residue:
+        warns.append(f"{source}: {len(residue)} sentence(s) in its QA text are not Interactive's; read them: "
+                     + " | ".join(repr(_qa_short(sentence, 120)) for sentence in residue[:3]))
+    if legacy_counts and missing and not others:
+        # The older count leaves out the criteria it could not assess. Alone it says so by omission;
+        # beside a person's words, those words may say it.
+        message = (f"{source}: counts only the {len(assessed)} evaluable of {_qa_criteria_count(total)} and does not "
+                   f"say that {len(missing)} could not be assessed")
+        if residue:
+            warns.append(message + ", unless the other sentences do")
+        else:
+            contradicted = True
+            fails.append(message)
+    # Before the QA section: anything about QA in it.
+    if before:
+        scanned = QA_FILE_NAMES.sub(" ", before)
+        for sentence in _qa_sentences(scanned):
+            claim = _qa_claim(sentence, criteria)
+            if claim:
+                fails.append(f"{source}: {claim}: {_qa_short(sentence)!r}")
+            named = any(item["pattern"] and item["pattern"].search(sentence) for item in criteria)
+            if named or QA_VOCABULARY.search(sentence):
+                warns.append(f"{source}: speaks of QA before its QA section; read it: {_qa_short(sentence)!r}")
+
+    covers = not contradicted and (
+        ("statement" in forms and (not missing or bool(others)))
+        or ("no matrix" in forms and not assessed and not record.present)
+        or ("evaluable count" in forms and not missing)
+        or ("none from the sample types" in forms and not assessed))
+    if "statement" in forms and missing and not others:
+        warns.append(f"{source}: gives Interactive's count but not its sentence naming the {len(missing)} criteria "
+                     "that could not be assessed")
+    return {"source": source, "covers": covers, "forms": forms, "reasons": reasons, "fails": fails,
+            "warns": warns, "speaks": bool(forms or residue), "empty": not (flat or before),
+            "methods": methods}
+
+
+QA_STATUS_WORDS = {"pass": "pass", "passed": "pass", "met": "pass", "fail": "fail", "failed": "fail",
+                   "not_met": "fail", "not_assessed": "not_assessed", "not_assessable": "not_assessed",
+                   "not_evaluated": "not_assessed", "na": "not_assessed", "n/a": "not_assessed"}
+QA_NO_VALUE = {"", "not recorded", "na", "n/a", "none", "null", "-", "not assessed", "not available"}
+
+
+def _qa_table(source: str, table: str, record: _QaRecord) -> dict:
+    """The Supplementary Table's QA rows against the record."""
+    fails: list[str] = []
+    warns: list[str] = []
+    criteria = record.criteria
+    try:
+        parsed = list(csv.DictReader(io.StringIO(table, newline=""), delimiter="\t"))
+    except csv.Error as exc:
+        return {"source": source, "rows": 0, "fails": [], "warns": [f"{source}: could not be parsed ({exc})"]}
+    names = {name for item in criteria for name in item["names"]}
+    rows, near, elsewhere = [], set(), set()
+    for row in parsed:
+        section = _qa_space(str(row.get("Section") or "")).casefold()
+        if section == "quality assurance":
+            rows.append(row)
+            continue
+        if re.search(r"quality|\bqa\b", section):
+            near.add(section)
+        if _qa_space(str(row.get("Record") or "")).casefold() in names:
+            elsewhere.add(section)
+    for section in sorted(near):
+        warns.append(f"{source}: has rows under {_qa_short(section, 60)!r}, which QA-1 does not read as the QA section")
+    for section in sorted(elsewhere - near):
+        warns.append(f"{source}: has rows for a QA criterion under {_qa_short(section, 60)!r}")
+    if not rows:
+        return {"source": source, "rows": 0, "fails": fails, "warns": warns}
+    by_record: dict[str, list[tuple[str, str]]] = {}
+    for row in rows:
+        by_record.setdefault(_qa_space(str(row.get("Record") or "")).casefold(), []).append(
+            (_qa_space(str(row.get("Parameter") or "")).casefold(), str(row.get("Value") or "").strip()))
+
+    def status_of(text: str) -> "str | None":
+        return QA_STATUS_WORDS.get(re.sub(r"[\s-]+", "_", text.strip().casefold()))
+
+    known = set()
+    for item in criteria:
+        records = sorted(name for name in item["names"] if name in by_record)
+        if not records:
+            warns.append(f"{source}: has no rows for {item['label']!r}")
+            continue
+        known.update(records)
+        entries = [entry for name in records for entry in by_record[name]]
+        if not any(parameter == "assessment" for parameter, _ in entries):
+            warns.append(f"{source}: has no Assessment row for {item['label']!r}")
+        for parameter, value in entries:
+            if parameter == "assessment":
+                stated = status_of(value)
+                if stated is None:
+                    warns.append(f"{source}: assesses {item['label']!r} as {_qa_short(value, 40)!r}, which QA-1 cannot read")
+                elif stated != item["status"]:
+                    fails.append(f"{source}: assesses {item['label']!r} as {_qa_short(value, 40)!r}; the assessment says "
+                                 f"{item['status']!r}")
+            elif parameter == "observed":
+                if item["status"] == "not_assessed":
+                    if _qa_number(value) is not None:
+                        fails.append(f"{source}: gives {_qa_short(value, 40)} as observed for {item['label']!r}, which "
+                                     "was not assessed")
+                    elif value.strip().casefold() not in QA_NO_VALUE:
+                        warns.append(f"{source}: gives {_qa_short(value, 40)!r} as observed for {item['label']!r}, "
+                                     "which was not assessed")
+                    continue
+                agrees = _qa_agrees(value, item["value"], unit=item["unit"], absolute=item["absolute"])
+                if agrees is False:
+                    fails.append(f"{source}: gives {_qa_short(value, 40)} as observed for {item['label']!r}; the "
+                                 f"assessment records {item['value']}")
+                elif agrees is None and _qa_float(item["value"]) is not None:
+                    warns.append(f"{source}: gives {_qa_short(value, 40)!r} as observed for {item['label']!r}, which "
+                                 "QA-1 cannot read as a number")
+            elif parameter == "criterion":
+                if not item["operator"] or _qa_float(item["threshold"]) is None:
+                    continue
+                match = re.fullmatch(r"(abs\s*<=|<=|>=|<|>)\s*(.+)",
+                                     _qa_space(value).replace("\u2264", "<=").replace("\u2265", ">="))
+                threshold = _qa_agrees(match.group(2), item["threshold"], unit=item["unit"]) if match else None
+                if threshold is False:
+                    fails.append(f"{source}: gives {_qa_short(value, 40)!r} as the criterion for {item['label']!r}; "
+                                 f"the assessment applied {item['operator']} {item['threshold']}")
+                elif threshold is None:
+                    warns.append(f"{source}: gives {_qa_short(value, 40)!r} as the criterion for {item['label']!r}, "
+                                 "which QA-1 cannot read")
+                elif re.sub(r"\s+", "", match.group(1)) != re.sub(r"\s+", "", item["operator"]):
+                    warns.append(f"{source}: gives {_qa_short(value, 40)!r} as the criterion for {item['label']!r}; "
+                                 f"the assessment applied {item['operator']} {item['threshold']}")
+            else:
+                warns.append(f"{source}: gives {_qa_short(parameter, 40)!r} for {item['label']!r}, a row QA-1 does not read")
+    for record_name, entries in by_record.items():
+        if record_name in known or record_name == "observed metric":
+            continue
+        if any(parameter in ("assessment", "observed", "criterion") for parameter, _ in entries):
+            warns.append(f"{source}: gives an assessment, observed value or criterion for {_qa_short(record_name, 60)!r}, "
+                         "which the assessment does not list")
+    # "Observed metric" rows repeat the QA matrix summary the criteria were judged on.
+    summary = {str(name).casefold(): value for name, value in record.summary.items()}
+    observed_rows = by_record.get("observed metric", [])
+    if observed_rows and not record.present:
+        warns.append(f"{source}: gives {len(observed_rows)} observed metric(s), but the report carries no QA matrix summary")
+    for parameter, value in observed_rows if record.present else []:
+        if parameter not in summary:
+            warns.append(f"{source}: gives {_qa_short(parameter, 40)!r} as an observed metric, which the QA matrix "
+                         "summary does not carry")
+            continue
+        recorded = summary[parameter]
+        if isinstance(recorded, (dict, list)):
+            try:
+                differs = json.loads(value) != recorded
+            except (ValueError, RecursionError):
+                warns.append(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which QA-1 cannot read")
+                continue
+            if differs:
+                fails.append(f"{source}: gives {_qa_short(value, 80)} as {parameter}; the QA matrix records another value")
+            continue
+        if recorded is None or _qa_float(recorded) is None:
+            if _qa_number(value) is not None:
+                fails.append(f"{source}: gives {_qa_short(value, 40)} as {parameter}; the QA matrix records none")
+            elif value.strip().casefold() not in QA_NO_VALUE and recorded is None:
+                warns.append(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which the QA matrix records "
+                             "as none")
+            continue
+        agrees = _qa_agrees(value, recorded)
+        if agrees is False:
+            fails.append(f"{source}: gives {_qa_short(value, 40)} as {parameter}; the QA matrix records {recorded}")
+        elif agrees is None:
+            warns.append(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which QA-1 cannot read as a number")
+    return {"source": source, "rows": len(rows), "fails": fails, "warns": warns}
+
+
+def _qa_decode(data: bytes) -> "tuple[str | None, str]":
+    for bom, encoding in ((b"\xff\xfe\x00\x00", "utf-32"), (b"\x00\x00\xfe\xff", "utf-32"),
+                          (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
+        if data.startswith(bom):
+            break
+    else:
+        encoding = "utf-8-sig"
+    try:
+        text = data.decode(encoding)
+    except UnicodeDecodeError:
+        return None, "is not UTF-8 text"
+    if "\x00" in text:
+        return None, "holds NUL characters, so it is not UTF-8 text"
+    return text.replace("\r\n", "\n").replace("\r", "\n"), ""
+
+
+def _qa_read(path: Path, limit: int) -> "tuple[str | None, str]":
+    try:
+        if not path.is_file():
+            return None, "is not a file"
+        if path.stat().st_size > limit:
+            return None, f"is larger than {limit // (1024 * 1024)} MB"
+        return _qa_decode(path.read_bytes())
+    except OSError as exc:
+        return None, f"could not be read ({exc})"
+
+
+def _qa_bundle(path: Path, wanted: tuple[str, ...]) -> "tuple[list[tuple[str, str, str]], list[str]]":
+    """(name, member, text) for each wanted member of the bundle, and what could not be read."""
+    members: list[tuple[str, str, str]] = []
+    notes: list[str] = []
+    names = {name.casefold(): name for name in wanted}
+    stems = {name.rsplit(".", 1)[0].casefold(): name for name in wanted}
+    budget = QA_BUNDLE_LIMIT
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                base = info.filename.replace("\\", "/").rsplit("/", 1)[-1]
+                name = names.get(base.casefold())
+                if info.is_dir():
+                    continue
+                if name is None:
+                    if base.rsplit(".", 1)[0].casefold() in stems and not base.casefold().endswith(".xlsx"):
+                        notes.append(f"{path.name}:{info.filename} looks like a QA text under another name and was not read")
+                    continue
+                limit = QA_TABLE_LIMIT if name in (QA_TABLE_FILE, QA_REPORT_FILE) else QA_TEXT_LIMIT
+                if info.file_size > limit or info.file_size > budget:
+                    notes.append(f"{path.name}:{info.filename} is too large to read ({info.file_size} bytes)")
+                    continue
+                try:
+                    data = archive.read(info)
+                except Exception as exc:  # an encrypted member, an unknown compression, a corrupt stream
+                    notes.append(f"{path.name}:{info.filename} could not be read ({type(exc).__name__})")
+                    continue
+                budget -= len(data)
+                text, problem = _qa_decode(data)
+                if text is None:
+                    notes.append(f"{path.name}:{info.filename} {problem} and was not read")
+                    continue
+                members.append((name, info.filename, text))
+    except Exception as exc:  # not a zip, or one the archive reader cannot open
+        notes.append(f"{path.name} could not be opened ({type(exc).__name__})")
+    return members, notes
+
+
+def _qa_same_record(first: dict, second: dict) -> bool:
+    try:
+        def view(record: dict) -> str:
+            report = record.get("qa_report")
+            return json.dumps([record.get("qa_assessment"), report.get("summary") if isinstance(report, dict) else None],
+                              sort_keys=True)
+        return view(first) == view(second)
+    except (ValueError, TypeError, RecursionError):
+        return False
+
+
+def _qa_table_text(text: str) -> str:
+    return text.lstrip("\ufeff").replace("\r\n", "\n").rstrip("\n")
+
+
 def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) -> None:
-    """The generated prose must not recite a QA battery that was not performed."""
+    """QA-1. The published QA text and table say what the assessment says, and no more.
+
+    Read: the Materials and Methods, the QA results, the Supplementary Table, and their copies in
+    the reporting bundle. FAIL for what is established: one of Interactive's own sentences (0.5.1 and
+    later, or the wording before 0.5.1) whose counts, lists, values or reason contradict the
+    assessment or its QA matrix summary; that older wording's recital of criteria that were not
+    assessed, and its count of the evaluable ones alone; a whole sentence saying one criterion was
+    met, not met, not assessed or had a value, against its status; a table row that contradicts the
+    record; an assessment that contradicts its own checks or its QA matrix summary. WARN for what a
+    person must read: any other sentence in a QA text, QA vocabulary before the Methods' QA section, a
+    text about QA without Interactive's statement, a missing reason, a count with nothing to compare it
+    with, a table row QA-1 cannot place, a bundle copy or record that differs, a file QA-1 cannot read.
+    NOT_EVALUABLE when the assessment or every text is unreadable.
+    """
     if stage != "before-publish":
         return
-    report_json, reason = _read_json(output / "MS_DIAL_publication_report.json")
+    report_json, reason = _read_json(output / QA_REPORT_FILE)
     if report_json is None:
-        report.add("QA-1", stage, "QA prose matches the assessment it summarizes", NOT_EVALUABLE, reason)
+        report.add("QA-1", stage, QA_TITLE, NOT_EVALUABLE, reason)
         return
     assessment = report_json.get("qa_assessment")
     if not isinstance(assessment, dict) or not isinstance(assessment.get("checks"), list):
-        report.add("QA-1", stage, "QA prose matches the assessment it summarizes", NOT_EVALUABLE,
+        report.add("QA-1", stage, QA_TITLE, NOT_EVALUABLE,
                    "The publication report carries no qa_assessment.checks list.")
         return
-    checks = assessment["checks"]
-    statuses = Counter(str(item.get("status", "")) for item in checks if isinstance(item, dict))
-    evaluated = assessment.get("evaluated")
-    not_assessed = statuses.get("not_assessed", 0)
-    if not_assessed == 0:
-        report.add("QA-1", stage, "QA prose matches the assessment it summarizes", PASS,
-                   f"All {len(checks)} prespecified criteria were assessable.",
-                   statuses=dict(statuses), evaluated=evaluated)
+    record = _QaRecord(report_json)
+    repeated = _qa_duplicate_keys(output / QA_REPORT_FILE)
+    if repeated:
+        record.unreadable.append(f"the report repeats the key(s) {', '.join(sorted(set(repeated))[:5])}, so which "
+                                 "value it means cannot be told")
+    if record.unreadable or not record.criteria:
+        report.add("QA-1", stage, QA_TITLE, NOT_EVALUABLE,
+                   "The assessment cannot be read, so nothing can be compared with it: "
+                   + ("; ".join(_qa_short(item, 120) for item in record.unreadable[:5]) or "it lists no criteria."),
+                   unreadable=[_qa_short(item, 200) for item in record.unreadable[:20]])
         return
-    report.add(
-        "QA-1", stage, "QA prose matches the assessment it summarizes", WARN,
-        f"{not_assessed} of {len(checks)} prespecified QA criteria were not assessable, but the "
-        f"summary reports {evaluated} evaluated. The Methods prose renders that as a complete "
-        "battery. Before publishing, state which criteria were evaluated and why the rest were not.",
-        statuses=dict(statuses), evaluated=evaluated, total=len(checks),
-        not_assessed_names=[
-            str(item.get("name") or item.get("id") or "?")
-            for item in checks
-            if isinstance(item, dict) and item.get("status") == "not_assessed"
-        ],
-    )
+    assessed, missing, passed = record.assessed, record.missing, record.passed
+    notes = list(record.notes)
+
+    # Every copy: the files, and the bundle's members that differ from them, each distinct text once.
+    sources: list[tuple[str, str, str]] = []
+    local: dict[str, str] = {}
+    for name in QA_PROSE_FILES + (QA_TABLE_FILE,):
+        if not (output / name).exists():
+            continue
+        text, problem = _qa_read(output / name, QA_TABLE_LIMIT if name == QA_TABLE_FILE else QA_TEXT_LIMIT)
+        if text is None:
+            notes.append(f"{name} {problem} and was not read")
+            continue
+        local[name] = text
+
+        sources.append((name, name, text))
+
+    def key_of(name: str, text: str) -> tuple[str, str]:
+        return (name, _qa_table_text(text) if name == QA_TABLE_FILE else _qa_space(text))
+
+    if (output / QA_BUNDLE_FILE).exists():
+        members, problems = _qa_bundle(output / QA_BUNDLE_FILE, QA_PROSE_FILES + (QA_TABLE_FILE, QA_REPORT_FILE))
+        notes += problems
+        seen = {key_of(name, text) for name, text in local.items()}
+        for name, member, text in members:
+            where = f"{QA_BUNDLE_FILE}:{member}"
+            if name == QA_REPORT_FILE:
+                try:
+                    shared = json.loads(text)
+                except (ValueError, RecursionError):
+                    notes.append(f"{where} is not JSON")
+                    continue
+                if not isinstance(shared, dict) or not _qa_same_record(shared, report_json):
+                    notes.append(f"{where} carries a different assessment or QA summary from the report beside it")
+                continue
+            key = key_of(name, text)
+            if key in seen:
+                continue
+            seen.add(key)
+            if name in local:
+                notes.append(f"{where} differs from the {name} beside it")
+            sources.append((name, where, text))
+
+    judged, tables = [], []
+    for name, where, text in sources:
+        if name == QA_TABLE_FILE:
+            tables.append(_qa_table(where, text, record))
+        else:
+            judged.append(_qa_judge_text(where, text, record, methods=name == QA_METHODS_FILE))
+    record_fails = list(record.contradictions)
+    fails = record_fails + [message for item in judged + tables for message in item["fails"]]
+    warns = notes + [message for item in judged + tables for message in item["warns"]]
+    readable = [item for item in judged if not item["empty"]]
+    covering = [item for item in readable if item["covers"]]
+    if readable and not covering:
+        warns.append("no text carries the statement Interactive writes for this assessment"
+                     + (f", so none says which {len(missing)} criteria could not be assessed" if missing else ""))
+    for item in readable:
+        if item["speaks"] and not item["covers"] and covering and not item["fails"]:
+            warns.append(f"{item['source']}: speaks of QA without the statement Interactive writes for it")
+    cited = any(QA_T_TABLE_NOTE.search(_qa_space(text)) for name, _, text in sources if name != QA_TABLE_FILE)
+    if tables and not any(item["rows"] for item in tables) and (assessed or cited):
+        warns.append(f"{QA_TABLE_FILE} carries no Quality assurance rows, though "
+                     + ("a text says the criteria are reported there" if cited else f"{len(assessed)} were evaluated"))
+    workbook = (output / QA_WORKBOOK_FILE).exists()
+
+    evidence = {
+        "total": len(record.criteria), "evaluated": len(assessed), "passed": passed,
+        "evaluated_names": [item["label"] for item in assessed],
+        "not_assessed_names": [item["label"] for item in missing],
+        "read": [where for _, where, _ in sources],
+        "carrying_the_statement": [item["source"] for item in covering],
+        "fails": [_qa_short(message, 400) for message in fails[:20]], "fail_count": len(fails),
+        "warns": [_qa_short(message, 400) for message in warns[:20]], "warn_count": len(warns),
+        "not_read": [QA_WORKBOOK_FILE] if workbook else [],
+    }
+    if fails:
+        prose = len(fails) - len(record_fails)
+        headline = ("The published QA contradicts the assessment" if prose else "The assessment contradicts itself")
+        report.add("QA-1", stage, QA_TITLE, FAIL,
+                   f"{headline} ({len(assessed)} of {len(record.criteria)} criteria evaluated, {passed} met): "
+                   + " | ".join(_qa_short(message, 300) for message in fails[:3]), **evidence)
+        return
+    if not readable:
+        report.add("QA-1", stage, QA_TITLE, NOT_EVALUABLE,
+                   "No Materials and Methods or QA results text could be read, so no QA prose can be compared with "
+                   "the assessment." + (" " + "; ".join(_qa_short(note, 160) for note in notes[:3]) if notes else ""),
+                   **evidence)
+        return
+    if warns:
+        report.add("QA-1", stage, QA_TITLE, WARN,
+                   f"Nothing established contradicts the assessment ({len(assessed)} of {len(record.criteria)} "
+                   f"evaluated, {passed} met), but a person should read: "
+                   + " | ".join(_qa_short(message, 300) for message in warns[:3]), **evidence)
+        return
+    forms = {form for item in covering for form in item["forms"]}
+    reasons = sorted({reason for item in covering for reason in item["reasons"]})
+    if "no matrix" in forms:
+        what = f"say that no QA matrix was supplied, so none of the {len(record.criteria)} criteria was evaluated"
+    elif "none from the sample types" in forms and "statement" not in forms:
+        what = "say that no prespecified criterion could be evaluated from the available sample types"
+    elif missing:
+        what = (f"state that {len(assessed)} of {len(record.criteria)} prespecified criteria could be evaluated and "
+                f"{passed} met, and name the {len(missing)} that could not be assessed"
+                + (f", {'; '.join(reasons)}" if reasons else ""))
+    else:
+        what = f"state that all {len(record.criteria)} prespecified criteria could be evaluated and {passed} met"
+    table_note = (" The Supplementary Table's QA rows agree." if any(item["rows"] for item in tables)
+                  else " The Supplementary Table carries no QA rows." if tables else " No Supplementary Table was read.")
+    methods_note = (" and no QA vocabulary before the Methods' QA section"
+                    if any(item["methods"] for item in readable) else "")
+    report.add("QA-1", stage, QA_TITLE, PASS,
+               f"{', '.join(item['source'] for item in covering)} carry the statement Interactive writes for this "
+               f"assessment: they {what}.{table_note} No other sentence was found in the QA texts{methods_note}."
+               + (f" {QA_WORKBOOK_FILE} was not read." if workbook else ""), **evidence)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1573,8 +2516,9 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
         return
     claims = []
     skipped = []
+    unread: list[str] = []
     for path in present:
-        for member, text in _readable_members(path):
+        for member, text in _readable_members(path, unread):
             for sentence in SENTENCE.findall(text):
                 for match in CHECKSUM_CLAIM.finditer(sentence):
                     where = f"{path.name}:{member}: {sentence.strip()[:160]!r}"
@@ -1599,6 +2543,12 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
                    "claims, as negations or statements about the library; read them: "
                    + " | ".join(skipped[:3]),
                    artifacts=len(present), not_counted=skipped[:50], not_counted_count=len(skipped))
+        return
+    if unread:
+        report.add("SUM-2", stage, title, WARN,
+                   f"No known checksum-verification phrasing matched, but {len(unread)} artifact member(s) could "
+                   "not be read, so what they say is unknown: " + "; ".join(unread[:5]),
+                   artifacts=len(present), unread=unread[:20])
         return
     report.add("SUM-2", stage, title, PASS,
                f"No known checksum-verification phrasing matched in {len(present)} publication "
@@ -1925,8 +2875,9 @@ def check_no_private_path_in_a_shared_artifact(report: Report, output: Path, sta
                    "No publication artifact has been generated.", required=False)
         return
     hits: list[str] = []
+    unread: list[str] = []
     for path in present:
-        for member, payload in _readable_members(path):
+        for member, payload in _readable_members(path, unread):
             for match in PRIVATE_PATH_PATTERN.findall(payload):
                 hits.append(f"{path.name}:{member}: {match}")
     if hits:
@@ -1937,14 +2888,25 @@ def check_no_private_path_in_a_shared_artifact(report: Report, output: Path, sta
             occurrences=sorted(set(hits))[:10], scanned=[path.name for path in present],
         )
         return
+    if unread:
+        report.add("SEC-1", stage, "No private path in a shared artifact", WARN,
+                   f"No user-profile path matched, but {len(unread)} artifact member(s) could not be read, so "
+                   "what they hold is unknown: " + "; ".join(unread[:5]),
+                   scanned=[path.name for path in present], unread=unread[:20])
+        return
     report.add("SEC-1", stage, "No private path in a shared artifact", PASS,
                f"No user-profile path matched in {len(present)} shared artifact(s). This says no "
                "known pattern matched, not that no private data is present.",
                scanned=[path.name for path in present])
 
 
-def _readable_members(path: Path) -> list[tuple[str, str]]:
-    """Every text member of an artifact, so a zip is scanned by content and not by filename."""
+def _readable_members(path: Path, unread: list[str] | None = None) -> list[tuple[str, str]]:
+    """Every text member of an artifact, so a zip is scanned by content and not by filename.
+
+    What cannot be read is named in `unread`, so that a check scanning these does not pass content
+    it never saw.
+    """
+    unread = unread if unread is not None else []
     try:
         if path.suffix.casefold() == ".zip":
             members = []
@@ -1952,11 +2914,12 @@ def _readable_members(path: Path) -> list[tuple[str, str]]:
                 for name in archive.namelist():
                     try:
                         members.append((name, archive.read(name).decode("utf-8", "replace")))
-                    except (OSError, ValueError):
-                        continue
+                    except Exception as exc:  # an encrypted member, an unknown compression, a corrupt stream
+                        unread.append(f"{path.name}:{name} ({type(exc).__name__})")
             return members
         return [(path.name, path.read_text(encoding="utf-8", errors="replace"))]
-    except (OSError, ValueError, zipfile.BadZipFile):
+    except Exception as exc:  # not a zip, or unreadable
+        unread.append(f"{path.name} ({type(exc).__name__})")
         return []
 
 
@@ -2209,9 +3172,16 @@ def main(argv: list[str]) -> int:
         return 3
 
     report = verify(workspace, args.stage)
+    # Details quote the artifacts, and a console code page such as cp932 has no "\u2264" in it: the
+    # print would end the gate with no report at all. JSON escapes what it cannot print; text
+    # replaces it.
     if args.json:
-        print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        print(json.dumps(report.as_dict(), ensure_ascii=True, indent=2))
     else:
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
         print(render(report))
     if not report.ok:
         return 2
