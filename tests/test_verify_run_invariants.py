@@ -118,13 +118,16 @@ class WorkspaceBuilder:
         return self
 
     def publication(self, *, run_order_status: str | None = "pass",
-                    provenance_warning_for: str | None = None) -> "WorkspaceBuilder":
+                    provenance_warning_for: str | None = None,
+                    qa_prose: bool = True) -> "WorkspaceBuilder":
         checks = [
-            {"metric": "median_qc_rsd_percent", "value": None, "status": "not_assessed"},
+            {"metric": "median_qc_rsd_percent", "label": "Median QC feature RSD", "value": None,
+             "status": "not_assessed"},
         ]
         if run_order_status is not None:
             checks.append({
                 "metric": "run_order_intensity_correlation",
+                "label": "Absolute run-order/intensity correlation",
                 "value": 0.0747,
                 "status": run_order_status,
             })
@@ -133,15 +136,30 @@ class WorkspaceBuilder:
             warnings.append(
                 f"No persistent identifier was recorded for {provenance_warning_for}."
             )
+        evaluated = [item["label"] for item in checks if item["status"] != "not_assessed"]
+        passed = sum(1 for item in checks if item["status"] == "pass")
         (self.output / "MS_DIAL_publication_report.json").write_text(json.dumps({
             "qa_assessment": {
                 "status": "pass",
-                "passed": 1,
-                "evaluated": 1 if run_order_status else 0,
+                "passed": passed,
+                "evaluated": len(evaluated),
                 "checks": checks,
             },
+            # The QA matrix summary the counts in the prose are compared with.
+            "qa_report": {"summary": {"sample_count": 6, "alignment_spot_count": 3,
+                                      "category_counts": {"Sample": 6, "QC": 0, "Blank": 0}}},
             "library_provenance_warnings": warnings,
         }), encoding="utf-8")
+        if qa_prose:
+            # What Interactive 0.5.1 and later write, so QA-1 has the prose it reads.
+            if evaluated:
+                lead = (f"Of {len(checks)} prespecified QA criteria, {len(evaluated)} could be evaluated "
+                        f"({'; '.join(evaluated)}), and {passed} of them {'was' if passed == 1 else 'were'} met.")
+            else:
+                lead = f"None of the {len(checks)} prespecified QA criteria could be evaluated."
+            (self.output / "MS_DIAL_QA_Results.txt").write_text(
+                lead + " The other 1 (Median QC feature RSD) could not be assessed because the run had "
+                "0 QC injection(s), where at least three are needed.\n", encoding="utf-8")
         return self
 
     def workflow_settings(self, *, library: str, doi: str | None) -> "WorkspaceBuilder":
@@ -461,12 +479,21 @@ class PublicationTests(unittest.TestCase):
             report = verifier.verify(builder.root, "before-publish")
             self.assertEqual(verifier.PASS, _status(report, "LIB-1"))
 
-    def test_unassessable_qa_criteria_are_reported(self):
+    def test_prose_naming_the_unassessable_qa_criteria_passes(self):
+        # QA-1 used to WARN on every run with an unassessable criterion, whatever its prose said.
+        # It reads the prose now; tests/test_verify_qa_prose.py holds the cases.
         with tempfile.TemporaryDirectory() as directory:
             builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6)
             builder.publication(run_order_status="pass")
             report = verifier.verify(builder.root, "before-publish")
-            self.assertEqual(verifier.WARN, _status(report, "QA-1"))
+            self.assertEqual(verifier.PASS, _status(report, "QA-1"))
+
+    def test_qa_with_no_prose_to_compare_is_not_evaluable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6)
+            builder.publication(run_order_status="pass", qa_prose=False)
+            report = verifier.verify(builder.root, "before-publish")
+            self.assertEqual(verifier.NOT_EVALUABLE, _status(report, "QA-1"))
 
 
 class StrictModeTests(unittest.TestCase):
