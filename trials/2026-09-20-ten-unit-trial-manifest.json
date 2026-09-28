@@ -924,6 +924,11 @@
       "at": "2026-09-28",
       "by": "user",
       "decision": "A WARN a person must read holds a run from counting as completed until that person's reading is recorded: SUM-2's matching sentences set aside by a rule, and QA-1's sentences that are not Interactive's own. The record names who read which check's sentences, when, and what they concluded, with a hash of the sentences read, so that a changed text is read again. WARNs that report a known condition (SUM-1 for a repository publishing no checksums, MTH-1 for keys no Console reads) do not need it. Order: first Interactive's QA text gives a reason wherever a criterion could not be assessed, so that its own output needs no reader; then the record and the gate. Not yet implemented."
+    },
+    {
+      "at": "2026-09-28",
+      "by": "user",
+      "decision": "A QC-based QA criterion (median QC feature RSD, the fraction of QC features with RSD <=30%, the median QC detection rate, the QC PCA relative dispersion) is assessed only from three or more QC injections; below that it is not assessed, and its reason says how many QC the run had. Interactive computed an RSD or a dispersion from two QC and a detection rate from one while its warning said three were needed. Implemented with the per-criterion reasons in msdial-interactive-app#35 (Interactive 0.5.3) and read by QA-1 in msdial-public-reanalysis#13."
     }
   ]
 }
