@@ -169,7 +169,7 @@ def _table(checks: list[dict], edit=None, extra: list[str] | None = None) -> str
             ["Observed", "not recorded" if item["value"] is None else str(item["value"])],
             ["Criterion", f"{item['operator']} {item['threshold']}"],
             ["Assessment", item["status"]],
-        ]
+        ] + ([["Not assessed because", item["reason"]]] if item.get("reason") else [])
         if edit:
             rows = edit(item["label"], rows)
         for parameter, value in rows:
@@ -1165,6 +1165,367 @@ class RoundThreeTests(unittest.TestCase):
 
         self.assertEqual(verifier.WARN, sec.status, sec.detail)
         self.assertIn("could not be read", sec.detail)
+
+
+QC_REASON_0 = "the run had 0 QC injection(s), and at least three are needed"
+QC_REASON_2 = "the run had 2 QC injection(s), and at least three are needed"
+NO_BLANK = "the run had no Blank files"
+BLANK_ORDER = "no Blank file followed an injection with detected features in its batch"
+QC_LABELS = ("Median QC feature RSD, Fraction of QC features with RSD <=30%, Median QC detection rate and QC PCA "
+             "relative dispersion")
+
+
+def _reasoned(statuses: dict, values: dict, reasons: dict) -> list[dict]:
+    checks = _checks(statuses, values)
+    for item in checks:
+        if item["status"] == "not_assessed":
+            item["reason"] = reasons[item["metric"]]
+    return checks
+
+
+class Interactive053Tests(unittest.TestCase):
+    """From 0.5.3 each criterion that could not be assessed carries the reason it fell to."""
+
+    OTHER_0 = (f"The other 6 ({SIX}) could not be assessed: {QC_LABELS} because {QC_REASON_0}; Fraction of features "
+               f"with Sample/Blank >=3 and Median blank carryover ratio because {NO_BLANK}.")
+    NONE_BLANK = {
+        "statuses": {"run_order_intensity_correlation": "fail"},
+        "values": {"run_order_intensity_correlation": -0.4988351017208908},
+        "reasons": {metric: (NO_BLANK if metric in ("sample_blank_ratio_ge_3", "median_blank_carryover_ratio")
+                             else QC_REASON_0) for metric, *_ in SEVEN[:6]},
+        "summary": INTERACTIVE_052["summary"],
+    }
+    TWO_QC = {
+        "statuses": {"sample_blank_ratio_ge_3": "pass", "run_order_intensity_correlation": "pass"},
+        "values": {"sample_blank_ratio_ge_3": 0.8, "run_order_intensity_correlation": 0.1},
+        "reasons": {"median_qc_rsd_percent": QC_REASON_2, "qc_features_rsd_le_30_percent": QC_REASON_2,
+                    "median_qc_detection_rate": QC_REASON_2, "qc_pca_relative_dispersion": QC_REASON_2,
+                    "median_blank_carryover_ratio": BLANK_ORDER},
+        "summary": {"sample_count": 9, "alignment_spot_count": 90,
+                    "category_counts": {"Sample": 5, "QC": 2, "Blank": 2}},
+    }
+
+    def results_0(self) -> str:
+        return ("Quality assessment included 5 injections and 18098 aligned features. Of 7 prespecified QA criteria, 1 "
+                "could be evaluated (Absolute run-order/intensity correlation), and 0 of them were met. " + self.OTHER_0
+                + " Individual criteria and outcomes are reported in Supplementary Table S1. Criteria requiring review "
+                "were: Absolute run-order/intensity correlation.\n")
+
+    def results_2(self) -> str:
+        missing = "; ".join(LABEL[m] for m in ("median_qc_rsd_percent", "qc_features_rsd_le_30_percent",
+                                               "median_qc_detection_rate", "qc_pca_relative_dispersion",
+                                               "median_blank_carryover_ratio"))
+        return ("Quality assessment included 9 injections and 90 aligned features. Of 7 prespecified QA criteria, 2 could "
+                "be evaluated (Fraction of features with Sample/Blank >=3; Absolute run-order/intensity correlation), and "
+                f"2 of them were met. The other 5 ({missing}) could not be assessed: {QC_LABELS} because {QC_REASON_2}; "
+                f"Median blank carryover ratio because {BLANK_ORDER}. Individual criteria and outcomes are reported in "
+                "Supplementary Table S1.\n")
+
+    def check(self, fixture: dict, results: str, *, checks=None, table=True, edit=None):
+        checks = checks or _reasoned(fixture["statuses"], fixture["values"], fixture["reasons"])
+        with tempfile.TemporaryDirectory() as directory:
+            return Workspace(Path(directory), checks, summary=fixture["summary"], results=results,
+                             table=_table(checks, edit) if table else None).qa1()
+
+    def test_what_interactive_0_5_3_writes_passes(self) -> None:
+        for name, fixture, results in (("no QC, no blanks", self.NONE_BLANK, self.results_0()),
+                                       ("two QC, a blank first", self.TWO_QC, self.results_2())):
+            with self.subTest(name):
+                check = self.check(fixture, results)
+                self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn(f"(because {QC_REASON_0}; because {NO_BLANK})", self.check(self.NONE_BLANK, self.results_0()).detail)
+
+    def test_a_reason_the_record_does_not_give_is_refused(self) -> None:
+        results_0, results_2 = self.results_0(), self.results_2()
+        cases = {
+            "the QC count": (self.NONE_BLANK, results_0.replace("had 0 QC", "had 2 QC"),
+                             f"the assessment records {QC_REASON_0!r}"),
+            "another reason": (self.TWO_QC, results_2.replace(f"Median blank carryover ratio because {BLANK_ORDER}",
+                                                              f"Median blank carryover ratio because {NO_BLANK}"),
+                               f"the assessment records {BLANK_ORDER!r}"),
+            "a reason for a criterion that was assessed": (
+                self.TWO_QC, results_2.replace("Median blank carryover ratio because",
+                                               "Median blank carryover ratio and Absolute run-order/intensity correlation "
+                                               "because"),
+                "gives a reason 'Absolute run-order/intensity correlation' could not be assessed"),
+        }
+        for name, (fixture, results, message) in cases.items():
+            with self.subTest(name):
+                check = self.check(fixture, results)
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(message, _joined(check, "fails"))
+
+    def test_where_the_record_gives_no_reasons_the_text_is_checked_against_the_counts(self) -> None:
+        results_0, results_2 = self.results_0(), self.results_2()
+        plain_0 = _checks(self.NONE_BLANK["statuses"], self.NONE_BLANK["values"])
+        plain_2 = _checks(self.TWO_QC["statuses"], self.TWO_QC["values"])
+        cases = {
+            "the QC count": (self.NONE_BLANK, plain_0, results_0.replace("had 0 QC", "had 2 QC"),
+                             "gives 2 QC injection(s) as the reason; the QA matrix records 0"),
+            "a reason that is no reason for the criterion": (
+                self.TWO_QC, plain_2, results_2.replace(f"; Median blank carryover ratio because {BLANK_ORDER}", "")
+                .replace("QC PCA relative dispersion because",
+                         "QC PCA relative dispersion and Median blank carryover ratio because"),
+                "which is no reason for that criterion"),
+            "no blanks, but there were": (
+                self.TWO_QC, plain_2, results_2.replace(f"Median blank carryover ratio because {BLANK_ORDER}",
+                                                        f"Median blank carryover ratio because {NO_BLANK}"),
+                "gives 'no Blank files' as the reason; the QA matrix records 2"),
+        }
+        for name, (fixture, checks, results, message) in cases.items():
+            with self.subTest(name):
+                check = self.check(fixture, results, checks=checks, table=False)
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(message, _joined(check, "fails"))
+
+    def test_a_reason_the_counts_do_not_decide_is_for_a_person(self) -> None:
+        plain = _checks(self.NONE_BLANK["statuses"], self.NONE_BLANK["values"])
+        results = self.results_0().replace(f"because {QC_REASON_0}", "because the QA matrix gives no value for it")
+        check = self.check(self.NONE_BLANK, results, checks=plain, table=False)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("but the counts decide another reason (qc count)", _joined(check, "warns"))
+
+    def test_the_records_own_reasons_are_checked(self) -> None:
+        def reasons(**changes):
+            return dict(self.TWO_QC["reasons"], **changes)
+
+        cases = {
+            "a reason the counts refute": (reasons(median_blank_carryover_ratio=NO_BLANK), None,
+                                           "the assessment gives 'no Blank files' as the reason; the QA matrix records 2"),
+            "a reason for another criterion": (reasons(median_blank_carryover_ratio=QC_REASON_2), None,
+                                               "which is no reason for that criterion"),
+            "the summary's reason differs": (self.TWO_QC["reasons"],
+                                             {"median_blank_carryover_ratio": NO_BLANK},
+                                             "its check gives"),
+        }
+        for name, (record_reasons, summary_reasons, message) in cases.items():
+            with self.subTest(name):
+                checks = _reasoned(self.TWO_QC["statuses"], self.TWO_QC["values"], record_reasons)
+                fixture = dict(self.TWO_QC)
+                if summary_reasons is not None:
+                    fixture["summary"] = dict(self.TWO_QC["summary"], not_assessed_reasons=dict(
+                        self.TWO_QC["reasons"], **summary_reasons))
+                check = self.check(fixture, self.results_2(), checks=checks, table=False)
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(message, _joined(check, "fails"))
+
+    def test_a_qc_criterion_needs_three_qc(self) -> None:
+        statuses = dict(self.TWO_QC["statuses"], median_qc_rsd_percent="pass")
+        values = dict(self.TWO_QC["values"], median_qc_rsd_percent=12.0)
+        with_reasons = _reasoned(statuses, values, self.TWO_QC["reasons"])
+        without = _checks(statuses, values)
+        fixture = dict(self.TWO_QC, statuses=statuses, values=values)
+        new = self.check(fixture, "MS-DIAL was used.", checks=with_reasons, table=False)
+        old = self.check(fixture, "MS-DIAL was used.", checks=without, table=False)
+
+        self.assertEqual(verifier.FAIL, new.status, new.detail)
+        self.assertIn("a QC-based criterion needs at least three", _joined(new, "fails"))
+        self.assertIn("a record from before Interactive 0.5.3", _joined(old, "warns"))
+        self.assertEqual(0, old.evidence["fail_count"])
+
+    def test_interactive_0_5_2_wording_beside_a_0_5_3_record(self) -> None:
+        old_other = (f"The other 6 ({SIX}) could not be assessed because the run had 0 QC injection(s), where at least "
+                     "three are needed and no Blank files.")
+        check = self.check(self.NONE_BLANK, self.results_0().replace(self.OTHER_0, old_other))
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("gives Interactive 0.5.2's reason for all", _joined(check, "warns"))
+
+        only_qc = old_other.replace(" and no Blank files", "")
+        check = self.check(self.NONE_BLANK, self.results_0().replace(self.OTHER_0, only_qc))
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn(f"the assessment records {NO_BLANK!r}", _joined(check, "fails"))
+
+    def test_a_record_that_leaves_one_criterion_without_a_reason_is_for_a_person(self) -> None:
+        checks = _reasoned(self.TWO_QC["statuses"], self.TWO_QC["values"], self.TWO_QC["reasons"])
+        next(item for item in checks if item["metric"] == "median_blank_carryover_ratio").pop("reason")
+        check = self.check(self.TWO_QC, self.results_2(), checks=checks, table=False)
+
+        self.assertIn("gives no reason 'Median blank carryover ratio' could not be assessed, though it gives one",
+                      _joined(check, "warns"))
+
+    def test_table_reasons_are_read_as_written(self) -> None:
+        def edit(value):
+            def change(label, rows):
+                return [[name, value if name == "Not assessed because" and label == LABEL["median_blank_carryover_ratio"]
+                         else old] for name, old in rows]
+            return change
+
+        honest = self.check(self.TWO_QC, self.results_2(), edit=edit(BLANK_ORDER[0].upper() + BLANK_ORDER[1:] + "."))
+        unknown = self.check(self.TWO_QC, self.results_2(), edit=edit("the blanks came first"))
+
+        self.assertEqual(verifier.PASS, honest.status, honest.detail)
+        self.assertEqual(verifier.WARN, unknown.status, unknown.detail)
+        self.assertIn("which QA-1 cannot read as one of Interactive's reasons", _joined(unknown, "warns"))
+
+    def test_a_reason_that_is_not_text_makes_the_record_unreadable(self) -> None:
+        checks = _reasoned(self.TWO_QC["statuses"], self.TWO_QC["values"], self.TWO_QC["reasons"])
+        checks[0]["reason"] = {"why": "no QC"}
+        check = self.check(self.TWO_QC, self.results_2(), checks=checks, table=False)
+
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status, check.detail)
+
+    def test_the_count_and_list_of_the_0_5_3_sentence_are_compared(self) -> None:
+        results = self.results_2()
+        for name, text, verdict, key, message in (
+            ("the count", results.replace("The other 5 (", "The other 4 ("), verifier.FAIL, "fails",
+             "says the other 4 could not be assessed"),
+            ("the list", results.replace("QC PCA relative dispersion; Median blank", "Median blank"), verifier.FAIL, "fails",
+             "as not assessed, which leaves out QC PCA relative dispersion"),
+            ("a name QA-1 cannot match", results.replace("QC PCA relative dispersion; Median blank",
+                                                         "QC PCA dispersion; Median blank"), verifier.WARN, "warns",
+             "its list of criteria not assessed names"),
+        ):
+            with self.subTest(name):
+                check = self.check(self.TWO_QC, text)
+                self.assertEqual(verdict, check.status, check.detail)
+                self.assertIn(message, _joined(check, key))
+
+    def test_a_table_reason_the_record_does_not_carry_is_for_a_person(self) -> None:
+        def row(label, rows):
+            return rows + [["Not assessed because", NO_BLANK]] if label == LABEL["median_blank_carryover_ratio"] else rows
+
+        checks = _checks(self.TWO_QC["statuses"], self.TWO_QC["values"])
+        results = self.results_2().replace(f"could not be assessed: {QC_LABELS} because {QC_REASON_2}; Median blank "
+                                           f"carryover ratio because {BLANK_ORDER}.",
+                                           "could not be assessed because the run had 2 QC injection(s), where at "
+                                           "least three are needed.")
+        check = self.check(self.TWO_QC, results, checks=checks, edit=row)
+
+        self.assertIn("a reason the assessment does not record", _joined(check, "warns"))
+
+    def test_a_criterion_left_without_a_reason_is_for_a_person(self) -> None:
+        results = self.results_2().replace(f"; Median blank carryover ratio because {BLANK_ORDER}", "")
+        check = self.check(self.TWO_QC, results)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("does not say why 'Median blank carryover ratio' could not be assessed", _joined(check, "warns"))
+
+    def test_a_reason_qa1_does_not_know_is_for_a_person(self) -> None:
+        results = self.results_2().replace(BLANK_ORDER, "the blanks were run first")
+        check = self.check(self.TWO_QC, results)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual(0, check.evidence["fail_count"])
+
+    def test_the_table_gives_each_reason_as_the_record_does(self) -> None:
+        def row(metric, value):
+            def edit(label, rows):
+                return rows + [["Not assessed because", value]] if label == LABEL[metric] else rows
+            return edit
+
+        def changed(label, rows):
+            return [[name, NO_BLANK if name == "Not assessed because" and label == LABEL["median_blank_carryover_ratio"]
+                     else value] for name, value in rows]
+
+        for name, edit, message in (
+            ("a reason the record does not give", changed, "the assessment records 'no Blank file followed"),
+            ("a reason for a criterion that was assessed", row("run_order_intensity_correlation", NO_BLANK),
+             "as why 'Absolute run-order/intensity correlation' could not be assessed; the assessment passed it"),
+        ):
+            with self.subTest(name):
+                check = self.check(self.TWO_QC, self.results_2(), edit=edit)
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(message, _joined(check, "fails"))
+
+    def test_a_record_giving_a_reason_for_an_assessed_criterion_contradicts_itself(self) -> None:
+        checks = _reasoned(self.TWO_QC["statuses"], self.TWO_QC["values"], self.TWO_QC["reasons"])
+        next(item for item in checks if item["metric"] == "sample_blank_ratio_ge_3")["reason"] = NO_BLANK
+        check = self.check(self.TWO_QC, self.results_2(), checks=checks)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("gives a reason it could not be assessed", _joined(check, "fails"))
+
+    def test_the_shared_sentence_is_read_by_the_version_of_the_record(self) -> None:
+        # "because the run had no Blank files" is 0.5.2's reason for the run and 0.5.3's for each
+        # criterion; a QC criterion given it is a contradiction only in a record that carries reasons.
+        statuses = {metric: "pass" for metric, *_ in SEVEN} | {"median_qc_detection_rate": "not_assessed"}
+        values = {metric: 0.9 for metric, *_ in SEVEN}
+        values.pop("median_qc_detection_rate")
+        summary = {"sample_count": 9, "alignment_spot_count": 90, "category_counts": {"Sample": 6, "QC": 3, "Blank": 0}}
+        results = ("Of 7 prespecified QA criteria, 6 could be evaluated (" + "; ".join(
+            LABEL[m] for m, *_ in SEVEN if m != "median_qc_detection_rate") + "), and 6 of them were met. The other 1 "
+            f"(Median QC detection rate) could not be assessed because {NO_BLANK}.")
+        fixture = {"statuses": statuses, "values": values, "summary": summary,
+                   "reasons": {"median_qc_detection_rate": "the QA matrix gives no value for it"}}
+        old = self.check(fixture, results, checks=_checks(statuses, values), table=False)
+        new = self.check(fixture, results, table=False)
+
+        self.assertEqual(0, old.evidence["fail_count"], old.evidence["fails"])
+        self.assertEqual(verifier.FAIL, new.status, new.detail)
+
+
+class RecordReadingTests(unittest.TestCase):
+    """What QA-1 notes, or refuses, about the record itself, one branch each."""
+
+    TWO_QC = Interactive053Tests.TWO_QC
+
+    def check(self, checks, summary, results, assessment=None):
+        with tempfile.TemporaryDirectory() as directory:
+            return Workspace(Path(directory), checks, summary=summary, results=results, assessment=assessment).qa1()
+
+    def reasoned(self, **changes):
+        return _reasoned(self.TWO_QC["statuses"], self.TWO_QC["values"], dict(self.TWO_QC["reasons"], **changes))
+
+    def test_what_the_record_cannot_give_is_noted(self) -> None:
+        results = Interactive053Tests().results_2()
+        summary = self.TWO_QC["summary"]
+        cases = {
+            "a reason with no count to compare": (
+                self.reasoned(), {"sample_count": 9, "alignment_spot_count": 90}, None,
+                "which the report has no figure to compare with"),
+            "counts that are not an object": (self.reasoned(), dict(summary, category_counts=[5, 2, 2]), None,
+                                              "category_counts is not an object"),
+            "a count that is not a count": (self.reasoned(), dict(summary, sample_count="nine"), None,
+                                            "qa_report.summary.sample_count is 'nine', not a count"),
+            "evaluated that is not a count": (self.reasoned(), summary, {"evaluated": "two"},
+                                              "qa_assessment.evaluated is 'two', not a count"),
+            "reasons that are not an object": (self.reasoned(), dict(summary, not_assessed_reasons=["x"]), None,
+                                               "not_assessed_reasons is not an object"),
+            "no summary beside evaluated criteria": (self.reasoned(), None, None,
+                                                     "the report carries no QA matrix summary, although 2 criteria"),
+        }
+        for name, (checks, summary_value, assessment, message) in cases.items():
+            with self.subTest(name):
+                check = self.check(checks, summary_value, results, assessment)
+                self.assertIn(message, _joined(check, "warns"))
+
+    def test_what_the_record_contradicts_is_refused(self) -> None:
+        results = Interactive053Tests().results_2()
+        summary = self.TWO_QC["summary"]
+        cases = {
+            "no matrix, but there is one": (self.reasoned(median_blank_carryover_ratio="no LC-MS QA matrix was supplied"),
+                                            summary, "gives 'no LC-MS QA matrix was supplied' as a reason"),
+            "a summary reason for an assessed criterion": (
+                self.reasoned(), dict(summary, not_assessed_reasons=dict(self.TWO_QC["reasons"],
+                                                                          run_order_intensity_correlation=NO_BLANK)),
+                "the QA matrix summary gives a reason 'Absolute run-order/intensity correlation' could not be assessed"),
+            "an assessed criterion with no value in the summary": (
+                self.reasoned(), dict(summary, run_order_intensity_correlation=None),
+                "'Absolute run-order/intensity correlation' is 'pass', but the QA matrix summary records no value"),
+        }
+        for name, (checks, summary_value, message) in cases.items():
+            with self.subTest(name):
+                check = self.check(checks, summary_value, results)
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(message, _joined(check, "fails"))
+
+    def test_groups_that_name_a_criterion_qa1_cannot_match_or_twice(self) -> None:
+        results = Interactive053Tests().results_2()
+        cases = {
+            "an unknown name": (results.replace(f"Median blank carryover ratio because {BLANK_ORDER}",
+                                                f"Median blank carry-over ratio because {BLANK_ORDER}"),
+                                "gives a reason for median blank carry-over ratio, which QA-1 cannot match"),
+            "one criterion given two reasons": (
+                results.replace("QC PCA relative dispersion because",
+                                "QC PCA relative dispersion and Median blank carryover ratio because"),
+                "gives 'Median blank carryover ratio' more than one reason"),
+        }
+        for name, (text_value, message) in cases.items():
+            with self.subTest(name):
+                check = self.check(self.reasoned(), self.TWO_QC["summary"], text_value)
+                self.assertNotEqual(verifier.PASS, check.status)
+                self.assertIn(message, _joined(check, "warns"))
 
 
 class CommandLineTests(unittest.TestCase):
