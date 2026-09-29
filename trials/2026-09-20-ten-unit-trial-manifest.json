@@ -81,7 +81,7 @@
       {
         "id": "B3",
         "stage": "class_settled",
-        "artifacts": "project.class_proposal ratified (accepted, confirmed or approved). An abstention leaves no artifact yet",
+        "artifacts": "project.class_proposal ratified (accepted, confirmed or approved): a Class proposal, or where the Catalog abstains, the abstention saved with msdial_catalog_save_class_proposal(abstain=True) - no field selected, every sample in the one Class 'All', the reason in contrast_definition",
         "judged_by": [
           "CLS-3"
         ],

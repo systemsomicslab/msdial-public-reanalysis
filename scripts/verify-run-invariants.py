@@ -1006,36 +1006,53 @@ def check_analytical_order_is_real(
         )
         return
     if sequential:
+        single = len(set(classes)) == 1
         report.add(
             "ORD-1", stage, "Recorded analytical order is a measurement", WARN,
             "analytical_order is exactly the row number. It may still be the true injection order, "
-            "but nothing here establishes that it is.",
-            samples=len(order),
+            "but nothing here establishes that it is."
+            + (" With every sample in one Class no Class pattern in it can say either way, so ORD-2 "
+               "warns on any run-order criterion reported against it." if single else ""),
+            samples=len(order), single_class=single,
         )
         return
     report.add("ORD-1", stage, "Recorded analytical order is a measurement", PASS,
                "analytical_order is not a restatement of row order.", samples=len(order))
 
 
-def _order_is_synthesized(csv_rows: list[dict] | None, provenance: dict | None = None) -> bool:
+def _order_kind(csv_rows: list[dict] | None, provenance: dict | None = None) -> str:
+    """What the CSV's analytical_order is, as far as the artifacts can say.
+
+    "header": the acquisition order the raw headers record. "not_row_number": anything but the
+    sequence 1..N. Otherwise it is the row number, and "synthesized" when each of two or more
+    Classes is one contiguous block of it (perfectly confounded with Class), "interleaved" when the
+    Classes alternate as a randomised injection sequence does, and "single_class" when every sample
+    is in one Class, where no Class pattern can say whether the row number is the injection order.
+    """
     if not csv_rows:
-        return False
+        return "not_row_number"
     agreement = _header_order_agreement(provenance, csv_rows)
     if agreement is not None and agreement[0]:
-        return False
+        return "header"
     raw = [str(row.get("analytical_order", "")).strip() for row in csv_rows]
     if not all(value.isdigit() for value in raw):
-        return False
+        return "not_row_number"
     if [int(value) for value in raw] != list(range(1, len(raw) + 1)):
-        return False
+        return "not_row_number"
     classes = [str(row.get("class_id", "")).strip() for row in csv_rows]
+    if len(set(classes)) == 1:
+        return "single_class"
     blocks = 0
     previous = object()
     for name in classes:
         if name != previous:
             blocks += 1
             previous = name
-    return blocks == len(set(classes)) and len(set(classes)) > 1
+    return "synthesized" if blocks == len(set(classes)) else "interleaved"
+
+
+def _order_is_synthesized(csv_rows: list[dict] | None, provenance: dict | None = None) -> bool:
+    return _order_kind(csv_rows, provenance) == "synthesized"
 
 
 def check_no_metric_rests_on_a_synthetic_order(
@@ -1059,10 +1076,16 @@ def check_no_metric_rests_on_a_synthetic_order(
                    "The analysis CSV is absent, so whether the run order was recorded or "
                    "synthesized cannot be established.")
         return
-    if not _order_is_synthesized(csv_rows, provenance):
-        report.add("ORD-2", stage, "No reported metric rests on a synthesized run order", PASS,
-                   "The run order is not a restatement of file order, so a drift metric computed "
-                   "from it is meaningful.")
+    kind = _order_kind(csv_rows, provenance)
+    if kind in ("header", "not_row_number", "interleaved"):
+        report.add("ORD-2", stage, "No reported metric rests on a synthesized run order", PASS, {
+            "header": "The run order is the acquisition order the raw headers record, so a drift "
+                      "metric computed from it is meaningful.",
+            "not_row_number": "The run order is not the row number, so it was not synthesized from "
+                              "file order.",
+            "interleaved": "The run order is the row number, but the Classes alternate in it as a "
+                           "randomised injection sequence does, so it is not confounded with Class.",
+        }[kind], order=kind)
         return
     report_json, reason = _read_json(output / "MS_DIAL_publication_report.json")
     if report_json is None:
@@ -1080,7 +1103,24 @@ def check_no_metric_rests_on_a_synthetic_order(
     ]
     if not asserted:
         report.add("ORD-2", stage, "No reported metric rests on a synthesized run order", PASS,
-                   "The run order is synthesized, and no run-order criterion is asserted.")
+                   "The run order is synthesized, and no run-order criterion is asserted." if kind == "synthesized"
+                   else "The run order is the row number, and no run-order criterion is asserted.", order=kind)
+        return
+    if kind == "single_class":
+        # One Class cannot be confounded with itself, so this is not ORD-2's refusal; but nothing
+        # establishes the row number as the injection order, and every sample of an abstention sits here.
+        report.add(
+            "ORD-2", stage, "No reported metric rests on a synthesized run order", WARN,
+            "The run order is the row number, which nothing here establishes as the injection order, "
+            f"and with every sample in one Class no Class pattern can say either way. {len(asserted)} "
+            "run-order criterion is reported with a value and a verdict against it: it is a statement "
+            "about file order until the injection order is shown.",
+            order=kind,
+            asserted=[
+                {"metric": item.get("metric"), "value": item.get("value"), "status": item.get("status")}
+                for item in asserted
+            ],
+        )
         return
     report.add(
         "ORD-2", stage, "No reported metric rests on a synthesized run order", FAIL,
@@ -2587,6 +2627,11 @@ def _ratified(proposal: dict | None) -> bool:
     return str((proposal or {}).get("status") or "").strip().casefold() in RATIFIED_STATUSES
 
 
+# The reasons the Catalog's declared-factor selection gives for abstaining (msdial_repository_catalog
+# class_proposal.ABSTENTION_REASONS).
+ABSTENTION_REASONS = ("no_declared_factor", "no_usable_declared_factor")
+
+
 def _class_proposal(provenance: dict | None) -> dict | None:
     if not isinstance(provenance, dict):
         return None
@@ -2715,6 +2760,56 @@ def check_class_proposal_was_accepted(report: Report, provenance: dict | None, r
     status = str(proposal.get("status") or "").strip().casefold()
     model = str(proposal.get("model") or "")
     warnings = [str(item) for item in proposal.get("warnings") or []]
+    contrast = proposal.get("contrast_definition") if isinstance(proposal.get("contrast_definition"), dict) else {}
+    # A Class record saved for another unit settles nothing here, however it was ratified. A split
+    # part carries its parent's record, so the parent's id is this unit's too.
+    record_unit = str(proposal.get("unit_id") or "")
+    own_unit = str(((provenance or {}).get("project") or {}).get("analysis_unit_id") or "")
+    split_from = (provenance or {}).get("split_from")
+    parent_unit = str(split_from.get("analysis_unit_id") or "") if isinstance(split_from, dict) else ""
+    if record_unit and own_unit and record_unit not in {own_unit, parent_unit}:
+        report.add("CLS-3", stage, "The executed grouping was ratified", FAIL,
+                   f"The Class record was saved for unit {record_unit}, not for this unit ({own_unit}"
+                   + (f", split from {parent_unit}" if parent_unit else "") + "): it settles nothing here.",
+                   status=status, record_unit=record_unit, analysis_unit_id=own_unit, parent_unit=parent_unit)
+        return
+    if contrast.get("kind") == "abstention":
+        # Where the Catalog abstains, the decision is that no Class is defined: saved, and ratified,
+        # like a proposal (decided 2026-09-28), as every sample in one Class with no field selected.
+        assignments = [item for item in proposal.get("assignments") or [] if isinstance(item, dict)]
+        labels = sorted({str(item.get("class_label") or "") for item in assignments})
+        fields = list(proposal.get("selected_fields") or [])
+        problems = []
+        if fields:
+            problems.append(f"it selects {fields}")
+        if len(labels) != 1:
+            problems.append(f"it gives {len(labels)} Classes, not one" if assignments else "it assigns no sample")
+        elif labels[0] != str(contrast.get("class_label") or ""):
+            problems.append(f"its one Class {labels[0]!r} is not the Class it names "
+                            f"({str(contrast.get('class_label') or '') or 'none'!r})")
+        if problems:
+            report.add("CLS-3", stage, "The executed grouping was ratified", FAIL,
+                       "The record says no Class was defined, but " + " and ".join(problems)
+                       + ": an abstention that groups the samples is a grouping nobody proposed.",
+                       status=status, abstention=True, labels=labels[:5], selected_fields=fields)
+            return
+        reason = str(contrast.get("reason") or "")
+        if status in RATIFIED_STATUSES and reason not in ABSTENTION_REASONS:
+            # Ratified, but not for a reason the Catalog's selection gives: the decision stands and
+            # the record does not say why no declared factor could be used.
+            report.add("CLS-3", stage, "The executed grouping was ratified", WARN,
+                       f"The Class decision is a ratified abstention, but its reason "
+                       f"({reason or 'none recorded'!r}) is not one the Catalog's selection gives "
+                       f"({', '.join(ABSTENTION_REASONS)}). Every sample is in Class {labels[0]!r}.",
+                       status=status, abstention=True, reason=reason, model=model, warnings=warnings[:4])
+            return
+        if status in RATIFIED_STATUSES:
+            report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
+                       f"The Class decision is a ratified abstention ({reason}): "
+                       f"no contrast, every sample in Class {labels[0]!r}. Status is {status!r}.",
+                       status=status, abstention=True, reason=reason, model=model,
+                       warnings=warnings[:4])
+            return
     if status in RATIFIED_STATUSES:
         report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
                    f"Class proposal status is {status!r}.", status=status, model=model,
@@ -3441,7 +3536,9 @@ COMPLETION_STAGES = (
      "by the confirmed cleanup (status raw_cleaned)",
      ("SUM-1",)),
     ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1")),
-    ("B3", "class_settled", "a ratified Class proposal (accepted, confirmed or approved)", ("CLS-3",)),
+    ("B3", "class_settled",
+     "a ratified Class proposal, or where the Catalog abstains a ratified abstention (accepted, confirmed or approved)",
+     ("CLS-3",)),
     ("B4", "diagnostic_done", "a recorded peak-height diagnostic whose absolute directory exists", ("PKH-1",)),
     ("B5", "production_prepared", "output holds analysis_files.csv, method.txt and run-manifest.json",
      ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production")),

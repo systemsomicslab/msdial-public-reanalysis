@@ -86,7 +86,8 @@ following actions require a separate explicit human confirmation:
 
 - contacting a repository for a raw-data download;
 - downloading an official annotation library;
-- accepting a Class proposal;
+- accepting a Class proposal, or an abstention where no declared factor groups
+  the samples;
 - starting each production MS-DIAL run;
 - deleting downloaded raw data.
 

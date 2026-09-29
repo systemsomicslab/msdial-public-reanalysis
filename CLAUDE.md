@@ -95,6 +95,13 @@ For Class proposals, include one assignment per sample, selected source fields,
 the intended contrast, rationale, and warnings about confounding or missingness.
 Do not use continuous fields merely because they are available.
 
+Where the Catalog abstains because no declared factor groups the samples, do not
+build Class from other columns. Show the abstention preview
+(`msdial_catalog_save_class_proposal(..., abstain=True)`, which reports the
+reason and the factors considered) and, after the same confirmation as a
+proposal (boundary 3), save it: the run then carries no contrast, every sample
+in the one Class `All`, and the gate's B3 accepts the ratified abstention.
+
 ## Confirmation boundaries
 
 Never perform these operations without an explicit user confirmation in the
@@ -103,7 +110,7 @@ current conversation:
 1. Raw-data download, including destination, size bound, selected analysis
    unit, and retention policy.
 2. Official-library download.
-3. Saving a Class proposal.
+3. Saving a Class proposal, or an abstention.
 4. Starting each production MS-DIAL run after showing the exact plan/command.
 5. Raw-data deletion after validated output and retained-artifact inventory.
 6. Recording a person's reading of the sentences a gate check left for them

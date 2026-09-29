@@ -647,6 +647,131 @@ class ExecutedClassTests(unittest.TestCase):
                          "the grouping is faithful; nobody agreed to it")
 
 
+class AbstentionTests(unittest.TestCase):
+    """CLS-3 and B3 for a unit whose Catalog selection abstained (decided 2026-09-28).
+
+    The abstention is saved and ratified like a proposal: no field selected, every sample in the one
+    Class "All", the reason in the contrast definition.
+    """
+
+    def _workspace(self, temporary: str, *, labels=None, fields=None, status="accepted",
+                   contrast=None, unit_id=None, split_from=None) -> Path:
+        rows = _samples(4)
+        for row in rows:
+            row["class_id"] = "All"
+        labels = labels or ["All"] * len(rows)
+        builder = WorkspaceBuilder(Path(temporary)).provenance(inputs=len(rows))
+        manifest_path = builder.root / "provenance" / "run-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["project"]["class_proposal"] = {
+            "proposal_id": "a1", "status": status, "model": "catalog-declared-factor-selection",
+            "selected_fields": fields or [],
+            "contrast_definition": contrast if contrast is not None else
+            {"kind": "abstention", "reason": "no_usable_declared_factor", "class_label": "All"},
+            "assignments": [{"sample_id": row["file_name"], "class_label": label} for row, label in zip(rows, labels)],
+            "warnings": ["No Class was proposed: factors were declared but none of them groups these samples."],
+        }
+        if unit_id is not None:
+            manifest["project"]["class_proposal"]["unit_id"] = unit_id
+        if split_from is not None:
+            manifest["split_from"] = split_from
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        builder.analysis_csv(rows)
+        return builder.root
+
+    def _b3(self, workspace: Path) -> bool:
+        manifest = json.loads((workspace / "provenance" / "run-manifest.json").read_text(encoding="utf-8"))
+        return verifier.completion_progress(workspace, manifest, workspace / "output")["stages"]["B3"]
+
+    def test_a_ratified_abstention_settles_the_class(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary)
+            report = verifier.verify(workspace, "before-production")
+            settled = self._b3(workspace)
+        with tempfile.TemporaryDirectory() as temporary:
+            unsettled = self._b3(self._workspace(temporary, status="proposed"))
+
+        check = next(item for item in report.checks if item.check_id == "CLS-3")
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn("ratified abstention (no_usable_declared_factor)", check.detail)
+        self.assertEqual(verifier.PASS, _status(report, "CLS-2"))
+        # B3 is reached on the ratified abstention and not on the same record unratified.
+        self.assertTrue(settled)
+        self.assertFalse(unsettled)
+
+    def test_an_abstention_whose_class_is_not_the_one_it_names_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = verifier.verify(self._workspace(temporary, labels=["Control"] * 4), "before-production")
+
+        check = next(item for item in report.checks if item.check_id == "CLS-3")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("is not the Class it names", check.detail)
+
+    def test_an_abstention_for_a_reason_the_catalog_does_not_give_warns(self) -> None:
+        for name, contrast in {
+            "no reason": {"kind": "abstention", "class_label": "All"},
+            "an unknown reason": {"kind": "abstention", "reason": "agent_preferred_none", "class_label": "All"},
+        }.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                report = verifier.verify(self._workspace(temporary, contrast=contrast), "before-production")
+                self.assertEqual(verifier.WARN, _status(report, "CLS-3"))
+
+    def test_a_class_record_saved_for_another_unit_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = verifier.verify(self._workspace(temporary, unit_id="0123456789abcdef0123"), "before-production")
+
+        check = next(item for item in report.checks if item.check_id == "CLS-3")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("settles nothing here", check.detail)
+
+    def test_a_split_part_carries_its_parents_class_record(self) -> None:
+        for name, options in {
+            "this unit's record": dict(unit_id=UNIT_ID),
+            "the parent's record": dict(unit_id="parent00000000000000",
+                                        split_from={"analysis_unit_id": "parent00000000000000"}),
+        }.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                report = verifier.verify(self._workspace(temporary, **options), "before-production")
+                self.assertEqual(verifier.PASS, _status(report, "CLS-3"))
+
+    def _published(self, temporary: str, *, run_order_status) -> Path:
+        workspace = self._workspace(temporary)
+        builder = WorkspaceBuilder.__new__(WorkspaceBuilder)
+        builder.root = workspace
+        builder.publication(run_order_status=run_order_status)
+        return workspace
+
+    def test_a_drift_metric_on_one_classs_row_number_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = verifier.verify(self._published(temporary, run_order_status="pass"), "before-publish")
+
+        check = next(item for item in report.checks if item.check_id == "ORD-2")
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("statement about file order", check.detail)
+        self.assertNotIn("not a restatement", check.detail)
+
+    def test_one_classs_row_number_with_no_drift_metric_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = verifier.verify(self._published(temporary, run_order_status=None), "before-publish")
+
+        check = next(item for item in report.checks if item.check_id == "ORD-2")
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn("is the row number", check.detail)
+
+    def test_an_abstention_that_groups_the_samples_is_refused(self) -> None:
+        for name, options in {"two Classes": dict(labels=["All", "All", "All", "Other"]),
+                              "a field selected": dict(fields=["Factor Value[Batch]"])}.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                report = verifier.verify(self._workspace(temporary, **options), "before-production")
+                self.assertEqual(verifier.FAIL, _status(report, "CLS-3"))
+
+    def test_an_unratified_abstention_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = verifier.verify(self._workspace(temporary, status="proposed"), "before-production")
+
+        self.assertEqual(verifier.FAIL, _status(report, "CLS-3"))
+
+
 class ThresholdProvenanceTests(unittest.TestCase):
     """PKH-1. The threshold the Console reads is one this unit's own diagnostic produced."""
 
