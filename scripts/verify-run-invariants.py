@@ -863,6 +863,11 @@ def check_class_distribution(report: Report, csv_rows: list[dict] | None, reason
 
 
 HEADER_ORDER_SOURCE = "raw_header_acquisition_start_time"
+# Interactive 0.5.4 records what a repository unit's order was taken from when the headers did not
+# give it; a run-order criterion is not to be assessed against the listing (decided 2026-09-29).
+LISTING_ORDER_SOURCE = "listing"
+UNRECORDED_ORDER_REASON = re.compile(r"the\s+injection\s+order\s+was\s+not\s+recorded\s+for\s+every\s+file",
+                                     re.IGNORECASE)
 
 
 def _parse_header_time(value) -> "datetime | None":
@@ -877,6 +882,40 @@ def _parse_header_time(value) -> "datetime | None":
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def _recorded_order_source(provenance: dict | None, csv_rows: list[dict] | None) -> "str | None":
+    """What the unit manifest records the CSV's analytical order as taken from, or None.
+
+    Only while the CSV carries each recorded file exactly once at its recorded rank: an edited CSV
+    carries an order nobody recorded. A header record from before order_source reads as the header
+    source; any other record without it as unknown.
+    """
+    record = (provenance or {}).get("analytical_order")
+    if not isinstance(record, dict) or not csv_rows:
+        return None
+    source = record.get("order_source") or (
+        HEADER_ORDER_SOURCE if record.get("derived_from") == HEADER_ORDER_SOURCE else None)
+    if not isinstance(source, str) or not source:
+        return None
+    files = record.get("files") if isinstance(record.get("files"), list) else []
+    recorded: dict = {}
+    for item in files:
+        if not isinstance(item, dict):
+            return None
+        stem = Path(str(item.get("file", ""))).stem.casefold()
+        if stem in recorded:
+            return None
+        recorded[stem] = _as_rank(item.get("analytical_order"))
+    in_csv: dict = {}
+    for row in csv_rows:
+        stem = str(row.get("file_name", "")).strip().casefold()
+        if stem in in_csv:
+            return None
+        in_csv[stem] = _as_rank(row.get("analytical_order"))
+    if recorded != in_csv or None in recorded.values():
+        return None
+    return source
 
 
 def _as_rank(value) -> "int | None":
@@ -1090,6 +1129,42 @@ def check_no_metric_rests_on_a_synthetic_order(
                    "synthesized cannot be established.")
         return
     kind = _order_kind(csv_rows, provenance)
+    recorded = _recorded_order_source(provenance, csv_rows)
+    report_json, reason = _read_json(output / "MS_DIAL_publication_report.json")
+    assessment = (report_json or {}).get("qa_assessment") or {}
+    checks = assessment.get("checks") if isinstance(assessment, dict) else None
+    run_order = [item for item in (checks or []) if isinstance(item, dict)
+                 and "run_order" in str(item.get("metric", ""))]
+    asserted = [item for item in run_order
+                if item.get("value") is not None and item.get("status") not in (None, "not_assessed")]
+    said_unrecorded = [item for item in run_order if item.get("status") == "not_assessed"
+                       and UNRECORDED_ORDER_REASON.fullmatch(" ".join(str(item.get("reason") or "").split()).rstrip("."))]
+    if said_unrecorded and recorded not in (None, LISTING_ORDER_SOURCE):
+        report.add(
+            "ORD-2", stage, "No reported metric rests on a synthesized run order", FAIL,
+            "The report withholds the run-order criterion because the injection order was not recorded, but "
+            f"the unit manifest records the order the analysis CSV carries as taken from {recorded}.",
+            order=kind, recorded_source=recorded)
+        return
+    if recorded == LISTING_ORDER_SOURCE:
+        # Whatever pattern the Classes make in it, the listing is no injection order (decided 2026-09-29).
+        if report_json is None:
+            report.add("ORD-2", stage, "No reported metric rests on a synthesized run order", NOT_EVALUABLE,
+                       reason, order=kind, recorded_source=recorded)
+        elif asserted:
+            report.add(
+                "ORD-2", stage, "No reported metric rests on a synthesized run order", FAIL,
+                "The unit manifest records the order the analysis CSV carries as the file listing, yet "
+                f"{len(asserted)} run-order criterion is reported with a value and a verdict. The listing is no "
+                "injection order, so a drift computed against it describes the listing.",
+                order=kind, recorded_source=recorded,
+                asserted=[{"metric": item.get("metric"), "value": item.get("value"), "status": item.get("status")}
+                          for item in asserted])
+        else:
+            report.add("ORD-2", stage, "No reported metric rests on a synthesized run order", PASS,
+                       "The unit manifest records the order as the file listing, and no run-order criterion is "
+                       "asserted.", order=kind, recorded_source=recorded)
+        return
     if kind in ("header", "not_row_number", "interleaved"):
         report.add("ORD-2", stage, "No reported metric rests on a synthesized run order", PASS, {
             "header": "The run order is the acquisition order the raw headers record, so a drift "
@@ -1100,20 +1175,10 @@ def check_no_metric_rests_on_a_synthetic_order(
                            "randomised injection sequence does, so it is not confounded with Class.",
         }[kind], order=kind)
         return
-    report_json, reason = _read_json(output / "MS_DIAL_publication_report.json")
     if report_json is None:
         report.add("ORD-2", stage, "No reported metric rests on a synthesized run order",
                    NOT_EVALUABLE, reason)
         return
-    assessment = report_json.get("qa_assessment") or {}
-    checks = assessment.get("checks") if isinstance(assessment, dict) else None
-    asserted = [
-        item for item in (checks or [])
-        if isinstance(item, dict)
-        and "run_order" in str(item.get("metric", ""))
-        and item.get("value") is not None
-        and item.get("status") not in (None, "not_assessed")
-    ]
     if not asserted:
         report.add("ORD-2", stage, "No reported metric rests on a synthesized run order", PASS,
                    "The run order is synthesized, and no run-order criterion is asserted." if kind == "synthesized"
@@ -1358,6 +1423,8 @@ QA_REASONS = (
     ("blank detections", r"no\s+feature\s+was\s+detected\s+in\s+both\s+a\s+Blank\s+file\s+and\s+a\s+study\s+sample"),
     ("blank order", r"no\s+Blank\s+file\s+followed\s+an\s+injection\s+with\s+detected\s+features\s+in\s+its\s+batch"),
     ("flat", r"run\s+order\s+or\s+median\s+intensity\s+did\s+not\s+vary\s+across\s+injections"),
+    # Interactive 0.5.4: the unit manifest records the analytical order as the file listing.
+    ("unrecorded order", r"the\s+injection\s+order\s+was\s+not\s+recorded\s+for\s+every\s+file"),
     ("no value", r"the\s+QA\s+matrix\s+gives\s+no\s+value\s+for\s+it"),
     ("no matrix", r"no\s+LC-MS\s+QA\s+matrix\s+was\s+supplied"),
 )
@@ -1371,6 +1438,7 @@ QA_REASON_METRICS = {
     "blank order": {"median_blank_carryover_ratio"},
     "injection count": {"run_order_intensity_correlation"},
     "flat": {"run_order_intensity_correlation"},
+    "unrecorded order": {"run_order_intensity_correlation"},
 }
 _QA_REASON = "(?:" + "|".join(pattern.replace(r"(\d{1,9})", r"\d{1,9}") for _, pattern in QA_REASONS) + ")"
 QA_T_OTHER_REASONS = _qa_template(

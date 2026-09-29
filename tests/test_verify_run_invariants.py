@@ -455,6 +455,63 @@ class RunOrderTests(unittest.TestCase):
             report = verifier.verify(builder.root, "before-publish")
             self.assertEqual(verifier.PASS, _status(report, "ORD-2"))
 
+    # Interactive 0.5.4 records what the order was taken from, and withholds the run-order criterion
+    # against the file listing (decided 2026-09-29).
+    UNRECORDED = "the injection order was not recorded for every file"
+
+    def _recorded(self, directory, source, *, withheld=False, asserted=True, edit_csv=False):
+        rows = _samples(6, classes=2, grouped=False)
+        builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6).analysis_csv(rows)
+        manifest_path = builder.root / "provenance" / "run-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["analytical_order"] = {
+            "derived_from": None, "order_source": source,
+            "files": [{"file": f"{row['file_name']}.lcd",
+                       "analytical_order": int(row["analytical_order"]) + (10 if edit_csv else 0)} for row in rows],
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        builder.publication(run_order_status="pass" if asserted else None)
+        if withheld:
+            path = builder.output / "MS_DIAL_publication_report.json"
+            report_json = json.loads(path.read_text(encoding="utf-8"))
+            report_json["qa_assessment"]["checks"].append({
+                "metric": "run_order_intensity_correlation", "label": "Absolute run-order/intensity correlation",
+                "value": None, "status": "not_assessed", "reason": self.UNRECORDED})
+            path.write_text(json.dumps(report_json), encoding="utf-8")
+        return next(item for item in verifier.verify(builder.root, "before-publish").checks if item.check_id == "ORD-2")
+
+    def test_a_drift_metric_on_a_recorded_listing_is_refused_whatever_the_classes_do(self):
+        # Interleaved, so the row-number heuristic alone would pass it.
+        with tempfile.TemporaryDirectory() as directory:
+            check = self._recorded(directory, "listing")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("file listing", check.detail)
+
+    def test_a_recorded_listing_with_the_criterion_withheld_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            check = self._recorded(directory, "listing", withheld=True, asserted=False)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_withholding_the_criterion_for_an_order_that_was_recorded_is_refused(self):
+        for source in ("repository_sample_table", "embedded"):
+            with self.subTest(source), tempfile.TemporaryDirectory() as directory:
+                check = self._recorded(directory, source, withheld=True, asserted=False)
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(source, check.detail)
+
+    def test_a_record_the_csv_no_longer_carries_is_not_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            check = self._recorded(directory, "listing", edit_csv=True)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIsNone(check.evidence.get("recorded_source"))
+
+    def test_qa1_knows_the_reason_and_what_it_is_the_reason_for(self):
+        self.assertEqual(("unrecorded order", None), verifier._qa_reason_kind(self.UNRECORDED + "."))
+        self.assertEqual({"run_order_intensity_correlation"}, verifier.QA_REASON_METRICS["unrecorded order"])
+
 
 class MztabTests(unittest.TestCase):
     def test_a_whole_section_width_mismatch_is_refused(self):
