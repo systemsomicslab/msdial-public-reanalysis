@@ -119,7 +119,12 @@ the workspace is unusable, and 4 (`--strict` only) means an artifact that stage
 owed is absent. Exit 0 includes WARNs, which a person reads before publishing.
 QA-1 passes only when the QA texts carry Interactive's own statement for the
 assessment and nothing else; any QA sentence edited or added is a WARN that
-quotes it. Always pass `--strict`: without it a workspace where nothing has
+quotes it. Those sentences, and the checksum phrasings SUM-2 sets aside, hold
+the run under `--strict` (READ-1, exit 4) until a person's reading of them is
+recorded: `python .\scripts\record-reading.py <unit-workspace> --check QA-1`
+shows them and their digest; once the person has read them and said what they
+found, the same command with `--digest`, `--by` and `--conclusion` records it
+in `provenance/readings.json`. A changed text is read again. Always pass `--strict`: without it a workspace where nothing has
 happened exits 0. The one report whose exit code is not a verdict is a split
 unit's raw owner at `before-publish`: it is not a run and owes no run artifacts,
 so read its DSK-1 from it and ignore its exit code. Run the gate; do not infer

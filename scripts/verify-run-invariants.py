@@ -30,7 +30,9 @@ Usage:
 Exit codes: 0 no evaluated check failed, 2 at least one failed, 3 the workspace is unusable,
 4 (--strict only) a check could not be evaluated because an artifact the stage owed is absent.
 A WARN exits 0 and is for a person to read before publishing: QA-1's, for one, quotes every QA
-sentence that is not Interactive's own statement for the assessment.
+sentence that is not Interactive's own statement for the assessment. Those sentences, and the
+checksum phrasings SUM-2 sets aside, are also held by READ-1, which --strict refuses until a
+person's reading of them is recorded with scripts/record-reading.py.
 
 --strict exists because `ok` means "no check FAILed", and a workspace where nothing has happened
 produces no FAILs at all. Run against a directory holding an empty provenance/ and an empty
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import math
@@ -1820,6 +1823,12 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
     """What one text says of the assessment."""
     fails: list[str] = []
     warns: list[str] = []
+    # What a person must read (READ-1): the sentences that are not Interactive's, and those of its
+    # sentences with words in them QA-1 cannot attribute to Interactive.
+    to_read: list[dict] = []
+
+    def quote(sentence: str) -> None:
+        to_read.append({"source": source, "sentence": _qa_space(sentence)})
     criteria, assessed, missing, failed = record.criteria, record.assessed, record.missing, record.failed
     total, passed = len(criteria), record.passed
     heading = QA_SECTION_HEADING.search(text) if methods else None
@@ -1855,6 +1864,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
         elif verdict == "unread":
             contradicted = True
             warns.append(f"{source}: its list of evaluated criteria {detail}")
+            quote(match.group(0))
         forms.append("statement")
     for match in QA_T_NONE.finditer(flat):
         spans.append(match.span())
@@ -1887,6 +1897,8 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
             (fails if level == "fail" else warns).append(message)
             if level == "fail" or message.endswith("QA-1 cannot match to a criterion") or " does not say why " in message:
                 contradicted = True
+        if any(level == "warn" and "no figure to compare with" not in message for level, message in problems):
+            quote(match.group(0))
         reasons.extend(given)
     taken = {match.span() for match in reasoned}
     others = [match for match in QA_T_OTHER.finditer(flat) if match.span() not in taken]
@@ -1951,6 +1963,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
             fails.append(f"{source}: lists {_qa_short(match.group(1))!r} as requiring review, which {detail}")
         elif verdict == "unread":
             warns.append(f"{source}: its list of criteria requiring review {detail}")
+            quote(match.group(0))
     for pattern in (QA_T_FILES, QA_L_FILES):
         for match in pattern.finditer(flat):
             spans.append(match.span())
@@ -1986,12 +1999,14 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
             item = by_metric.get(metric)
             if item is None:
                 warns.append(f"{source}: gives a value for {metric}, which the assessment does not list")
+                quote(match.group(0))
                 continue
             agrees = _qa_agrees(match.group(1), item["value"], scale=scale)
             if item["status"] == "not_assessed":
                 if _qa_number(match.group(1)) is None:
                     warns.append(f"{source}: prints {_qa_short(match.group(1), 40)!r} as the value of {item['label']!r}, "
                                  "which was not assessed")
+                    quote(match.group(0))
                 else:
                     fails.append(f"{source}: gives {match.group(1)} as the value of {item['label']!r}, which was not assessed")
             elif agrees is False:
@@ -2000,6 +2015,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
             elif agrees is None:
                 warns.append(f"{source}: gives {_qa_short(match.group(1), 40)!r} as the value of {item['label']!r}, "
                              "which QA-1 cannot read as a number")
+                quote(match.group(0))
 
     # The sentences Interactive wrote before 0.5.1.
     if (QA_L_BATTERY.search(flat) or QA_L_BATTERY.search(before)) and missing:
@@ -2036,6 +2052,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
         claim = _qa_claim(sentence, criteria)
         if claim:
             fails.append(f"{source}: {claim}: {_qa_short(sentence)!r}")
+    to_read.extend({"source": source, "sentence": sentence} for sentence in residue)
     if residue:
         warns.append(f"{source}: {len(residue)} sentence(s) in its QA text are not Interactive's; read them: "
                      + " | ".join(repr(_qa_short(sentence, 120)) for sentence in residue[:3]))
@@ -2058,6 +2075,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
                 fails.append(f"{source}: {claim}: {_qa_short(sentence)!r}")
             named = any(item["pattern"] and item["pattern"].search(sentence) for item in criteria)
             if named or QA_VOCABULARY.search(sentence):
+                to_read.append({"source": source, "sentence": sentence})
                 warns.append(f"{source}: speaks of QA before its QA section; read it: {_qa_short(sentence)!r}")
 
     covers = not contradicted and (
@@ -2068,7 +2086,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
     if "statement" in forms and missing and not others_all:
         warns.append(f"{source}: gives Interactive's count but not its sentence naming the {len(missing)} criteria "
                      "that could not be assessed")
-    return {"source": source, "covers": covers, "forms": forms, "reasons": reasons, "fails": fails,
+    return {"source": source, "covers": covers, "forms": forms, "reasons": reasons, "fails": fails, "to_read": to_read,
             "warns": warns, "speaks": bool(forms or residue), "empty": not (flat or before),
             "methods": methods}
 
@@ -2080,31 +2098,43 @@ QA_NO_VALUE = {"", "not recorded", "na", "n/a", "none", "null", "-", "not assess
 
 
 def _qa_table(source: str, table: str, record: _QaRecord) -> dict:
-    """The Supplementary Table's QA rows against the record."""
+    """The Supplementary Table's QA rows against the record.
+
+    A row QA-1 cannot read or place is a WARN, and its cells are a sentence to read (READ-1): what
+    the gate did not read, a person must.
+    """
     fails: list[str] = []
     warns: list[str] = []
+    to_read: list[dict] = []
     criteria = record.criteria
+
+    def unread(message: str, *cells) -> None:
+        warns.append(message)
+        to_read.append({"source": source, "sentence": " | ".join(_qa_space(str(cell)) for cell in cells)})
+
     try:
         parsed = list(csv.DictReader(io.StringIO(table, newline=""), delimiter="\t"))
     except csv.Error as exc:
-        return {"source": source, "rows": 0, "fails": [], "warns": [f"{source}: could not be parsed ({exc})"]}
+        return {"source": source, "rows": 0, "fails": [], "warns": [f"{source}: could not be parsed ({exc})"],
+                "to_read": [], "unread": [f"{source} could not be parsed ({exc})"]}
     names = {name for item in criteria for name in item["names"]}
-    rows, near, elsewhere = [], set(), set()
+    rows, near, elsewhere = [], [], []
     for row in parsed:
         section = _qa_space(str(row.get("Section") or "")).casefold()
         if section == "quality assurance":
             rows.append(row)
             continue
+        cells = (row.get("Section"), row.get("Record"), row.get("Parameter"), row.get("Value"))
         if re.search(r"quality|\bqa\b", section):
-            near.add(section)
-        if _qa_space(str(row.get("Record") or "")).casefold() in names:
-            elsewhere.add(section)
-    for section in sorted(near):
-        warns.append(f"{source}: has rows under {_qa_short(section, 60)!r}, which QA-1 does not read as the QA section")
-    for section in sorted(elsewhere - near):
-        warns.append(f"{source}: has rows for a QA criterion under {_qa_short(section, 60)!r}")
+            near.append((section, cells))
+        elif _qa_space(str(row.get("Record") or "")).casefold() in names:
+            elsewhere.append((section, cells))
+    for section, cells in near:
+        unread(f"{source}: has rows under {_qa_short(section, 60)!r}, which QA-1 does not read as the QA section", *cells)
+    for section, cells in elsewhere:
+        unread(f"{source}: has rows for a QA criterion under {_qa_short(section, 60)!r}", *cells)
     if not rows:
-        return {"source": source, "rows": 0, "fails": fails, "warns": warns}
+        return {"source": source, "rows": 0, "fails": fails, "warns": warns, "to_read": to_read, "unread": []}
     by_record: dict[str, list[tuple[str, str]]] = {}
     for row in rows:
         by_record.setdefault(_qa_space(str(row.get("Record") or "")).casefold(), []).append(
@@ -2127,7 +2157,8 @@ def _qa_table(source: str, table: str, record: _QaRecord) -> dict:
             if parameter == "assessment":
                 stated = status_of(value)
                 if stated is None:
-                    warns.append(f"{source}: assesses {item['label']!r} as {_qa_short(value, 40)!r}, which QA-1 cannot read")
+                    unread(f"{source}: assesses {item['label']!r} as {_qa_short(value, 40)!r}, which QA-1 cannot read",
+                           item["label"], parameter, value)
                 elif stated != item["status"]:
                     fails.append(f"{source}: assesses {item['label']!r} as {_qa_short(value, 40)!r}; the assessment says "
                                  f"{item['status']!r}")
@@ -2137,30 +2168,31 @@ def _qa_table(source: str, table: str, record: _QaRecord) -> dict:
                         fails.append(f"{source}: gives {_qa_short(value, 40)} as observed for {item['label']!r}, which "
                                      "was not assessed")
                     elif value.strip().casefold() not in QA_NO_VALUE:
-                        warns.append(f"{source}: gives {_qa_short(value, 40)!r} as observed for {item['label']!r}, "
-                                     "which was not assessed")
+                        unread(f"{source}: gives {_qa_short(value, 40)!r} as observed for {item['label']!r}, which was "
+                               "not assessed", item["label"], parameter, value)
                     continue
                 agrees = _qa_agrees(value, item["value"], unit=item["unit"], absolute=item["absolute"])
                 if agrees is False:
                     fails.append(f"{source}: gives {_qa_short(value, 40)} as observed for {item['label']!r}; the "
                                  f"assessment records {item['value']}")
                 elif agrees is None and _qa_float(item["value"]) is not None:
-                    warns.append(f"{source}: gives {_qa_short(value, 40)!r} as observed for {item['label']!r}, which "
-                                 "QA-1 cannot read as a number")
+                    unread(f"{source}: gives {_qa_short(value, 40)!r} as observed for {item['label']!r}, which QA-1 "
+                           "cannot read as a number", item["label"], parameter, value)
             elif parameter == "not assessed because":
                 stated = _qa_space(value).rstrip(".").strip()
                 if item["status"] != "not_assessed":
                     fails.append(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
                                  f"assessed; the assessment {'passed' if item['status'] == 'pass' else 'failed'} it")
                 elif not item["reason"]:
-                    warns.append(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
-                                 "assessed, a reason the assessment does not record")
+                    unread(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be assessed, a "
+                           "reason the assessment does not record", item["label"], parameter, value)
                     for level, message in _qa_reason_problems(item, stated, record, f"{source}:"):
                         (fails if level == "fail" else warns).append(message)
                 elif stated.casefold() != item["reason"].casefold():
                     if _qa_reason_kind(stated) is None:
-                        warns.append(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
-                                     "assessed, which QA-1 cannot read as one of Interactive's reasons")
+                        unread(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
+                               "assessed, which QA-1 cannot read as one of Interactive's reasons",
+                               item["label"], parameter, value)
                     else:
                         fails.append(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
                                      f"assessed; the assessment records {item['reason']!r}")
@@ -2174,19 +2206,21 @@ def _qa_table(source: str, table: str, record: _QaRecord) -> dict:
                     fails.append(f"{source}: gives {_qa_short(value, 40)!r} as the criterion for {item['label']!r}; "
                                  f"the assessment applied {item['operator']} {item['threshold']}")
                 elif threshold is None:
-                    warns.append(f"{source}: gives {_qa_short(value, 40)!r} as the criterion for {item['label']!r}, "
-                                 "which QA-1 cannot read")
+                    unread(f"{source}: gives {_qa_short(value, 40)!r} as the criterion for {item['label']!r}, which "
+                           "QA-1 cannot read", item["label"], parameter, value)
                 elif re.sub(r"\s+", "", match.group(1)) != re.sub(r"\s+", "", item["operator"]):
-                    warns.append(f"{source}: gives {_qa_short(value, 40)!r} as the criterion for {item['label']!r}; "
-                                 f"the assessment applied {item['operator']} {item['threshold']}")
+                    unread(f"{source}: gives {_qa_short(value, 40)!r} as the criterion for {item['label']!r}; the "
+                           f"assessment applied {item['operator']} {item['threshold']}", item["label"], parameter, value)
             else:
-                warns.append(f"{source}: gives {_qa_short(parameter, 40)!r} for {item['label']!r}, a row QA-1 does not read")
+                unread(f"{source}: gives {_qa_short(parameter, 40)!r} for {item['label']!r}, a row QA-1 does not read",
+                       item["label"], parameter, value)
     for record_name, entries in by_record.items():
         if record_name in known or record_name == "observed metric":
             continue
-        if any(parameter in ("assessment", "observed", "criterion") for parameter, _ in entries):
-            warns.append(f"{source}: gives an assessment, observed value or criterion for {_qa_short(record_name, 60)!r}, "
-                         "which the assessment does not list")
+        for parameter, value in entries:
+            if parameter in ("assessment", "observed", "criterion", "not assessed because"):
+                unread(f"{source}: gives an assessment, observed value or criterion for {_qa_short(record_name, 60)!r}, "
+                       "which the assessment does not list", record_name, parameter, value)
     # "Observed metric" rows repeat the QA matrix summary the criteria were judged on.
     summary = {str(name).casefold(): value for name, value in record.summary.items()}
     observed_rows = by_record.get("observed metric", [])
@@ -2194,15 +2228,16 @@ def _qa_table(source: str, table: str, record: _QaRecord) -> dict:
         warns.append(f"{source}: gives {len(observed_rows)} observed metric(s), but the report carries no QA matrix summary")
     for parameter, value in observed_rows if record.present else []:
         if parameter not in summary:
-            warns.append(f"{source}: gives {_qa_short(parameter, 40)!r} as an observed metric, which the QA matrix "
-                         "summary does not carry")
+            unread(f"{source}: gives {_qa_short(parameter, 40)!r} as an observed metric, which the QA matrix summary "
+                   "does not carry", "Observed metric", parameter, value)
             continue
         recorded = summary[parameter]
         if isinstance(recorded, (dict, list)):
             try:
                 differs = json.loads(value) != recorded
             except (ValueError, RecursionError):
-                warns.append(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which QA-1 cannot read")
+                unread(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which QA-1 cannot read",
+                       "Observed metric", parameter, value)
                 continue
             if differs:
                 fails.append(f"{source}: gives {_qa_short(value, 80)} as {parameter}; the QA matrix records another value")
@@ -2211,15 +2246,16 @@ def _qa_table(source: str, table: str, record: _QaRecord) -> dict:
             if _qa_number(value) is not None:
                 fails.append(f"{source}: gives {_qa_short(value, 40)} as {parameter}; the QA matrix records none")
             elif value.strip().casefold() not in QA_NO_VALUE and recorded is None:
-                warns.append(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which the QA matrix records "
-                             "as none")
+                unread(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which the QA matrix records as none",
+                       "Observed metric", parameter, value)
             continue
         agrees = _qa_agrees(value, recorded)
         if agrees is False:
             fails.append(f"{source}: gives {_qa_short(value, 40)} as {parameter}; the QA matrix records {recorded}")
         elif agrees is None:
-            warns.append(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which QA-1 cannot read as a number")
-    return {"source": source, "rows": len(rows), "fails": fails, "warns": warns}
+            unread(f"{source}: gives {_qa_short(value, 40)!r} as {parameter}, which QA-1 cannot read as a number",
+                   "Observed metric", parameter, value)
+    return {"source": source, "rows": len(rows), "fails": fails, "warns": warns, "to_read": to_read, "unread": []}
 
 
 def _qa_decode(data: bytes) -> "tuple[str | None, str]":
@@ -2345,12 +2381,14 @@ def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) 
     # Every copy: the files, and the bundle's members that differ from them, each distinct text once.
     sources: list[tuple[str, str, str]] = []
     local: dict[str, str] = {}
+    unread_texts: list[str] = []
     for name in QA_PROSE_FILES + (QA_TABLE_FILE,):
         if not (output / name).exists():
             continue
         text, problem = _qa_read(output / name, QA_TABLE_LIMIT if name == QA_TABLE_FILE else QA_TEXT_LIMIT)
         if text is None:
             notes.append(f"{name} {problem} and was not read")
+            unread_texts.append(f"{name} {problem}")
             continue
         local[name] = text
 
@@ -2362,6 +2400,7 @@ def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) 
     if (output / QA_BUNDLE_FILE).exists():
         members, problems = _qa_bundle(output / QA_BUNDLE_FILE, QA_PROSE_FILES + (QA_TABLE_FILE, QA_REPORT_FILE))
         notes += problems
+        unread_texts += problems
         seen = {key_of(name, text) for name, text in local.items()}
         for name, member, text in members:
             where = f"{QA_BUNDLE_FILE}:{member}"
@@ -2370,6 +2409,7 @@ def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) 
                     shared = json.loads(text)
                 except (ValueError, RecursionError):
                     notes.append(f"{where} is not JSON")
+                    unread_texts.append(f"{where} is not JSON")
                     continue
                 if not isinstance(shared, dict) or not _qa_same_record(shared, report_json):
                     notes.append(f"{where} carries a different assessment or QA summary from the report beside it")
@@ -2404,8 +2444,12 @@ def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) 
         warns.append(f"{QA_TABLE_FILE} carries no Quality assurance rows, though "
                      + ("a text says the criteria are reported there" if cited else f"{len(assessed)} were evaluated"))
     workbook = (output / QA_WORKBOOK_FILE).exists()
+    to_read = [entry for item in judged + tables for entry in item["to_read"]]
+    unread_texts += [message for item in tables for message in item.get("unread", [])]
 
     evidence = {
+        **_to_read_evidence("QA-1", to_read),
+        "unread_texts": unread_texts,
         "total": len(record.criteria), "evaluated": len(assessed), "passed": passed,
         "evaluated_names": [item["label"] for item in assessed],
         "not_assessed_names": [item["label"] for item in missing],
@@ -2756,6 +2800,7 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
         return
     claims = []
     skipped = []
+    to_read: list[dict] = []
     unread: list[str] = []
     for path in present:
         for member, text in _readable_members(path, unread):
@@ -2768,12 +2813,15 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
                         skipped.append(f"about the library: {where}")
                     else:
                         claims.append(where)
+                        continue
+                    to_read.append({"source": f"{path.name}:{member}", "sentence": sentence.strip()})
+    read_evidence = {**_to_read_evidence("SUM-2", to_read), "unread": unread[:20]}
     if claims:
         report.add("SUM-2", stage, title, FAIL,
                    "A published artifact calls these inputs checksum-verified, but the repository "
                    "published no checksum and none was compared.",
                    claims=claims[:10], claim_count=len(claims),
-                   not_counted=skipped[:50], not_counted_count=len(skipped))
+                   not_counted=skipped[:50], not_counted_count=len(skipped), **read_evidence)
         return
     if skipped:
         # A phrasing matched and was set aside by a rule, not by a reader. That is for a person to
@@ -2782,18 +2830,164 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
                    f"{len(skipped)} checksum-verification phrasing(s) matched and were not counted as "
                    "claims, as negations or statements about the library; read them: "
                    + " | ".join(skipped[:3]),
-                   artifacts=len(present), not_counted=skipped[:50], not_counted_count=len(skipped))
+                   artifacts=len(present), not_counted=skipped[:50], not_counted_count=len(skipped),
+                   **read_evidence)
         return
     if unread:
         report.add("SUM-2", stage, title, WARN,
                    f"No known checksum-verification phrasing matched, but {len(unread)} artifact member(s) could "
                    "not be read, so what they say is unknown: " + "; ".join(unread[:5]),
-                   artifacts=len(present), unread=unread[:20])
+                   artifacts=len(present), **read_evidence)
         return
     report.add("SUM-2", stage, title, PASS,
                f"No known checksum-verification phrasing matched in {len(present)} publication "
                "artifact(s). This is not a statement that no such claim is made.",
-               artifacts=len(present))
+               artifacts=len(present), **read_evidence)
+
+
+# ---- READ-1 -------------------------------------------------------------------------------------
+# Decided by the user on 2026-09-28: a WARN a person must read holds a run from counting as completed
+# until that person's reading is recorded. Those WARNs are SUM-2's matching sentences set aside by a
+# rule and QA-1's sentences that are not Interactive's own; each check hands over the sentences, and
+# a digest of them, as to_read. The reading is recorded with scripts/record-reading.py in
+# provenance/readings.json, against that digest, so a changed text is read again. WARNs that report
+# a known condition (SUM-1, MTH-1 and QA-1's other notes) need no reading.
+READINGS_FILE = "readings.json"
+READINGS_SCHEMA = "msdial-public-reanalysis-readings.v1"
+READ_CHECKS = ("QA-1", "SUM-2")
+READ_CONCLUSIONS = ("accepted", "rejected")
+
+
+def _reading_digest(check_id: str, to_read: list[dict]) -> str:
+    items = sorted([str(item.get("source", "")), re.sub(r"\s+", " ", str(item.get("sentence", ""))).strip()]
+                   for item in to_read)
+    payload = json.dumps([check_id, items], ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _to_read_evidence(check_id: str, to_read: list[dict]) -> dict:
+    return {"to_read": to_read, "to_read_count": len(to_read),
+            "to_read_digest": _reading_digest(check_id, to_read) if to_read else ""}
+
+
+def _read_readings(workspace: Path) -> "tuple[list[dict], list[str]]":
+    """The recorded readings, and every reason some of them cannot be trusted.
+
+    An entry is trusted only as the recorder writes it: a known check, a sha256 digest, a
+    conclusion of accepted or rejected, a reader's name and a time. A repeated key anywhere, or an
+    entry of another shape, makes the file untrusted for the checks it concerns.
+    """
+    path = workspace / "provenance" / READINGS_FILE
+    if not path.exists():
+        return [], []
+    record, reason = _read_json(path)
+    if record is None:
+        return [], [reason]
+    if _qa_duplicate_keys(path):
+        return [], [f"{READINGS_FILE} repeats a key, so which value it means cannot be told"]
+    readings = record.get("readings")
+    if record.get("schema") != READINGS_SCHEMA or not isinstance(readings, list):
+        return [], [f"{READINGS_FILE} is not a {READINGS_SCHEMA} record"]
+    kept, problems = [], []
+    for index, item in enumerate(readings, start=1):
+        problem = _reading_problem(item)
+        if problem:
+            problems.append(f"entry {index} of {READINGS_FILE} {problem}")
+        else:
+            kept.append(item)
+    return kept, problems
+
+
+def _reading_problem(item) -> str:
+    if not isinstance(item, dict):
+        return "is not an object"
+    if item.get("check_id") not in READ_CHECKS:
+        return f"names no check QA-1 or SUM-2 ({item.get('check_id')!r})"
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(item.get("digest") or "")):
+        return "has no sha256 digest"
+    if item.get("conclusion") not in READ_CONCLUSIONS:
+        return f"concludes {item.get('conclusion')!r}, not accepted or rejected"
+    if not isinstance(item.get("read_by"), str) or not item["read_by"].strip():
+        return "names no reader"
+    try:
+        datetime.fromisoformat(str(item.get("read_at") or ""))
+    except ValueError:
+        return "has no time it was read"
+    return ""
+
+
+def check_readings_recorded(report: Report, workspace: Path, stage: str) -> None:
+    """READ-1. Every sentence a person must read has been read, and the reading is recorded.
+
+    PASS when nothing is to be read, or when each such check's current sentences carry a reading
+    whose latest conclusion is 'accepted'. FAIL when the latest reading of them concluded 'rejected':
+    a person established that the text is wrong, until it is corrected or a later reading of the
+    same sentences accepts it. NOT_EVALUABLE, required, so that --strict holds the run, when
+    sentences are to be read and no trusted reading of exactly them is recorded, or when QA-1 or
+    SUM-2 could not read a text; NOT_EVALUABLE, not required, when QA-1 could not be evaluated.
+    """
+    title = "Every sentence a person must read has been read"
+    checks = {check.check_id: check for check in report.checks if check.check_id in READ_CHECKS}
+    pending = {check_id: check for check_id, check in checks.items() if check.evidence.get("to_read_count")}
+    unreadable = {check_id: list(check.evidence.get("unread_texts") or check.evidence.get("unread") or [])
+                  for check_id, check in checks.items()}
+    unreadable = {check_id: items for check_id, items in unreadable.items() if items}
+    # SUM-2 not evaluable has nothing to set aside; QA-1 not evaluable read no text, so what is to be
+    # read is unknown.
+    unjudged = ["QA-1"] if "QA-1" in checks and checks["QA-1"].status == NOT_EVALUABLE else []
+    readings, problems = _read_readings(workspace)
+    missing, rejected, accepted, stale = [], [], [], []
+    for check_id, check in sorted(pending.items()):
+        digest = check.evidence["to_read_digest"]
+        count = check.evidence["to_read_count"]
+        matching = [item for item in readings if item["check_id"] == check_id and item["digest"] == digest]
+        if any(item["check_id"] == check_id and item["digest"] != digest for item in readings):
+            stale.append(check_id)
+        if not matching:
+            missing.append(f"{check_id} ({count} sentence(s), digest {digest[:19]}...)")
+            continue
+        latest = matching[-1]
+        entry = f"{check_id}: {count} sentence(s) read by {latest['read_by']} on {latest['read_at']}"
+        if latest["conclusion"] == "rejected":
+            rejected.append(entry + (f", who found them wrong: {_qa_short(latest.get('note') or '', 160)}"
+                                     if latest.get("note") else ", who found them wrong"))
+        else:
+            accepted.append(entry)
+    evidence = {"pending": sorted(pending), "readings_file": str(Path("provenance") / READINGS_FILE),
+                "accepted": accepted, "rejected": rejected, "missing": missing, "unreadable": unreadable,
+                "unjudged": unjudged, "problems": problems[:20],
+                "stale": [f"{check_id}: a reading is recorded for other sentences" for check_id in stale]}
+    if rejected:
+        report.add("READ-1", stage, title, FAIL,
+                   "A person read the sentences and found them wrong, so the text must be corrected before "
+                   "publication: " + " | ".join(rejected), **evidence)
+        return
+    if unreadable:
+        report.add("READ-1", stage, title, NOT_EVALUABLE,
+                   "A text could not be read, by the gate or so by anyone reading what it quotes: "
+                   + "; ".join(f"{check_id}: {', '.join(_qa_short(item, 100) for item in items[:3])}"
+                               for check_id, items in sorted(unreadable.items()))
+                   + ". Make it readable, or remove it, and run the gate again.", **evidence)
+        return
+    if missing or (pending and problems):
+        report.add("READ-1", stage, title, NOT_EVALUABLE,
+                   ("Sentences are for a person to read, and no reading of exactly them is recorded: "
+                    + "; ".join(missing) + ". " if missing else "")
+                   + ("The readings file cannot be trusted: " + "; ".join(problems[:3]) + ". " if problems else "")
+                   + "Show the sentences to the person, and once they have said what they found, record it with "
+                   "scripts/record-reading.py.", **evidence)
+        return
+    if unjudged:
+        report.add("READ-1", stage, title, NOT_EVALUABLE,
+                   "QA-1 could not be evaluated, so what is to be read is unknown."
+                   + (" Read and accepted: " + " | ".join(accepted) if accepted else ""), required=False, **evidence)
+        return
+    if accepted:
+        report.add("READ-1", stage, title, PASS, "Read and accepted: " + " | ".join(accepted), **evidence)
+        return
+    judged = ", ".join(f"{check_id} ({checks[check_id].status})" for check_id in sorted(checks)) or "neither check ran"
+    report.add("READ-1", stage, title, PASS,
+               f"No sentence is for a person to read: {judged} left none.", **evidence)
 
 
 def check_unit_reached_a_terminal_state(
@@ -3217,6 +3411,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_no_unearned_checksum_claim(report, provenance, output)
         check_retention_policy_was_acted_on(report, provenance, provenance_reason, workspace)
         check_no_private_path_in_a_shared_artifact(report, output, "before-publish")
+        check_readings_recorded(report, workspace, "before-publish")
     report.progress = completion_progress(workspace, provenance, output)
     return report
 
@@ -3257,7 +3452,7 @@ COMPLETION_STAGES = (
     ("B8", "qa_produced", "a QA matrix (*.qa.tsv) exists", ("QA-1", "ORD-2")),
     ("B9", "publication_artifacts",
      "the publication report, Materials and Methods and supplementary table exist",
-     ("LIB-1", "SEC-1", "SUM-2")),
+     ("LIB-1", "SEC-1", "SUM-2", "READ-1")),
     ("B10", "retention_recorded", "the retention policy and the retained-artifact inventory are recorded",
      ("RET-1", "DSK-1")),
 )
