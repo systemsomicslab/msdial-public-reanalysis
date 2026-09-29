@@ -2431,6 +2431,31 @@ def check_class_proposal_was_accepted(report: Report, provenance: dict | None, r
     status = str(proposal.get("status") or "").strip().casefold()
     model = str(proposal.get("model") or "")
     warnings = [str(item) for item in proposal.get("warnings") or []]
+    contrast = proposal.get("contrast_definition") if isinstance(proposal.get("contrast_definition"), dict) else {}
+    if contrast.get("kind") == "abstention":
+        # Where the Catalog abstains, the decision is that no Class is defined: saved, and ratified,
+        # like a proposal (decided 2026-09-28), as every sample in one Class with no field selected.
+        assignments = [item for item in proposal.get("assignments") or [] if isinstance(item, dict)]
+        labels = sorted({str(item.get("class_label") or "") for item in assignments})
+        fields = list(proposal.get("selected_fields") or [])
+        problems = []
+        if fields:
+            problems.append(f"it selects {fields}")
+        if len(labels) != 1:
+            problems.append(f"it gives {len(labels)} Classes, not one" if assignments else "it assigns no sample")
+        if problems:
+            report.add("CLS-3", stage, "The executed grouping was ratified", FAIL,
+                       "The record says no Class was defined, but " + " and ".join(problems)
+                       + ": an abstention that groups the samples is a grouping nobody proposed.",
+                       status=status, abstention=True, labels=labels[:5], selected_fields=fields)
+            return
+        if status in RATIFIED_STATUSES:
+            report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
+                       f"The Class decision is a ratified abstention ({contrast.get('reason') or 'no reason recorded'}): "
+                       f"no contrast, every sample in Class {labels[0]!r}. Status is {status!r}.",
+                       status=status, abstention=True, reason=str(contrast.get("reason") or ""), model=model,
+                       warnings=warnings[:4])
+            return
     if status in RATIFIED_STATUSES:
         report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
                    f"Class proposal status is {status!r}.", status=status, model=model,
@@ -3006,7 +3031,9 @@ COMPLETION_STAGES = (
      "by the confirmed cleanup (status raw_cleaned)",
      ("SUM-1",)),
     ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1")),
-    ("B3", "class_settled", "a ratified Class proposal (accepted, confirmed or approved)", ("CLS-3",)),
+    ("B3", "class_settled",
+     "a ratified Class proposal, or where the Catalog abstains a ratified abstention (accepted, confirmed or approved)",
+     ("CLS-3",)),
     ("B4", "diagnostic_done", "a recorded peak-height diagnostic whose absolute directory exists", ("PKH-1",)),
     ("B5", "production_prepared", "output holds analysis_files.csv, method.txt and run-manifest.json",
      ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production")),
