@@ -2,7 +2,7 @@
   "schema": "msdial-public-reanalysis-trial-manifest.v1",
   "trial_id": "2026-09-20-ten-unit",
   "prepared_at": "2026-09-20T22:30:00+09:00",
-  "status": "Units approved 2026-09-20. Only MTBLS2207 has been downloaded (2026-09-23) and split into a DDA and a DIA run (2026-09-24). Both runs were run in production under Interactive 0.5.2 with the 31dea2b39 Console on 2026-09-27, each after its own boundary-4 confirmation; the DDA run had run once before, on 2026-09-26, and that run is superseded (units[n=5].runs). No other unit has been downloaded. How far each run has got is not recorded here: run scripts/verify-run-invariants.py <run workspace> --stage all --strict --json (progress, checks_by_stage). What a run's record below says the gate returned is an observation on the date it names, not a stage.",
+  "status": "Units approved 2026-09-20. Only MTBLS2207 has been downloaded (2026-09-23) and split into a DDA and a DIA run (2026-09-24). Both runs were run in production under Interactive 0.5.2 with the 31dea2b39 Console on 2026-09-27, each after its own boundary-4 confirmation; the DDA run had run once before, on 2026-09-26, and that run is superseded (units[n=5].runs). No other unit has been downloaded. On 2026-09-29 the production Console moved to c471463a5 (P1); neither run has been made with it. How far each run has got is not recorded here: run scripts/verify-run-invariants.py <run workspace> --stage all --strict --json (progress, checks_by_stage). What a run's record below says the gate returned is an observation on the date it names, not a stage.",
   "purpose_of_the_trial": "Exercise every branch of the repository reanalysis pipeline against real public data, and have the result judged by a layer that did not run it. This is a pipeline test, not a biological study.",
   "evaluation": {
     "rule": "Two verdicts, reported separately and never combined. Part A says whether the pipeline is ready to be judged. Part B says how far each run got on real data. The gate derives it from the artifacts on disk and from fields the provenance manifest records, each paired with an artifact where one exists (B1 downloads, input_candidates and the unit's or its owner's status; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics and its directory; B7 status, finalized_at and mztab_validation with an mzTab-M; B10 raw_retention_policy and retained_artifact_inventory). It never reads a stage written by hand, here or anywhere. The stages are defined by COMPLETION_STAGES in scripts/verify-run-invariants.py, which part_b_stages mirrors (a test holds them equal). A stage is reached when its artifacts exist, whether or not they are right; whether they are right is the gate's verdict, reported beside it by stage (checks_by_stage). A run is completed on real data when it reaches B10 and its gate, run with --stage all --strict, exits 0. A run whose SUM-2 or QA-1 leaves sentences a person must read is completed only once that person's reading is recorded (decided 2026-09-28): READ-1, at B9, holds it under --strict (exit 4) until scripts/record-reading.py has recorded, in provenance/readings.json, a reading of exactly those sentences (boundary 6). A unit is completed when every one of its runs is. A negative control is completed when it stops where its expected_stage says, for the reason it names.",
@@ -657,11 +657,31 @@
   "preconditions": [
     {
       "id": "P1",
-      "state": "met",
-      "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master 31dea2b3913d58db27c318159380b02d7aeac4eb (9ee32dd24 plus MsdialWorkbench#808) in the MsdialWorkbench-console-31dea2b39 worktree, binary sha256 80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a, --version 5.5.260926, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-26.",
-      "verified": "2026-09-26, read-only. IL comparison of the two builds: 10 of 18,156 methods differ, all in Common.dll and one per #808 hunk; the other 11 project assemblies differ only in build stamps (commit, MVID, PDB path, build date, Splash's 1.0.* version); all 113 other files, vendor readers included, are byte-identical. The build record omits the toolchain, which changed: .NET SDK 10.0.401 with Roslyn 5.9.0 (baseline SDK 10.0.301, Roslyn 5.6.0), with no effect on the IL outside #808. Before/after on the FastLC demo (SCIEX, negative, DDA, the same Zenodo 21904324 LBM and 204-entry searched lipid class list as MTBLS2207): every peak-detection column identical in all 13,193 .mdpeak rows, aligned spots and heights identical, 20 annotation rows changed, all Cer_EBDS, Cer_EODS or Cer_EOS. Not exercised: Thermo mzML, DIA, the MSP tiers.",
-      "detail": "The 9ee32dd24 build (sha256 351ef4e4c34b9a79ed8cd7b5ea0db03f0407d43cdd03114549f773c572ab8b53) is kept unchanged at its path in MsdialWorkbench-master-baseline: both MTBLS2207 peak-height diagnostics were measured with it. The saved Console setting still resolves to a third binary, MsdialWorkbench's own build output, sha256 21586b8d7be965c8e2c95a1a165d3c99d1779b97a662b284bd760977f4641305, built from a working tree with uncommitted changes (it carries the unmerged MsdialWorkbench#810); a call that omits console_path runs it. A rebuild of the same commit gives a different sha256 (embedded worktree path, build date, Splash), so the worktree is not rebuilt until both runs finish. Met earlier by 9ee32dd24 (2026-09-25) and by feature/annotation-evidence-record at 9cbf058cd99d5e1e5b3e6578d020c49d075cb735 (2026-09-20). Both runs have finished. The binary is still not rebuilt: it measured the production diagnostics and ran both runs, so it stays as it is, and the next production Console is built in its own worktree named by its commit.",
-      "met": "2026-09-27. The output/run-manifest.json of both production runs records this binary (sha256 80469d6c..., --version 5.5.260926, git_head 31dea2b3913d58db27c318159380b02d7aeac4eb, git_dirty false) with software_provenance_status verified, and BIN-1 reads MS-DIAL 5.5.260926+31dea2b3 from each mzTab-M. The superseded first DDA run used it too. Both peak-height diagnostics the runs use were measured with it (decision 2026-09-26)."
+      "state": "open",
+      "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master c471463a576626650e0886e26bd064cca53a7ae3 (31dea2b39 plus MsdialWorkbench#810, #811, #813, #814, #815 and #816) in the MsdialWorkbench-console-c471463a5 worktree, binary sha256 8ecfe11a3bb9f5978a584843fe342aa8dc3d7b3584a0796da617b8064dac6314, --version 5.5.260929, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-29.",
+      "verified": "2026-09-29. Built net48 Release through msdial_build_console_from_local_source with select_after_build=false, from a detached worktree at origin/master, clean before and after the build: 0 errors. The provenance record verifies (binary sha256 as above, git_head c471463a5, git_dirty false); --version prints 5.5.260929 and commit c471463a5; Interactive detects automatic_alignment_rt_correction, lcms_alignment_qa_matrix and rt_correction_review. MsdialCoreTestAppTests at the same commit, in a separate worktree: 68 of 68 pass, on net8.0, not on this net48 binary. Not exercised: any analysis with this binary, and no before/after comparison with 31dea2b39 like the one the previous pin had (previous_pins).",
+      "detail": "What it changes from 31dea2b39, as the pull requests describe it. #815: a method file's Searched adduct ions take effect; before it the Console estimated adducts with [M+H]+ or [M-H]- alone whatever the list said, while method.keys.json recorded the key as applied. #813: on/off keys are read in both directions, and a value other than true or false is now unusable (an MTH-1 FAIL) where it was silently taken. #811: the keys LcmsProcess reads for itself are recorded as applied; for MTBLS2207's method files MTH-1's unrecognised count is predicted from source to fall from 29 to 26. #810: automatic alignment-only RT correction, off unless the method asks for it; since msdial-public-reanalysis#16 CNT-1 does not count its audit TSVs as samples. #814 is DIMS only; #816 is the LBM CCS filter. Neither MTBLS2207 run has been made with this binary: both record 31dea2b39, so P1 is open until a production run records this one, and whether they are re-run is in open_decisions_for_the_user. The 31dea2b39 build stays unchanged at its path, since both runs and their peak-height diagnostics were made with it. Since 2026-09-29 the saved Console setting resolves to this binary too, so a call that omits console_path runs it; production runs still pass it explicitly. A rebuild of the same commit gives a different sha256 (embedded worktree path, build date, Splash), so this worktree is never rebuilt, and the next production Console is built in its own worktree named by its commit. Met earlier by 31dea2b39 (2026-09-27), 9ee32dd24 (2026-09-25) and feature/annotation-evidence-record at 9cbf058cd99d5e1e5b3e6578d020c49d075cb735 (2026-09-20).",
+      "previous_pins": [
+        {
+          "commit": "31dea2b3913d58db27c318159380b02d7aeac4eb",
+          "worktree": "MsdialWorkbench-console-31dea2b39",
+          "binary_sha256": "80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a",
+          "version": "5.5.260926",
+          "pinned": "2026-09-26",
+          "replaced": "2026-09-29",
+          "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master 31dea2b3913d58db27c318159380b02d7aeac4eb (9ee32dd24 plus MsdialWorkbench#808) in the MsdialWorkbench-console-31dea2b39 worktree, binary sha256 80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a, --version 5.5.260926, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-26.",
+          "verified": "2026-09-26, read-only. IL comparison of the two builds: 10 of 18,156 methods differ, all in Common.dll and one per #808 hunk; the other 11 project assemblies differ only in build stamps (commit, MVID, PDB path, build date, Splash's 1.0.* version); all 113 other files, vendor readers included, are byte-identical. The build record omits the toolchain, which changed: .NET SDK 10.0.401 with Roslyn 5.9.0 (baseline SDK 10.0.301, Roslyn 5.6.0), with no effect on the IL outside #808. Before/after on the FastLC demo (SCIEX, negative, DDA, the same Zenodo 21904324 LBM and 204-entry searched lipid class list as MTBLS2207): every peak-detection column identical in all 13,193 .mdpeak rows, aligned spots and heights identical, 20 annotation rows changed, all Cer_EBDS, Cer_EODS or Cer_EOS. Not exercised: Thermo mzML, DIA, the MSP tiers.",
+          "met": "2026-09-27. The output/run-manifest.json of both production runs records this binary (sha256 80469d6c..., --version 5.5.260926, git_head 31dea2b3913d58db27c318159380b02d7aeac4eb, git_dirty false) with software_provenance_status verified, and BIN-1 reads MS-DIAL 5.5.260926+31dea2b3 from each mzTab-M. The superseded first DDA run used it too. Both peak-height diagnostics the runs use were measured with it (decision 2026-09-26)."
+        },
+        {
+          "commit": "9ee32dd241ebdd00f7afdc78f2aa03a3b077bd29",
+          "worktree": "MsdialWorkbench-master-baseline",
+          "binary_sha256": "351ef4e4c34b9a79ed8cd7b5ea0db03f0407d43cdd03114549f773c572ab8b53",
+          "pinned": "2026-09-25",
+          "replaced": "2026-09-26",
+          "note": "Kept unchanged at its path: the first MTBLS2207 peak-height diagnostics (DDA 9000, DIA 0) were measured with it."
+        }
+      ]
     },
     {
       "id": "P2",
@@ -671,7 +691,8 @@
     },
     {
       "id": "P3",
-      "state": "met",
+      "state": "open",
+      "reopened": "2026-09-29. On GitHub: Interactive main d8eaf14 (0.5.3), this repository main 9663509, catalog main c6226f4, MsdialWorkbench master c471463a5. The local checkouts were fast-forwarded to them, clean. But neither the msdial-interactive nor the msdial-repository-catalog MCP server has been reconnected since. Their tools still run the code they imported, and the Catalog's has no abstain=True. A standalone backend started from the d8eaf14 checkout serves port 8765. Met again once both servers are reconnected.",
       "what": "Every repository is on its merged main/master, and the MCP server runs that code.",
       "detail": "Was open until msdial-interactive-app#31 (Interactive 0.5.0, agent API 0.5) is merged and the MCP server is restarted onto it; the server embeds the backend and does not reload changed source. Checked 2026-09-26: Interactive main cb7c74f (reports 0.4.7), catalog main 27932c0, MsdialWorkbench master 31dea2b39, all clean. The production Console is 9ee32dd24, one commit behind master (see the #808 open decision). Met on 2026-09-20: six pull requests merged at 13:28Z and the Console rebuilt from clean master 817407a25a0f85cd4672458b97df363239f8d4ec, binary sha256 ea2fe049869d67d4.",
       "met": "2026-09-27. Interactive main 6d164c6 (0.5.2, agent API 0.5; msdial-interactive-app#31, #33 and #34 merged), this repository main 6d7fa19 (#9 merged), catalog main 27932c0, MsdialWorkbench master 31dea2b39, each clean. The desktop app, and with it the MCP server, was restarted after the last of those merges; the backend that ran both runs was started from the 6d164c6 checkout, and both runs record Interactive 0.5.2."
@@ -727,7 +748,10 @@
       "status": "Per run and per text: only after that person has read the sentences in the conversation and said what they found; a changed text is read again. Not exercised: on 2026-09-29 READ-1 found no sentence to read in either MTBLS2207 run."
     }
   ],
-  "open_decisions_for_the_user": [],
+  "open_decisions_for_the_user": [
+    "Whether both MTBLS2207 runs are re-run with the c471463a5 Console (P1). They were made with 31dea2b39, before MsdialWorkbench#815, so their adduct estimation used [M-H]- alone although their method files list 20 negative adducts; their unannotated features carry only [M-H]- or [M-2H]2- (read 2026-09-29), consistent with that but not a proof of it. A re-run needs its own boundary-4 confirmation and, as decided on 2026-09-26 when the previous pin moved, peak-height diagnostics measured with the same Console.",
+    "Whether READ-1 holds ORD-2's single-Class WARN (known_gaps). It does not; every abstention runs one Class."
+  ],
   "library": {
     "decision": "LBM2 on every unit, plus MSP high-confidence and MSP low-confidence in the unit's own polarity. User confirmed 2026-09-20: the LBM tier applies to the metabolomics units too.",
     "recovered_from": "analysis/mb_post/MPST000007/6f27431da49ec82f3734/output/workflow-settings.json and msp_annotator_settings.tsv",
@@ -938,6 +962,12 @@
       "at": "2026-09-28",
       "by": "user",
       "decision": "A QC-based QA criterion (median QC feature RSD, the fraction of QC features with RSD <=30%, the median QC detection rate, the QC PCA relative dispersion) is assessed only from three or more QC injections; below that it is not assessed, and its reason says how many QC the run had. Interactive computed an RSD or a dispersion from two QC and a detection rate from one while its warning said three were needed. Implemented with the per-criterion reasons in msdial-interactive-app#35 (Interactive 0.5.3) and read by QA-1 in msdial-public-reanalysis#13."
+    },
+    {
+      "at": "2026-09-29",
+      "by": "user",
+      "decision": "The production Console moves to MsdialWorkbench master c471463a5 (P1), and the saved Console setting is switched to the same binary.",
+      "result": "2026-09-29. Built clean in D:\\0_SourceCode\\MsdialWorkbench-console-c471463a5 through msdial_build_console_from_local_source (sha256 8ecfe11a...ac6314, 5.5.260929, provenance verified), then saved as the default with msdial_set_console_path. MsdialCoreTestAppTests pass 68 of 68 at the commit (net8.0). No analysis has been run with it."
     }
   ]
 }
