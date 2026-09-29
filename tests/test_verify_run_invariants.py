@@ -910,18 +910,51 @@ class ThresholdProvenanceTests(unittest.TestCase):
     """PKH-1. The threshold the Console reads is one this unit's own diagnostic produced."""
 
     def _workspace(self, temporary: str, *, diagnostics: list[dict] | None,
-                   written: str | None) -> Path:
+                   written: str | None, method_text: str | None = None) -> Path:
         builder = WorkspaceBuilder(Path(temporary)).provenance()
         manifest_path = builder.root / "provenance" / "run-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if diagnostics is not None:
             manifest["peak_height_diagnostics"] = diagnostics
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        if written is not None:
+        if method_text is not None:
+            (builder.output / "method.txt").write_text(method_text, encoding="utf-8")
+        elif written is not None:
             (builder.output / "method.txt").write_text(
                 f"Smoothing method: LinearWeightedMovingAverage\nMinimum peak height: {written}\n",
                 encoding="utf-8")
         return builder.root
+
+    def _pkh1(self, method_text: str, measured: int = 500):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, diagnostics=[{"minimum_peak_height": measured}],
+                                        written=None, method_text=method_text)
+            report = verifier.verify(workspace, "before-production")
+        return next(item for item in report.checks if item.check_id == "PKH-1")
+
+    def test_the_threshold_is_the_one_the_console_applies(self) -> None:
+        """The Console applies the last value it can read; the first line is not the one that runs."""
+        cases = {
+            "measured first, another later": ("Minimum peak height: 500\nMinimum peak height: 700\n", verifier.FAIL),
+            "another first, measured later": ("Minimum peak height: 700\nMinimum peak height: 500\n", verifier.WARN),
+            "separated by '='": ("Minimum peak height = 500\n", verifier.PASS),
+            "a space before the colon": ("Minimum peak height : 500\n", verifier.PASS),
+            "a blank line after it": ("Minimum peak height: 500\nMinimum peak height:\n", verifier.PASS),
+            "an unreadable line after it": ("Minimum peak height: 500\nMinimum peak height: high\n", verifier.WARN),
+            "a comment after it": ("Minimum peak height: 500\n# Minimum peak height: 700\n", verifier.PASS),
+            "quoted": ('Minimum peak height: "500"\n', verifier.PASS),
+            "stated twice alike": ("Minimum peak height: 500\nMinimum peak height: 500\n", verifier.PASS),
+        }
+        for name, (text, expected) in cases.items():
+            with self.subTest(name):
+                check = self._pkh1(text)
+                self.assertEqual(expected, check.status, check.detail)
+
+    def test_a_first_line_that_does_not_run_is_named(self) -> None:
+        check = self._pkh1("Minimum peak height: 500\nMinimum peak height: 700\n")
+
+        self.assertEqual("700", check.evidence["method_threshold"])
+        self.assertEqual(["500", "700"], check.evidence["stated"])
 
     def test_a_measured_threshold_passes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -972,6 +1005,29 @@ class ThresholdProvenanceTests(unittest.TestCase):
 
 class MethodKeyTests(unittest.TestCase):
     """MTH-1. Every parameter in the method file was one the Console could use."""
+
+    def test_a_key_record_of_another_method_file_is_not_read(self) -> None:
+        import hashlib
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._workspace(temporary, None)
+            method = workspace / "output" / "method.txt"
+            method.write_text("Minimum peak height: 500\n", encoding="utf-8")
+            own = hashlib.sha256(method.read_bytes()).hexdigest()
+            outcomes = {}
+            for name, record in {
+                "this file": {"schema": "msdial-method-file-keys.v1", "method_file_sha256": own,
+                              "applied": ["Minimum peak height"], "unusable": [], "unrecognised": []},
+                "another file": {"schema": "msdial-method-file-keys.v1", "method_file_sha256": "0" * 64,
+                                 "applied": ["Minimum peak height"], "unusable": [], "unrecognised": []},
+                "another schema": {"schema": "msdial-method-file-keys.v2", "method_file_sha256": own,
+                                   "applied": ["Minimum peak height"], "unusable": [], "unrecognised": []},
+            }.items():
+                (workspace / "output" / "method.keys.json").write_text(json.dumps(record), encoding="utf-8")
+                outcomes[name] = _status(verifier.verify(workspace, "after-run"), "MTH-1")
+
+        self.assertEqual(verifier.PASS, outcomes["this file"])
+        self.assertEqual(verifier.NOT_EVALUABLE, outcomes["another file"])
+        self.assertEqual(verifier.NOT_EVALUABLE, outcomes["another schema"])
 
     def _workspace(self, temporary: str, record: dict | None) -> Path:
         builder = WorkspaceBuilder(Path(temporary)).provenance()
