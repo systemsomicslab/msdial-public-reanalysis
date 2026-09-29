@@ -211,6 +211,31 @@ class SampleCountTests(unittest.TestCase):
             self.assertEqual(verifier.FAIL, _status(report, "CNT-1"))
             self.assertEqual(verifier.FAIL, _status(report, "EXP-1"))
 
+    def test_run_level_exports_are_not_counted_as_samples(self):
+        # With automatic alignment RT correction (MsdialWorkbench #810), Interactive lists the two
+        # audit TSVs among the expected exports. They are one per run, not one per file.
+        audit = ("automatic_alignment_rt_correction_summary.tsv", "automatic_alignment_rt_correction_anchors.tsv")
+        for name, keep in {"every file": 6, "a file skipped": 5}.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                rows = _samples(6)
+                builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6)
+                builder.analysis_csv(rows).run_manifest(rows)
+                manifest_path = builder.output / "run-manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                extra = [str(builder.output / item) for item in audit]
+                manifest["expected_analysis_exports"] += extra
+                manifest["expected_automatic_rt_correction_exports"] = extra
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                for path in extra:
+                    Path(path).write_text("x\n", encoding="ascii")
+                for row in rows[keep:]:
+                    (builder.output / f"{row['file_name']}.mdpeak").unlink()
+                report = verifier.verify(builder.root, "after-run")
+                check = next(item for item in report.checks if item.check_id == "CNT-1")
+                self.assertEqual(verifier.PASS if keep == 6 else verifier.FAIL, check.status, check.detail)
+                self.assertEqual(sorted(audit), sorted(check.evidence["run_level_exports"]))
+                self.assertEqual(verifier.PASS if keep == 6 else verifier.FAIL, _status(report, "EXP-1"))
+
     def test_a_single_count_is_not_evaluable(self):
         with tempfile.TemporaryDirectory() as directory:
             builder = WorkspaceBuilder(Path(directory)).provenance(inputs=6)
