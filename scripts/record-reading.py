@@ -28,6 +28,8 @@ import json
 import os
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -41,6 +43,26 @@ def _gate():
     sys.modules.setdefault("verify_run_invariants", module)
     spec.loader.exec_module(module)
     return module
+
+
+@contextmanager
+def _locked(path: Path, wait: float = 10.0):
+    """Hold <readings>.lock while the file is read, changed and written, so no reading is lost."""
+    lock = path.with_name(path.name + ".lock")
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"{lock} is held by another recorder; remove it if none is running")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        os.close(handle)
+        lock.unlink(missing_ok=True)
 
 
 def _write(path: Path, record: dict) -> None:
@@ -90,8 +112,6 @@ def main(argv: list[str]) -> int:
     print(f"{args.check}: {count} sentence(s) for a person to read (digest {digest})")
     for index, item in enumerate(to_read, start=1):
         print(f"  {index}. [{item.get('source')}] {item.get('sentence')}")
-    if count > len(to_read):
-        print(f"  ... and {count - len(to_read)} more; see the gate's --json output")
     if not args.digest:
         print("Nothing recorded. Once the person has read these and said what they found, run again with "
               "--digest, --by and --conclusion.")
@@ -105,15 +125,29 @@ def main(argv: list[str]) -> int:
         return 2
 
     path = workspace / "provenance" / gate.READINGS_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _locked(path):
+            return _append(gate, path, args, digest, count, to_read)
+    except (OSError, TimeoutError) as exc:
+        print(f"refused: could not record in {path} ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return 2
+
+
+def _append(gate, path: Path, args, digest: str, count: int, to_read: list[dict]) -> int:
     if path.exists():
-        record, reason = gate._read_json(path)
-        if record is None or record.get("schema") != gate.READINGS_SCHEMA or not isinstance(record.get("readings"), list):
-            print(f"refused: {path} is not a {gate.READINGS_SCHEMA} record ({reason or 'wrong schema'})",
+        if not path.is_file():
+            print(f"refused: {path} is not a file", file=sys.stderr)
+            return 2
+        readings, problems = gate._read_readings(path.parent.parent)
+        if problems:
+            print(f"refused: {path} cannot be trusted ({'; '.join(problems[:3])}); fix it before recording",
                   file=sys.stderr)
             return 2
+        record = {"schema": gate.READINGS_SCHEMA, "readings": readings}
     else:
         record = {"schema": gate.READINGS_SCHEMA, "readings": []}
-    record["readings"].append({
+    entry = {
         "check_id": args.check,
         "digest": digest,
         "sentence_count": count,
@@ -123,8 +157,13 @@ def main(argv: list[str]) -> int:
         "conclusion": args.conclusion,
         "note": args.note.strip(),
         "gate_sha256": hashlib.sha256(GATE.read_bytes()).hexdigest(),
-    })
+    }
+    record["readings"].append(entry)
     _write(path, record)
+    kept, _ = gate._read_readings(path.parent.parent)
+    if not kept or kept[-1] != entry:
+        print(f"refused: the reading did not survive the write to {path}", file=sys.stderr)
+        return 2
     print(f"recorded: {args.check} read by {args.by.strip()}, {args.conclusion}, in {path}")
     return 0
 

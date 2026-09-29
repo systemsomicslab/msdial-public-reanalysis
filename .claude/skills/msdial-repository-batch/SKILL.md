@@ -126,7 +126,9 @@ and the checksum phrasings SUM-2 sets aside, are held by READ-1 (exit 4 under
 only after they have read the sentences and said what they found, record it
 with `--digest <the digest shown> --by <that person> --conclusion
 accepted|rejected`. Never record a reading on your own: that is confirmation
-boundary 6. A rejected reading is a FAIL until the text is corrected.
+boundary 6. A rejected reading is a FAIL until the text is corrected, or until a later
+reading of the same sentences accepts them. A text the gate could not read holds the run
+too, until it is made readable.
 
 **Always pass `--strict`.** Without it a workspace where nothing has happened
 exits 0: `ok` means "no check FAILed", and a directory holding an empty

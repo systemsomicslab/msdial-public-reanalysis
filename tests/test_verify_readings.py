@@ -151,7 +151,7 @@ class ReadingTests(unittest.TestCase):
             kept = path.read_text(encoding="utf-8")
 
         self.assertEqual(verifier.NOT_EVALUABLE, check.status)
-        self.assertIn("is not a", check.evidence["problem"])
+        self.assertIn("is not a", " ".join(check.evidence["problems"]))
         self.assertEqual(2, code)
         self.assertEqual('{"readings": "yes"}', kept)
 
@@ -185,7 +185,100 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(verifier.NOT_EVALUABLE, before.status, before.detail)
         self.assertIn("SUM-2", before.evidence["pending"])
         self.assertIn("not checksum-verified", shown)
-        self.assertEqual(verifier.PASS, after.status, after.detail)
+        # The fixture has no publication report, so QA-1 could not be evaluated: READ-1 does not PASS,
+        # and says that SUM-2's sentences were read.
+        self.assertEqual(verifier.NOT_EVALUABLE, after.status, after.detail)
+        self.assertFalse(after.required)
+        self.assertIn("SUM-2: 1 sentence(s) read by A", after.detail)
+
+    def test_a_persons_words_inside_interactives_sentences_are_read(self) -> None:
+        results = prose.INTERACTIVE_052["results"].replace(
+            "review were: Absolute run-order/intensity correlation.",
+            "review were: Absolute run-order/intensity correlation, although the drift is explained by maintenance.")
+        with tempfile.TemporaryDirectory() as directory:
+            check, report = _read1(self.workspace(directory, results))
+        qa1 = next(item for item in report.checks if item.check_id == "QA-1")
+
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status, check.detail)
+        self.assertIn("explained by maintenance", " ".join(item["sentence"] for item in qa1.evidence["to_read"]))
+
+    def test_a_table_row_qa1_cannot_read_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = prose.INTERACTIVE_052
+            root = prose._real(Path(directory), fixture,
+                               extra=["Quality assurance\tAbsolute run-order/intensity correlation\tComment\t"
+                                      "drift explained by maintenance\t\tx"]).root
+            check, report = _read1(root)
+        qa1 = next(item for item in report.checks if item.check_id == "QA-1")
+
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status, check.detail)
+        self.assertIn("comment | drift explained by maintenance",
+                      " ".join(item["sentence"] for item in qa1.evidence["to_read"]))
+
+    def test_a_text_qa1_could_not_read_holds_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.workspace(directory, prose.INTERACTIVE_052["results"])
+            (root / "output" / "MS_DIAL_QA_Results.txt").write_bytes(b"Quality \xe9t\xe9 \xff")
+            check, _ = _read1(root)
+
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status, check.detail)
+        self.assertTrue(check.required)
+        self.assertIn("could not be read", check.detail)
+
+    def test_every_sentence_is_shown_and_covered(self) -> None:
+        many = " ".join(f"Carryover note {index} was reviewed." for index in range(250))
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.workspace(directory, prose._append(prose.INTERACTIVE_052, many))
+            report = verifier.verify(root, "before-publish")
+            qa1 = next(item for item in report.checks if item.check_id == "QA-1")
+
+        self.assertEqual(250, qa1.evidence["to_read_count"])
+        self.assertEqual(250, len(qa1.evidence["to_read"]))
+
+    def test_readings_the_recorder_would_not_write_are_not_trusted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.workspace(directory)
+            digest = _digest(root)
+            for name, entry in {
+                "an odd conclusion": {"check_id": "QA-1", "digest": digest, "conclusion": "Accepted", "read_by": "A",
+                                      "read_at": "2026-09-29T10:00:00+09:00"},
+                "no reader": {"check_id": "QA-1", "digest": digest, "conclusion": "accepted", "read_by": " ",
+                              "read_at": "2026-09-29T10:00:00+09:00"},
+                "no time": {"check_id": "QA-1", "digest": digest, "conclusion": "accepted", "read_by": "A",
+                            "read_at": "yesterday"},
+            }.items():
+                with self.subTest(name):
+                    (root / "provenance" / "readings.json").write_text(json.dumps(
+                        {"schema": verifier.READINGS_SCHEMA, "readings": [entry]}), encoding="utf-8")
+                    check, _ = _read1(root)
+                    self.assertEqual(verifier.NOT_EVALUABLE, check.status, check.detail)
+                    self.assertTrue(check.evidence["problems"])
+            (root / "provenance" / "readings.json").write_text(
+                '{"schema": "%s", "readings": [], "readings": []}' % verifier.READINGS_SCHEMA, encoding="utf-8")
+            repeated, _ = _read1(root)
+
+        self.assertIn("repeats a key", " ".join(repeated.evidence["problems"]))
+
+    def test_the_latest_reading_of_the_same_sentences_decides(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.workspace(directory)
+            digest = _digest(root)
+            _record(root, "--check", "QA-1", "--digest", digest, "--by", "A", "--conclusion", "rejected")
+            _record(root, "--check", "QA-1", "--digest", digest, "--by", "A", "--conclusion", "accepted",
+                    "--note", "on second reading the remark is true")
+            check, _ = _read1(root)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_the_recorder_refuses_to_write_where_it_cannot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.workspace(directory)
+            digest = _digest(root)
+            (root / "provenance" / "readings.json").mkdir()
+            code, _, err = _record(root, "--check", "QA-1", "--digest", digest, "--by", "A", "--conclusion", "accepted")
+
+        self.assertEqual(2, code)
+        self.assertIn("refused", err)
 
     def test_a_digest_names_the_check_the_sentences_belong_to(self) -> None:
         items = [{"source": "a.txt", "sentence": "x"}]
