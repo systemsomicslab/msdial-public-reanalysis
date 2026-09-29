@@ -3238,18 +3238,61 @@ def check_unit_reached_a_terminal_state(
     )
 
 
-def _method_threshold(output: Path) -> tuple[str | None, str]:
+def _console_field(line: str) -> "tuple[str, str] | None":
+    """(key, value) as the Console's readFieldValues reads a method-file line, or None.
+
+    Nothing for a blank or '#' line or one without a separator; otherwise the key before the first
+    ':' or '=', trimmed and case-folded, and the value after it, trimmed, with one pair of enclosing
+    quotes removed.
+    """
+    if len(line) < 2 or line.lstrip().startswith("#"):
+        return None
+    separators = [index for index in (line.find(":"), line.find("=")) if index >= 0]
+    if not separators:
+        return None
+    at = min(separators)
+    value = line[at + 1:].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return line[:at].strip().casefold(), value
+
+
+def _console_count(text: str) -> "int | None":
+    """The whole number the Console's Count arm accepts, or None: an integer, or a real that is one."""
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        real = float(text)
+    except ValueError:
+        return None
+    return int(round(real)) if abs(real - round(real)) < 1e-9 else None
+
+
+def _method_threshold(output: Path) -> "tuple[str | None, str, list[str]]":
+    """The Minimum peak height the Console applies from method.txt, why none, and every value stated.
+
+    As the Console reads it: every non-blank value of the key is stated, and the last one its Count
+    arm can read is applied (MsdialWorkbench ConfigParser; every reader is last-wins since #817).
+    When none can be read the last stated value is returned, for PKH-1 to name.
+    """
     method = output / "method.txt"
     if not method.is_file():
-        return None, f"{method.name} is absent"
+        return None, f"{method.name} is absent", []
     try:
-        for line in method.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-            key, sep, value = line.partition(":")
-            if sep and key.strip().casefold() == "minimum peak height":
-                return value.strip(), ""
+        text = method.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as error:
-        return None, str(error)
-    return None, "method.txt states no Minimum peak height"
+        return None, str(error), []
+    stated = []
+    for line in text.splitlines():
+        field = _console_field(line)
+        if field and field[0] == "minimum peak height" and field[1]:
+            stated.append(field[1])
+    if not stated:
+        return None, "method.txt states no Minimum peak height", []
+    usable = [value for value in stated if _console_count(value) is not None]
+    return (usable or stated)[-1], "", stated
 
 
 def check_threshold_was_measured_on_this_unit(
@@ -3272,7 +3315,7 @@ def check_threshold_was_measured_on_this_unit(
         report.add("PKH-1", stage, "The threshold was measured on this unit", NOT_EVALUABLE, reason)
         return
     diagnostics = provenance.get("peak_height_diagnostics")
-    written, written_reason = _method_threshold(output)
+    written, written_reason, stated = _method_threshold(output)
     if not isinstance(diagnostics, list) or not diagnostics:
         report.add(
             "PKH-1", stage, "The threshold was measured on this unit", FAIL,
@@ -3301,21 +3344,27 @@ def check_threshold_was_measured_on_this_unit(
         return
     if any(abs(executed - value) < 1e-9 for value in measured):
         latest = diagnostics[-1] if isinstance(diagnostics[-1], dict) else {}
+        # Other stated values do not run, but a method file that asks for two thresholds was edited
+        # by something that did not know which one the Console applies.
+        differing = sorted({value for value in stated if value != written})
         report.add(
-            "PKH-1", stage, "The threshold was measured on this unit", PASS,
+            "PKH-1", stage, "The threshold was measured on this unit", WARN if differing else PASS,
             f"method.txt asks for {written}, which this unit's diagnostic measured "
             f"({latest.get('method', 'method unrecorded')}, "
             f"{latest.get('diagnostic_peak_count', '?')} peaks at zero threshold, step "
-            f"{latest.get('threshold_step', '?')}).",
-            method_threshold=written, measured=measured,
+            f"{latest.get('threshold_step', '?')})."
+            + (f" It also states {', '.join(differing)}, which the Console does not apply: it applies the last "
+               "value it can read." if differing else ""),
+            method_threshold=written, measured=measured, stated=stated,
             representative=(latest.get("representative") or {}).get("file_name", ""),
         )
         return
     report.add(
         "PKH-1", stage, "The threshold was measured on this unit", FAIL,
         f"method.txt asks for a Minimum peak height of {written}, and no diagnostic on this unit "
-        f"produced it. Measured here: {', '.join(str(value) for value in measured) or 'nothing'}.",
-        method_threshold=written, measured=measured,
+        f"produced it. Measured here: {', '.join(str(value) for value in measured) or 'nothing'}."
+        + (f" (It states {len(stated)} values; the Console applies the last it can read.)" if len(stated) > 1 else ""),
+        method_threshold=written, measured=measured, stated=stated,
     )
 
 
@@ -3349,6 +3398,24 @@ def check_method_file_reached_the_console(report: Report, output: Path, stage: s
         report.add("MTH-1", stage, "Every method-file parameter reached the Console", NOT_EVALUABLE,
                    reason)
         return
+    # The record names the method file it read by checksum; a record of another method file says
+    # nothing about this one.
+    schema = parsed.get("schema")
+    recorded_sha = str(parsed.get("method_file_sha256") or "").strip().casefold()
+    method_path = output / "method.txt"
+    if schema is not None and schema != "msdial-method-file-keys.v1":
+        report.add("MTH-1", stage, "Every method-file parameter reached the Console", NOT_EVALUABLE,
+                   f"method.keys.json has schema {schema!r}, not msdial-method-file-keys.v1.")
+        return
+    if recorded_sha and method_path.is_file():
+        actual_sha = hashlib.sha256(method_path.read_bytes()).hexdigest()
+        if actual_sha != recorded_sha:
+            report.add("MTH-1", stage, "Every method-file parameter reached the Console", NOT_EVALUABLE,
+                       "method.keys.json records another method file (sha256 "
+                       f"{recorded_sha[:12]}...) than output/method.txt ({actual_sha[:12]}...), so it does not "
+                       "say which of this file's parameters took effect.",
+                       recorded_sha256=recorded_sha, method_sha256=actual_sha)
+            return
     unusable = [str(item) for item in parsed.get("unusable") or []]
     unrecognised = [str(item) for item in parsed.get("unrecognised") or []]
     applied = [str(item) for item in parsed.get("applied") or []]
