@@ -1289,6 +1289,38 @@ QA_T_NONE = _qa_template(_QA_START + r"None\s+of\s+the\s+(\d{1,9})\s+prespecifie
 QA_T_OTHER = _qa_template(_QA_START + r"The\s+other\s+(\d{1,9})\s*\(([^()]{0,2000})\)\s*could\s+not\s+be\s+assessed"
                           r"(?:\s+because\s+the\s+run\s+had\s+(?:(\d{1,9})\s+QC\s+injection\(s\)\s*,\s+where\s+at\s+least\s+"
                           r"three\s+are\s+needed(\s+and\s+no\s+Blank\s+files)?|(no\s+Blank\s+files)))?\s*\.")
+# From 0.5.3 each criterion that could not be assessed is given the reason it fell to, from a fixed set
+# (msdial_app.quality_assurance.not_assessed_reasons): "could not be assessed because <reason>" when
+# they share one, else "could not be assessed: A and B because <reason>; C because <reason>".
+QA_REASONS = (
+    ("qc count", r"the\s+run\s+had\s+(\d{1,9})\s+QC\s+injection\(s\)\s*,\s+and\s+at\s+least\s+three\s+are\s+needed"),
+    ("injection count", r"the\s+run\s+had\s+(\d{1,9})\s+injection\(s\)\s*,\s+and\s+at\s+least\s+three\s+are\s+needed"),
+    ("no blank", r"the\s+run\s+had\s+no\s+Blank\s+files"),
+    ("no features", r"the\s+alignment\s+has\s+no\s+features"),
+    ("qc detections", r"no\s+feature\s+was\s+detected\s+in\s+two\s+or\s+more\s+QC\s+injections"),
+    ("qc dispersion", r"the\s+QC\s+dispersion\s+could\s+not\s+be\s+computed\s+from\s+the\s+PCA"),
+    ("blank detections", r"no\s+feature\s+was\s+detected\s+in\s+both\s+a\s+Blank\s+file\s+and\s+a\s+study\s+sample"),
+    ("blank order", r"no\s+Blank\s+file\s+followed\s+an\s+injection\s+with\s+detected\s+features\s+in\s+its\s+batch"),
+    ("flat", r"run\s+order\s+or\s+median\s+intensity\s+did\s+not\s+vary\s+across\s+injections"),
+    ("no value", r"the\s+QA\s+matrix\s+gives\s+no\s+value\s+for\s+it"),
+    ("no matrix", r"no\s+LC-MS\s+QA\s+matrix\s+was\s+supplied"),
+)
+# The criteria a reason can be the reason for; one not listed can be the reason for any.
+QA_REASON_METRICS = {
+    "qc count": QA_QC_METRICS,
+    "qc detections": {"median_qc_rsd_percent", "qc_features_rsd_le_30_percent"},
+    "qc dispersion": {"qc_pca_relative_dispersion"},
+    "no blank": QA_BLANK_METRICS,
+    "blank detections": {"sample_blank_ratio_ge_3"},
+    "blank order": {"median_blank_carryover_ratio"},
+    "injection count": {"run_order_intensity_correlation"},
+    "flat": {"run_order_intensity_correlation"},
+}
+_QA_REASON = "(?:" + "|".join(pattern.replace(r"(\d{1,9})", r"\d{1,9}") for _, pattern in QA_REASONS) + ")"
+QA_T_OTHER_REASONS = _qa_template(
+    _QA_START + r"The\s+other\s+(\d{1,9})\s*\(([^()]{0,2000})\)\s*could\s+not\s+be\s+assessed(?:\s+because\s+("
+    + _QA_REASON + r")|\s*:\s+((?:[^;:.()]{1,2000}?\s+because\s+" + _QA_REASON + r"\s*;\s+){0,20}[^;:.()]{1,2000}?\s+"
+    r"because\s+" + _QA_REASON + r"))\s*\.")
 QA_T_REVIEW = _qa_template(_QA_START + r"Criteria\s+requiring\s+review\s+were\s*:\s*([^.]{0,1000}?)\s*\.(?=\s|$)")
 QA_T_FILES = _qa_template(_QA_START + r"Analytical\s+quality\s+was\s+assessed\s+from\s+(\d{1,9})\s+files?\s*\(\s*(\d{1,9})"
                           r"\s+study\s+samples?\s*,\s+(\d{1,9})\s+pooled\s+QC\s+samples?\s*,\s+and\s+(\d{1,9})\s+blanks?"
@@ -1324,7 +1356,7 @@ QA_L_COUNT = _qa_template(_QA_START + r"(?:Overall\s*,\s+)?(\d{1,9})\s+of\s+(\d{
                           r"Supplementary\s+Table\s+S1|evaluable\s+prespecified\s+QA\s+criteria\s+were\s+met)\s*\.")
 QA_L_NONE = _qa_template(_QA_START + r"Prespecified\s+QA\s+criteria\s+could\s+not\s+be\s+evaluated\s+from\s+the\s+"
                          r"available\s+sample\s+types\s*\.")
-QA_TEMPLATES = (QA_T_OF, QA_T_NONE, QA_T_OTHER, QA_T_REVIEW, QA_T_FILES, QA_T_INJECTIONS, QA_T_NO_MATRIX,
+QA_TEMPLATES = (QA_T_OF, QA_T_NONE, QA_T_OTHER_REASONS, QA_T_OTHER, QA_T_REVIEW, QA_T_FILES, QA_T_INJECTIONS, QA_T_NO_MATRIX,
                 QA_T_TABLE_NOTE, QA_L_BATTERY, QA_L_FILES, QA_L_COUNT, QA_L_NONE) + tuple(item[1] for item in QA_T_VALUES)
 
 # Before the Methods' QA section: what names QA, or one of the criteria. Interactive's processing
@@ -1532,8 +1564,15 @@ class _QaRecord:
                 continue
             words = r"[\s-]+".join(re.escape(word) for word in label.split())
             operator = item.get("operator") if isinstance(item.get("operator"), str) else ""
+            if item.get("reason") is not None and not isinstance(item.get("reason"), str):
+                self.unreadable.append(f"{label!r} has a reason that is not text")
+                continue
+            reason = _qa_space(item["reason"]) if isinstance(item.get("reason"), str) else ""
+            if reason and status != "not_assessed":
+                self.contradictions.append(f"{label!r} is {status!r}, but the assessment gives a reason it could not "
+                                           f"be assessed: {_qa_short(reason, 80)!r}")
             self.criteria.append({
-                "metric": metric, "label": label, "status": status, "value": item.get("value"),
+                "metric": metric, "label": label, "status": status, "value": item.get("value"), "reason": reason,
                 "operator": operator, "threshold": item.get("threshold"),
                 "absolute": operator.replace(" ", "").startswith("abs"),
                 "unit": item.get("unit") if isinstance(item.get("unit"), str) else "",
@@ -1580,6 +1619,37 @@ class _QaRecord:
         if self.assessed and not self.present:
             self.notes.append(f"the report carries no QA matrix summary, although {len(self.assessed)} criteria were "
                               "evaluated; the counts the texts give were not compared")
+        self.has_reasons = any(item["reason"] for item in self.criteria)
+        for item in self.missing:
+            if item["reason"]:
+                for level, message in _qa_reason_problems(item, item["reason"], self, "the assessment"):
+                    (self.contradictions if level == "fail" else self.notes).append(message)
+            elif self.has_reasons:
+                self.notes.append(f"the assessment gives no reason {item['label']!r} could not be assessed, though it "
+                                  "gives one for the others")
+        # From 0.5.3 a QC-based criterion is assessed only from three or more QC injections.
+        if self.qc is not None and self.qc < 3:
+            for item in self.assessed:
+                if item["metric"] in QA_QC_METRICS:
+                    message = (f"{item['label']!r} is {item['status']!r} from {self.qc} QC injection(s); a QC-based "
+                               "criterion needs at least three")
+                    (self.contradictions if self.has_reasons else self.notes).append(
+                        message if self.has_reasons else message + " (a record from before Interactive 0.5.3)")
+        summary_reasons = self.summary.get("not_assessed_reasons")
+        if summary_reasons is not None and not isinstance(summary_reasons, dict):
+            self.notes.append("qa_report.summary.not_assessed_reasons is not an object and was not read")
+        elif isinstance(summary_reasons, dict):
+            for item in self.criteria:
+                stated = summary_reasons.get(item["metric"])
+                if stated is None:
+                    continue
+                stated = _qa_space(str(stated))
+                if item["status"] != "not_assessed":
+                    self.contradictions.append(f"the QA matrix summary gives a reason {item['label']!r} could not be "
+                                               f"assessed, but it is {item['status']!r}")
+                elif item["reason"] and stated.casefold() != item["reason"].casefold():
+                    self.contradictions.append(f"the QA matrix summary gives {_qa_short(stated, 80)!r} as why "
+                                               f"{item['label']!r} could not be assessed; its check gives {item['reason']!r}")
         # Interactive judges each criterion on the summary's value of the same name.
         for item in self.criteria:
             if not self.present or item["metric"] not in self.summary:
@@ -1632,6 +1702,120 @@ def _qa_claim(sentence: str, criteria: list[dict]) -> str:
     return ""
 
 
+def _qa_reason_kind(text: str) -> "tuple[str, int | None] | None":
+    for kind, pattern in QA_REASONS:
+        match = re.fullmatch(pattern, _qa_space(text).rstrip(".").strip())
+        if match:
+            return kind, int(match.group(1)) if match.groups() else None
+    return None
+
+
+def _qa_decided_kind(item: dict, record: "_QaRecord") -> "str | None":
+    """The reason the counts alone decide for a criterion, as Interactive decides it, or None."""
+    if record.features == 0:
+        return "no features"
+    if item["metric"] in QA_QC_METRICS and record.qc is not None and record.qc < 3:
+        return "qc count"
+    if item["metric"] in QA_BLANK_METRICS and record.blank == 0:
+        return "no blank"
+    if item["metric"] == "run_order_intensity_correlation" and record.files is not None and record.files < 3:
+        return "injection count"
+    return None
+
+
+def _qa_reason_problems(item: dict, reason: str, record: "_QaRecord", who: str) -> "list[tuple[str, str]]":
+    """(level, message) for a reason given for one criterion: one QA-1 knows, that can be the reason for
+    that criterion, and that the counts bear out."""
+    label = item["label"]
+    kind_and_number = _qa_reason_kind(reason)
+    if kind_and_number is None:
+        return [("warn", f"{who} gives {_qa_short(reason, 80)!r} as why {label!r} could not be assessed, a reason "
+                         "QA-1 does not know")]
+    kind, number = kind_and_number
+    problems: list[tuple[str, str]] = []
+    allowed = QA_REASON_METRICS.get(kind)
+    if allowed is not None and item["metric"] not in allowed:
+        problems.append(("fail", f"{who} gives {_qa_short(reason, 80)!r} as why {label!r} could not be assessed, which "
+                                 "is no reason for that criterion"))
+
+    def against(recorded: "int | None", what: str, wrong: bool, message: str) -> None:
+        if recorded is None:
+            problems.append(("warn", f"{who} gives {what} as a reason, which the report has no figure to compare with"))
+        elif wrong:
+            problems.append(("fail", f"{who} {message}"))
+
+    if kind == "qc count":
+        against(record.qc, f"{number} QC injection(s)", record.qc is not None and (record.qc != number or number >= 3),
+                f"gives {number} QC injection(s) as the reason; the QA matrix records {record.qc}"
+                + (", and at least three are enough" if number is not None and number >= 3 else ""))
+    elif kind == "injection count":
+        against(record.files, f"{number} injection(s)", record.files is not None and (record.files != number or number >= 3),
+                f"gives {number} injection(s) as the reason; the QA matrix records {record.files}")
+    elif kind == "no blank":
+        against(record.blank, "'no Blank files'", bool(record.blank),
+                f"gives 'no Blank files' as the reason; the QA matrix records {record.blank}")
+    elif kind == "no features":
+        against(record.features, "'no features'", bool(record.features),
+                f"gives 'the alignment has no features' as the reason; the QA matrix records {record.features}")
+    elif kind == "no matrix" and record.present:
+        problems.append(("fail", f"{who} gives 'no LC-MS QA matrix was supplied' as a reason; the report carries its "
+                                 "summary"))
+    decided = _qa_decided_kind(item, record)
+    if decided is not None and decided != kind and not any(level == "fail" for level, _ in problems):
+        problems.append(("warn", f"{who} gives {_qa_short(reason, 80)!r} as why {label!r} could not be assessed, but the "
+                                 f"counts decide another reason ({decided})"))
+    return problems
+
+
+def _qa_judge_reasons(source: str, single: "str | None", groups: "str | None",
+                      record: "_QaRecord") -> "tuple[list[tuple[str, str]], list[str]]":
+    """What the reasons in a 0.5.3 sentence say, against the record and the counts.
+
+    Each criterion that could not be assessed must be given one reason: the one the record gives it
+    where the record carries reasons (the record's own reasons are checked where it is read), and
+    otherwise one that can be the reason for that criterion and that the counts bear out. Returns
+    (level, message) problems and the reasons given, for the PASS detail.
+    """
+    problems: list[tuple[str, str]] = []
+    missing = record.missing
+    if single is not None:
+        parts = [(missing, single)]
+    else:
+        parts = []
+        known = {re.sub(r"\s*(<=|>=)\s*", r" \1", name): item for item in record.criteria for name in item["names"]}
+        for match in re.finditer(r"\s*(.+?)\s+because\s+(" + _QA_REASON + r")\s*(?:;|$)", groups or ""):
+            members, unread = [], []
+            for name in _qa_items(match.group(1)):
+                (members.append(known[name]) if name in known else unread.append(name))
+            if unread:
+                problems.append(("warn", f"{source}: gives a reason for {', '.join(unread)}, which QA-1 cannot match to "
+                                         "a criterion"))
+            parts.append((members, match.group(2)))
+    given: list[str] = []
+    seen: dict[int, int] = {}
+    for members, reason in parts:
+        given.append("because " + _qa_space(reason))
+        for item in members:
+            seen[id(item)] = seen.get(id(item), 0) + 1
+            if item["status"] != "not_assessed":
+                problems.append(("fail", f"{source}: gives a reason {item['label']!r} could not be assessed; the "
+                                         f"assessment {'passed' if item['status'] == 'pass' else 'failed'} it"))
+            elif item["reason"]:
+                if _qa_space(reason).casefold() != item["reason"].casefold():
+                    problems.append(("fail", f"{source}: gives {_qa_short(reason, 80)!r} as why {item['label']!r} could "
+                                             f"not be assessed; the assessment records {item['reason']!r}"))
+            else:
+                problems.extend(_qa_reason_problems(item, reason, record, f"{source}:"))
+    if single is None:
+        for item in missing:
+            if seen.get(id(item), 0) == 0:
+                problems.append(("warn", f"{source}: does not say why {item['label']!r} could not be assessed"))
+            elif seen[id(item)] > 1:
+                problems.append(("warn", f"{source}: gives {item['label']!r} more than one reason"))
+    unique = list(dict.fromkeys(problems))
+    return unique, sorted(set(given), key=given.index)
+
+
 def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) -> dict:
     """What one text says of the assessment."""
     fails: list[str] = []
@@ -1679,9 +1863,48 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
             fails.append(f"{source}: says none of {match.group(1)} prespecified criteria could be evaluated; the "
                          f"assessment evaluated {len(assessed)} of {total}")
         forms.append("statement")
-    others = list(QA_T_OTHER.finditer(flat))
+    # "could not be assessed because the run had no Blank files" is both 0.5.2's reason for the whole
+    # run and 0.5.3's for each criterion. A record from before 0.5.3 carries no reasons, and its text is
+    # read as 0.5.2 wrote it.
+    record_reasons = any(item["reason"] for item in criteria)
+    reasoned = [match for match in QA_T_OTHER_REASONS.finditer(flat)
+                if record_reasons or not (match.group(3) and (_qa_reason_kind(match.group(3)) or ("",))[0] == "no blank")]
+    for match in reasoned:
+        spans.append(match.span())
+        if int(match.group(1)) != len(missing):
+            contradicted = True
+            fails.append(f"{source}: says the other {match.group(1)} could not be assessed; the assessment could "
+                         f"not assess {len(missing)}")
+        verdict, detail = _qa_listing(match.group(2), missing, criteria)
+        if verdict == "contradicts":
+            contradicted = True
+            fails.append(f"{source}: lists {_qa_short(match.group(2))!r} as not assessed, which {detail}")
+        elif verdict == "unread":
+            contradicted = True
+            warns.append(f"{source}: its list of criteria not assessed {detail}")
+        problems, given = _qa_judge_reasons(source, match.group(3), match.group(4), record)
+        for level, message in problems:
+            (fails if level == "fail" else warns).append(message)
+            if level == "fail" or message.endswith("QA-1 cannot match to a criterion") or " does not say why " in message:
+                contradicted = True
+        reasons.extend(given)
+    taken = {match.span() for match in reasoned}
+    others = [match for match in QA_T_OTHER.finditer(flat) if match.span() not in taken]
+    others_all = reasoned + others
     for match in others:
         spans.append(match.span())
+        if record_reasons:
+            # 0.5.2's one reason for all, where the record gives each criterion its own.
+            contradicted = True
+            stated = {kind for kind, present in (("qc count", match.group(3)), ("no blank", match.group(4) or match.group(5)))
+                      if present}
+            warns.append(f"{source}: gives Interactive 0.5.2's reason for all where the assessment gives each criterion "
+                         "its own")
+            for item in missing:
+                recorded = _qa_reason_kind(item["reason"]) if item["reason"] else None
+                if recorded is not None and recorded[0] not in stated:
+                    fails.append(f"{source}: gives {', '.join(sorted(stated)) or 'no reason'} as why the criteria could "
+                                 f"not be assessed; the assessment records {item['reason']!r} for {item['label']!r}")
         if int(match.group(1)) != len(missing):
             contradicted = True
             fails.append(f"{source}: says the other {match.group(1)} could not be assessed; the assessment could "
@@ -1816,7 +2039,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
     if residue:
         warns.append(f"{source}: {len(residue)} sentence(s) in its QA text are not Interactive's; read them: "
                      + " | ".join(repr(_qa_short(sentence, 120)) for sentence in residue[:3]))
-    if legacy_counts and missing and not others:
+    if legacy_counts and missing and not others_all:
         # The older count leaves out the criteria it could not assess. Alone it says so by omission;
         # beside a person's words, those words may say it.
         message = (f"{source}: counts only the {len(assessed)} evaluable of {_qa_criteria_count(total)} and does not "
@@ -1838,11 +2061,11 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
                 warns.append(f"{source}: speaks of QA before its QA section; read it: {_qa_short(sentence)!r}")
 
     covers = not contradicted and (
-        ("statement" in forms and (not missing or bool(others)))
+        ("statement" in forms and (not missing or bool(others_all)))
         or ("no matrix" in forms and not assessed and not record.present)
         or ("evaluable count" in forms and not missing)
         or ("none from the sample types" in forms and not assessed))
-    if "statement" in forms and missing and not others:
+    if "statement" in forms and missing and not others_all:
         warns.append(f"{source}: gives Interactive's count but not its sentence naming the {len(missing)} criteria "
                      "that could not be assessed")
     return {"source": source, "covers": covers, "forms": forms, "reasons": reasons, "fails": fails,
@@ -1924,6 +2147,23 @@ def _qa_table(source: str, table: str, record: _QaRecord) -> dict:
                 elif agrees is None and _qa_float(item["value"]) is not None:
                     warns.append(f"{source}: gives {_qa_short(value, 40)!r} as observed for {item['label']!r}, which "
                                  "QA-1 cannot read as a number")
+            elif parameter == "not assessed because":
+                stated = _qa_space(value).rstrip(".").strip()
+                if item["status"] != "not_assessed":
+                    fails.append(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
+                                 f"assessed; the assessment {'passed' if item['status'] == 'pass' else 'failed'} it")
+                elif not item["reason"]:
+                    warns.append(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
+                                 "assessed, a reason the assessment does not record")
+                    for level, message in _qa_reason_problems(item, stated, record, f"{source}:"):
+                        (fails if level == "fail" else warns).append(message)
+                elif stated.casefold() != item["reason"].casefold():
+                    if _qa_reason_kind(stated) is None:
+                        warns.append(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
+                                     "assessed, which QA-1 cannot read as one of Interactive's reasons")
+                    else:
+                        fails.append(f"{source}: gives {_qa_short(value, 60)!r} as why {item['label']!r} could not be "
+                                     f"assessed; the assessment records {item['reason']!r}")
             elif parameter == "criterion":
                 if not item["operator"] or _qa_float(item["threshold"]) is None:
                     continue
@@ -2203,7 +2443,7 @@ def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) 
     elif missing:
         what = (f"state that {len(assessed)} of {len(record.criteria)} prespecified criteria could be evaluated and "
                 f"{passed} met, and name the {len(missing)} that could not be assessed"
-                + (f", {'; '.join(reasons)}" if reasons else ""))
+                + (f" ({'; '.join(reasons)})" if reasons else ""))
     else:
         what = f"state that all {len(record.criteria)} prespecified criteria could be evaluated and {passed} met"
     table_note = (" The Supplementary Table's QA rows agree." if any(item["rows"] for item in tables)
