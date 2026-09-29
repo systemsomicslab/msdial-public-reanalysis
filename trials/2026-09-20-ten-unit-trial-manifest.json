@@ -163,7 +163,7 @@
       "A unit whose Class decision abstained reaches B3 only through a ratified abstention (decided 2026-09-28): saved with msdial_catalog_save_class_proposal(abstain=True) after boundary 3, carried as project.class_proposal, and accepted by CLS-3. Until theirs are saved, the three units whose Class decision abstained (7 MTBLS417, 8 MTBKS157, 10 ST003075) cannot count as completed however correct their runs are.",
       "QA persists only in the publication report, so QA-1 can judge B8 only once B9 exists.",
       "Boundary 4 is a conversation fact; no artifact proves it was given.",
-      "ORD-2 treats an interleaved listing order as a real run order; ORD-1's WARN is the only signal. In a run with one Class, as every abstention is, no Class pattern can say whether a row-number order is the injection order, so ORD-2 WARNs on any run-order criterion reported against it. READ-1 does not hold that WARN; whether it should is not decided.",
+      "For a unit prepared with Interactive 0.5.4 or later the unit manifest records what its analytical order was taken from. Interactive does not assess the run-order criterion against the file listing or a sequence number read out of the file names, and ORD-2 refuses one reported against either, whatever the Classes do (decided 2026-09-29). For a unit prepared earlier, ORD-2 still judges the row number alone: it treats an interleaved listing as a real run order and only WARNs on one Class's, with ORD-1's WARN the other signal.",
       "Nothing on disk marks that a production run began before its first artifact: a run that failed before writing anything and was not recorded looks like one never started. The Interactive should write a run-start record (job_id, started_at) into the unit manifest before launching the Console.",
       "SUM-2 recognises checksum-verification phrasing by pattern, clause by clause. A phrasing no pattern knows passes. A matching sentence it sets aside as a negation (before the phrase, or 'was not performed' after it) or as a statement about the spectral library is reported as a WARN with the sentences quoted. The WARN does not change the exit code; READ-1 holds the run under --strict until a person's reading of those sentences is recorded. A negation separated from its phrase by a comma, as in 'not, under that policy, checksum-verified', is read as a claim: the conservative error.",
       "QA-1 establishes only what Interactive's own sentences (0.5.1 and later, and the wording before 0.5.1), a whole sentence about one criterion, the Supplementary Table's TSV and the assessment record say. Any other QA sentence, a false outcome claim included, is a WARN that quotes it; before the Methods' QA section only QA vocabulary is looked for, and the xlsx workbook is not read. The WARN does not change the exit code; as for SUM-2, READ-1 holds the run under --strict until a person's reading of those sentences is recorded, and a QA text the gate could not read holds it too."
@@ -749,8 +749,7 @@
     }
   ],
   "open_decisions_for_the_user": [
-    "Whether both MTBLS2207 runs are re-run with the c471463a5 Console (P1). They were made with 31dea2b39, before MsdialWorkbench#815, so their adduct estimation used [M-H]- alone although their method files list 20 negative adducts; their unannotated features carry only [M-H]- or [M-2H]2- (read 2026-09-29), consistent with that but not a proof of it. A re-run needs its own boundary-4 confirmation and, as decided on 2026-09-26 when the previous pin moved, peak-height diagnostics measured with the same Console.",
-    "Whether READ-1 holds ORD-2's single-Class WARN (known_gaps). It does not; every abstention runs one Class."
+    "Whether both MTBLS2207 runs are re-run with the c471463a5 Console (P1). They were made with 31dea2b39, before MsdialWorkbench#815, so their adduct estimation used [M-H]- alone although their method files list 20 negative adducts; their unannotated features carry only [M-H]- or [M-2H]2- (read 2026-09-29), consistent with that but not a proof of it. A re-run needs its own boundary-4 confirmation and, as decided on 2026-09-26 when the previous pin moved, peak-height diagnostics measured with the same Console."
   ],
   "library": {
     "decision": "LBM2 on every unit, plus MSP high-confidence and MSP low-confidence in the unit's own polarity. User confirmed 2026-09-20: the LBM tier applies to the metabolomics units too.",
@@ -968,6 +967,12 @@
       "by": "user",
       "decision": "The production Console moves to MsdialWorkbench master c471463a5 (P1), and the saved Console setting is switched to the same binary.",
       "result": "2026-09-29. Built clean in D:\\0_SourceCode\\MsdialWorkbench-console-c471463a5 through msdial_build_console_from_local_source (sha256 8ecfe11a...ac6314, 5.5.260929, provenance verified), then saved as the default with msdial_set_console_path. MsdialCoreTestAppTests pass 68 of 68 at the commit (net8.0). No analysis has been run with it."
+    },
+    {
+      "at": "2026-09-29",
+      "by": "user",
+      "decision": "Where a unit's analytical order is the file listing or a sequence number read out of the file names, Interactive does not assess the run-order criterion, whatever pattern the Classes make in it (option ウ, every listing order; the sequence number was added the same day). This settles ORD-2's single-Class WARN at its source, so READ-1 is not extended to it.",
+      "result": "Implemented 2026-09-29: msdial-interactive-app#40 (Interactive 0.5.4) records the order's source in the unit manifest (order_source) and withholds the criterion against the listing or a file-name sequence with the reason 'the injection order was not recorded for every file'; msdial-public-reanalysis#18 teaches QA-1 that reason, and ORD-2 refuses a run-order criterion reported against either recorded source and the reason given for an order recorded otherwise."
     }
   ]
 }
