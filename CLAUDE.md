@@ -106,6 +106,11 @@ current conversation:
 3. Saving a Class proposal.
 4. Starting each production MS-DIAL run after showing the exact plan/command.
 5. Raw-data deletion after validated output and retained-artifact inventory.
+6. Recording a person's reading of the sentences a gate check left for them
+   (`scripts/record-reading.py --digest`): only after that person has read the
+   sentences it shows, in the conversation, and said what they found; `--by` is
+   that person and `--conclusion` is what they said. A reading is never the
+   agent's own.
 
 An accepted raw-retention policy records intent but is not deletion approval.
 Preview `msdial_cleanup_repository_raw` and obtain a separate confirmation for

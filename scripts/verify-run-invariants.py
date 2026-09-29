@@ -30,7 +30,9 @@ Usage:
 Exit codes: 0 no evaluated check failed, 2 at least one failed, 3 the workspace is unusable,
 4 (--strict only) a check could not be evaluated because an artifact the stage owed is absent.
 A WARN exits 0 and is for a person to read before publishing: QA-1's, for one, quotes every QA
-sentence that is not Interactive's own statement for the assessment.
+sentence that is not Interactive's own statement for the assessment. Those sentences, and the
+checksum phrasings SUM-2 sets aside, are also held by READ-1, which --strict refuses until a
+person's reading of them is recorded with scripts/record-reading.py.
 
 --strict exists because `ok` means "no check FAILed", and a workspace where nothing has happened
 produces no FAILs at all. Run against a directory holding an empty provenance/ and an empty
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import math
@@ -2036,6 +2039,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
         claim = _qa_claim(sentence, criteria)
         if claim:
             fails.append(f"{source}: {claim}: {_qa_short(sentence)!r}")
+    to_read = [{"source": source, "sentence": sentence} for sentence in residue]
     if residue:
         warns.append(f"{source}: {len(residue)} sentence(s) in its QA text are not Interactive's; read them: "
                      + " | ".join(repr(_qa_short(sentence, 120)) for sentence in residue[:3]))
@@ -2058,6 +2062,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
                 fails.append(f"{source}: {claim}: {_qa_short(sentence)!r}")
             named = any(item["pattern"] and item["pattern"].search(sentence) for item in criteria)
             if named or QA_VOCABULARY.search(sentence):
+                to_read.append({"source": source, "sentence": sentence})
                 warns.append(f"{source}: speaks of QA before its QA section; read it: {_qa_short(sentence)!r}")
 
     covers = not contradicted and (
@@ -2068,7 +2073,7 @@ def _qa_judge_text(source: str, text: str, record: _QaRecord, *, methods: bool) 
     if "statement" in forms and missing and not others_all:
         warns.append(f"{source}: gives Interactive's count but not its sentence naming the {len(missing)} criteria "
                      "that could not be assessed")
-    return {"source": source, "covers": covers, "forms": forms, "reasons": reasons, "fails": fails,
+    return {"source": source, "covers": covers, "forms": forms, "reasons": reasons, "fails": fails, "to_read": to_read,
             "warns": warns, "speaks": bool(forms or residue), "empty": not (flat or before),
             "methods": methods}
 
@@ -2404,8 +2409,10 @@ def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) 
         warns.append(f"{QA_TABLE_FILE} carries no Quality assurance rows, though "
                      + ("a text says the criteria are reported there" if cited else f"{len(assessed)} were evaluated"))
     workbook = (output / QA_WORKBOOK_FILE).exists()
+    to_read = [entry for item in judged for entry in item["to_read"]]
 
     evidence = {
+        **_to_read_evidence("QA-1", to_read),
         "total": len(record.criteria), "evaluated": len(assessed), "passed": passed,
         "evaluated_names": [item["label"] for item in assessed],
         "not_assessed_names": [item["label"] for item in missing],
@@ -2756,6 +2763,7 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
         return
     claims = []
     skipped = []
+    to_read: list[dict] = []
     unread: list[str] = []
     for path in present:
         for member, text in _readable_members(path, unread):
@@ -2768,12 +2776,15 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
                         skipped.append(f"about the library: {where}")
                     else:
                         claims.append(where)
+                        continue
+                    to_read.append({"source": f"{path.name}:{member}", "sentence": sentence.strip()})
+    read_evidence = _to_read_evidence("SUM-2", to_read)
     if claims:
         report.add("SUM-2", stage, title, FAIL,
                    "A published artifact calls these inputs checksum-verified, but the repository "
                    "published no checksum and none was compared.",
                    claims=claims[:10], claim_count=len(claims),
-                   not_counted=skipped[:50], not_counted_count=len(skipped))
+                   not_counted=skipped[:50], not_counted_count=len(skipped), **read_evidence)
         return
     if skipped:
         # A phrasing matched and was set aside by a rule, not by a reader. That is for a person to
@@ -2782,18 +2793,124 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
                    f"{len(skipped)} checksum-verification phrasing(s) matched and were not counted as "
                    "claims, as negations or statements about the library; read them: "
                    + " | ".join(skipped[:3]),
-                   artifacts=len(present), not_counted=skipped[:50], not_counted_count=len(skipped))
+                   artifacts=len(present), not_counted=skipped[:50], not_counted_count=len(skipped),
+                   **read_evidence)
         return
     if unread:
         report.add("SUM-2", stage, title, WARN,
                    f"No known checksum-verification phrasing matched, but {len(unread)} artifact member(s) could "
                    "not be read, so what they say is unknown: " + "; ".join(unread[:5]),
-                   artifacts=len(present), unread=unread[:20])
+                   artifacts=len(present), unread=unread[:20], **read_evidence)
         return
     report.add("SUM-2", stage, title, PASS,
                f"No known checksum-verification phrasing matched in {len(present)} publication "
                "artifact(s). This is not a statement that no such claim is made.",
-               artifacts=len(present))
+               artifacts=len(present), **read_evidence)
+
+
+# ---- READ-1 -------------------------------------------------------------------------------------
+# Decided by the user on 2026-09-28: a WARN a person must read holds a run from counting as completed
+# until that person's reading is recorded. Those WARNs are SUM-2's matching sentences set aside by a
+# rule and QA-1's sentences that are not Interactive's own; each check hands over the sentences, and
+# a digest of them, as to_read. The reading is recorded with scripts/record-reading.py in
+# provenance/readings.json, against that digest, so a changed text is read again. WARNs that report
+# a known condition (SUM-1, MTH-1 and QA-1's other notes) need no reading.
+READINGS_FILE = "readings.json"
+READINGS_SCHEMA = "msdial-public-reanalysis-readings.v1"
+READ_CHECKS = ("QA-1", "SUM-2")
+READ_CONCLUSIONS = ("accepted", "rejected")
+
+
+def _reading_digest(check_id: str, to_read: list[dict]) -> str:
+    items = sorted([str(item.get("source", "")), re.sub(r"\s+", " ", str(item.get("sentence", ""))).strip()]
+                   for item in to_read)
+    payload = json.dumps([check_id, items], ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _to_read_evidence(check_id: str, to_read: list[dict]) -> dict:
+    return {"to_read": to_read[:200], "to_read_count": len(to_read),
+            "to_read_digest": _reading_digest(check_id, to_read) if to_read else ""}
+
+
+def _read_readings(workspace: Path) -> "tuple[list[dict], str]":
+    """The recorded readings, and what could not be read of them."""
+    path = workspace / "provenance" / READINGS_FILE
+    if not path.exists():
+        return [], ""
+    record, reason = _read_json(path)
+    if record is None:
+        return [], reason
+    readings = record.get("readings")
+    if record.get("schema") != READINGS_SCHEMA or not isinstance(readings, list):
+        return [], f"{READINGS_FILE} is not a {READINGS_SCHEMA} record"
+    kept = [item for item in readings if isinstance(item, dict)]
+    return kept, "" if len(kept) == len(readings) else f"{len(readings) - len(kept)} entries of {READINGS_FILE} are not objects"
+
+
+def check_readings_recorded(report: Report, workspace: Path, stage: str) -> None:
+    """READ-1. Every sentence a person must read has been read, and the reading is recorded.
+
+    PASS when nothing is to be read, or when each such check's current sentences carry a reading
+    whose conclusion is 'accepted'. FAIL when the latest reading of them concluded 'rejected': a
+    person established that the text is wrong. NOT_EVALUABLE (required) when sentences are to be read
+    and no reading of exactly them is recorded, so that --strict holds the run from completion.
+    """
+    title = "Every sentence a person must read has been read"
+    checks = {check.check_id: check for check in report.checks if check.check_id in READ_CHECKS}
+    pending = {check_id: check for check_id, check in checks.items() if check.evidence.get("to_read_count")}
+    # SUM-2 not evaluable has nothing to set aside; QA-1 not evaluable read no text, so what is to be read
+    # is unknown.
+    unjudged = ["QA-1"] if "QA-1" in checks and checks["QA-1"].status == NOT_EVALUABLE else []
+    if not pending:
+        if unjudged:
+            report.add("READ-1", stage, title, NOT_EVALUABLE,
+                       f"{', '.join(unjudged)} could not be evaluated, so what is to be read is unknown.",
+                       required=False, unjudged=unjudged)
+            return
+        report.add("READ-1", stage, title, PASS,
+                   "No sentence is for a person to read: QA-1 found nothing but Interactive's own QA text, and "
+                   "SUM-2 set no matching sentence aside." if checks else "Nothing to read was found.",
+                   checks=sorted(checks))
+        return
+    readings, problem = _read_readings(workspace)
+    missing, rejected, accepted, stale = [], [], [], []
+    for check_id, check in sorted(pending.items()):
+        digest = check.evidence["to_read_digest"]
+        count = check.evidence["to_read_count"]
+        matching = [item for item in readings if item.get("check_id") == check_id and item.get("digest") == digest
+                    and item.get("conclusion") in READ_CONCLUSIONS]
+        if any(item.get("check_id") == check_id and item.get("digest") != digest for item in readings):
+            stale.append(check_id)
+        if not matching:
+            missing.append(f"{check_id} ({count} sentence(s), digest {digest[:19]}...)")
+            continue
+        latest = matching[-1]
+        entry = (f"{check_id}: {count} sentence(s) read by {latest.get('read_by') or 'someone unnamed'} on "
+                 f"{latest.get('read_at') or 'an unrecorded date'}")
+        if latest.get("conclusion") == "rejected":
+            rejected.append(entry + (f", who found them wrong: {_qa_short(latest.get('note') or '', 160)}"
+                                     if latest.get("note") else ", who found them wrong"))
+        else:
+            accepted.append(entry)
+    evidence = {"pending": sorted(pending), "readings_file": str(Path("provenance") / READINGS_FILE),
+                "accepted": accepted, "rejected": rejected, "missing": missing,
+                "stale": [f"{check_id}: a reading is recorded for other sentences" for check_id in stale]}
+    if problem:
+        evidence["problem"] = problem
+    if rejected:
+        report.add("READ-1", stage, title, FAIL,
+                   "A person read the sentences and found them wrong, so the text must be corrected before "
+                   "publication: " + " | ".join(rejected), **evidence)
+        return
+    if missing:
+        report.add("READ-1", stage, title, NOT_EVALUABLE,
+                   "Sentences are for a person to read, and no reading of exactly them is recorded: "
+                   + "; ".join(missing) + ". Show them to the person, and once they have said what they found, "
+                   "record it with scripts/record-reading.py." + (f" ({problem})" if problem else ""),
+                   **evidence)
+        return
+    report.add("READ-1", stage, title, PASS, "Read and accepted: " + " | ".join(accepted), **evidence)
 
 
 def check_unit_reached_a_terminal_state(
@@ -3217,6 +3334,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_no_unearned_checksum_claim(report, provenance, output)
         check_retention_policy_was_acted_on(report, provenance, provenance_reason, workspace)
         check_no_private_path_in_a_shared_artifact(report, output, "before-publish")
+        check_readings_recorded(report, workspace, "before-publish")
     report.progress = completion_progress(workspace, provenance, output)
     return report
 
@@ -3257,7 +3375,7 @@ COMPLETION_STAGES = (
     ("B8", "qa_produced", "a QA matrix (*.qa.tsv) exists", ("QA-1", "ORD-2")),
     ("B9", "publication_artifacts",
      "the publication report, Materials and Methods and supplementary table exist",
-     ("LIB-1", "SEC-1", "SUM-2")),
+     ("LIB-1", "SEC-1", "SUM-2", "READ-1")),
     ("B10", "retention_recorded", "the retention policy and the retained-artifact inventory are recorded",
      ("RET-1", "DSK-1")),
 )
