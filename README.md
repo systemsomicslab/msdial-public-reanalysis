@@ -89,7 +89,10 @@ following actions require a separate explicit human confirmation:
 - accepting a Class proposal, or an abstention where no declared factor groups
   the samples;
 - starting each production MS-DIAL run;
-- deleting downloaded raw data.
+- deleting downloaded raw data;
+- recording a person's reading of the sentences a gate check left for them
+  (`scripts/record-reading.py --digest`), only after that person has read them
+  and said what they found.
 
 The default retention policy is `keep`. Never combine different analysis units
 in one MS-DIAL run. Never redistribute the laboratory's private MSP libraries.

@@ -7,7 +7,7 @@ without re-deriving any of it.
 
 ## Read first
 
-1. `CLAUDE.md` in this directory — the mission, the supported scope, the five
+1. `CLAUDE.md` in this directory — the mission, the supported scope, the six
    confirmation boundaries, and the mandatory workspace root. The boundaries are
    not negotiable and no fix in this repository relaxes them.
 2. `AGENTS.md` — points at the private cross-repository master prompt.

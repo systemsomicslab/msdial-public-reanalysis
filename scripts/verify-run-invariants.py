@@ -580,6 +580,11 @@ def _mdpeak_count(output: Path) -> int:
     return len(list(output.glob("*.mdpeak")))
 
 
+# The exports the Console writes one per input file. Anything else in expected_analysis_exports is
+# written once per run, such as the automatic RT correction audit TSVs (MsdialWorkbench #810).
+PER_FILE_EXPORT_SUFFIXES = (".mdpeak", ".mdscan")
+
+
 # Statuses the Interactive writes only after a production run was attempted.
 ATTEMPTED_STATUSES = frozenset({
     "run_failed", "validation_failed", "mztab_validated", "completed",
@@ -713,6 +718,7 @@ def check_sample_count_invariant(
     """
     counts: dict[str, int] = {}
     missing: list[str] = []
+    run_level: list[str] = []
 
     if provenance is not None and isinstance(provenance.get("input_candidates"), list):
         counts["repository_manifest.input_candidates"] = len(provenance["input_candidates"])
@@ -734,7 +740,13 @@ def check_sample_count_invariant(
             return None
         counts[".mdpeak files produced"] = _mdpeak_count(output)
         if run_manifest is not None and isinstance(run_manifest.get("expected_analysis_exports"), list):
-            counts["run_manifest.expected_analysis_exports"] = len(run_manifest["expected_analysis_exports"])
+            # A per-file export is a sample count; a run-level one is not. Interactive lists the
+            # automatic RT correction audit TSVs among the expected exports, and counting them as
+            # samples refused every run that used it. EXP-1 still requires every one of them.
+            exports = [str(item) for item in run_manifest["expected_analysis_exports"]]
+            per_file = [item for item in exports if item.casefold().endswith(PER_FILE_EXPORT_SUFFIXES)]
+            run_level = [Path(item).name for item in exports if item not in per_file]
+            counts["run_manifest.expected_analysis_exports"] = len(per_file)
 
     if len(counts) < 2:
         report.add("CNT-1", stage, "The approved sample count survived every stage", NOT_EVALUABLE,
@@ -746,14 +758,15 @@ def check_sample_count_invariant(
     if len(distinct) == 1:
         value = distinct.pop()
         report.add("CNT-1", stage, "The approved sample count survived every stage", PASS,
-                   f"All {len(counts)} independent records agree on {value} samples.", counts=counts)
+                   f"All {len(counts)} independent records agree on {value} samples.", counts=counts,
+                   run_level_exports=run_level)
         return value
 
     report.add(
         "CNT-1", stage, "The approved sample count survived every stage", FAIL,
         "Independent records of the same study disagree on how many samples it contains. Whichever "
         "is right, at least one retained artifact describes a study that was not run.",
-        counts=counts,
+        counts=counts, run_level_exports=run_level,
     )
     return None
 
