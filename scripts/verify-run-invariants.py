@@ -351,7 +351,11 @@ def _path_key(value: object) -> str:
 REPOSITORIES_WITHOUT_CHECKSUMS = frozenset({"metabolights"})
 
 
-ARCHIVE_SUFFIXES = (".zip", ".tar", ".tgz", ".tar.gz", ".gz", ".7z", ".rar", ".bz2", ".xz")
+# What an archive or a packed file is named with, as Interactive's archives.py opens them, longest
+# first so ".tar.gz" wins over ".gz" where a suffix is stripped.
+ARCHIVE_SUFFIXES = tuple(sorted(
+    (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tbz", ".tar.xz", ".txz", ".zip", ".tar", ".7z", ".rar", ".gz",
+     ".bz2", ".xz", ".lzma"), key=len, reverse=True))
 
 
 def _declared_name(value: object) -> str:
@@ -1413,6 +1417,148 @@ def check_sample_count_invariant(
     return None
 
 
+INP1_TITLE = "Each declared analysis input is one input candidate and one CSV row"
+
+
+def _declared_inputs(project: dict) -> tuple[list | None, str]:
+    """The analysis inputs a unit's project declares, or None; and what contradicts the declaration.
+
+    The Catalog's handoff carries the list with its count and a flag saying whether the listing named
+    the inputs at all. A declaration with a count or the flag and no list is a list lost on the way in:
+    the handoff's own response omits it, and only its file holds it.
+    """
+    inputs = project.get("analysis_inputs")
+    count = project.get("analysis_input_count")
+    count = count if isinstance(count, int) and not isinstance(count, bool) else None
+    if not isinstance(inputs, list) or not inputs:
+        if project.get("analysis_inputs_declared") is True or (count or 0) > 0:
+            return [], (f"the manifest declares {count if count else 'its'} analysis input(s) and lists none, "
+                        "so the list was lost on the way in")
+        return None, ""
+    if count is not None and count != len(inputs):
+        return inputs, f"the manifest counts {count} analysis input(s) and lists {len(inputs)}"
+    return inputs, ""
+
+
+def _excluded_inputs(manifest: dict) -> list[str]:
+    """The inputs a unit's campaign disposition excluded, by path."""
+    disposition = manifest.get("campaign_disposition")
+    excluded = disposition.get("excluded_inputs") if isinstance(disposition, dict) else None
+    return [str(item["path"]) for item in excluded if isinstance(item, dict) and str(item.get("path") or "").strip()
+            ] if isinstance(excluded, list) else []
+
+
+def check_analysis_inputs_are_the_inputs(
+    report: Report, provenance: dict | None, reason: str, csv_rows: list[dict] | None, csv_reason: str,
+) -> None:
+    """INP-1. What the Catalog declared MS-DIAL opens is what the lease found and what the CSV lists.
+
+    Three writers. The Catalog projects a unit's file listing onto what MS-DIAL opens, one analysis
+    input per file, vendor folder or packed container (project.analysis_inputs); Interactive finds its
+    input candidates on disk after the download; the preparer writes one CSV row per candidate. A
+    Waters .raw folder read as its member files is thirty-odd inputs where one was declared, and the
+    stale sidecars of one inflated unit held 477 rows for 12 samples. CNT-1 compares the candidates
+    with the rows; nothing compared either with what the Catalog declared.
+
+    Required only where the manifest declares analysis inputs. A unit whose data sit inside an
+    accession archive, or that publishes only converted files, finds its inputs after the download,
+    and a manifest written before the Catalog declared them has nothing to compare.
+
+    An input the campaign disposition excluded (excluded_inputs, with its reason) was declared, may be
+    no candidate, and is never a CSV row. A split part's project is its parent's with, where the split
+    carries them, only the part's own samples' inputs: the parent's declaration is compared with the
+    parent's candidates, a declaration of the part's own with the part's candidates, and the part's
+    candidates with its rows. SPL-1 holds that the parts partition the parent.
+    """
+    stage = "before-production"
+    if provenance is None:
+        report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE, reason, required=False)
+        return
+    split = isinstance(provenance.get("split_from"), dict)
+    owner, owner_reason = _raw_owner_manifest(provenance)
+
+    def declaration(manifest: dict | None) -> tuple[list | None, str]:
+        project = (manifest or {}).get("project")
+        return _declared_inputs(project if isinstance(project, dict) else {})
+
+    own_declared, own_contradiction = declaration(provenance)
+    declared, contradiction = declaration(owner) if split and owner is not None else (own_declared, own_contradiction)
+    if declared is None and own_declared is None:
+        report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
+                   "The manifest declares no analysis inputs: the unit finds its inputs after the download, or "
+                   "was prepared before the Catalog declared them.", required=False)
+        return
+    if owner is None:
+        report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
+                   f"This unit was split from another, whose manifest cannot be used: {owner_reason}")
+        return
+    owner_candidates, own_candidates = owner.get("input_candidates"), provenance.get("input_candidates")
+    if not isinstance(owner_candidates, list) or not isinstance(own_candidates, list):
+        report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
+                   "The manifest declares analysis inputs and records no input candidates to compare them with.")
+        return
+    if csv_rows is None:
+        report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE, csv_reason)
+        return
+
+    def excluded_beside(manifest: dict, candidates: list) -> tuple[list[str], set[str]]:
+        """The inputs a disposition excluded that are not among the candidates, and every excluded key."""
+        excluded = _excluded_inputs(manifest)
+        keys = {_path_key(item) for item in candidates}
+        return [item for item in excluded if _path_key(item) not in keys], {_path_key(item) for item in excluded}
+
+    excluded, excluded_keys = excluded_beside(owner, owner_candidates)
+    # A part that carries a declaration of its own samples' inputs: a list other than its parent's.
+    own_list = split and own_declared is not None and own_declared != declared
+    own_excluded, own_excluded_keys = excluded_beside(provenance, own_candidates) if own_list else ([], set())
+    counts = {"analysis_inputs": len(declared or []), "input_candidates": len(own_candidates),
+              "analysis_files.csv rows": len(csv_rows)}
+    if split:
+        counts["parent input_candidates"] = len(owner_candidates)
+    if own_list:
+        counts["part analysis_inputs"] = len(own_declared)
+    if excluded or own_excluded:
+        counts["excluded_inputs"] = len(excluded) + len(own_excluded)
+    # A part's own list is its parent's cut to its samples, so a count it carries is the parent's.
+    problems = [contradiction] if contradiction else []
+    if declared is not None and len(declared) != len(owner_candidates) + len(excluded):
+        problems.append(
+            f"the Catalog declared {len(declared)} analysis input(s) and the lease found {len(owner_candidates)} "
+            "input candidate(s)" + (" in the parent" if split else "")
+            + (f", with {len(excluded)} more excluded" if excluded else ""))
+    if own_list and len(own_declared) != len(own_candidates) + len(own_excluded):
+        problems.append(
+            f"the part declares {len(own_declared)} analysis input(s) of its own samples and holds "
+            f"{len(own_candidates)} input candidate(s)"
+            + (f", with {len(own_excluded)} more excluded" if own_excluded else ""))
+    if len(own_candidates) != len(csv_rows):
+        problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)")
+    aliases = _input_keys_by_console_path(provenance)
+    listed_excluded = [str(row.get("file_name") or "") or Path(str(row.get("file_path") or "")).name
+                       for row in csv_rows if _input_key(row, aliases) in excluded_keys | own_excluded_keys]
+    if listed_excluded:
+        problems.append(f"{len(listed_excluded)} CSV row(s) name an input the campaign disposition excluded "
+                        f"({', '.join(listed_excluded[:5])})")
+    if problems:
+        report.add("INP-1", stage, INP1_TITLE, FAIL,
+                   "What MS-DIAL will open is not what the Catalog declared it opens: " + "; ".join(problems)
+                   + ". A vendor folder read as its member files, or a sample dropped on the way, looks like this.",
+                   counts=counts, excluded=[Path(item).name for item in (excluded + own_excluded)[:10]])
+        return
+    if split:
+        detail = ((f"The parent declared {len(declared)} analysis input(s), which are its {len(owner_candidates)} "
+                   "input candidates; " if declared is not None else "")
+                  + (f"this part declares {len(own_declared)} of its own samples'; " if own_list else "")
+                  + f"this part's {len(own_candidates)} input candidates are its {len(csv_rows)} CSV rows.")
+    else:
+        detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates "
+                  f"and the {len(csv_rows)} CSV rows.")
+    report.add("INP-1", stage, INP1_TITLE, PASS,
+               detail + (f" {len(excluded) + len(own_excluded)} declared input(s) were excluded by the campaign "
+                         "disposition." if excluded or own_excluded else ""),
+               counts=counts)
+
+
 def check_expected_exports_present(
     report: Report, run_manifest: dict | None, output: Path, stage: str,
     provenance: dict | None = None,
@@ -1448,6 +1594,390 @@ def check_expected_exports_present(
          + _earlier_failures(provenance)),
         expected=len(expected), absent_count=len(absent), absent=absent[:10],
     )
+
+
+# --------------------------------------------------------------------------------------------
+# the acquisition type the Console reads
+# --------------------------------------------------------------------------------------------
+#
+# The Console deconvolutes each file by the acquisition_type its CSV row gives, and reads that value
+# with Enum.TryParse over {DDA, SWATH, AIF, None}, ignoring case: anything it cannot parse, "DIA"
+# among them, silently becomes DDA (MsdialCoreTestApp AnalysisFilesParser). A DIA file deconvoluted
+# as DDA, or an MSe file as DDA, completes, validates and is wrong. Interactive maps each file's
+# header verdict onto a Console type, console_acquisition_type in the per-file preflight record (DIA
+# to SWATH where isolation windows are recorded or inferred, to AIF where MS2 is all-ion), and the CSV
+# builder writes it. The extractor's own record, raw-metadata-preflight.json, is a third writer.
+
+CONSOLE_ACQUISITION_TYPES = ("DDA", "SWATH", "AIF")
+ACQ1_TITLE = "Each file runs as the acquisition type its header gives"
+AIF1_TITLE = "Every AIF file has collision-energy targets"
+# What the Console prints for each AIF collision-energy target at or below 0, which it skips
+# (MsdialLcMsApi SpectrumDeconvolutionProcess). It names no file, and an empty target list prints nothing.
+AIF_CE_MESSAGE = "No correct CE information in AIF-MSDEC"
+CONSOLE_LOG_LIMIT = 256 * 1024 * 1024
+
+
+def _per_file_records(provenance: dict) -> dict[str, dict]:
+    """Each inspected input's per-file raw-header record, by path.
+
+    From the unit's own preflight, then the verdicts a split part carried from its parent, then the
+    parent's own preflight, as Interactive reads the acquisition start times.
+    """
+    def per_file(manifest: dict) -> object:
+        preflight = manifest.get("raw_metadata_preflight")
+        summary = preflight.get("summary") if isinstance(preflight, dict) else None
+        return summary.get("per_file") if isinstance(summary, dict) else None
+
+    sources = [per_file(provenance), provenance.get("header_verdicts_from_parent")]
+    if isinstance(provenance.get("split_from"), dict):
+        parent, _ = _raw_owner_manifest(provenance)
+        if parent is not None:
+            sources.append(per_file(parent))
+    records: dict[str, dict] = {}
+    for source in sources:
+        for item in source if isinstance(source, list) else []:
+            if isinstance(item, dict) and str(item.get("file") or "").strip():
+                records.setdefault(_path_key(item["file"]), item)
+    return records
+
+
+def _input_keys_by_console_path(provenance: dict) -> dict[str, str]:
+    """The input each Console path stands for, where the CSV names an alias of it rather than the input.
+
+    A path or name the Console's CSV parser cannot read back (a comma, a quote, a character outside
+    ASCII) is given to it through an alias in the raw tree, and the input's lineage row records the path
+    the CSV gives it (console_path, console_alias). The raw-header records name the input itself.
+    The CSV's writer wrote that record, so while both are on disk the alias must be the input (a
+    junction or a hard link to it); one that is another file stands for nothing.
+    """
+    manifests = [provenance]
+    if isinstance(provenance.get("split_from"), dict):
+        parent, _ = _raw_owner_manifest(provenance)
+        if parent is not None:
+            manifests.append(parent)
+    keys: dict[str, str] = {}
+    for manifest in manifests:
+        lineage = manifest.get("input_lineage")
+        rows = lineage.get("rows") if isinstance(lineage, dict) else None
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not str(row.get("path") or "").strip():
+                continue
+            alias = row.get("console_alias") if isinstance(row.get("console_alias"), dict) else {}
+            for console in (row.get("console_path"), alias.get("path")):
+                if not str(console or "").strip() or _same_path(console, row["path"]):
+                    continue
+                if Path(str(console)).exists() and Path(str(row["path"])).exists():
+                    try:
+                        if not os.path.samefile(str(console), str(row["path"])):
+                            continue
+                    except OSError:
+                        continue
+                keys.setdefault(_path_key(console), _path_key(row["path"]))
+    return keys
+
+
+def _input_key(row: dict, aliases: dict[str, str]) -> str:
+    """The key of the input a CSV row opens, through its Console alias where it has one; "" for no path."""
+    path = str(row.get("file_path") or "")
+    return aliases.get(_path_key(path), _path_key(path)) if path.strip() else ""
+
+
+def _extractor_records(provenance: dict, workspace: Path) -> dict[str, dict]:
+    """What the raw-metadata extractor itself wrote for each input, by path.
+
+    The preflight names its output file; a workspace that moved keeps it under provenance/. A split
+    part reads its own, then its parent's.
+    """
+    manifests = [(provenance, workspace)]
+    if isinstance(provenance.get("split_from"), dict):
+        parent, _ = _raw_owner_manifest(provenance)
+        if parent is not None:
+            manifests.append((parent, Path(str(parent.get("workspace") or ""))))
+    records: dict[str, dict] = {}
+    for manifest, root in manifests:
+        preflight = manifest.get("raw_metadata_preflight")
+        named = str(preflight.get("output") or "").strip() if isinstance(preflight, dict) else ""
+        if not named:
+            continue
+        candidates = [Path(named)] + ([root / "provenance" / Path(named).name] if str(root) not in ("", ".") else [])
+        path = next((item for item in candidates if item.is_file()), None)
+        if path is None:
+            continue
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
+            continue
+        for item in [parsed] if isinstance(parsed, dict) else parsed if isinstance(parsed, list) else []:
+            source = item.get("source") if isinstance(item, dict) else None
+            if isinstance(source, dict) and str(source.get("filePath") or "").strip():
+                records.setdefault(_path_key(source["filePath"]), item)
+    return records
+
+
+def _extractor_acquisition(record: dict | None) -> dict:
+    acquisition = (record or {}).get("acquisition")
+    return acquisition if isinstance(acquisition, dict) else {}
+
+
+def _extractor_method(record: dict | None) -> str:
+    method = _extractor_acquisition(record).get("method")
+    return str((method.get("value") if isinstance(method, dict) else method) or "")
+
+
+def _isolation_windows(record: dict | None) -> int | None:
+    """How many isolation targets the extractor recorded, or None where it wrote no record."""
+    if record is None:
+        return None
+    targets = _extractor_acquisition(record).get("isolationWindowTargets")
+    return len(targets) if isinstance(targets, list) else None
+
+
+def _console_reads(value: str) -> str:
+    """The AcquisitionType the pinned Console makes of a CSV value: Enum.TryParse ignoring case, else DDA."""
+    text = value.strip()
+    named = {name.casefold(): name for name in (*CONSOLE_ACQUISITION_TYPES, "None")}
+    if text.casefold() in named:
+        return named[text.casefold()]
+    if re.fullmatch(r"[+-]?\d{1,9}", text):
+        return {0: "DDA", 1: "SWATH", 2: "AIF", 3: "None"}.get(int(text), f"the undefined value {int(text)}")
+    return "DDA"
+
+
+def _header_contradiction(method: str, windows: int | None, value: str) -> str:
+    """How a CSV acquisition type contradicts the extractor's own verdict, or "".
+
+    Two or more isolation targets are windows (SWATH); Waters MSe records one and is all-ion.
+    """
+    if method in ("DDA", "AIF") and value != method:
+        return f"its header says {method}, and the Console will deconvolute it as {value}"
+    if method == "DIA" and value == "DDA":
+        return "its header says DIA, and the Console will deconvolute it as DDA"
+    if method == "DIA" and value == "AIF" and (windows or 0) >= 2:
+        return (f"its header says DIA with {windows} isolation targets recorded, and the Console will deconvolute it "
+                "as AIF, which ignores them")
+    return ""
+
+
+def check_acquisition_type_is_the_headers(
+    report: Report, provenance: dict | None, reason: str, csv_rows: list[dict] | None, csv_reason: str,
+) -> None:
+    """ACQ-1. Every CSV row's acquisition_type is a Console type, and the one its file's header gives.
+
+    Read against console_acquisition_type where the per-file record carries it, and always against the
+    extractor's own verdict, written by another program than the one that mapped it: a DDA or AIF
+    header must run as itself, and a DIA header never as DDA, nor as AIF where windows are recorded. A
+    record written before console_acquisition_type existed says DIA without saying which; its
+    extractor record's windows settle SWATH, and without them the row is a WARN. A file whose header
+    gives no Console type (a Waters DDA read as Unknown, an MS1-only file) runs on another source,
+    which is a WARN, as is a row no header record names.
+
+    Not required without a preflight: a unit whose acquisition mode was known from the repository
+    never needed a header read (PRE-1).
+    """
+    stage = "before-production"
+    if provenance is None:
+        report.add("ACQ-1", stage, ACQ1_TITLE, NOT_EVALUABLE, reason, required=False)
+        return
+    records = _per_file_records(provenance)
+    if not records:
+        report.add("ACQ-1", stage, ACQ1_TITLE, NOT_EVALUABLE,
+                   "No per-file raw-header record is recorded, so no header verdict stands to compare the CSV "
+                   "with.", required=False)
+        return
+    if csv_rows is None:
+        report.add("ACQ-1", stage, ACQ1_TITLE, NOT_EVALUABLE, csv_reason)
+        return
+    extracted = _extractor_records(provenance, report.workspace)
+    aliases = _input_keys_by_console_path(provenance)
+    failures: list[str] = []
+    warnings: list[str] = []
+    basis: Counter = Counter()
+    for row in csv_rows:
+        path = str(row.get("file_path") or "")
+        name = str(row.get("file_name") or "") or Path(path).name or "a row with no file"
+        value = str(row.get("acquisition_type") or "")
+        if value not in CONSOLE_ACQUISITION_TYPES:
+            failures.append(f"{name}: acquisition_type {value!r} is not DDA, SWATH or AIF, and the Console "
+                            f"reads it as {_console_reads(value)}")
+            continue
+        key = _input_key(row, aliases)
+        record = records.get(key) if key else None
+        header = extracted.get(key) if key else None
+        method = str((record or {}).get("acquisition_mode") or "") or _extractor_method(header)
+        windows = _isolation_windows(header)
+        if record is None:
+            basis["no_record"] += 1
+            contradiction = _header_contradiction(method, windows, value)
+            (failures if contradiction else warnings).append(
+                f"{name}: " + (contradiction or f"no raw-header record names it, so no header verdict stands "
+                               f"behind its {value}"))
+            continue
+        if "console_acquisition_type" in record:
+            basis["console_acquisition_type"] += 1
+            console = record.get("console_acquisition_type")
+            if console is not None and console not in CONSOLE_ACQUISITION_TYPES:
+                failures.append(f"{name}: its record's console_acquisition_type {console!r} is no Console type, so "
+                                "its header verdict was never resolved to DDA, SWATH or AIF")
+                continue
+            if console is not None and console != value:
+                failures.append(f"{name}: its header gives {console}, and the Console will deconvolute it as {value}")
+                continue
+            contradiction = _header_contradiction(method, windows, value)
+            if contradiction:
+                failures.append(f"{name}: {contradiction}")
+            elif console is None:
+                warnings.append(f"{name}: its header gives no Console acquisition type, so its {value} rests on "
+                                "something other than the raw headers")
+            continue
+        basis["acquisition_mode"] += 1
+        contradiction = _header_contradiction(method, windows, value)
+        if contradiction:
+            failures.append(f"{name}: {contradiction}")
+        elif method == "DIA" and (windows or 0) < 2:
+            warnings.append(f"{name}: its header says DIA, its record predates console_acquisition_type, and "
+                            + ("the extractor wrote no record of it" if windows is None else
+                               f"the extractor recorded {windows} isolation target(s)")
+                            + f", so whether {value} is right is not settled")
+        elif method not in ("DDA", "AIF", "DIA"):
+            warnings.append(f"{name}: its header gives {method or 'no acquisition mode'}, which is no Console "
+                            f"acquisition type, so its {value} rests on something other than the raw headers")
+    evidence = {"rows": len(csv_rows), "types": dict(Counter(str(row.get("acquisition_type") or "") for row in csv_rows)),
+                "basis": dict(basis), "extractor_records": len(extracted)}
+    if failures:
+        report.add("ACQ-1", stage, ACQ1_TITLE, FAIL,
+                   f"{len(failures)} of the {len(csv_rows)} row(s) would be deconvoluted as an acquisition type their "
+                   "header does not give, which completes, validates and is wrong: " + "; ".join(failures[:3]) + ".",
+                   failures=failures[:10], warnings=warnings[:10], **evidence)
+        return
+    if warnings:
+        report.add("ACQ-1", stage, ACQ1_TITLE, WARN,
+                   f"No row contradicts its header, but {len(warnings)} of the {len(csv_rows)} rest on no header "
+                   "verdict for their acquisition type: " + "; ".join(warnings[:3]) + ".",
+                   warnings=warnings[:10], **evidence)
+        return
+    report.add("ACQ-1", stage, ACQ1_TITLE, PASS,
+               f"All {len(csv_rows)} row(s) run as the acquisition type their raw header gives ("
+               + ", ".join(f"{key} {count}" for key, count in sorted(evidence["types"].items())) + ").", **evidence)
+
+
+def _ce_targets(record: dict | None, header: dict | None) -> list[float] | None:
+    """The collision energies recorded for a file, or None where nothing records them.
+
+    From the per-file record where Interactive carries them, else from the extractor's own record, which
+    keeps the energies above 0 among the MS2 headers it sampled.
+    """
+    for values in ((record or {}).get("collision_energies"), _extractor_acquisition(header).get("collisionEnergies")
+                   if header is not None else None):
+        if isinstance(values, list):
+            numbers = [float(item) for item in values
+                       if isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item)]
+            if numbers or not values:
+                return numbers
+    return None
+
+
+def _console_log_hits(provenance: dict | None, output: Path) -> tuple[int, list[str]]:
+    """How often the Console's output this unit keeps says it skipped an AIF target, and what was read.
+
+    Interactive keeps the last lines of a failed run's log in the manifest (run_failures, and
+    run_attempts where they carry one); a successful run's log stays with the job, so only a log kept
+    in the output (*.log) is read beside them.
+    """
+    hits, sources = 0, []
+    record = provenance if isinstance(provenance, dict) else {}
+    for key in ("run_failures", "run_attempts"):
+        items = record.get(key)
+        for index, item in enumerate(items if isinstance(items, list) else []):
+            tail = item.get("log_tail") if isinstance(item, dict) else None
+            if isinstance(tail, list):
+                sources.append(f"{key}[{index}]")
+                hits += sum(1 for line in tail if AIF_CE_MESSAGE in str(line))
+    for path in sorted(output.glob("*.log")):
+        try:
+            if path.stat().st_size > CONSOLE_LOG_LIMIT:
+                sources.append(f"{path.name} (not read: larger than {CONSOLE_LOG_LIMIT // (1024 * 1024)} MB)")
+                continue
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                hits += sum(1 for line in handle if AIF_CE_MESSAGE in line)
+            sources.append(path.name)
+        except OSError as error:
+            sources.append(f"{path.name} (not read: {error})")
+    return hits, sources
+
+
+def check_aif_files_have_collision_energies(
+    report: Report, provenance: dict | None, csv_rows: list[dict] | None, csv_reason: str, output: Path,
+    stage: str,
+) -> None:
+    """AIF-1. Every file the Console runs as AIF has a collision-energy target it can use.
+
+    The Console deconvolutes an AIF file once per collision-energy target and skips every target at or
+    below 0, printing only that it did (AIF_CE_MESSAGE, with no file named). A file whose target list is
+    empty gets no MS2 deconvolution at all, and nothing says so. The targets are read from the per-file
+    raw-header record; the extractor samples spectrum headers and also reads an energy under activation,
+    where the Console reads spectrum-level energies only, so a target recorded here is the extractor's
+    evidence and not the Console's list.
+
+    Never a FAIL, and never required: the user decided on 2026-09-30 that an AIF file with an empty
+    target list is recorded with a warning and still runs. The files are named; the Console's own line is
+    attributed to the files that can print it.
+    """
+    if stage == "before-production":
+        return
+    if csv_rows is None:
+        report.add("AIF-1", stage, AIF1_TITLE, NOT_EVALUABLE, csv_reason, required=False)
+        return
+    aif = [row for row in csv_rows if _console_reads(str(row.get("acquisition_type") or "")) == "AIF"]
+    if not aif:
+        report.add("AIF-1", stage, AIF1_TITLE, NOT_EVALUABLE, "No file is run as AIF.", required=False)
+        return
+    records = _per_file_records(provenance) if isinstance(provenance, dict) else {}
+    extracted = _extractor_records(provenance, report.workspace) if isinstance(provenance, dict) else {}
+    aliases = _input_keys_by_console_path(provenance) if isinstance(provenance, dict) else {}
+    none_usable, some_skipped, unknown, usable = [], [], [], []
+    for row in aif:
+        path = str(row.get("file_path") or "")
+        name = str(row.get("file_name") or "") or Path(path).name
+        key = _input_key(row, aliases)
+        targets = _ce_targets(records.get(key), extracted.get(key)) if key else None
+        if targets is None:
+            unknown.append(name)
+            continue
+        # Rounded to two places before the comparison, as the Console does.
+        kept = [value for value in targets if round(value, 2) > 0]
+        (none_usable if not kept else some_skipped if len(kept) < len(targets) else usable).append(name)
+    hits, sources = _console_log_hits(provenance, output)
+    evidence = {"aif_files": len(aif), "without_usable_target": none_usable[:10], "with_a_skipped_target": some_skipped[:10],
+                "targets_unrecorded": unknown[:10], "console_log_lines": hits, "console_logs_read": sources[:10]}
+    if none_usable or hits:
+        parts = []
+        if none_usable:
+            parts.append(f"{len(none_usable)} of the {len(aif)} AIF file(s) have no collision-energy target above 0 in "
+                         f"their raw-header record ({', '.join(none_usable[:5])}): the Console gets no MS2 deconvolution "
+                         "for such a file, and says nothing")
+        if hits:
+            # The line names no file. Only a file whose recorded targets include one at or below 0 prints it,
+            # or one whose targets are not recorded.
+            named = ([str(aif[0].get("file_name") or "")] if len(aif) == 1 else some_skipped or unknown)
+            parts.append(f"the Console's log says '{AIF_CE_MESSAGE}' {hits} time(s), so it skipped a target at or below "
+                         "0 for " + (", ".join(named[:5]) if named else
+                                     "one of the AIF files, and neither the log nor the records say which"))
+        sentence = "; ".join(parts)
+        report.add("AIF-1", stage, AIF1_TITLE, WARN,
+                   sentence[:1].upper() + sentence[1:] + ". Recorded, not refused (user decision, 2026-09-30).",
+                   **evidence)
+        return
+    if unknown:
+        report.add("AIF-1", stage, AIF1_TITLE, NOT_EVALUABLE,
+                   f"The collision-energy targets of {len(unknown)} of the {len(aif)} AIF file(s) are recorded nowhere "
+                   f"({', '.join(unknown[:5])}), and no Console log kept here says one was skipped.",
+                   required=False, **evidence)
+        return
+    report.add("AIF-1", stage, AIF1_TITLE, PASS,
+               f"Each of the {len(aif)} AIF file(s) has a collision-energy target above 0 in its raw-header record"
+               + (f", and no Console log read here ({', '.join(sources[:3])}) says one was skipped." if sources else
+                  "; no Console log is kept in this workspace, so the Console's own reading is not seen."),
+               **evidence)
 
 
 # --------------------------------------------------------------------------------------------
@@ -3387,20 +3917,48 @@ def _class_proposal(provenance: dict | None) -> dict | None:
     return proposal if isinstance(proposal, dict) and proposal else None
 
 
+# The containers MS-DIAL opens, as Interactive's archives.py names them beside its archive suffixes
+# (ARCHIVE_SUFFIXES). Its container_alias is the one alias rule: X.d.zip stands for the folder X.d,
+# which the CSV calls X.
+CONTAINER_SUFFIXES = (".raw", ".d", ".wiff", ".wiff2", ".mzml", ".mzxml", ".lcd", ".cdf", ".qgd", ".abf")
+
+
+def _strip_suffix(name: str, suffixes: tuple[str, ...]) -> str:
+    lower = name.casefold()
+    return next((name[:-len(suffix)] for suffix in suffixes
+                 if lower.endswith(suffix) and len(lower) > len(suffix)), name)
+
+
+def _csv_name_forms(raw_file: str) -> list[str]:
+    """The names an analysis-CSV row may carry for a recorded raw_file, most specific first.
+
+    A folder is recorded with a trailing "/" (raw/x.raw/), and a container that was published packed
+    with its archive suffix (x.d.zip), while the CSV names both by the container's stem (x). So the
+    trailing "/" goes, then an archive suffix, then a container suffix; the file name less its last
+    extension, as this check always tried, stays last.
+    """
+    name = raw_file.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    unpacked = _strip_suffix(name, ARCHIVE_SUFFIXES)
+    forms = [name, unpacked, _strip_suffix(unpacked, CONTAINER_SUFFIXES),
+             unpacked.rsplit(".", 1)[0], name.rsplit(".", 1)[0]]
+    return [form for form in dict.fromkeys(forms) if form]
+
+
 def _files_of_samples(provenance: dict | None, samples: set[str], csv_names: set[str]) -> dict[str, list[str]]:
     """The analysis-CSV rows each approved sample is, by name or through its recorded raw file.
 
     A sample whose id is itself a CSV file_name maps to that row. Otherwise every raw_file the
-    unit's sample metadata records for it is reduced to the name the CSV uses (the file name
-    without its extension) and kept if the CSV has it. A sample that maps to nothing is absent.
+    unit's sample metadata records for it is reduced to the name the CSV uses (_csv_name_forms: the
+    container's stem for a folder or an archived container, else the file name without its
+    extension) and kept if the CSV has it. A sample that maps to nothing is absent.
     """
     recorded: dict[str, list[str]] = {}
     for row in ((provenance or {}).get("project") or {}).get("sample_metadata") or []:
         if not isinstance(row, dict):
             continue
         sample = str(row.get("sample_id") or "")
-        raw = str(row.get("raw_file") or "").replace("\\", "/").rsplit("/", 1)[-1]
-        if sample and raw:
+        raw = str(row.get("raw_file") or "")
+        if sample and _csv_name_forms(raw):
             recorded.setdefault(sample, []).append(raw)
     result: dict[str, list[str]] = {}
     for sample in samples:
@@ -3409,7 +3967,7 @@ def _files_of_samples(provenance: dict | None, samples: set[str], csv_names: set
             continue
         names = []
         for raw in recorded.get(sample, []):
-            for candidate in (raw, raw.rsplit(".", 1)[0] if "." in raw else raw):
+            for candidate in _csv_name_forms(raw):
                 if candidate in csv_names and candidate not in names:
                     names.append(candidate)
                     break
@@ -3909,6 +4467,85 @@ def check_unit_reached_a_terminal_state(
         "whatever the output directory contains.",
         status=status, finalized_at=str(finalized), has_validation=isinstance(validation, dict),
     )
+
+
+# What Interactive's run finalisation (0.5.15, run_finalisation.py) records a step it could not do as:
+# one entry of the unit manifest's finalisation_holds, naming what the step's absence makes unsafe.
+FINALISATION_HOLDS = "finalisation_holds"
+BLOCKS_SHARING = "sharing"
+BLOCKS_RAW_DELETION = "raw_deletion"
+FIN2_TITLE = "No finalisation hold stands"
+
+
+def check_no_finalisation_hold_stands(report: Report, provenance: dict | None, reason: str) -> None:
+    """FIN-2. Nothing a run's finalisation left undone stands against sharing or raw deletion.
+
+    After the Console returns, Interactive rewrites the mzTab-M so it names no location of this
+    machine, moves a campaign unit's MS-DIAL containers out of the raw tree, and deletes the loaded-
+    library copy (*_Loaded.msp2.dbs). A step another process's lock defeats is kept as a hold until a
+    retry succeeds. A hold that blocks sharing (an mzTab-M still naming a location, a library copy still
+    in the output, a finalisation that stopped) means a shared artifact may still carry a private
+    location: a FAIL, here at publication. One that blocks only raw deletion (containers still beside
+    the inputs) is a WARN; the raw cleanup refuses it on its own.
+
+    A manifest without the record was written before the finalisation existed, or by a run that has not
+    finalised: not evaluable, and not required. SEC-1 reads the shared artifacts themselves.
+    """
+    stage = "before-publish"
+    if provenance is None:
+        report.add("FIN-2", stage, FIN2_TITLE, NOT_EVALUABLE, reason, required=False)
+        return
+    holds = provenance.get(FINALISATION_HOLDS)
+    if holds is None:
+        report.add("FIN-2", stage, FIN2_TITLE, NOT_EVALUABLE,
+                   f"The manifest records no {FINALISATION_HOLDS}: it predates Interactive's run finalisation "
+                   "(0.5.15), or no production run has finalised here.", required=False)
+        return
+    resolved = provenance.get("finalisation_hold_resolutions")
+    evidence = {"holds": len(holds) if isinstance(holds, list) else None,
+                "resolved_on_retry": len(resolved) if isinstance(resolved, list) else 0}
+    if not isinstance(holds, list):
+        report.add("FIN-2", stage, FIN2_TITLE, NOT_EVALUABLE,
+                   f"{FINALISATION_HOLDS} is not a list, so it is not established that nothing blocks sharing.",
+                   **evidence)
+        return
+
+    def described(item: dict) -> str:
+        return (f"{item.get('step') or 'an unnamed step'} of run {item.get('job_id') or 'unrecorded'} "
+                f"({item.get('reason') or 'no reason recorded'})")
+
+    readable = [item for item in holds if isinstance(item, dict) and isinstance(item.get("blocks"), list)]
+    unreadable = len(holds) - len(readable)
+    sharing = [item for item in readable if BLOCKS_SHARING in item["blocks"]]
+    raw = [item for item in readable if item not in sharing and BLOCKS_RAW_DELETION in item["blocks"]]
+    other = [item for item in readable if item not in sharing and item not in raw]
+    evidence.update({"sharing": [described(item) for item in sharing[:10]],
+                     "raw_deletion": [described(item) for item in raw[:10]],
+                     "other": [described(item) for item in other[:10]], "unreadable": unreadable})
+    if sharing:
+        report.add("FIN-2", stage, FIN2_TITLE, FAIL,
+                   f"{len(sharing)} finalisation hold(s) block sharing: {'; '.join(evidence['sharing'][:3])}. A shared "
+                   "artifact of this run may still carry a location of this machine or a copy of a private library; "
+                   "nothing here may be shared until a retry clears the hold.", **evidence)
+        return
+    if unreadable:
+        report.add("FIN-2", stage, FIN2_TITLE, NOT_EVALUABLE,
+                   f"{unreadable} of the {len(holds)} finalisation hold(s) do not say what they block, so it is not "
+                   "established that nothing blocks sharing.", **evidence)
+        return
+    if raw or other:
+        report.add("FIN-2", stage, FIN2_TITLE, WARN,
+                   (f"{len(raw)} finalisation hold(s) block raw deletion: {'; '.join(evidence['raw_deletion'][:3])}. "
+                    "Deleting the raw tree would delete MS-DIAL's containers with it; the cleanup refuses until a "
+                    "retry moves them." if raw else "")
+                   + (" " if raw and other else "")
+                   + (f"{len(other)} hold(s) block something this gate does not know: "
+                      f"{'; '.join(evidence['other'][:3])}." if other else ""), **evidence)
+        return
+    report.add("FIN-2", stage, FIN2_TITLE, PASS,
+               "No finalisation hold stands"
+               + (f"; {evidence['resolved_on_retry']} earlier hold(s) were resolved on retry." if evidence["resolved_on_retry"]
+                  else "."), **evidence)
 
 
 def _console_field(line: str) -> "tuple[str, str] | None":
@@ -4860,12 +5497,14 @@ def verify(workspace: Path, stage: str) -> Report:
         check_split_part_partitions_its_parent(report, provenance, provenance_reason)
         check_execution_allowed(report, provenance, provenance_reason)
         check_preflight_claim(report, provenance, provenance_reason)
+        check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_checksum_coverage(report, provenance, provenance_reason)
         check_class_distribution(report, csv_rows, csv_reason, "before-production")
         check_executed_class_matches_approved(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_class_proposal_was_accepted(report, provenance, provenance_reason)
         check_threshold_was_measured_on_this_unit(report, provenance, provenance_reason, output)
         check_analytical_order_is_real(report, csv_rows, csv_reason, "before-production", provenance)
+        check_analysis_inputs_are_the_inputs(report, provenance, provenance_reason, csv_rows, csv_reason)
         approved = check_sample_count_invariant(
             report, provenance, provenance_reason, csv_rows, csv_reason,
             run_manifest, output, "before-production",
@@ -4884,6 +5523,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_mztab_structure(report, output, "after-run")
         check_mztab_run_count(report, output, approved, "after-run")
         check_method_file_reached_the_console(report, output, "after-run", provenance)
+        check_aif_files_have_collision_energies(report, provenance, csv_rows, csv_reason, output, "after-run")
         check_binary_identity_is_recorded(report, run_manifest, output, "after-run")
 
     if "before-publish" in stages:
@@ -4892,6 +5532,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_qa_prose_matches_assessment(report, output, "before-publish")
         check_storage_shape(report, workspace, "before-publish", provenance)
         check_unit_reached_a_terminal_state(report, provenance, provenance_reason, output)
+        check_no_finalisation_hold_stands(report, provenance, provenance_reason)
         check_no_unearned_checksum_claim(report, provenance, output)
         check_retention_policy_was_acted_on(report, provenance, provenance_reason, workspace)
         check_no_private_path_in_a_shared_artifact(report, output, "before-publish")
@@ -4930,8 +5571,9 @@ COMPLETION_STAGES = (
      ("CLS-3",)),
     ("B4", "diagnostic_done", "a recorded peak-height diagnostic whose absolute directory exists", ("PKH-1",)),
     ("B5", "production_prepared", "output holds analysis_files.csv, method.txt and run-manifest.json",
-     ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production")),
-    ("B6", "production_run_done", "at least one .mdpeak in output", ("EXP-1", "CNT-1@after-run", "MTH-1")),
+     ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production", "INP-1", "ACQ-1")),
+    ("B6", "production_run_done", "at least one .mdpeak in output",
+     ("EXP-1", "CNT-1@after-run", "MTH-1", "AIF-1", "FIN-2")),
     ("B7", "mztab_validated",
      "a validated terminal status, a validation record with no failure, and an mzTab-M in output",
      ("TAB-1", "TAB-2", "BIN-1", "FIN-1")),

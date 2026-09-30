@@ -103,7 +103,9 @@
           "CLS-1",
           "CLS-2",
           "ORD-1",
-          "CNT-1@before-production"
+          "CNT-1@before-production",
+          "INP-1",
+          "ACQ-1"
         ]
       },
       {
@@ -113,7 +115,9 @@
         "judged_by": [
           "EXP-1",
           "CNT-1@after-run",
-          "MTH-1"
+          "MTH-1",
+          "AIF-1",
+          "FIN-2"
         ],
         "boundary": 4
       },
