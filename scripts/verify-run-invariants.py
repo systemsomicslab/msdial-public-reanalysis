@@ -387,13 +387,526 @@ def _names_cover(relative: str, declared: str) -> bool:
     return declared in _name_forms(relative)
 
 
+# ---- The input lineage ----------------------------------------------------------------------------
+# Interactive writes one row per analysis input into the manifest's input_lineage table: what the
+# input is and where its bytes came from. SUM-1 used to answer that question from its own reading of
+# downloads, extracted_files and the allow-list, and could not follow an input through an archive or
+# a conversion at all: no clause let a verified Workbench archive vouch for what came out of it, so
+# every one of the 661 declared-pool Workbench units was refused. A manifest that carries the table is
+# judged by it; one written before it existed keeps the reading below it, unchanged.
+INPUT_LINEAGE_SCHEMA = "msdial-input-lineage.v1"
+# What archives.py writes to provenance/archive-members-<sha12>.tsv for the whole lineage of one
+# archive, nested archives included, each path relative to the outermost archive's destination.
+ARCHIVE_LISTING_COLUMNS = ("path", "type", "size", "crc32", "modified", "depth", "archive", "member_name",
+                           "disposition")
+# How strongly each basis vouches for an input, weakest first. A unit rests on its weakest input.
+CHECKSUM_BASES = ("download_sha256", "archive_verified", "verified")
+# An input extracted from an archive whose published MD5 matched at download, and named in the
+# archive's recorded listing, was never compared with a checksum of its own. Whether that earns a PASS
+# is the user's decision, not yet taken (2026-09-30); until then it is a WARN, which exits 0 like a
+# PASS, so the Workbench units proceed either way. Changing this constant is that decision.
+ARCHIVE_VERIFIED_STATUS = WARN
+ARCHIVE_WORDING_TEXT = "extracted from an archive whose published MD5 matched"
+
+
+@dataclass
+class _Cover:
+    """What vouches for one input's bytes: a basis from CHECKSUM_BASES, or the reason nothing does."""
+
+    basis: str = ""
+    reason: str = ""
+    detail: str = ""
+    # The file's own sha256 and size where a record gives them, for a conversion to be compared with.
+    sha256: str = ""
+    size: int | None = None
+    archive: str = ""
+    crc_verified: object = None
+    converted: bool = False
+
+
+def _uncovered(reason: str, detail: str) -> _Cover:
+    return _Cover(reason=reason, detail=detail)
+
+
+def _weakest(covers: list[_Cover]) -> _Cover:
+    return min(covers, key=lambda cover: CHECKSUM_BASES.index(cover.basis))
+
+
+@dataclass
+class _ArchiveListing:
+    files: dict = field(default_factory=dict)
+    directories: set = field(default_factory=set)
+    problem: str = ""
+
+
+class _InputLineage:
+    """The manifest's input_lineage table, resolved input by input to what vouches for its bytes.
+
+    Each row is read by its kind, and every basis is checked against the primary record it names,
+    never against the row alone:
+
+    - file: a repository object downloaded as itself. Its own declared checksum, verified at download
+      or by the allow-list validator ("verified"); or, for a repository that publishes none and a unit
+      that declares none, the sha256 recorded at download ("download_sha256"). A row's word that a
+      checksum was verified counts only for a checksum the repository declared for this unit.
+    - extracted_member and archived_container: out of an archive. Its own declared checksum where one
+      was compared ("verified"). Otherwise the archive's: the download record must hold the archive's
+      sha256, its published MD5 must have matched ("archive_verified"; for a repository publishing
+      none, "download_sha256"), an archive_extractions record for exactly those bytes must list the
+      input in its member listing, whose sha256 is recorded, and must have rejected no member.
+    - vendor_folder: a .d or .raw directory assembled from objects downloaded one by one, each of
+      which must be covered as a file is.
+    - converted: written by the mzXML conversion. Covered iff a completed conversion record in
+      input_conversions (msdial-mzxml-conversion.v1 records, as a list or as an object's "records")
+      names it as its output, with the output's sha256; the row's
+      source.conversion.source_sha256 is the sha256 that record read; and the mzXML it read is itself
+      covered, through source.conversion.source_row when the row carries one, otherwise through the
+      download or the archive listing that holds it, with the same sha256 (or, for an archive member,
+      which is not hashed, the listed size). The mzXML's basis is the converted input's.
+
+    An input with no row, or with two different rows, is covered by nothing.
+    """
+
+    def __init__(self, owner: dict) -> None:
+        self.owner = owner
+        self.problem = ""
+        lineage = owner.get("input_lineage")
+        rows = lineage.get("rows") if isinstance(lineage, dict) else None
+        if not isinstance(lineage, dict) or lineage.get("schema") != INPUT_LINEAGE_SCHEMA or not isinstance(rows, list):
+            self.problem = (f"The manifest's input_lineage is not an {INPUT_LINEAGE_SCHEMA} table with rows, so "
+                            "nothing says where any input came from.")
+            rows = []
+        self.rows: dict[str, list[dict]] = {}
+        for row in rows:
+            if isinstance(row, dict) and str(row.get("path") or "").strip():
+                self.rows.setdefault(_path_key(row["path"]), []).append(row)
+        self.downloads = [item for item in owner.get("downloads") or [] if isinstance(item, dict)]
+        self.downloads_by_path = {_path_key(item.get("path")): item for item in self.downloads
+                                  if str(item.get("path") or "").strip()}
+        self.downloads_by_sha256 = {str(item.get("sha256")).casefold(): item for item in self.downloads
+                                    if str(item.get("sha256") or "").strip()}
+        project = owner.get("project") or {}
+        self.repository = str(project.get("repository") or "").strip().casefold()
+        files = [item for item in project.get("files") or [] if isinstance(item, dict)]
+        declared = [item for item in files if str(item.get("checksum") or "").strip()]
+        self.unit_declares_checksums = bool(declared) or any(
+            str(item.get("declared_checksum") or "").strip() for item in self.downloads)
+        # What the repository published, which a row's "declared and verified" must be one of.
+        self.published_checksums = {str(item.get("checksum")).strip().casefold() for item in declared} | {
+            str(item.get("declared_checksum")).strip().casefold() for item in self.downloads
+            if str(item.get("declared_checksum") or "").strip()}
+        validation = owner.get("allowlist_checksum_validation")
+        verified = validation.get("verified") if isinstance(validation, dict) else None
+        # The validator raises on a mismatch or on a name it cannot resolve, so a count equal to the
+        # declared checksums means each one was compared with the file it names.
+        self.declared_names = (
+            {_declared_name(item.get("name")) for item in declared}
+            if declared and isinstance(verified, int) and verified == len(declared) else set()
+        )
+        self.input_directory = str(owner.get("input_directory") or "")
+        raw_extracted = owner.get("extracted_files")
+        self.extracted = {_path_key(item) for item in raw_extracted} if isinstance(raw_extracted, list) else set()
+        raw_records = owner.get("archive_extractions")
+        # None: the lease predates the extraction record, and extracted a MetaboLights archive as the
+        # legacy reading below assumes. A present block is judged by what it records.
+        self.extraction_records = (
+            None if raw_records is None
+            else [item for item in raw_records if isinstance(item, dict)] if isinstance(raw_records, list) else []
+        )
+        self.extractions = {str(item.get("archive_sha256")).casefold(): item
+                            for item in self.extraction_records or [] if str(item.get("archive_sha256") or "").strip()}
+        raw_conversions = owner.get("input_conversions")
+        if isinstance(raw_conversions, dict):
+            raw_conversions = raw_conversions.get("records")
+        self.conversions = {}
+        for record in raw_conversions if isinstance(raw_conversions, list) else []:
+            output = record.get("output") if isinstance(record, dict) else None
+            if isinstance(output, dict) and str(output.get("path") or "").strip():
+                self.conversions.setdefault(_path_key(output["path"]), []).append(record)
+        self._listings: dict[str, _ArchiveListing] = {}
+        self._under: dict[str, list[dict]] | None = None
+
+    def resolve_input(self, path: str) -> _Cover:
+        rows = self.rows.get(_path_key(path)) or []
+        if not rows:
+            return _uncovered("no_lineage_row", "the lineage table has no row for it")
+        if any(row != rows[0] for row in rows[1:]):
+            return _uncovered("ambiguous_lineage_row", f"the lineage table has {len(rows)} different rows for it")
+        return self.resolve_row(rows[0], 0)
+
+    def resolve_row(self, row: dict, depth: int) -> _Cover:
+        kind = str(row.get("kind") or "")
+        source = row.get("source") if isinstance(row.get("source"), dict) else {}
+        checksums = row.get("checksums") if isinstance(row.get("checksums"), dict) else {}
+        path = str(row.get("path") or "")
+        if (kind in ("file", "extracted_member") and checksums.get("declared_verified") is True
+                and str(checksums.get("declared") or "").strip()):
+            if str(checksums["declared"]).strip().casefold() not in self.published_checksums:
+                return _uncovered("declared_checksum_unknown", "the checksum its row says was verified is not one "
+                                  "the repository declared for this unit")
+            return _Cover("verified", sha256=str(checksums.get("sha256") or "").casefold())
+        if kind == "file":
+            return self._file(path, source, checksums)
+        if kind == "extracted_member":
+            archive = source.get("archive")
+            if not isinstance(archive, dict):
+                return _uncovered("no_archive_source", "its row names no archive it came out of")
+            return self._from_archive(path, archive, str(source.get("member") or ""), directory=False)
+        if kind == "archived_container":
+            archives = [item for item in source.get("archives") or [] if isinstance(item, dict)] \
+                if isinstance(source.get("archives"), list) else []
+            if not archives:
+                return _uncovered("no_archive_source", "its row names no archive it came out of")
+            covers = [self._from_archive(path, archive, "", directory=True) for archive in archives]
+            refused = next((cover for cover in covers if not cover.basis), None)
+            return refused or _weakest(covers)
+        if kind == "vendor_folder":
+            return self._vendor_folder(path, checksums)
+        if kind == "converted":
+            return self._converted(path, source, checksums, depth)
+        return _uncovered("unknown_lineage_kind", f"its lineage kind {kind or 'none'!r} is not one the gate reads")
+
+    def _declaration(self, download: dict, *, archive: bool) -> _Cover:
+        """What a downloaded object's own declaration earns: verified, unverified, none published, or lost."""
+        what = "archive it came out of" if archive else "file"
+        if str(download.get("declared_checksum") or "").strip():
+            if download.get("declared_checksum_verified") is True:
+                return _Cover("archive_verified" if archive else "verified")
+            if archive:
+                return _uncovered("archive_md5_unverified",
+                                  f"the {what} declares a checksum that was not verified at download")
+            return _uncovered("declared_checksum_unverified", "its declared checksum was not verified")
+        if self.repository in REPOSITORIES_WITHOUT_CHECKSUMS:
+            if self.unit_declares_checksums:
+                return _uncovered("partial_declaration",
+                                  f"the {what} declares no checksum while other files of this unit do")
+            return _Cover("download_sha256")
+        return _uncovered("declaration_lost",
+                          f"the {what} declares no checksum, and {self.repository or 'its repository'} is not "
+                          "recorded as publishing none: the declaration was lost on the way in")
+
+    def _download_sha256(self, download: dict) -> str:
+        return str(download.get("sha256") or "").strip().casefold()
+
+    def _file(self, path: str, source: dict, checksums: dict) -> _Cover:
+        download = self.downloads_by_path.get(_path_key(source.get("download_path") or path))
+        if download is None:
+            reused = source.get("origin") == "not_downloaded_by_this_lease"
+            return _uncovered("not_downloaded", "it is not a recorded download"
+                              + (" (the lease did not download it)" if reused else ""))
+        sha256 = self._download_sha256(download)
+        if not sha256:
+            return _uncovered("no_download_sha256", "no sha256 was recorded when it was downloaded")
+        recorded = str(checksums.get("sha256") or "").strip().casefold()
+        if recorded and recorded != sha256:
+            return _uncovered("sha256_disagrees", "its lineage row and its download record give different sha256")
+        cover = self._declaration(download, archive=False)
+        cover.sha256 = sha256
+        size = download.get("size_bytes")
+        cover.size = size if isinstance(size, int) else None
+        return cover
+
+    def _downloads_under(self, folder: str) -> list[dict]:
+        """The downloads inside a folder, from one index over every download's parents.
+
+        A Waters unit holds hundreds of .raw folders and tens of thousands of member objects; searching
+        the downloads once per folder would grow with their product.
+        """
+        if self._under is None:
+            self._under = {}
+            stop = _path_key(self.input_directory) if self.input_directory else ""
+            for key, item in self.downloads_by_path.items():
+                parent = os.path.dirname(key)
+                while parent and len(parent) > len(stop) and parent != os.path.dirname(parent):
+                    self._under.setdefault(parent, []).append(item)
+                    parent = os.path.dirname(parent)
+        return self._under.get(_path_key(folder), [])
+
+    def _vendor_folder(self, path: str, checksums: dict) -> _Cover:
+        members = self._downloads_under(path)
+        if not members:
+            return _uncovered("not_downloaded", "no downloaded object lies under it")
+        count = checksums.get("member_objects")
+        if isinstance(count, int) and count != len(members):
+            return _uncovered("member_count_disagrees",
+                              f"its row counts {count} member object(s) and the downloads {len(members)}")
+        covers = []
+        for member in members:
+            name = Path(str(member.get("path"))).name
+            if not self._download_sha256(member):
+                return _uncovered("no_download_sha256", f"its member {name} has no sha256 recorded at download")
+            relative = _relative_name(member.get("path"), self.input_directory) if self.input_directory else ""
+            if relative and any(form in self.declared_names for form in _name_forms(relative)):
+                covers.append(_Cover("verified"))
+                continue
+            cover = self._declaration(member, archive=False)
+            if not cover.basis:
+                return _uncovered(cover.reason, f"its member {name}: {cover.detail}")
+            covers.append(cover)
+        return _weakest(covers)
+
+    def _member_names(self, path: str, record: dict, member: str) -> list[str]:
+        """The names an input may carry in an archive's listing, which is relative to the destination."""
+        key = _path_key(path)
+        destination = str(record.get("destination") or "")
+        if destination and key.startswith(_path_key(destination) + os.sep):
+            return [key[len(_path_key(destination)) + 1:].replace(os.sep, "/").casefold()]
+        names = [member.replace("\\", "/").strip("/").casefold()] if member.strip() else []
+        root = _path_key(self.input_directory) if self.input_directory else ""
+        if root and key.startswith(root + os.sep):
+            names.append(key[len(root) + 1:].replace(os.sep, "/").casefold())
+        return list(dict.fromkeys(names))
+
+    def _from_archive(self, path: str, archive: dict, member: str, *, directory: bool) -> _Cover:
+        claimed = str(archive.get("sha256") or "").strip().casefold()
+        download = self.downloads_by_sha256.get(claimed) if claimed else None
+        if download is None and str(archive.get("download_path") or "").strip():
+            download = self.downloads_by_path.get(_path_key(archive["download_path"]))
+        if download is None:
+            return _uncovered("archive_not_downloaded", "the archive it came out of is not a recorded download")
+        sha256 = self._download_sha256(download)
+        name = Path(str(download.get("path") or "")).name or "its archive"
+        if not sha256:
+            return _uncovered("no_download_sha256", f"no sha256 was recorded when {name} was downloaded")
+        if claimed and claimed != sha256:
+            return _uncovered("sha256_disagrees", f"its lineage row and the download record of {name} give "
+                              "different sha256")
+        cover = self._declaration(download, archive=True)
+        if not cover.basis:
+            return cover
+        record = self.extractions.get(sha256)
+        if record is None:
+            if (cover.basis == "download_sha256" and self.extraction_records is None
+                    and (_path_key(path) in self.extracted or (self.input_directory and _path_key(path).startswith(
+                        _path_key(self.input_directory) + os.sep)))):
+                # Extracted before the record existed: the archive's hash covers what came out of it, as
+                # the legacy reading has it.
+                return _Cover("download_sha256", archive=sha256)
+            return _uncovered("no_extraction_record",
+                              f"no archive_extractions record lists what came out of {name}")
+        rejected = _rejected_member_count(record)
+        if rejected:
+            return _uncovered("members_rejected", f"{rejected} member(s) of {name} were rejected at extraction, "
+                              "so what came out of it is not the archive that was published")
+        listing = self._listing(record)
+        if listing.problem:
+            return _uncovered("listing_unreadable", listing.problem)
+        names = self._member_names(path, record, member)
+        found = [item for item in names if (item in listing.directories if directory else item in listing.files)]
+        if not found:
+            return _uncovered("missing_from_listing", f"it is not in the recorded member listing of {name}")
+        size = None if directory else listing.files[found[0]]
+        return _Cover(cover.basis, size=size, archive=sha256, crc_verified=record.get("crc_verified"))
+
+    def _listing(self, record: dict) -> _ArchiveListing:
+        members = record.get("members_tsv")
+        name = str(record.get("archive_name") or "the archive")
+        if not isinstance(members, dict) or not str(members.get("path") or "").strip():
+            return _ArchiveListing(problem=f"the extraction record of {name} keeps no member listing")
+        recorded = Path(str(members["path"]))
+        candidates = [recorded]
+        if str(self.owner.get("workspace") or "").strip():
+            # Read where the unit keeps it, if its workspace moved since the listing was written.
+            candidates.append(Path(str(self.owner["workspace"])) / "provenance" / recorded.name)
+        path = next((item for item in candidates if item.is_file()), None)
+        if path is None:
+            return _ArchiveListing(problem=f"the member listing of {name} ({recorded.name}) is absent")
+        cache_key = _path_key(path)
+        if cache_key in self._listings:
+            return self._listings[cache_key]
+        listing = self._listings[cache_key] = _read_archive_listing(path, str(members.get("sha256") or ""), name)
+        return listing
+
+    def _converted(self, path: str, source: dict, checksums: dict, depth: int) -> _Cover:
+        if depth:
+            return _uncovered("conversion_chain", "it is a conversion of a conversion, which the gate does not follow")
+        records = self.conversions.get(_path_key(path)) or []
+        if not records:
+            return _uncovered("no_conversion_record", "no conversion record names it as its output")
+        if len(records) > 1:
+            return _uncovered("ambiguous_conversion_record",
+                              f"{len(records)} conversion records name it as their output")
+        record = records[0]
+        if record.get("status") != "converted":
+            return _uncovered("conversion_not_completed",
+                              f"its conversion record's status is {record.get('status')!r}, not 'converted'")
+        output = record.get("output") if isinstance(record.get("output"), dict) else {}
+        output_sha256 = str(output.get("sha256") or "").strip().casefold()
+        if not output_sha256:
+            return _uncovered("no_output_sha256", "its conversion record keeps no sha256 of the mzML it wrote")
+        recorded = str(checksums.get("sha256") or "").strip().casefold()
+        if recorded and recorded != output_sha256:
+            return _uncovered("sha256_disagrees", "its lineage row and its conversion record give different sha256")
+        read = record.get("source") if isinstance(record.get("source"), dict) else {}
+        source_sha256 = str(read.get("sha256") or "").strip().casefold()
+        if not source_sha256:
+            return _uncovered("no_source_sha256", "its conversion record keeps no sha256 of the mzXML it read")
+        reference = source.get("conversion") if isinstance(source.get("conversion"), dict) else {}
+        if str(reference.get("source_sha256") or "").strip().casefold() != source_sha256:
+            return _uncovered("source_sha256_mismatch", "its row's source_sha256 is not the sha256 of the mzXML its "
+                              "conversion record read")
+        source_path = str(read.get("path") or reference.get("source_path") or "")
+        if reference.get("source_path") and read.get("path") and not _same_path(reference["source_path"], read["path"]):
+            return _uncovered("source_path_mismatch", "its row and its conversion record name different mzXML files")
+        source_name = Path(source_path).name or "its source"
+        source_row = reference.get("source_row") if isinstance(reference.get("source_row"), dict) else (
+            self._derived_row(source_path))
+        if source_row is None:
+            return _uncovered("source_not_traced", f"{source_name} is neither a recorded download nor listed in an "
+                              "archive extraction")
+        cover = self.resolve_row(source_row, depth + 1)
+        if not cover.basis:
+            return _uncovered(cover.reason, f"its source {source_name} is not covered: {cover.detail}")
+        if cover.sha256 and cover.sha256 != source_sha256:
+            return _uncovered("source_sha256_mismatch", f"the conversion read other bytes than the {source_name} "
+                              "that was downloaded")
+        read_bytes = read.get("bytes")
+        if cover.size is not None and isinstance(read_bytes, int) and cover.size != read_bytes:
+            return _uncovered("source_size_mismatch", f"the conversion read {read_bytes} bytes and the listing "
+                              f"records {cover.size} for {source_name}")
+        return _Cover(cover.basis, sha256=output_sha256, archive=cover.archive, crc_verified=cover.crc_verified,
+                      converted=True)
+
+    def _derived_row(self, path: str) -> dict | None:
+        """A lineage row for a conversion's source, from the download or the archive listing that holds it."""
+        if not path.strip():
+            return None
+        key = _path_key(path)
+        rows = self.rows.get(key) or []
+        if len(rows) == 1:
+            return rows[0]
+        if key in self.downloads_by_path:
+            return {"kind": "file", "path": path, "source": {"download_path": self.downloads_by_path[key].get("path")}}
+        for record in self.extraction_records or []:
+            listing = self._listing(record)
+            if not listing.problem and any(name in listing.files for name in self._member_names(path, record, "")):
+                return {"kind": "extracted_member", "path": path,
+                        "source": {"archive": {"sha256": record.get("archive_sha256")}}}
+        return None
+
+
+def _rejected_member_count(record: dict, depth: int = 0) -> int:
+    rejected = record.get("rejected_members")
+    count = len(rejected) if isinstance(rejected, list) else 0
+    nested = record.get("nested")
+    if depth < 8 and isinstance(nested, list):
+        count += sum(_rejected_member_count(item, depth + 1) for item in nested if isinstance(item, dict))
+    return count
+
+
+def _read_archive_listing(path: Path, recorded_sha256: str, name: str) -> _ArchiveListing:
+    """The files and folders an archive's recorded listing says were extracted."""
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return _ArchiveListing(problem=f"the member listing of {name} could not be read: {exc}")
+    if not recorded_sha256.strip():
+        return _ArchiveListing(problem=f"the extraction record of {name} keeps no sha256 of its member listing")
+    if hashlib.sha256(data).hexdigest() != recorded_sha256.strip().casefold():
+        return _ArchiveListing(problem=f"the member listing of {name} has changed since its sha256 was recorded")
+    try:
+        lines = data.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return _ArchiveListing(problem=f"the member listing of {name} is not UTF-8")
+    header = lines[0].split("\t") if lines else []
+    if not set(ARCHIVE_LISTING_COLUMNS) <= set(header):
+        return _ArchiveListing(problem=f"the member listing of {name} does not have the columns archives.py writes")
+    listing = _ArchiveListing()
+    for number, line in enumerate(lines[1:], start=2):
+        if not line:
+            continue
+        cells = line.split("\t")
+        if len(cells) != len(header):
+            return _ArchiveListing(problem=f"line {number} of the member listing of {name} has {len(cells)} fields, "
+                                   f"not {len(header)}")
+        entry = dict(zip(header, cells))
+        # Only what was extracted: dropped operating-system metadata and nested archives that were
+        # expanded in place are not on disk as themselves.
+        if entry["disposition"] != "extracted":
+            continue
+        member = entry["path"].replace("\\", "/").strip("/").casefold()
+        parts = member.split("/")
+        listing.directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
+        if entry["type"] == "dir":
+            listing.directories.add(member)
+        else:
+            listing.files[member] = int(entry["size"]) if entry["size"].isdigit() else None
+    return listing
+
+
+def _lineage_checksum_basis(owner: dict, evidence: dict) -> tuple[str, str, dict]:
+    """SUM-1 for a manifest that carries input_lineage: every input resolved through its row."""
+    lineage = _InputLineage(owner)
+    evidence["lineage_schema"] = INPUT_LINEAGE_SCHEMA
+    evidence["basis"] = "insufficient"
+    if lineage.problem:
+        return "insufficient", lineage.problem, evidence
+    raw_candidates = owner.get("input_candidates")
+    candidates = [str(item) for item in raw_candidates] if isinstance(raw_candidates, list) else []
+    if not candidates:
+        return "insufficient", "No input candidate is recorded, so the lineage vouches for nothing analysed.", evidence
+    covers = [(item, lineage.resolve_input(item)) for item in candidates]
+    uncovered = [(item, cover) for item, cover in covers if not cover.basis]
+    covered = [cover for _, cover in covers if cover.basis]
+    archives = {cover.archive: cover for cover in covered if cover.archive and cover.basis == "archive_verified"}
+    evidence.update({
+        "lineage_rows": sum(len(rows) for rows in lineage.rows.values()),
+        "inputs_by_basis": dict(Counter(cover.basis for cover in covered)),
+        "inputs_uncovered": len(uncovered),
+        "uncovered_reasons": dict(Counter(cover.reason for _, cover in uncovered)),
+        "uncovered": [{"input": Path(item).name, "reason": cover.reason, "detail": cover.detail}
+                      for item, cover in uncovered[:10]],
+        "converted_inputs": sum(1 for cover in covered if cover.converted),
+        "archives_verified": len(archives),
+        "archives_without_member_crc": sum(1 for cover in archives.values() if cover.crc_verified is not True),
+    })
+    if uncovered:
+        shown = "; ".join(f"{Path(item).name}: {cover.detail}" for item, cover in uncovered[:3])
+        return ("insufficient", f"{len(uncovered)} of {len(candidates)} input(s) are covered by nothing their lineage "
+                f"records: {shown}.", evidence)
+    basis = evidence["basis"] = _weakest(covered).basis
+    counts = evidence["inputs_by_basis"]
+    converted = (f" {evidence['converted_inputs']} of the inputs are mzML converted from an mzXML that is covered "
+                 "in this way itself." if evidence["converted_inputs"] else "")
+    if basis == "verified":
+        return ("verified", f"Every one of the {len(candidates)} inputs had its own declared checksum verified, "
+                "traced through the input lineage." + converted, evidence)
+    if basis == "archive_verified":
+        without_crc = evidence["archives_without_member_crc"]
+        own = counts.get("verified", 0)
+        return (
+            "archive_verified",
+            f"{counts.get('archive_verified', 0)} of the {len(candidates)} inputs were {ARCHIVE_WORDING_TEXT} at "
+            f"download, and each is named in that archive's recorded member listing"
+            + (f" ({without_crc} of the {len(archives)} archive(s) carry no member CRC the extractor could check)"
+               if without_crc else "")
+            + (f"; the other {own} had their own declared checksum verified" if own else "")
+            + f".{converted} The archived inputs' own checksums were not compared, so no artifact may call them "
+            f"checksum-verified; the permitted wording is '{ARCHIVE_WORDING_TEXT}'. Whether this basis passes is "
+            "the user's decision, not yet taken.",
+            evidence,
+        )
+    return (
+        "download_sha256",
+        f"{lineage.repository} publishes no checksum for any file, so nothing could be compared with a source "
+        f"value. Integrity rests on the sha256 recorded at download, which covers all {len(candidates)} inputs "
+        f"through their lineage.{converted} No artifact may describe these inputs as checksum-verified.",
+        evidence,
+    )
+
+
 def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
     """How this unit's inputs are known to be intact: (kind, detail, evidence).
 
     kind is "verified" (every declared file was checked against its published checksum, and every
     input is one of them, lies in a declared vendor directory, or came out of a declared archive),
-    "download_sha256" (the repository publishes none, and every input rests on a sha256 recorded at
-    download), or "insufficient" (anything else).
+    "archive_verified" (some input rests on the published MD5 of the archive it was extracted from,
+    and on that archive's recorded listing, and the rest are verified; only a manifest carrying
+    input_lineage can say so), "download_sha256" (the repository publishes none, and every input rests
+    on a sha256 recorded at download), or "insufficient" (anything else).
+
+    A manifest carrying input_lineage is resolved through it, input by input (_InputLineage). One
+    written before the table existed is read as it always was, below.
     """
     validation = owner.get("allowlist_checksum_validation")
     files = [item for item in (owner.get("project") or {}).get("files") or [] if isinstance(item, dict)]
@@ -446,6 +959,8 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
         "declared_checksums": len(declared), "downloads_with_sha256": len(hashed_downloads),
         "repository": repository,
     }
+    if owner.get("input_lineage") is not None:
+        return _lineage_checksum_basis(owner, evidence)
     if counts_known and files and skipped == 0 and verified == len(files):
         # The validator raises on a mismatch or on a file it cannot resolve, so a count equal to the
         # declared files means every one was checked. Sidecars such as .wiff.scan are declared and
@@ -517,6 +1032,12 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
 
     A split part carries its raw owner's verdict. Read on the part alone, the record is absent
     and a FAIL on the parent would become a mere absence on the part.
+
+    AN ARCHIVE'S PUBLISHED MD5 is the only checksum a Metabolomics Workbench archive unit has. Where
+    the manifest carries input_lineage, an input extracted from an archive whose MD5 matched at
+    download, and named in that archive's recorded member listing, rests on basis archive_verified:
+    ARCHIVE_VERIFIED_STATUS, a WARN until the user decides it passes. An unverified archive MD5, an
+    input missing from the listing, and a member rejected at extraction are FAILs.
     """
     stage = "before-production"
     title = "Every input's checksum was verified"
@@ -539,7 +1060,7 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
                    inherited_from=inherited_from)
         return
     kind, detail, evidence = _checksum_basis(owner)
-    status = {"verified": PASS, "download_sha256": WARN}.get(kind, FAIL)
+    status = {"verified": PASS, "archive_verified": ARCHIVE_VERIFIED_STATUS, "download_sha256": WARN}.get(kind, FAIL)
     report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, **evidence)
 
 
@@ -2984,6 +3505,13 @@ INPUT_SUBJECT = re.compile(
 )
 # A sentence ends at . ; ! ? or a newline, but not at the point of a decimal such as 5.5.
 SENTENCE = re.compile(r"(?:[^.;!?\n]|(?<=\d)\.(?=\d))+")
+# The one way an artifact may describe inputs whose basis is archive_verified (ARCHIVE_WORDING_TEXT),
+# with the checksum noun and a plural allowed. It says what was compared, the archive, and not that the
+# inputs themselves were. Where no archive's published MD5 was compared it is itself an unearned claim.
+ARCHIVE_WORDING = re.compile(
+    r"extracted\s+from\s+(?:(?:an|the)\s+)?archives?\s+whose\s+published\s+md5s?(?:\s+checksums?)?\s+matched",
+    re.IGNORECASE,
+)
 
 
 def _claim_is_negated(sentence: str, start: int, end: int | None = None) -> bool:
@@ -3005,6 +3533,12 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     The second clause of the user's decision of 2026-09-25: a unit whose inputs rest on the sha256
     recorded at download proceeds past SUM-1 with a WARN, and no artifact may then describe its
     inputs as checksum-verified. SUM-1 can only say so; this is where the claim would be made.
+
+    The same holds for inputs whose basis is archive_verified: only the archive they came out of was
+    compared with a published MD5. For them, and only for them, the artifact may say they were
+    "extracted from an archive whose published MD5 matched" (ARCHIVE_WORDING), which is neither counted
+    nor set aside. Said of inputs that rest on a download sha256, where the repository published no
+    checksum at all, the same wording is a claim.
     """
     stage = "before-publish"
     title = "No artifact calls unverified inputs checksum-verified"
@@ -3013,7 +3547,7 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
         report.add("SUM-2", stage, title, NOT_EVALUABLE, owner_reason or "The manifest is absent.")
         return
     kind, _detail, _evidence = _checksum_basis(owner)
-    if kind != "download_sha256":
+    if kind not in ("download_sha256", "archive_verified"):
         report.add("SUM-2", stage, title, NOT_EVALUABLE,
                    "The inputs were checksum-verified, or SUM-1 refused them; there is no unearned "
                    "claim to look for.", required=False, basis=kind)
@@ -3022,14 +3556,25 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     if not present:
         report.add("SUM-2", stage, title, NOT_EVALUABLE, "No publication artifact is present.")
         return
+    archive = kind == "archive_verified"
     claims = []
     skipped = []
+    permitted: list[str] = []
     to_read: list[dict] = []
     unread: list[str] = []
     for path in present:
         for member, text in _readable_members(path, unread):
             for sentence in SENTENCE.findall(text):
+                spans = [wording.span() for wording in ARCHIVE_WORDING.finditer(sentence)]
+                for _span in spans:
+                    where = f"{path.name}:{member}: {sentence.strip()[:160]!r}"
+                    if archive:
+                        permitted.append(where)
+                    else:
+                        claims.append(f"{where} (no archive's published MD5 was compared for these inputs)")
                 for match in CHECKSUM_CLAIM.finditer(sentence):
+                    if any(start <= match.start() and match.end() <= end for start, end in spans):
+                        continue  # the archive wording, already judged whole
                     where = f"{path.name}:{member}: {sentence.strip()[:160]!r}"
                     if _claim_is_negated(sentence, match.start(), match.end()):
                         skipped.append(f"negated: {where}")
@@ -3040,8 +3585,13 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
                         continue
                     to_read.append({"source": f"{path.name}:{member}", "sentence": sentence.strip()})
     read_evidence = {**_to_read_evidence("SUM-2", to_read), "unread": unread[:20]}
+    if archive:
+        read_evidence.update(basis=kind, permitted_wording=permitted[:20], permitted_wording_count=len(permitted))
     if claims:
         report.add("SUM-2", stage, title, FAIL,
+                   "A published artifact calls these inputs checksum-verified, but only the archive they were "
+                   "extracted from was compared with its published MD5, and their own checksums were not. The "
+                   f"permitted wording is '{ARCHIVE_WORDING_TEXT}'." if archive else
                    "A published artifact calls these inputs checksum-verified, but the repository "
                    "published no checksum and none was compared.",
                    claims=claims[:10], claim_count=len(claims),
@@ -3065,7 +3615,9 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
         return
     report.add("SUM-2", stage, title, PASS,
                f"No known checksum-verification phrasing matched in {len(present)} publication "
-               "artifact(s). This is not a statement that no such claim is made.",
+               "artifact(s). This is not a statement that no such claim is made."
+               + (f" {len(permitted)} sentence(s) use the permitted wording '{ARCHIVE_WORDING_TEXT}'."
+                  if permitted else ""),
                artifacts=len(present), **read_evidence)
 
 
