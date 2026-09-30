@@ -275,7 +275,8 @@ verification that follows the campaign.
 The runner runs the gate at each of its points and keeps every report for the
 verification that follows the campaign. No verdict holds the raw-data
 deletion. Which `before-production` FAILs stop a unit's MS-DIAL run is the
-user's decision of 2026-10-01:
+user's decision of 2026-10-01, which stops it only for a FAIL in the first
+list:
 
 - `blocks_run`: ELIG-1, ACQ-1, SUM-1, CNT-1 and INP-1. A FAIL in one of them
   breaks the results, so it stops the run, and the unit is a failed unit under
@@ -285,18 +286,29 @@ user's decision of 2026-10-01:
   outputs are present and its mzTab-M validates, so a Class, grouping, order or
   threshold error it carries is corrected only from a new download.
 
-**Awaiting the user's decision.** Four `before-production` checks are in
-neither list: ID-1 (the workspace is the unit its manifest names), SPL-1 (a
-split part partitions its parent's inputs), PRE-1 (a header-confirmed
-acquisition claim is permitted) and CONV-1 (every converted input is a
-validated conversion). Each holds what the inputs are, which is what
-`blocks_run` guards, so until the user places them they stop the run as
-`blocks_run` does, and so does any `before-production` check this section does
-not name. A `blocks_run` check that is required and cannot be evaluated (exit 4
-under `--strict`) stops the run as its FAIL would.
+**In neither list.** The user's rule does not name four `before-production`
+checks: ID-1 (the workspace is the unit its manifest names), SPL-1 (a split
+part partitions its parent's inputs), PRE-1 (a header-confirmed acquisition
+claim is permitted) and CONV-1 (every converted input is a validated
+conversion). It stops the run only for the five `blocks_run` checks, so a FAIL
+in one of these four is recorded with the unit and the unit runs, as a
+`record_only` FAIL is. PRE-1 never FAILs: it reports PASS, WARN or
+not_evaluable. A check the gate adds to `before-production` is named here
+until the user places it.
 
-The runner reads which checks failed from the gate's `--json` report, never
-from the exit code alone, which is 2 for a FAIL in either list. Outside a
+Nothing else stops the run. A check left `not_evaluable` is recorded with
+the unit and the unit runs, whichever list it is in and whether or not it is
+required; the report lists the required ones in `strict_failures`. A gate that
+produced no report is recorded the same way, and the unit runs: one that
+exited 3 (the workspace is unusable), or with any code other than 0, 2 and 4,
+or whose output does not parse as a report. The gate lifts none of
+Interactive's own refusals: a unit Interactive refuses to start does not run,
+whatever the gate said.
+
+The runner reads which checks failed from the `checks` of the gate's `--json`
+report, never from the exit code. The exit code is 2 for any FAIL, in a list
+or in neither, and a FAIL outranks a strict refusal, so one `record_only` FAIL
+gives 2 however many required checks were left unevaluated. Outside a
 campaign every `before-production` refusal still stops the unit.
 
 ## Batch behavior
