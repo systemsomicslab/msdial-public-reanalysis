@@ -2194,6 +2194,11 @@ def check_aif_files_have_collision_energies(
         name = str(row.get("file_name") or "") or Path(path).name
         key = _input_key(row, aliases)
         targets = _ce_targets(records.get(key), extracted.get(key)) if key else None
+        count = (records.get(key) or {}).get("collision_energy_count") if key else None
+        if targets is None and isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+            # Interactive's per-file record counts the extractor's energies, which are those above 0.
+            (usable if count else none_usable).append(name)
+            continue
         if targets is None:
             unknown.append(name)
             continue

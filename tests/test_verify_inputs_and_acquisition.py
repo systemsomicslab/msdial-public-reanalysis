@@ -832,6 +832,20 @@ class AifCollisionEnergyTests(unittest.TestCase):
                 if check.status == verifier.NOT_EVALUABLE:
                     self.assertFalse(check.required)
 
+    def test_the_count_on_the_per_file_record_stands_for_the_extractors_file(self) -> None:
+        """Interactive records collision_energy_count, the extractor's energies above 0, where no list is kept."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = Unit(temporary)
+            paths = unit.inputs(["AIF_0.d", "AIF_1.d"])
+            unit.preflight([_record(path, "AIF", "AIF", collision_energy_count=count)
+                            for path, count in zip(paths, (0, 2))], extractor=None)
+            unit.csv(unit.rows(["AIF", "AIF"]))
+            check = _check(verifier.verify(unit.write(), "after-run"), "AIF-1")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual(["AIF_0"], check.evidence["without_usable_target"])
+        self.assertEqual([], check.evidence["targets_unrecorded"])
+
     def test_targets_recorded_nowhere_are_not_evaluable(self) -> None:
         check = self._aif1([None])
 
