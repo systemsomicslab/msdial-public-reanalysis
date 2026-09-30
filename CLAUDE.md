@@ -238,6 +238,9 @@ cannot move holds the deletion. A split parent's raw tree, which its parts
 share, goes once every part has reached one of these ends, and an object in the
 download store once no unit still claims it. The gate's verdict does not hold
 the deletion; it is kept for the verification that follows the campaign.
+The user decided that about the deletion only, so a verdict still holds the
+run: a `before-production` refusal stops the unit's MS-DIAL run, in a campaign
+as outside one, and the unit is then a failed unit under this rule.
 
 ## Batch behavior
 

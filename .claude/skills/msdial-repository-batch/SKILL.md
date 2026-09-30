@@ -102,9 +102,10 @@ For a repository range:
 12. Write the production bundle with `msdial_prepare_guided_analysis`, with the
    accepted `minimum_peak_height` in the answers, then run the
    `before-production` gate (see below) against it and stop the unit on a
-   refusal (in a campaign, the runner records the refusal instead; see
-   Unattended operation). The gate reads `output\method.txt`, so it cannot run
-   before this.
+   refusal. In a campaign too: the unit is then a failed unit, retried and its
+   raw data deleted as the campaign's rule for one says (see Unattended
+   operation). The gate reads `output\method.txt`, so it cannot run before
+   this.
    The diagnostic in step 11 does not touch the production files: it writes its
    own single-file `analysis_files.csv`, `method.txt` and `run-manifest.json`
    under `<workspace>\diagnostics\<diagnostic-job-id>`, and
@@ -273,12 +274,15 @@ policy states (twice, in this campaign), never blindly, and one unit's failure
 never stops the campaign.
 
 In a campaign the runner runs the gate at each of its points and keeps every
-report for the verification that follows the campaign; a verdict holds neither
-the MS-DIAL run nor the raw-data deletion. Report a unit whose outputs are all
-present and whose mzTab-M validates as `outputs produced`, not `completed`: a
-run is completed only when it reaches B10 and its gate, run with
-`--stage all --strict`, exits 0, which a run whose QA-1 or SUM-2 left sentences
-does only once a person's reading is recorded.
+report for the verification that follows the campaign. A verdict does not hold
+the raw-data deletion: the user decided that on 2026-09-30, about the deletion
+only. It still holds the run: a `before-production` refusal stops the unit's
+MS-DIAL run, as it does outside a campaign, and the unit is then a failed
+unit, retried and its raw data deleted as the rule for one says. Report a unit
+whose outputs are all present and whose mzTab-M validates as
+`outputs produced`, not `completed`: a run is completed only when it reaches
+B10 and its gate, run with `--stage all --strict`, exits 0, which a run whose
+QA-1 or SUM-2 left sentences does only once a person's reading is recorded.
 
 Record `manifest_path`, `output_root`, `input_path`, the `analysis_unit_id` and
 every job ID into the batch's own state file (for a campaign, the ledger) as
