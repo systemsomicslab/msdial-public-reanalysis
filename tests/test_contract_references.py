@@ -15,13 +15,20 @@ The documents also name gate checks, and the campaign amendment decides by check
 before-production FAILs stop a unit's run (user decision, 2026-10-01). A check named there that the
 gate does not run is a rule nobody applies, and a before-production check the rule leaves out is one
 whose FAIL nobody has placed. So every named check must be one the gate runs, the campaign's gate
-rule must place every before-production check the gate runs, and the two lists the user gave must
-still hold the checks the trial manifest records them giving.
+rule must place every before-production check the gate runs, the two lists the user gave must hold
+exactly the checks the trial manifest records them giving, and every other before-production check
+must be named as in neither list. A list may not gain a check in either direction: one added to
+record_only is a FAIL that no longer stops a run, and one added to blocks_run is a unit failed and
+its raw data deleted, and neither is the contract's to decide.
 """
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import importlib.util
+import inspect
+import io
 import json
 import os
 import re
@@ -68,6 +75,9 @@ _CHECK_ID = re.compile(r"\b[A-Z]{2,5}-[1-9]\b")
 _NOT_CHECKS = frozenset({"UTF-8"})
 _GATE_RULE_SECTION = "## Gate verdicts in a campaign"
 _GATE_LISTS = ("blocks_run", "record_only")
+# The paragraph of the gate rule that names the before-production checks the user placed in neither
+# list.
+_NEITHER_LIST = "**In neither list.**"
 
 
 def _normalised(token: str) -> str:
@@ -111,18 +121,24 @@ def _exists_exactly(root: Path, name: str) -> bool:
     return True
 
 
-def _gate_checks_by_stage() -> dict[str, list[str]]:
-    """The check ids the gate runs at each stage, read from the gate itself on an empty workspace.
-
-    Every check reports on a workspace with no artifacts (not_evaluable, never skipped), so this is
-    the gate's own list, not one written down beside it.
-    """
+@functools.cache
+def _verifier():
     path = _ROOT / "scripts" / "verify-run-invariants.py"
     spec = importlib.util.spec_from_file_location("verify_run_invariants_contract", path)
     assert spec and spec.loader
     verifier = importlib.util.module_from_spec(spec)
     sys.modules["verify_run_invariants_contract"] = verifier
     spec.loader.exec_module(verifier)
+    return verifier
+
+
+def _gate_checks_by_stage() -> dict[str, list[str]]:
+    """The check ids the gate runs at each stage, read from the gate itself on an empty workspace.
+
+    Every check reports on a workspace with no artifacts (not_evaluable, never skipped), so this is
+    the gate's own list, not one written down beside it.
+    """
+    verifier = _verifier()
     with tempfile.TemporaryDirectory() as scratch:
         return {stage: [check.check_id for check in verifier.verify(Path(scratch), stage).checks]
                 for stage in verifier.STAGES}
@@ -162,6 +178,58 @@ def _decided_lists(decisions: list[dict]) -> dict[str, set[str]]:
                 if f"({name})" in sentence:
                     found[name] = _check_ids(sentence)
     return found
+
+
+def _trial_decisions() -> list[dict]:
+    return json.loads(
+        (_ROOT / "trials" / "2026-09-20-ten-unit-trial-manifest.json").read_text(encoding="utf-8")
+    )["decisions"]
+
+
+def _gate_rule_disagreements(
+    contract: str, before_production: set[str], decided: dict[str, set[str]],
+) -> list[str]:
+    """Where the campaign's gate rule departs from the gate or from the user's decision; empty if nowhere."""
+    problems = []
+    rule = _section(contract, _GATE_RULE_SECTION)
+    named = _check_ids(rule)
+    if named != before_production:
+        problems.append(f"the rule names {sorted(named - before_production)} beyond the gate's "
+                        f"before-production checks and leaves {sorted(before_production - named)} unnamed")
+    lists = {}
+    for name in _GATE_LISTS:
+        try:
+            lists[name] = _gate_list(rule, name)
+        except AssertionError as error:
+            problems.append(str(error))
+            continue
+        given = decided.get(name, set())
+        if lists[name] != given:
+            problems.append(f"{name} holds {sorted(lists[name] - given)} the user did not give it and "
+                            f"lacks {sorted(given - lists[name])} the user did")
+    if len(lists) == len(_GATE_LISTS) and lists["blocks_run"] & lists["record_only"]:
+        problems.append(f"{sorted(lists['blocks_run'] & lists['record_only'])} are in both lists")
+    unplaced = before_production - set().union(*decided.values())
+    paragraphs = [item for item in re.split(r"\n[ \t]*\n", rule)
+                  if item.lstrip().startswith(_NEITHER_LIST)]
+    if len(paragraphs) != 1:
+        problems.append(f"the rule has {len(paragraphs)} '{_NEITHER_LIST}' paragraphs, not one")
+    elif _check_ids(paragraphs[0]) != unplaced:
+        problems.append(f"'{_NEITHER_LIST}' names {sorted(_check_ids(paragraphs[0]))}, and the checks "
+                        f"the user placed in neither list are {sorted(unplaced)}")
+    return problems
+
+
+def _moved_into(contract: str, name: str, checks: set[str]) -> str:
+    """The contract with `checks` added at the head of the `name` bullet of the gate rule."""
+    marker = f"- `{name}`: "
+    start = contract.index(marker) + len(marker)
+    return contract[:start] + ", ".join(sorted(checks)) + ", " + contract[start:]
+
+
+def _without_neither_list(contract: str) -> str:
+    paragraph = r"\n" + re.escape(_NEITHER_LIST) + r".*?\n[ \t]*\n"
+    return re.sub(paragraph, "\n", contract, count=1, flags=re.DOTALL)
 
 
 class ContractReferencesTests(unittest.TestCase):
@@ -236,23 +304,106 @@ class ContractGateChecksTests(unittest.TestCase):
                 unknown[document] = sorted(named)
         self.assertEqual({}, unknown)
 
+    def _decided(self) -> dict[str, set[str]]:
+        decided = _decided_lists(_trial_decisions())
+        self.assertEqual(set(_GATE_LISTS), set(decided), "the trial manifest records no decision for a list")
+        self.assertTrue(all(decided.values()))
+        return decided
+
     def test_the_campaign_gate_rule_places_every_before_production_check(self) -> None:
         rule = _section(self.contract, _GATE_RULE_SECTION)
         self.assertEqual(set(self.stages["before-production"]), _check_ids(rule))
 
-    def test_the_two_lists_hold_the_checks_the_user_gave_them(self) -> None:
+    def test_the_two_lists_hold_exactly_the_checks_the_user_gave_them(self) -> None:
         rule = _section(self.contract, _GATE_RULE_SECTION)
         lists = {name: _gate_list(rule, name) for name in _GATE_LISTS}
         self.assertFalse(lists["blocks_run"] & lists["record_only"], "a check is in both lists")
-        decisions = json.loads(
-            (_ROOT / "trials" / "2026-09-20-ten-unit-trial-manifest.json").read_text(encoding="utf-8")
-        )["decisions"]
-        decided = _decided_lists(decisions)
-        self.assertEqual(set(_GATE_LISTS), set(decided), "the trial manifest records no decision for a list")
+        decided = self._decided()
         for name in _GATE_LISTS:
             with self.subTest(list=name):
-                self.assertTrue(decided[name])
-                self.assertLessEqual(decided[name], lists[name])
+                self.assertEqual(decided[name], lists[name])
+
+    def test_the_checks_the_user_placed_in_neither_list_are_named_as_such(self) -> None:
+        before_production = set(self.stages["before-production"])
+        self.assertEqual([], _gate_rule_disagreements(self.contract, before_production, self._decided()))
+
+    def test_a_list_widened_with_the_unplaced_checks_is_refused(self) -> None:
+        before_production = set(self.stages["before-production"])
+        decided = self._decided()
+        unplaced = before_production - decided["blocks_run"] - decided["record_only"]
+        self.assertTrue(unplaced, "every before-production check is placed; this test has nothing to move")
+        # Moved into record_only, their FAILs would stop no run; moved into blocks_run, as the draft once
+        # read them, each FAIL would fail the unit and delete its raw data. The user decided neither.
+        for name in _GATE_LISTS:
+            with self.subTest(list=name):
+                widened = _without_neither_list(_moved_into(self.contract, name, unplaced))
+                self.assertNotIn(_NEITHER_LIST, widened)
+                self.assertEqual(before_production, _check_ids(_section(widened, _GATE_RULE_SECTION)))
+                problems = _gate_rule_disagreements(widened, before_production, decided)
+                self.assertTrue(any(item.startswith(f"{name} holds") for item in problems), problems)
+                self.assertTrue(any(_NEITHER_LIST in item for item in problems), problems)
+                kept = _moved_into(self.contract, name, unplaced)
+                self.assertTrue(_gate_rule_disagreements(kept, before_production, decided))
+
+    def test_pre1_reports_no_fail_for_the_rule_to_place(self) -> None:
+        # The rule says PRE-1 never FAILs. It is reported in one function, which names no FAIL.
+        verifier = _verifier()
+        function = inspect.getsource(verifier.check_preflight_claim)
+        reported = re.compile(r'\.add\(\s*"PRE-1"')
+        self.assertTrue(reported.findall(function))
+        self.assertEqual(len(reported.findall(inspect.getsource(verifier))), len(reported.findall(function)))
+        self.assertEqual({"PASS", "WARN", "NOT_EVALUABLE"},
+                         set(re.findall(r"\b(PASS|WARN|FAIL|NOT_EVALUABLE)\b", function)))
+
+    def test_a_record_only_fail_hides_an_unevaluated_blocks_run_check_from_the_exit_code(self) -> None:
+        # The rule says the runner reads the report, not the exit code, because a FAIL outranks a strict
+        # refusal. A production bundle with no peak-height diagnostic FAILs PKH-1 (record_only), and the
+        # blocks_run checks whose artifacts are missing are left not_evaluable beside it: exit 2, not 4.
+        verifier = _verifier()
+        decided = self._decided()
+        with tempfile.TemporaryDirectory() as scratch:
+            unit = Path(scratch) / "unit"
+            (unit / "provenance").mkdir(parents=True)
+            (unit / "output").mkdir()
+            (unit / "provenance" / "run-manifest.json").write_text(json.dumps({
+                "schema": "msdial-public-reanalysis-run.v1",
+                "project": {"analysis_unit_id": "unit"},
+                "execution_allowed": True,
+            }), encoding="utf-8")
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                code = verifier.main([str(unit), "--stage", "before-production", "--strict", "--json"])
+        report = json.loads(printed.getvalue())
+        fails = {check["check_id"] for check in report["checks"] if check["status"] == verifier.FAIL}
+        self.assertEqual(2, code)
+        self.assertTrue(fails)
+        self.assertLessEqual(fails, decided["record_only"])
+        self.assertTrue(set(report["strict_failures"]) & decided["blocks_run"], report["strict_failures"])
+
+    def test_the_rule_is_refused_where_it_departs_from_the_gate_or_the_user(self) -> None:
+        section = (
+            "## Gate verdicts in a campaign\n\n"
+            "- `blocks_run`: ELIG-1 and\n  ACQ-1. Such a unit fails.\n"
+            "- `record_only`: CLS-1.\n\n"
+            "**In neither list.** SUM-1, and nothing else.\n\n"
+            "The runner reads the report.\n"
+        )
+        gate = {"ELIG-1", "ACQ-1", "CLS-1", "SUM-1"}
+        decided = {"blocks_run": {"ELIG-1", "ACQ-1"}, "record_only": {"CLS-1"}}
+        self.assertEqual([], _gate_rule_disagreements(section, gate, decided))
+        cases = {
+            "a check the gate added": (section, gate | {"CNT-1"}, decided),
+            "a decided check dropped": (section.replace("ELIG-1 and\n  ", ""), gate, decided),
+            "the paragraph deleted": (_without_neither_list(section), gate, decided),
+            "an unplaced check in a list": (_moved_into(section, "record_only", {"SUM-1"}), gate, decided),
+            "a placed check called unplaced": (section.replace("SUM-1, and", "SUM-1 and CLS-1, and"),
+                                               gate, decided),
+            "a later decision the rule missed": (section, gate,
+                                                 {**decided, "record_only": {"CLS-1", "SUM-1"}}),
+        }
+        for case, (text, checks, lists) in cases.items():
+            with self.subTest(case=case):
+                self.assertTrue(_gate_rule_disagreements(text, checks, lists))
 
     def test_the_lists_are_read_from_their_bullets_only(self) -> None:
         section = (
