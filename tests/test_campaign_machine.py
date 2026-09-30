@@ -756,6 +756,227 @@ class OutageTests(Base):
         self.assertEqual(book.events("paused"), [])
 
 
+class BeforeProductionGateTests(Base):
+    """A before-production FAIL stops the unit's run only for a check that breaks results (2026-10-01)."""
+
+    def production_starts(self, world: fakes.World, unit: str) -> int:
+        return world.interactive.console_starts.count((unit, "run"))
+
+    def test_a_fail_that_breaks_results_fails_the_unit_and_its_raw_data_go(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.gate.fails[("u1", "before_production")] = ["INP-1", "CLS-1"]
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["raw_disposition"]), ("failed", 3, "discarded"))
+        self.assertEqual(json.loads(unit["terminal_detail"])["reason"], "before_production_gate_failed")
+        self.assertEqual(self.production_starts(world, "u1"), 0, "no MS-DIAL run on inputs that break results")
+        verdicts = [row for row in book.gate_verdicts("u1") if row["point"] == "before_production"]
+        self.assertEqual(len(verdicts), 3, "each attempt's verdict is recorded with the failure it caused")
+        self.assertEqual({row["blocking_fail_ids_json"] for row in verdicts}, {'["INP-1"]'})
+        self.assertEqual({row["run_policy_source"] for row in verdicts}, {"runner_default"})
+        self.assertEqual([row["outcome"] for row in book.attempts("u1") if row["counted"]], ["failed"] * 3)
+        self.assertEqual(book.unit("u2")["state"], "done", "the campaign goes on")
+
+    def test_a_record_only_fail_is_recorded_and_the_unit_runs(self) -> None:
+        world = self.world()
+        world.gate.fails["before_production"] = ["CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1"]
+        book = self.finish(world)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
+        verdict = [row for row in book.gate_verdicts("u1") if row["point"] == "before_production"][0]
+        self.assertEqual(json.loads(verdict["fail_ids_json"]), ["CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1"])
+        self.assertEqual(json.loads(verdict["blocking_fail_ids_json"]), [])
+        self.assertEqual(self.production_starts(world, "u1"), 1)
+
+    def test_the_gates_own_run_policy_decides_when_it_states_one(self) -> None:
+        for fails, rules, blocks in (
+            (["SUM-1"], {"SUM-1": policy.RECORD_ONLY, "ELIG-1": policy.BLOCKS_RUN}, False),
+            (["CLS-1"], {"CLS-1": policy.BLOCKS_RUN}, True),
+        ):
+            with self.subTest(fails=fails, rules=rules):
+                world = self.world()
+                world.gate.fails["before_production"] = fails
+                world.gate.run_policy = rules
+                book = self.finish(world)
+                self.assertEqual(book.unit("u1")["state"], "failed" if blocks else "done")
+                verdict = [row for row in book.gate_verdicts("u1") if row["point"] == "before_production"][0]
+                self.assertEqual(verdict["run_policy_source"], "gate")
+
+
+class AppliedDispositionTests(Base):
+    """Interactive 0.5.17: only a disposition applied under the approval is acted on."""
+
+    def test_a_disposition_recorded_as_advice_is_applied_by_classify_preflight(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(applied=False)
+        book = self.finish(world)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
+        classified = [arguments for name, arguments in world.interactive.calls if name == "classify"]
+        self.assertEqual(len(classified), 1)
+        self.assertTrue(classified[0]["authorization_path"].endswith("campaign-authorization.json"))
+        self.assertTrue(json.loads(book.unit("u1")["disposition_json"])["applied"])
+        self.assertEqual(len([name for name, _ in world.interactive.calls if name == "preflight"]), 1,
+                         "the headers are not read again")
+
+    def test_a_disposition_nothing_applies_pauses_the_campaign(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(applied=False, classify_applies=False)
+        book = self.finish(world, max_iterations=40)
+        self.assertEqual(book.runner()["pause_kind"], "contract")
+        self.assertIn("not applied", book.runner()["pause_reason"])
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("downloaded", 0))
+        self.assertEqual(book.unit("u2")["state"], "pending")
+        self.assertFalse([start for start in world.interactive.console_starts if start[0] == "u1"])
+
+    def test_the_preflight_is_given_the_approval(self) -> None:
+        world = self.world()
+        self.finish(world)
+        preflight = next(arguments for name, arguments in world.interactive.calls if name == "preflight")
+        self.assertTrue(preflight["authorization_path"].endswith(str(Path("u1") / "provenance" / "campaign-authorization.json")))
+
+    def test_an_extractor_interactive_refuses_pauses_instead_of_failing_units(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.extractor_refused = True
+        book = self.finish(world, max_iterations=60)
+        self.assertEqual(book.runner()["pause_kind"], "contract")
+        self.assertIn("raw_metadata_extractor_refused", book.runner()["pause_reason"])
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("downloaded", 0))
+        self.assertEqual(book.unit("u1")["raw_disposition"], "present", "no raw data are deleted for the campaign's fault")
+        self.assertEqual(len([name for name, _ in world.interactive.calls if name == "preflight"]), 1)
+        self.assertEqual(book.unit("u2")["state"], "pending")
+        world.extractor_refused = False
+        self.assertTrue(book.resume(policy.iso(world.clock.now()), kinds=["contract"]))
+        book.close()
+        book = self.finish(world)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+
+    def test_a_unit_whose_run_may_still_go_is_waited_for_uncounted(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(held="run_in_progress")
+        with world.open() as book:
+            world.runner(book).run(max_iterations=40)
+            unit = book.unit("u1")
+            self.assertEqual((unit["state"], unit["resume_state"], unit["failures"]), ("waiting_retry", "downloaded", 0))
+            self.assertIn("busy", [row["outcome"] for row in book.attempts("u1")])
+        world.scripts["u1"].held = ""
+        book = self.finish(world)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
+
+    def test_a_unit_held_for_good_is_its_failure(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(held="past_preflight")
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"]), ("failed", 3))
+        self.assertEqual(json.loads(unit["terminal_detail"])["detail"]["held"]["reason"], "past_preflight")
+
+
+class ContractDeletionTests(Base):
+    def test_a_cleanup_this_interactive_cannot_make_pauses_and_keeps_the_raw_data(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(cleanup="unsupported")
+        book = self.finish(world, max_iterations=80)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["raw_disposition"], unit["failures"]), ("gated", "present", 0))
+        self.assertEqual(book.runner()["pause_kind"], "contract")
+        self.assertEqual(book.unit("u2")["state"], "pending")
+        self.assertTrue((Path(unit["workspace"]) / "raw").is_dir())
+        world.scripts["u1"].cleanup = "ok"
+        self.assertTrue(book.resume(policy.iso(world.clock.now()), kinds=["contract"]))
+        book.close()
+        book = self.finish(world)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+        self.assertEqual(book.unit("u1")["raw_disposition"], "released")
+
+
+class SharedDownloadTests(Base):
+    def test_a_download_waiting_for_a_shared_object_is_neither_stalled_nor_ended(self) -> None:
+        """Plan item 15: a unit's lease waits while another fetches an object they share, moving no bytes of
+        its own, for longer than the stall window here."""
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(downloads=["shared"], ticks=120)  # an hour; the stall window is 30 min
+        book = self.finish(world)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
+        self.assertEqual(world.interactive.cancels, [])
+        self.assertEqual(world.interactive.download_starts, ["u1"])
+
+
+class RunRecordTests(Base):
+    def test_every_production_attempt_is_recorded_as_it_ends(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(runs=["timeout", "invalid", "ok"])
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"]), ("done", 2))
+        jobs = [row["job_id"] for row in book.console_runs("u1") if row["kind"] == "production"]
+        self.assertEqual(sorted(world.catalog.runs), sorted(f"u1:{job}" for job in jobs))
+        first, second, last = (world.catalog.runs[f"u1:{job}"] for job in jobs)
+        self.assertEqual((first["status"], second["status"]), ("timed_out", "outputs_not_validated"))
+        self.assertNotIn("gate_verdict", first, "an attempt's own end, not the unit's")
+        self.assertEqual((last["status"], last["gate_verdict"], last["gate_exit_code"]), ("outputs_produced", "held", 4))
+        self.assertEqual(last["run_id"], f"u1:{unit['run_job_id']}")
+
+    def test_a_failed_units_runs_are_all_recorded(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(runs=["fail", "timeout", "fail"])
+        book = self.finish(world)
+        self.assertEqual(book.unit("u1")["state"], "failed")
+        statuses = [world.catalog.runs[f"u1:{row['job_id']}"]["status"] for row in book.console_runs("u1") if row["kind"] == "production"]
+        self.assertEqual(statuses, ["failed", "timed_out", "failed"])
+        last = world.catalog.runs[f"u1:{book.unit('u1')['run_job_id']}"]
+        self.assertEqual(last["gate_verdict"], "held", "the unit's end completes its last run's record")
+
+
+class RequestTests(Base):
+    def test_a_skip_does_not_relabel_a_unit_that_is_ending(self) -> None:
+        world = self.world(("u1",))
+        world.scripts["u1"] = fakes.UnitScript(downloads=["fail", "fail", "fail"])
+        broken = {"now": True}
+        original = world.gate.run
+
+        def gate(workspace, point, report_path):
+            if point == "final" and broken["now"]:
+                raise OSError("the report could not be written")
+            return original(workspace, point, report_path)
+
+        world.gate.run = gate
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["resume_state"] == "discarding")
+        book.add_request("skip", "u1", "not this one", "Test Person", runner.stamp())
+        runner.iterate()
+        self.assertIn("not skipped: the unit is ending (failed)", book.connection.execute(
+            "SELECT handled_detail FROM request").fetchone()[0])
+        broken["now"] = False
+        runner.run(until_idle=True, max_iterations=2000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"]), ("failed", "download_failed"))
+
+
+class RedactionTests(Base):
+    def test_what_the_gate_and_a_job_say_is_redacted_before_it_is_recorded(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(runs=["fail", "ok"])
+        location = world.libraries[fakes.POSITIVE_MSP]
+        world.gate.detail = f"Traceback: could not open {location}"
+        finish = world.interactive._finish
+
+        def finish_quoting_the_library(job, outcome):
+            finish(job, outcome)
+            if job["kind"] == "run" and job.get("status") == "failed":
+                job["error"] = f"MSP not readable: {location}"
+
+        world.interactive._finish = finish_quoting_the_library
+        book = self.finish(world)
+        self.assertEqual(book.unit("u1")["state"], "done")
+        dump = []
+        for (table,) in book.connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'"):
+            dump.extend(json.dumps(list(row), default=str) for row in book.connection.execute(f"SELECT * FROM {table}"))
+        text = "\n".join(dump).casefold().replace("\\\\", "\\")
+        self.assertIn("<library:", text, "the job's error and the gate's detail were recorded, redacted")
+        self.assertNotIn(str(world.private_directory).casefold(), text)
+
+
 class GatePortTests(unittest.TestCase):
     def test_the_gate_is_run_strict_and_never_records_a_reading(self) -> None:
         gate = ports.GatePort(gate_commit="c" * 40)
@@ -774,7 +995,8 @@ class GatePortTests(unittest.TestCase):
             script = Path(directory) / "gate.py"
             script.write_text(
                 "import json, sys\n"
-                "print(json.dumps({'checks': [{'check_id': 'SUM-1', 'status': 'WARN'}, {'check_id': 'READ-1', 'status': 'not_evaluable'}],"
+                "print(json.dumps({'checks': [{'check_id': 'SUM-1', 'status': 'warn'}, {'check_id': 'READ-1', 'status': 'not_evaluable'},"
+                " {'check_id': 'CLS-2', 'status': 'fail'}, {'check_id': 'CNT-1', 'status': 'fail'}],"
                 " 'strict_failures': ['READ-1'], 'progress': {'stage_reached': 'B10'}}))\n"
                 "sys.exit(4)\n",
                 encoding="utf-8",
@@ -784,7 +1006,9 @@ class GatePortTests(unittest.TestCase):
             verdict = gate.run(directory, "final", report)
             self.assertEqual((verdict["outcome"], verdict["exit_code"]), ("ran", 4))
             self.assertEqual(verdict["strict_hold_ids"], ["READ-1"])
-            self.assertEqual(verdict["warn_ids"], ["SUM-1"])
+            self.assertEqual(verdict["warn_ids"], ["SUM-1"], "the gate's statuses are lowercase")
+            self.assertEqual(verdict["fail_ids"], ["CLS-2", "CNT-1"])
+            self.assertEqual((verdict["blocking_fail_ids"], verdict["run_policy_source"]), (["CNT-1"], "runner_default"))
             self.assertEqual(verdict["stage_reached"], "B10")
             self.assertTrue(report.is_file())
 

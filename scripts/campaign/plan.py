@@ -12,9 +12,14 @@ listed with its reason:
 - no_files: the Catalog lists no raw file for it, so there is nothing to download (111 declared units);
 - ion_mobility: ion mobility Enabled, or a TIMS, Synapt, Vion, 6560 or Cyclic instrument. This campaign
   is LC-MS only; LC-IM-MS is excluded this time (decided 2026-09-30);
-- preexisting_workspace: <workspace_root>\\<repository>\\<accession> holds something no campaign made
-  (MTBLS2207, MTBLS341, ST002419, MPST000007, MPST000008: an accession-level workspace, or a unit
-  workspace of an earlier run). The runner never writes into a workspace it did not make;
+- preexisting_workspace: the unit's own workspace, <workspace_root>\\<repository>\\<accession>\\<unit>, or
+  that of one of its split parts (<unit>-<part>), holds an earlier run no campaign made (MTBLS2207's
+  a22083b091a0ccd04489 and its -dda and -dia parts; MPST000007's 6f27431da49ec82f3734). The runner never
+  writes into a workspace it did not make. The test is the unit's, not its accession's: the other units
+  of such an accession are planned, and an accession-level workspace of an earlier run (MTBLS341,
+  ST002419, MPST000008, whose raw, provenance and output sit in the accession folder itself) holds back
+  none of its units, whose workspaces are folders of their own beside it. Those accessions are listed
+  in the manifest (legacy_accession_workspaces) and in the text a person approves;
 - campaign_workspace: the unit's own workspace was made by an earlier campaign, and the plan was not
   asked to take that campaign's unfinished units again (--replan-from). A campaign's workspaces are
   known by the authorization copy the runner writes into provenance before anything else is written
@@ -68,9 +73,9 @@ EXCLUSION_REASONS = (
     "no_files", "ion_mobility", "preexisting_workspace", "campaign_workspace", "mzdata_only", "no_download_object",
     "class_undecided",
 )
-# Entries of an accession directory that are not a workspace: Interactive's download store (0.5.13), which
-# serves the units beside it.
-NOT_WORKSPACES = frozenset({"_dl"})
+# What an accession-level workspace of an earlier run keeps in the accession folder itself (Interactive's
+# layout before analysis units: <accession>\\raw, provenance and output).
+ACCESSION_WORKSPACE_PARTS = ("raw", "provenance", "output")
 # A unit a prior campaign ended in one of these, or has a job running for, is not planned again.
 NOT_REPLANNED = frozenset({"done", "split_done", "downloading", "diagnosing", "running"})
 ION_MOBILITY_INSTRUMENT = re.compile(r"tims|synapt|vion|6560|cyclic", re.IGNORECASE)
@@ -80,7 +85,9 @@ ARCHIVE_KINDS = frozenset({"archive", "bundle"})
 # A drive path, a UNC path or a file:// URI: none belongs in a manifest a person approves and Interactive
 # copies into every unit's provenance.
 _ABSOLUTE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|\\\\[^\\\s]|file://", re.IGNORECASE)
-MINIMUM_CATALOG_VERSION = (0, 6, 0)
+# Catalog 0.6.1 prefers a convertible mzXML to an unreadable twin and reads the empty digest as a known 0:
+# both change which files a unit holds and so its Class digest, which the runner compares before saving.
+MINIMUM_CATALOG_VERSION = (0, 6, 1)
 
 
 class PlanError(ValueError):
@@ -167,20 +174,31 @@ def replan_states(workspace_root: Path, campaign_ids: Iterable[str]) -> dict[str
     return result
 
 
+def legacy_accession_workspace(workspace_root: Path, repository: str, accession: str) -> bool:
+    """Whether the accession folder is itself the workspace of an earlier accession-level run. Read-only."""
+    folder = Path(workspace_root) / str(repository) / str(accession)
+    return any((folder / name).is_dir() for name in ACCESSION_WORKSPACE_PARTS)
+
+
 def workspace_exclusion(
     unit: Mapping[str, Any], workspace_root: Path, replan: Mapping[str, Mapping[str, str]] | None = None,
 ) -> tuple[str | None, str]:
-    """preexisting_workspace, campaign_workspace or None for this unit's workspace, with what was found."""
+    """preexisting_workspace, campaign_workspace or None for this unit's workspace, with what was found.
+
+    The unit's own workspace and its split parts' (<unit>-<part>): a run of the unit would make them
+    again, and a part's id is its parent's with the part's key appended.
+    """
     accession = workspace_root / str(unit["repository"]) / str(unit["accession"])
     if not accession.is_dir():
         return None, ""
+    unit_id = str(unit["unit_id"])
     foreign = sorted(
         entry.name for entry in accession.iterdir()
-        if entry.name not in NOT_WORKSPACES and not (entry.is_dir() and campaign_of(entry))
+        if entry.is_dir() and (entry.name == unit_id or entry.name.startswith(unit_id + "-")) and not campaign_of(entry)
     )
     if foreign:
-        return "preexisting_workspace", f"{accession.name} holds {', '.join(foreign[:5])}"
-    own = accession / str(unit["unit_id"])
+        return "preexisting_workspace", f"{accession.name} holds {', '.join(foreign[:5])}, made by no campaign"
+    own = accession / unit_id
     made_by = campaign_of(own) if own.is_dir() else None
     if made_by is None:
         return None, ""
@@ -383,6 +401,10 @@ def build_manifest(
     included_ids = {unit["unit_id"] for unit in units}
     objects = [item for item in download["objects"] if set(item.get("selected_consumer_unit_ids") or []) & included_ids]
     totals = _totals(selected, excluded, units, used_groups, objects)
+    legacy = sorted({
+        f"{unit['repository']}/{unit['accession']}" for unit in units
+        if legacy_accession_workspace(workspace_root, unit["repository"], unit["accession"])
+    })
     excluded.sort(key=lambda item: (item["reason"], item["repository"], item["accession"], item["unit_id"]))
     return {
         "schema": MANIFEST_SCHEMA,
@@ -401,6 +423,9 @@ def build_manifest(
         "groups": used_groups,
         "exclusions": excluded,
         "totals": totals,
+        # Planned units whose accession folder is an earlier accession-level run's workspace: their own
+        # workspaces are made beside it, and it is left as it is.
+        "legacy_accession_workspaces": legacy,
         **({"replanned_from": sorted(replan)} if replan else {}),
     }
 
@@ -472,6 +497,16 @@ def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> lis
         pin = manifest.get("pins", {}).get(name) or {}
         if not pin.get("exists") or not pin.get("binary_sha256"):
             problems.append(f"the manifest pins no {name} binary")
+    extractor = manifest.get("pins", {}).get("extractor") or {}
+    if extractor.get("exists") and extractor.get("binary_sha256") and not (
+        extractor.get("provenance_status") == "verified" and extractor.get("pinned") is True
+    ):
+        # Interactive 0.5.17 refuses a campaign preflight by any other extractor, so every unit would stop there.
+        problems.append(
+            f"the extractor is not a verified build of one of Interactive's PINNED_BUILDS (provenance "
+            f"{extractor.get('provenance_status') or 'unknown'}, pinned {extractor.get('pinned')})"
+        )
+    problems.extend(policy.pin_problems(manifest.get("pins") or {}))
     if not manifest.get("units"):
         problems.append("the manifest plans no unit")
     covered = {str(item) for item in covers}
@@ -540,9 +575,10 @@ def ledger_rows(manifest: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list
 
 
 def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
-    """What a person approves. The transfer is printed as the lease makes it: Interactive's lease fetches
-    each unit's objects for that unit (its download store is not used by the lease yet), so the bytes moved
-    and held are the per-unit sum, and the distinct bytes are what sharing would move."""
+    """What a person approves. The transfer is printed as the pinned Interactive's lease makes it, which is
+    the approval quantity: until the lease fetches through the download store (pins.interactive
+    .lease_uses_store, plan item 15) each unit fetches its own objects, so the bytes moved and held are the
+    per-unit sum, and the distinct bytes are what sharing would move."""
     totals = manifest["totals"]
     version = str((manifest.get("pins", {}).get("interactive") or {}).get("version") or "?")
 
@@ -556,15 +592,30 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     for reason, count in totals["excluded_by_reason"].items():
         lines.append(f"    excluded {reason}: {count}")
     lower = " at least" if totals["units_of_unknown_size"] else ""
+    lines.append(f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}")
+    if (manifest.get("pins", {}).get("interactive") or {}).get("lease_uses_store") is True:
+        lines += [
+            f"  transfer and disk:{lower} {tb(totals['distinct_bytes_known'])} of known size, each shared object fetched "
+            f"once through Interactive {version}'s download store; lower bound {tb(totals['distinct_bytes_lower_bound'])}",
+            f"  without the store the units would fetch {tb(totals['per_unit_known_bytes'])}",
+        ]
+    else:
+        lines += [
+            f"  transfer and disk:{lower} {tb(totals['per_unit_known_bytes'])}, each unit fetching its own copy of what "
+            f"units share (Interactive {version}'s lease does not share objects)",
+            f"  distinct bytes, once the lease shares objects through the download store: {tb(totals['distinct_bytes_known'])} "
+            f"of known size; lower bound {tb(totals['distinct_bytes_lower_bound'])}",
+        ]
     lines += [
-        f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}",
-        f"  transfer and disk:{lower} {tb(totals['per_unit_known_bytes'])}, each unit fetching its own copy of what "
-        f"units share (Interactive {version}'s lease does not share objects)",
-        f"  distinct bytes, once the lease shares objects through the download store: {tb(totals['distinct_bytes_known'])} "
-        f"of known size; lower bound {tb(totals['distinct_bytes_lower_bound'])}",
         f"  unknown sizes: {totals['unknown_size_objects']} objects "
         f"({totals['empty_digest_objects']} declare the digest of zero bytes), {totals['units_of_unknown_size']} units",
         f"  units with archives {totals['units_with_archives']}; Class {totals['class_kinds']}",
-        f"  manifest digest {digest}",
     ]
+    legacy = manifest.get("legacy_accession_workspaces") or []
+    if legacy:
+        lines.append(
+            f"  planned beside an earlier accession-level workspace, left as it is: {len(legacy)} accessions "
+            f"({', '.join(legacy[:5])}{', ...' if len(legacy) > 5 else ''})"
+        )
+    lines.append(f"  manifest digest {digest}")
     return "\n".join(lines)

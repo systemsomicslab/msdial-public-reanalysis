@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True
 TESTS = Path(__file__).resolve().parent
@@ -88,6 +89,21 @@ def build_catalog(path: Path) -> None:
     connection.close()
 
 
+# Pins an approvable plan records: a verified build of a pinned extractor, clean checkouts.
+APPROVABLE_PINS = {
+    "console": {"path": "C:/tools/MSDIALCUI.exe", "exists": True, "binary_sha256": "1" * 64},
+    "extractor": {"path": "C:/tools/RawMetadataConsoleApp.exe", "exists": True, "binary_sha256": "2" * 64,
+                  "inventory_sha256": "3" * 64, "provenance_status": "verified", "pinned": True},
+    "libraries": [{"name": "P.msp", "sha256": "4" * 64, "bytes": 8}],
+}
+CODE_PINS = {
+    "interactive": {"version": "0.5.19", "commit": "a" * 40, "dirty": False, "lease_uses_store": False},
+    "catalog": {"version": "0.6.1", "commit": "b" * 40, "dirty": False},
+    "gate": {"commit": "c" * 40, "dirty": False},
+}
+APPROVABLE_PINS.update(CODE_PINS)
+
+
 @unittest.skipUnless(contract.AVAILABLE, "the Interactive and Catalog checkouts are not where this test looks")
 class PlanTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -98,8 +114,10 @@ class PlanTests(unittest.TestCase):
         self.database.parent.mkdir()
         build_catalog(self.database)
         self.workspace_root = self.root / "analysis"
-        # An accession-level workspace of an earlier run, as MTBLS341 has.
-        (self.workspace_root / "metabolights" / "MTBLSPRE" / "provenance").mkdir(parents=True)
+        # uG's own workspace, of an earlier run no campaign made (as MTBLS2207's a22083b091a0ccd04489 is).
+        legacy = self.workspace_root / "metabolights" / "MTBLSPRE" / "uG" / "provenance"
+        legacy.mkdir(parents=True)
+        (legacy / "run-manifest.json").write_text("{}", encoding="utf-8")
 
     def manifest(self, pool: str, replan: dict | None = None) -> dict:
         catalog = ports.read_only_catalog(self.database)
@@ -160,14 +178,30 @@ class PlanTests(unittest.TestCase):
         self.assertIn("made by campaign earlier", exclusions["uB"]["detail"])
         self.assertIn("uC", [unit["unit_id"] for unit in manifest["units"]])
         self.assertEqual(exclusions["uG"]["reason"], "preexisting_workspace")
-        self.assertIn("provenance", exclusions["uG"]["detail"])
+        self.assertIn("uG, made by no campaign", exclusions["uG"]["detail"])
 
-    def test_a_unit_workspace_no_campaign_made_excludes_its_accession(self) -> None:
-        legacy = self.workspace_root / "metabolights" / "MTBLS1" / "an-earlier-unit" / "provenance"
-        legacy.mkdir(parents=True)
-        (legacy / "run-manifest.json").write_text("{}", encoding="utf-8")
+    def test_an_earlier_runs_workspace_holds_back_only_its_own_unit(self) -> None:
+        """A workspace no campaign made excludes the unit it is the workspace of, or of one of whose split
+        parts it is (<unit>-<part>, as MTBLS2207's -dda and -dia are), and no other unit of its accession."""
+        accession = self.workspace_root / "metabolights" / "MTBLS1"
+        (accession / "an-earlier-unit" / "provenance").mkdir(parents=True)
+        self.assertIn("uA", [unit["unit_id"] for unit in self.manifest("declared")["units"]])
+        (accession / "uA-dda" / "provenance").mkdir(parents=True)
+        exclusions = {item["unit_id"]: item for item in self.manifest("declared")["exclusions"]}
+        self.assertEqual(exclusions["uA"]["reason"], "preexisting_workspace")
+        self.assertIn("uA-dda", exclusions["uA"]["detail"])
+
+    def test_an_accession_level_workspace_is_listed_not_an_exclusion(self) -> None:
+        """MTBLS341, ST002419 and MPST000008 hold an earlier accession-level run in the accession folder itself;
+        their units' workspaces are folders of their own beside it, so the units are planned, and the
+        accession is named in the manifest and in the text a person approves."""
+        for accession in ("MTBLS1", "MTBLS5"):  # uA is planned; uE is excluded for ion mobility anyway
+            (self.workspace_root / "metabolights" / accession / "provenance").mkdir(parents=True)
         manifest = self.manifest("declared")
-        self.assertEqual({item["unit_id"]: item["reason"] for item in manifest["exclusions"]}["uA"], "preexisting_workspace")
+        self.assertIn("uA", [unit["unit_id"] for unit in manifest["units"]])
+        self.assertEqual(manifest["legacy_accession_workspaces"], ["metabolights/MTBLS1"])
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        self.assertIn("planned beside an earlier accession-level workspace, left as it is: 1 accessions (metabolights/MTBLS1)", text)
 
     def test_a_revoked_campaigns_unfinished_units_are_planned_again(self) -> None:
         world = campaign_fakes.World(self.root, ["uB", "uC"])  # its ledger is analysis\_campaigns\test-campaign
@@ -197,13 +231,18 @@ class PlanTests(unittest.TestCase):
 
     def test_the_summary_prints_the_transfer_the_lease_makes(self) -> None:
         manifest = self.manifest("declared")
-        manifest["pins"]["interactive"] = {"version": "0.5.16"}
+        # The declared pool of the 2026-09-30 dry run: 12.82 TB fetched unit by unit, 6.99 TB distinct.
+        manifest["totals"].update(per_unit_known_bytes=12_824_780_345_034, distinct_bytes_known=6_993_877_500_559)
+        manifest["pins"]["interactive"] = {"version": "0.5.19", "lease_uses_store": False}
         text = plan.summary_text(manifest, "sha256:" + "0" * 64)
-        per_unit = f"{manifest['totals']['per_unit_known_bytes'] / 1000**4:.2f} TB"
-        self.assertIn(f"transfer and disk: at least {per_unit}, each unit fetching its own copy", text)
-        self.assertIn("Interactive 0.5.16's lease does not share objects", text)
-        self.assertIn("distinct bytes, once the lease shares objects", text)
-        self.assertGreater(manifest["totals"]["per_unit_known_bytes"], manifest["totals"]["distinct_bytes_known"] - 1)
+        self.assertIn("transfer and disk: at least 12.82 TB, each unit fetching its own copy", text)
+        self.assertIn("Interactive 0.5.19's lease does not share objects", text)
+        self.assertIn("distinct bytes, once the lease shares objects through the download store: 6.99 TB", text)
+        # Once the lease fetches through the store (plan item 15), the distinct bytes are the transfer.
+        manifest["pins"]["interactive"]["lease_uses_store"] = True
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        self.assertIn("transfer and disk: at least 6.99 TB of known size, each shared object fetched once", text)
+        self.assertIn("without the store the units would fetch 12.82 TB", text)
 
     def test_the_acquisition_unknown_pool_is_its_own_manifest(self) -> None:
         manifest = self.manifest("acquisition_unknown")
@@ -222,12 +261,33 @@ class PlanTests(unittest.TestCase):
     def test_an_old_catalog_is_refused(self) -> None:
         catalog = ports.read_only_catalog(self.database)
         self.addCleanup(catalog.close)
-        with self.assertRaises(plan.PlanError):
-            plan.build_manifest(
-                catalog, pool="declared", campaign_id="c", analysis_purpose="p", workspace_root=self.workspace_root,
-                raw_retention_policy="keep", pins={"catalog": {"version": "0.5.9"}}, profile=None,
-                campaign_policy=policy.CampaignPolicy(), class_decision=lambda unit: {}, catalog_database="x",
-            )
+        for version in ("0.5.9", "0.6.0"):  # 0.6.1 chose mzXML over an unreadable twin: other Class digests
+            with self.subTest(version), self.assertRaises(plan.PlanError):
+                plan.build_manifest(
+                    catalog, pool="declared", campaign_id="c", analysis_purpose="p", workspace_root=self.workspace_root,
+                    raw_retention_policy="keep", pins={"catalog": {"version": version}}, profile=None,
+                    campaign_policy=policy.CampaignPolicy(), class_decision=lambda unit: {}, catalog_database="x",
+                )
+
+    def test_a_dirty_checkout_or_an_unpinned_extractor_is_not_approvable(self) -> None:
+        manifest = self.manifest("declared")
+        manifest["pins"].update(APPROVABLE_PINS)
+        manifest["profile"] = {"schema": plan.PROFILE_SCHEMA, "answers": {}, "by_ion_mode": {}}
+        self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4", "5"]), [], "the approvable baseline")
+        cases = {
+            "gate dirty": ("gate", {"commit": "c" * 40, "dirty": True}, "the gate checkout has uncommitted changes"),
+            "interactive unreadable": ("interactive", {"version": "0.5.19", "commit": "", "dirty": None, "error": "not a git repository"},
+                                       "the interactive checkout's state could not be read (not a git repository)"),
+            "extractor unpinned": ("extractor", {**APPROVABLE_PINS["extractor"], "pinned": False},
+                                   "not a verified build of one of Interactive's PINNED_BUILDS"),
+            "extractor stale": ("extractor", {**APPROVABLE_PINS["extractor"], "provenance_status": "stale_mismatch"},
+                                "provenance stale_mismatch"),
+        }
+        for name, (pin, value, words) in cases.items():
+            with self.subTest(name):
+                changed = json.loads(json.dumps(manifest))
+                changed["pins"][pin] = value
+                self.assertIn(words, "; ".join(plan.approval_problems(changed, ["1", "3", "4", "5"])))
 
     def test_profiles(self) -> None:
         good = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"},
@@ -265,12 +325,17 @@ class PlanTests(unittest.TestCase):
                                        "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}},
                                                        "Negative": {"libraries": {"msp_paths": ["library:N.msp"]}}}}),
                            encoding="utf-8")
-        code, out, err = self.cli(
-            "plan", "--campaign", "c1", "--pool", "declared", "--purpose", "annotation",
-            "--retention", "delete_after_validated_output", "--catalog", str(self.database),
-            "--console", str(tools / "MSDIALCUI.exe"), "--extractor", str(tools / "RawMetadataConsoleApp.exe"),
-            "--resources", str(resources), "--profile", str(profile),
-        )
+        # The synthetic extractor has no build record, and this test's checkouts may be mid-edit: the pins
+        # an approvable plan needs are read as a verified, pinned build and clean checkouts.
+        extractor = {**APPROVABLE_PINS["extractor"], "path": str(tools / "RawMetadataConsoleApp.exe")}
+        with mock.patch.object(ports.PinReader, "extractor", lambda _self: dict(extractor)), \
+                mock.patch.object(ports.PinReader, "code", lambda _self: json.loads(json.dumps(CODE_PINS))):
+            code, out, err = self.cli(
+                "plan", "--campaign", "c1", "--pool", "declared", "--purpose", "annotation",
+                "--retention", "delete_after_validated_output", "--catalog", str(self.database),
+                "--console", str(tools / "MSDIALCUI.exe"), "--extractor", str(tools / "RawMetadataConsoleApp.exe"),
+                "--resources", str(resources), "--profile", str(profile),
+            )
         self.assertEqual(code, 0, err)
         directory = self.workspace_root / "_campaigns" / "c1"
         manifest_path = directory / "campaign-manifest.json"
@@ -306,6 +371,12 @@ class PlanTests(unittest.TestCase):
         code, out, _err = self.cli("schedule-command", "--campaign", "c1")
         self.assertIn("schtasks /Create", out)
         self.assertIn("runs none of them", out)
+
+    def test_the_scheduled_command_keeps_a_path_with_a_space_one_word(self) -> None:
+        line = runner_cli.schedule_task_command(r"C:\Users\Hiroshi Tsugawa\python.exe", r"D:\code\scripts\campaign-runner.py", "c1")
+        self.assertIn(r'/TR "\"C:\Users\Hiroshi Tsugawa\python.exe\" \"D:\code\scripts\campaign-runner.py\" run --campaign c1 --until-idle"', line)
+        self.assertIn("/SC ONLOGON", line)
+        self.assertNotIn('""', line, "no unescaped quote inside /TR")
 
     def test_a_manifest_without_libraries_or_profile_is_not_approvable(self) -> None:
         code, _out, err = self.cli(

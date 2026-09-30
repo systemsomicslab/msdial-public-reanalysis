@@ -7,10 +7,12 @@ ports.py) under the rules the user decided on 2026-09-30 (scripts/campaign/polic
 
 THE ORDER OF USE
     python scripts/campaign-runner.py plan --campaign ID --pool declared --purpose "..." \\
-        --retention delete_after_validated_output --console <MSDIALCUI.exe> --extractor <RawMetadataConsoleApp.exe> \\
+        --retention delete_after_validated_output --console <MSDIALCUI.exe> [--extractor <RawMetadataConsoleApp.exe>] \\
         --profile <profile.json> [--resources <campaign-resources.local.json>] [--catalog <db>] \\
         [--replan-from <an earlier campaign whose approval is revoked> ...]
-        read-only on the Catalog and the analysis root; writes campaign-manifest.json and prints its digest
+        read-only on the Catalog and the analysis root; writes campaign-manifest.json and prints its digest.
+        The extractor defaults to the newest built pin of Interactive's PINNED_BUILDS beside the Interactive
+        checkout; a manifest is approvable only with a verified, pinned extractor and clean checkouts.
     python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
         --by NAME --statement "the person's words" --covers 1,3,4,5,split
         only after the person approved that digest in the conversation; the approval id is theirs
@@ -102,13 +104,16 @@ def command_plan(args: argparse.Namespace) -> int:
     campaign_policy = policy.CampaignPolicy.from_dict(
         json.loads(Path(args.policy).read_text(encoding="utf-8-sig")) if args.policy else None
     )
+    # The extractor is the newest built pin of Interactive's PINNED_BUILDS unless another is named; either
+    # way the plan records what it inspects as, and a build that is not verified and pinned is not approvable.
+    extractor = args.extractor or str(ports.default_extractor_path(args.interactive_root))
     reader = ports.PinReader(
-        console_path=args.console or "", extractor_path=args.extractor or "", libraries=libraries,
+        console_path=args.console or "", extractor_path=extractor, libraries=libraries,
         interactive_root=args.interactive_root, catalog_root=args.catalog_root,
     )
     pins = {
         "console": reader.console() if args.console else {"exists": False},
-        "extractor": reader.extractor() if args.extractor else {"exists": False},
+        "extractor": reader.extractor(),
         "libraries": reader.library_identities(),
         **reader.code(),
     }
@@ -267,8 +272,16 @@ def command_verify_env(args: argparse.Namespace) -> int:
                       "reserve_bytes": policy.disk_reserve(total, environment.policy.disk)}
     report["catalog_lock"] = environment.catalog.lock_module.campaign_lock_status(environment.catalog.database)
     report["summary"] = machine.summary(environment.ledger)
+    # What the runner cannot run without (Interactive 0.5.17): a preflight that takes the approval and
+    # applies its disposition, and the cleanup that takes it. The authorized discard and the split-parent
+    # release (plan item 14) have fallbacks, and are reported only.
+    capabilities = report["interactive"]
+    report["missing_capabilities"] = [
+        name for name in ("classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup")
+        if not capabilities.get(name)
+    ]
     _print(report)
-    blocking = report["pin_differences"] or not report["interactive"].get("classify_preflight")
+    blocking = report["pin_differences"] or report["missing_capabilities"]
     return EXIT_ENVIRONMENT if blocking else EXIT_OK
 
 
@@ -410,14 +423,20 @@ def command_revoke(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def schedule_task_command(python: str | Path, script: str | Path, campaign: str) -> str:
+    """The schtasks line for a campaign. /TR is one argument, so the quotes inside it are escaped as \\";
+    a path with a space (the Python under the user profile) then stays one word when the task runs."""
+    run = f'\\"{python}\\" \\"{script}\\" run --campaign {campaign} --until-idle'
+    return (f'schtasks /Create /TN "MSDIAL-campaign-{campaign}" /SC ONLOGON /RU "%USERNAME%" /RL LIMITED '
+            f'/TR "{run}" /F')
+
+
 def command_schedule(args: argparse.Namespace) -> int:
     """Print, and never run, the commands that keep a campaign going across reboots."""
-    python = Path(sys.executable)
-    script = Path(__file__).resolve()
-    task = f"MSDIAL-campaign-{args.campaign}"
-    run = f'"{python}" "{script}" run --campaign {args.campaign} --until-idle'
     print("# Persistent system configuration: the user decides and runs these. The runner runs none of them.")
-    print(f'schtasks /Create /TN "{task}" /SC ONSTART /RU "%USERNAME%" /RL LIMITED /TR "{run}" /F')
+    print(schedule_task_command(sys.executable, Path(__file__).resolve(), args.campaign))
+    print("# ONLOGON runs the task when the user logs on, with no password stored. For ONSTART, before anyone")
+    print("# logs on, the task needs the account's password: add /RP and type it at schtasks' own prompt.")
     print(f'# In Task Scheduler, set the task to restart on failure and "Do not start a new instance" if one runs.')
     print("# Keep the machine awake while the campaign runs (AC power), for example:")
     print("powercfg /change standby-timeout-ac 0")

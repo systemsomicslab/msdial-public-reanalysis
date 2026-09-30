@@ -69,15 +69,21 @@ class UnitScript:
     """What the fake backend does for one unit, attempt by attempt."""
 
     # ok; fail (HTTP 503); corrupt (a checksum that does not match, not the network); stall; hold (bytes keep
-    # arriving and the job never ends until it is cancelled); blocked; interrupt
+    # arriving and the job never ends until it is cancelled); blocked; interrupt; shared (waiting for another
+    # unit's lease to fetch a shared object, no bytes of its own, then ok)
     downloads: list[str] = field(default_factory=lambda: ["ok"])
     disposition: str = "run"  # run, split, skip, exclude, none, malformed
+    # Whether the preflight applies its disposition (a campaign unit, Interactive 0.5.17), and whether
+    # classify_preflight then does; held: what disposition_hold holds the unit for, if anything.
+    applied: bool = True
+    classify_applies: bool = True
+    held: str = ""
     split_modes: tuple[str, ...] = ("DDA", "SWATH")
     diagnostics: list[str] = field(default_factory=lambda: ["ok"])  # ok, timeout, fail, lose_reply
     # ok, timeout, fail, invalid (an mzTab-M that does not validate), late_fail (the mzTab-M validated and
     # the job failed after), hold, lose_reply, busy_reply
     runs: list[str] = field(default_factory=lambda: ["ok"])
-    cleanup: str = "ok"  # ok, blocked
+    cleanup: str = "ok"  # ok, blocked, unsupported (an Interactive whose cleanup takes no approval)
     # How long each job runs, in 30-second polls of fake time. A job ends when its time is up, whether or
     # not anyone is polling it, as a real job does while the runner is down.
     ticks: int = 2
@@ -221,6 +227,9 @@ class FakeInteractive:
             return {"ok": False, "reason": "job_not_found", "http_status": 404}
         if job["status"] in ("queued", "running"):
             self._advance(job)
+        if job["outcome"] == "shared" and job["status"] in ("queued", "running"):
+            return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome")},
+                    "status": "waiting_for_shared_download"}
         return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome")}}
 
     def _advance(self, job: dict[str, Any]) -> None:
@@ -229,7 +238,7 @@ class FakeInteractive:
             return
         if job["outcome"] == "stall":
             return
-        if job["kind"] == "download":
+        if job["kind"] == "download" and job["outcome"] != "shared":
             job["received"] += 1000
             if (self.store.read(job["manifest_path"]) or {}).get("status") == "downloading":
                 self._update(job["manifest_path"], lambda manifest: manifest.update(download_progress_at=self._stamp()))
@@ -238,6 +247,7 @@ class FakeInteractive:
 
     def _finish(self, job: dict[str, Any], outcome: str) -> None:
         manifest_path = job["manifest_path"]
+        outcome = "ok" if outcome == "shared" else outcome
         if job["kind"] == "download":
             if outcome == "ok" and self.world.outage:
                 outcome = "fail"
@@ -302,9 +312,16 @@ class FakeInteractive:
         return {"ok": True, "cancel_requested": True}
 
     def preflight(self, *, manifest_path: str, extractor_path: str, authorization_path: str) -> dict[str, Any]:
-        self.calls.append(("preflight", {"manifest_path": manifest_path, "extractor_path": extractor_path}))
+        self.calls.append(("preflight", {"manifest_path": manifest_path, "extractor_path": extractor_path,
+                                         "authorization_path": authorization_path}))
+        if self.world.extractor_refused:
+            return {"ok": False, "reason": "raw_metadata_extractor_refused", "codes": ["extractor_not_pinned"],
+                    "detail": "raw_metadata_extractor_refused [extractor_not_pinned]: not a pinned build."}
         unit = self._unit_of_manifest(manifest_path)
         script = self.world.scripts.setdefault(unit, UnitScript())
+        if script.held:
+            # disposition_hold: nothing is read, and the unit keeps whatever disposition it carries.
+            return {"completed": False, "extractor_found": True, "preflight_held": {"reason": script.held, "detail": "held"}}
         disposition = script.disposition
         if disposition != "none":
             record = {
@@ -314,11 +331,21 @@ class FakeInteractive:
                 "decided_at": self._stamp(),
                 "extractor": {"sha256": self.world.extractor_sha, "inventory_sha256": SHA["extractor"],
                               "provenance_status": "verified", "pinned": True},
+                "applied": script.applied,
             }
             if disposition == "malformed":
                 record = {"schema": "other", "disposition": "maybe"}
             self._update(manifest_path, lambda manifest: manifest.update(campaign_disposition=record, status="preflight_passed"))
         return {"completed": True, "extractor_found": True, "status": "preflight_passed"}
+
+    def classify(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+        """classify_preflight: the recorded preflight decided again under the approval, and applied."""
+        self.calls.append(("classify", {"manifest_path": manifest_path, "authorization_path": authorization_path}))
+        unit = self._unit_of_manifest(manifest_path)
+        script = self.world.scripts.setdefault(unit, UnitScript())
+        if script.classify_applies:
+            self._update(manifest_path, lambda manifest: manifest["campaign_disposition"].update(applied=True))
+        return {"ok": True, "applied": script.classify_applies, "held": None, "disposition": script.disposition}
 
     def split(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
         self.calls.append(("split", {"manifest_path": manifest_path}))
@@ -426,6 +453,8 @@ class FakeInteractive:
         unit = self._unit_of_manifest(manifest_path)
         if self.world.scripts.get(unit, UnitScript()).cleanup == "blocked":
             return {"ok": True, "deleted": False, "blockers": ["finalisation_held"]}
+        if self.world.scripts.get(unit, UnitScript()).cleanup == "unsupported":
+            return {"ok": False, "reason": "unsupported", "detail": "msdial_cleanup_repository_raw takes no campaign_authorization_path"}
         manifest = self.store.read(manifest_path) or {}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
         self._update(manifest_path, lambda current: current.update(status="raw_cleaned"))
@@ -514,20 +543,38 @@ class FakeCatalog:
 
 
 class FakeGate:
+    """The gate, as GatePort reads its --json report. `fails` names the checks a point FAILs, by point or by
+    (unit, point) (by default
+    SUM-1 at an exit 2 of pre_cleanup and final, and none before production); `run_policy` is each check's
+    run_policy when the gate states one, and while it is empty the report states none."""
+
     def __init__(self) -> None:
         self.exits = {"before_production": 0, "pre_cleanup": 4, "final": 4}
+        self.fails: dict[str, list[str]] = {}
+        self.run_policy: dict[str, str] = {}
         self.runs: list[tuple[str, str]] = []
+        self.detail = ""
 
     def run(self, workspace: str, point: str, report_path: Path) -> dict[str, Any]:
         self.runs.append((Path(workspace).name, point))
         exit_code = self.exits[point]
+        default = ["SUM-1"] if exit_code == 2 and point != "before_production" else []
+        fails = self.fails.get((Path(workspace).name, point), self.fails.get(point, default))
+        report = {"checks": [{"check_id": check, "status": "fail",
+                              **({"run_policy": self.run_policy[check]} if check in self.run_policy else {})}
+                             for check in fails]}
+        if self.run_policy:
+            report["checks"] += [{"check_id": check, "status": "pass", "run_policy": rule}
+                                 for check, rule in self.run_policy.items() if check not in fails]
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps({"point": point, "exit": exit_code}).encode()
+        data = json.dumps({"point": point, "exit": exit_code, **report}).encode()
         report_path.write_bytes(data)
+        blocking, source = policy.run_blocking_failures(report)
         return {"stage": ports.GATE_STAGES[point], "strict": True, "gate_commit": "fake", "outcome": "ran",
-                "exit_code": exit_code, "fail_ids": ["SUM-1"] if exit_code == 2 else [],
+                "exit_code": exit_code, "fail_ids": sorted(fails), "blocking_fail_ids": blocking, "run_policy_source": source,
                 "strict_hold_ids": ["READ-1"] if exit_code == 4 else [], "stage_reached": "B10",
-                "report_path": str(report_path), "report_sha256": hashlib.sha256(data).hexdigest()}
+                "report_path": str(report_path), "report_sha256": hashlib.sha256(data).hexdigest(),
+                **({"detail": self.detail} if self.detail else {})}
 
 
 class FakePins:
@@ -553,6 +600,8 @@ class World:
         self.scripts: dict[str, UnitScript] = {}
         # While set, every download that would have finished fails with HTTP 503: the repository is down.
         self.outage = False
+        # While set, Interactive refuses every campaign preflight: the extractor is not a verified, pinned build.
+        self.extractor_refused = False
         self.extractor_sha = SHA["extractor"]
         self.instrument_family = "QTOF"
         self.private_directory = root / "private libraries" / "vault"

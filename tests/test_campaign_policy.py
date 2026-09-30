@@ -41,6 +41,12 @@ class DispositionTests(unittest.TestCase):
         self.assertEqual(policy.read_disposition(disposition(disposition="split", split_key={"acquisition": "DDA"})).split_key,
                          {"acquisition": "DDA"})
 
+    def test_only_a_disposition_interactive_applied_reads_as_applied(self) -> None:
+        self.assertTrue(policy.read_disposition(disposition(applied=True)).applied)
+        self.assertFalse(policy.read_disposition(disposition(applied=False)).applied)
+        self.assertFalse(policy.read_disposition(disposition()).applied, "written before 0.5.17: advice only")
+        self.assertIs(policy.read_disposition(disposition(applied=True)).as_dict()["applied"], True)
+
     def test_no_record_is_none_not_a_decision(self) -> None:
         self.assertIsNone(policy.read_disposition({"status": "preflight_passed"}))
 
@@ -54,6 +60,7 @@ class DispositionTests(unittest.TestCase):
             "extractor": disposition(extractor={"sha256": "short"}),
             "split key": disposition(split_key=["DDA"]),
             "excluded input": disposition(excluded_inputs=[{"reason": "x"}]),
+            "applied": disposition(applied="yes"),
         }
         for name, manifest in cases.items():
             with self.subTest(name), self.assertRaises(policy.DispositionError):
@@ -86,6 +93,10 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(policy.classify_result({"ok": False, "reason": "backend_unavailable"}), policy.FAULT)
         self.assertEqual(policy.classify_result({"ok": False, "reason": "validation_error"}), policy.FAILED)
         self.assertEqual(policy.classify_result("not a mapping"), policy.FAILED)
+        for reason in ("unsupported", "malformed", "raw_metadata_extractor_refused"):
+            with self.subTest(reason):
+                self.assertEqual(policy.classify_result({"ok": False, "reason": reason}), policy.CONTRACT,
+                                 "the campaign's refusal, which would recur for every unit")
 
     def test_the_policy_refuses_what_would_break_the_rules(self) -> None:
         with self.assertRaises(ValueError):
@@ -130,6 +141,14 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(policy.threshold_step("Bruker solariX", ""), 1000)
         self.assertEqual(policy.threshold_step("Unknown", "", thermo_raw_inputs=3), 1000)
         self.assertEqual(policy.threshold_step("Waters Xevo G2-XS", ""), 100)
+        # The Catalog's own FT spellings that named no Q or no Orbitrap (review finding 15).
+        for instrument in ("Thermo Scientific Exactive", "Exactive Plus", "Exactive HF-X", "IQ-X tribrid",
+                           "Bruker APEX-Qe 9.4T"):
+            with self.subTest(instrument):
+                self.assertEqual(policy.threshold_step(instrument, "QTOF"), 1000)
+        for instrument in ("SCIEX TripleTOF 6600", "Agilent 6546 LC/Q-TOF", "Waters Synapt G2-Si", "Bruker impact II"):
+            with self.subTest(instrument):
+                self.assertEqual(policy.threshold_step(instrument, "QTOF"), 100)
 
 
 class DiskTests(unittest.TestCase):
@@ -176,6 +195,12 @@ class DownloadFailureTests(unittest.TestCase):
             {"error": "HTTP 503"}, {"error": "HTTP Error 502: Bad Gateway"}, {"error": "HTTP Error 429: Too Many Requests"},
             {"failure": {"reason": "<urlopen error [Errno 11001] getaddrinfo failed>", "error_type": "URLError"}},
             {"error": "The read operation timed out"}, {"failure": {"error_type": "ConnectionResetError", "reason": "x"}},
+            # Interactive 0.5.18 retries a stalled or lost transfer three times, then records what ended it.
+            {"failure": {"reason": "No bytes arrived from the server for 120 s.", "error_type": "DownloadStalled"}},
+            {"failure": {"reason": "The connection was lost", "error_type": "DownloadConnectionLost", "retryable": True}},
+            {"failure": {"reason": "short body", "error_type": "DownloadIncomplete"}},
+            # Whatever the error is called: Interactive marks every transfer it retried and gave up on.
+            {"failure": {"reason": "the transfer was interrupted", "error_type": "DownloadInterrupted", "retryable": True}},
         ):
             with self.subTest(detail):
                 self.assertTrue(policy.network_failure(detail))
@@ -192,6 +217,35 @@ class DownloadFailureTests(unittest.TestCase):
         self.assertTrue(policy.discard_blocked_for_good(["finalisation_held", "validated_status"]))
         self.assertFalse(policy.discard_blocked_for_good(["lease_live", "finalisation_held"]))
         self.assertFalse(policy.discard_blocked_for_good([]))
+
+
+class RunPolicyTests(unittest.TestCase):
+    """A before-production FAIL stops the run only for a check that breaks results (2026-10-01)."""
+
+    @staticmethod
+    def report(*checks, **top):
+        return {"checks": [dict(check) for check in checks], **top}
+
+    def test_without_a_stated_policy_the_fixed_list_decides(self) -> None:
+        report = self.report(*({"check_id": check, "status": "fail"} for check in (
+            "ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1")))
+        self.assertEqual(policy.run_blocking_failures(report), (sorted(policy.BLOCKS_RUN_CHECKS), "runner_default"))
+
+    def test_only_a_fail_blocks(self) -> None:
+        report = self.report({"check_id": "SUM-1", "status": "warn"}, {"check_id": "INP-1", "status": "not_evaluable"},
+                             {"check_id": "ELIG-1", "status": "pass"}, {"check_id": "ACQ-1", "status": "FAIL"})
+        self.assertEqual(policy.run_blocking_failures(report), (["ACQ-1"], "runner_default"))
+
+    def test_the_gates_run_policy_decides_when_it_states_one(self) -> None:
+        per_check = self.report({"check_id": "SUM-1", "status": "fail", "run_policy": "record_only"},
+                                {"check_id": "CLS-1", "status": "fail", "run_policy": "blocks_run"},
+                                {"check_id": "ORD-1", "status": "fail"})
+        self.assertEqual(policy.run_blocking_failures(per_check), (["CLS-1"], "gate"))
+        by_list = self.report({"check_id": "SUM-1", "status": "fail"}, {"check_id": "PKH-1", "status": "fail"},
+                              run_policy={"blocks_run": ["PKH-1"], "record_only": ["SUM-1"]})
+        self.assertEqual(policy.run_blocking_failures(by_list), (["PKH-1"], "gate"))
+        by_check = self.report({"check_id": "INP-1", "status": "fail"}, run_policy={"INP-1": "record_only"})
+        self.assertEqual(policy.run_blocking_failures(by_check), ([], "gate"))
 
 
 class OutputsTests(unittest.TestCase):
@@ -233,6 +287,20 @@ class PinTests(unittest.TestCase):
             policy.pin_differences(recorded, changed),
             ["console.inventory_sha256", "interactive.commit", "gate.dirty", "libraries.L.lbm2.missing", "libraries.P.msp.sha256"],
         )
+        stale = copy.deepcopy(recorded)
+        stale["extractor"].update(provenance_status="verified", pinned=True)
+        later = copy.deepcopy(stale)
+        later["extractor"].update(provenance_status="stale_mismatch", pinned=False)
+        self.assertEqual(policy.pin_differences(stale, later), ["extractor.provenance_status", "extractor.pinned"])
+
+    def test_a_checkout_the_commit_does_not_identify_is_not_approvable(self) -> None:
+        clean = {"interactive": {"commit": "c1", "dirty": False}, "catalog": {"commit": "c2", "dirty": False},
+                 "gate": {"commit": "c3", "dirty": False}}
+        self.assertEqual(policy.pin_problems(clean), [])
+        self.assertEqual(policy.pin_problems({**clean, "gate": {"commit": "c3", "dirty": True}}),
+                         ["the gate checkout has uncommitted changes; commit them and plan again"])
+        self.assertIn("could not be read (fatal: not a git repository)", policy.pin_problems(
+            {**clean, "catalog": {"commit": "", "dirty": None, "error": "fatal: not a git repository"}})[0])
 
 
 class PrivacyTests(unittest.TestCase):

@@ -17,16 +17,19 @@ a crash at any committed transition resumes without a second download or a secon
 (tests/test_campaign_resume.py stops the runner at every commit and checks it).
 
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run: that is Interactive's campaign_disposition,
-read after the raw-header preflight (policy.read_disposition). The Class digest, the libraries, the
-Console and the extractor were fixed by the approved manifest; a change pauses the campaign.
+read after the raw-header preflight (policy.read_disposition), and acted on only once Interactive
+applied it under the approval (0.5.17). The Class digest, the libraries, the Console and the extractor
+were fixed by the approved manifest; a change pauses the campaign.
 
 THE RULES are the user's, as policy.py writes them down: a failed unit is retried twice and then its raw
 data are deleted; raw data are deleted once the outputs are produced and the mzTab-M validates, with the
 gate verdict recorded beside the deletion, whatever it is; skipped and excluded units' raw data are
-deleted too; a short disk pauses the campaign. Raw data the rules delete and Interactive would not are
-"held", counted apart (summary), never reported as kept or deleted. The runner never records a
-person's reading (boundary 6): READ-1 holding the gate at exit 4 is a state it stores, and such a unit is
-reported as "outputs produced", never "completed".
+deleted too; a short disk pauses the campaign; a before-production FAIL stops the unit's run only for a
+check that breaks results (blocks_run), and the unit then counts as failed, while any other FAIL is
+recorded and the unit runs. Every production attempt is recorded in the Catalog as it ends. Raw data
+the rules delete and Interactive would not are "held", counted apart (summary), never reported as kept
+or deleted. The runner never records a person's reading (boundary 6): READ-1 holding the gate at exit 4
+is a state it stores, and such a unit is reported as "outputs produced", never "completed".
 """
 
 from __future__ import annotations
@@ -59,6 +62,9 @@ JOB_COLUMN = {"downloading": "download_job_id", "diagnosing": "diagnostic_job_id
 CONSOLE_ENTRY_POINT = {"tuning": "peak_count_diagnostic", "run": "agent_run"}
 # Lease statuses that are not a finished download.
 UNFINISHED_LEASE = frozenset({"downloading", "download_failed", "discarded"})
+# A download job waiting for another unit's lease to fetch an object they share (plan item 15's store): it
+# moves no bytes of its own meanwhile, so it is neither stalled nor ended.
+WAITING_FOR_SHARED = "waiting_for_shared_download"
 TSV_COLUMNS = (
     "unit_key", "catalog_unit_id", "repository", "accession", "role", "parent_unit_key", "state",
     "terminal_reason", "report_terms", "outputs_produced", "gate_exit_pre", "gate_exit_final",
@@ -245,9 +251,20 @@ class Runner:
             raise ledger_module.ApprovalMissing(f"No live approval covers boundary {boundary}.")
 
     def _move(self, unit: Mapping[str, Any], to_state: str, **kwargs: Any) -> dict[str, Any]:
-        """A transition from the state this unit was read in, with its detail redacted."""
-        if "detail" in kwargs and kwargs["detail"] is not None:
-            kwargs["detail"] = self.redact(kwargs["detail"])
+        """A transition from the state this unit was read in, with everything it records redacted: its
+        detail, the attempt it opens or closes (a job's error can quote a file) and the gate verdict (whose
+        detail is the gate's own stderr tail)."""
+        for key in ("detail", "terminal_detail", "raw_detail"):
+            if kwargs.get(key) is not None:
+                kwargs[key] = self.redact(kwargs[key])
+        if kwargs.get("new_attempt") is not None:
+            kwargs["new_attempt"] = self.redact(dict(kwargs["new_attempt"]))
+        if kwargs.get("close_attempt") is not None:
+            attempt_id, outcome, counted, detail = kwargs["close_attempt"]
+            kwargs["close_attempt"] = (attempt_id, outcome, counted, self.redact(detail) if detail is not None else None)
+        if kwargs.get("gate") is not None:
+            point, verdict = kwargs["gate"]
+            kwargs["gate"] = (point, self.redact(dict(verdict)))
         return self.ledger.transition(unit["unit_key"], to_state, self.stamp(), expect_from=unit["state"], **kwargs)
 
     # ---- the loop ----------------------------------------------------------------------------------
@@ -410,6 +427,7 @@ class Runner:
                     return False
                 self._poll_errors.pop(unit["unit_key"], None)
                 self._cancel(current, current[JOB_COLUMN[current["state"]]], "poll_error")
+                self._production_ended(current, "failed")
                 restart = {"downloading": "handoff_ready", "diagnosing": "metadata_prepared", "running": "prepared"}
                 self._fail(current, step=f"{current['state']}_poll", result={"ok": False, "reason": "exception", **detail},
                            retry_state=restart[current["state"]], console_run=self._open_console_end(current, "failed"))
@@ -455,6 +473,7 @@ class Runner:
         outcome: str = "failed",
         console_run: tuple[int, str] | None = None,
         job_id: str | None = None,
+        gate: tuple[str, dict[str, Any]] | None = None,
     ) -> None:
         kind = policy.classify_result(result) if isinstance(result, Mapping) else policy.FAILED
         detail = self.redact(dict(result) if isinstance(result, Mapping) else {"result": repr(result)})
@@ -474,29 +493,31 @@ class Runner:
             self._move(
                 unit, "stopped_no_approval", terminal_reason="campaign_authorization_refused",
                 terminal_detail=json.dumps(detail, ensure_ascii=False, sort_keys=True), detail={"step": step},
-                end_console_run=console_run, **attempt("refused", False),
+                end_console_run=console_run, gate=gate, **attempt("refused", False),
             )
             return
         if kind == policy.BUSY:
             due = self.now() + timedelta(seconds=float(self.policy.busy_retry_seconds))
             self._move(
                 unit, "waiting_retry", resume_state=retry_state, next_attempt_at=policy.iso(due),
-                detail={"step": step, "busy": True}, end_console_run=console_run, **attempt("busy", False),
+                detail={"step": step, "busy": True}, end_console_run=console_run, gate=gate, **attempt("busy", False),
             )
             return
-        if kind == policy.FAULT:
+        if kind in (policy.FAULT, policy.CONTRACT):
+            # The campaign's, not the unit's: nothing counts, the unit stays where it is, and the step is made
+            # again when the pause lifts - by itself at the fault recheck, by an operator for a contract.
             if attempt_id is not None:
                 self.ledger.close_attempt(attempt_id, "fault", self.stamp(), detail=detail)
             if console_run is not None:
                 self.ledger.end_console_run(console_run[0], "not_started", self.stamp())
-            self._pause("fault", f"{step} for unit {unit['unit_key']}: {detail.get('detail') or detail.get('reason')}")
+            self._pause(kind, f"{step} for unit {unit['unit_key']}: {detail.get('reason')}: {detail.get('detail') or ''}".rstrip(": "))
             return
         decision = policy.after_failure(int(unit["failures"]), self.now(), self.policy)
         if decision.state == "waiting_retry":
             self._move(
                 unit, "waiting_retry", resume_state=retry_state, next_attempt_at=decision.next_attempt_at,
                 failures=decision.failures, detail={"step": step, "failures": decision.failures},
-                end_console_run=console_run, **attempt(outcome, True),
+                end_console_run=console_run, gate=gate, **attempt(outcome, True),
             )
             return
         # The first attempt and both retries failed: the unit ends as failed, and its raw data go.
@@ -504,7 +525,7 @@ class Runner:
             unit, "discarding", pending_terminal="failed", failures=decision.failures,
             terminal_detail=json.dumps({"reason": f"{step}_failed", "detail": detail}, ensure_ascii=False, sort_keys=True),
             detail={"step": step, "failures": decision.failures, "retries_exhausted": True},
-            end_console_run=console_run, **attempt(outcome, True),
+            end_console_run=console_run, gate=gate, **attempt(outcome, True),
         )
 
     def _step_retry(
@@ -638,6 +659,10 @@ class Runner:
             if request["action"] == "skip":
                 if state in ledger_module.TERMINAL_STATES or state == "discarding":
                     detail = f"not skipped: the unit is already {state}"
+                elif state in END_STATES or (state == "waiting_retry" and unit["resume_state"] in END_STATES):
+                    # Already ending - failed, skipped or excluded, or with its outputs produced: what it ends as
+                    # is not relabelled.
+                    detail = f"not skipped: the unit is ending ({unit['pending_terminal'] or unit['resume_state'] or state})"
                 elif state in IN_FLIGHT:
                     self._cancel(unit, unit[JOB_COLUMN[state]], "skip")
                     detail = "cancel requested; the unit is skipped when its job ends"
@@ -945,6 +970,10 @@ class Runner:
                 return False
             return self._download_lost(unit)
         status = str(job.get("status") or "")
+        if status == WAITING_FOR_SHARED:
+            self._resend_cancel(job_id)
+            self._progress.pop(job_id, None)
+            return False
         if status in ("queued", "running"):
             self._resend_cancel(job_id)
             self._watch_download(unit, job)
@@ -1059,20 +1088,36 @@ class Runner:
             manifest_path=unit["manifest_path"], extractor_path=extractor, authorization_path=self._authorization(unit)
         )
         if result.get("ok") is False:
+            # An extractor Interactive refuses as unverified or unpinned (0.5.17) is a contract pause, not a
+            # failure of this unit: _fail reads it so.
             self._fail(unit, step="preflight", result=result, retry_state="downloaded", attempt_id=attempt)
             return True
         if result.get("extractor_found") is False:
             self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"extractor_found": False})
-            self._pause("fault", "The pinned raw-metadata extractor was not found by Interactive.")
+            self._pause("contract", "The pinned raw-metadata extractor was not found by Interactive.")
             return False
         # A broken contract pauses as "contract", which only an operator lifts: a pause that lifted itself
         # would run the preflight again, hours for a large unit, only to find the same record.
+        held = dict(result.get("preflight_held") or {})
         try:
             disposition = policy.read_disposition(self._manifest(unit) or {})
+            if disposition is not None and not disposition.applied:
+                # Recorded as advice (the unit was no campaign unit as it was decided): classify_preflight
+                # decides it again under the approval and applies it, without reading a header again.
+                classified = self.ports.interactive.classify(
+                    manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit)
+                )
+                if classified.get("ok") is False:
+                    self._fail(unit, step="classify", result=classified, retry_state="downloaded", attempt_id=attempt)
+                    return True
+                held = held or dict(classified.get("held") or {})
+                disposition = policy.read_disposition(self._manifest(unit) or {})
         except policy.DispositionError as error:
             self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"contract": str(error)})
             self._pause("contract", f"Unit {unit['unit_key']}: {error}")
             return False
+        if (disposition is None or not disposition.applied) and held:
+            return self._preflight_held(unit, held, attempt)
         if disposition is None:
             self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"contract": "no campaign_disposition"})
             self._pause(
@@ -1081,10 +1126,19 @@ class Runner:
                 "and makes none of its own (classify_preflight, plan item 11).",
             )
             return False
+        if not disposition.applied:
+            self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"contract": "disposition not applied"})
+            self._pause(
+                "contract",
+                f"Unit {unit['unit_key']}'s campaign_disposition is not applied, even by classify_preflight under the "
+                "approval; the runner acts only on an applied disposition.",
+            )
+            return False
         pinned = str((self.pins.get("extractor") or {}).get("binary_sha256") or "")
-        if pinned and disposition.extractor.get("sha256") != pinned:
+        if (pinned and disposition.extractor.get("sha256") != pinned) or disposition.extractor.get("pinned") is False:
             # The pinned binary is where it was (the pin check found no difference before the unit started),
-            # so Interactive ran another one, or reused verdicts another one made.
+            # so Interactive ran another one, or reused verdicts another one made, or no longer counts the
+            # build among its PINNED_BUILDS.
             self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"extractor": disposition.extractor})
             self._event("contract_broken", {"extractor_sha256": disposition.extractor.get("sha256"), "pinned_sha256": pinned},
                         unit["unit_key"])
@@ -1108,6 +1162,17 @@ class Runner:
                 terminal_detail=json.dumps({"reason": "preflight_" + disposition.disposition, "codes": list(disposition.reasons)}),
                 close_attempt=close,
             )
+        return True
+
+    def _preflight_held(self, unit: dict[str, Any], held: Mapping[str, Any], attempt: int) -> bool:
+        """Interactive read nothing and decided nothing: disposition_hold holds the unit (0.5.17), and it
+        carries no applied disposition to act on. A run of its own that may still be going is waited for,
+        uncounted; a unit split, finished or never preflighted cannot be run from here, which is the unit's
+        failure - retried, and then its raw data go."""
+        reason = str(held.get("reason") or "")
+        result = {"ok": False, "reason": "unit_busy" if reason == "run_in_progress" else "preflight_held",
+                  "held": dict(held)}
+        self._fail(unit, step="preflight", result=result, retry_state="downloaded", attempt_id=attempt)
         return True
 
     def _state_splitting(self, unit: dict[str, Any]) -> bool:
@@ -1286,6 +1351,7 @@ class Runner:
                   "error": job.get("error"), "stop_reason": job.get("stop_reason")}
         job_id = unit[JOB_COLUMN[unit["state"]]]
         if self._cancel_reason(job_id) == "skip":
+            self._production_ended(unit, "cancelled")
             self._move(
                 unit, "discarding", pending_terminal="skipped", terminal_detail=json.dumps({"reason": "operator_skip"}),
                 end_console_run=(run[0], "cancelled") if run else None,
@@ -1293,10 +1359,12 @@ class Runner:
             )
             return True
         if job.get("status") == "interrupted":
+            self._production_ended(unit, "interrupted")
             self._interrupted(unit, step=step, retry_state=retry_state, detail=detail,
                               console_run=(run[0], "interrupted") if run else None)
             return True
         outcome = "timeout" if exit_code == -3 else "cancelled" if exit_code == -4 else "failed"
+        self._production_ended(unit, {"timeout": "timed_out"}.get(outcome, outcome))
         self._fail(unit, step=step, result={"ok": False, "reason": outcome, **detail}, retry_state=retry_state,
                    outcome=outcome, console_run=(run[0], outcome) if run else None, job_id=job_id)
         return True
@@ -1311,6 +1379,7 @@ class Runner:
             killed = self.ports.interactive.kill_orphan(attempt)
             self._event("orphan_killed", {"job_id": attempt.get("job_id"), "killed": killed}, unit["unit_key"])
         run = self._open_console_end(unit, "interrupted")
+        self._production_ended(unit, "interrupted")
         self._interrupted(unit, step=step, retry_state=retry_state, detail={"job_id": job_id, "job": "lost"}, console_run=run)
         return True
 
@@ -1374,7 +1443,14 @@ class Runner:
         return True
 
     def _state_diagnosed(self, unit: dict[str, Any]) -> bool:
-        """The production plan, written without running; then the before-production gate, which only records."""
+        """The production plan, written without running; then the before-production gate.
+
+        A FAIL there stops the run only for a check that breaks results (the user's rule of 2026-10-01): a
+        check whose run_policy is blocks_run in the gate's report, or, while the gate states none,
+        policy.BLOCKS_RUN_CHECKS. Such a unit counts as failed, so it is retried twice and then its raw data
+        go. A FAIL of a record_only check, a WARN, a check left not evaluable and a gate that could not run
+        are recorded, and the unit runs.
+        """
         answers = self.answers(unit, unit["minimum_peak_height"])
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_run", self.stamp(), tool="msdial_prepare_guided_analysis")
         result = self.ports.interactive.prepare_guided(input_path=unit["input_path"], answers=answers)
@@ -1382,6 +1458,15 @@ class Runner:
             self._fail(unit, step="prepare_run", result=result, retry_state="diagnosed", attempt_id=attempt)
             return True
         verdict = self._gate(unit, "before_production")
+        blocking = list((verdict or {}).get("blocking_fail_ids") or [])
+        if blocking:
+            self._fail(
+                unit, step="before_production_gate", attempt_id=attempt, retry_state="diagnosed",
+                result={"ok": False, "reason": "gate_blocks_run", "blocking_fail_ids": blocking,
+                        "run_policy_source": verdict.get("run_policy_source")},
+                gate=("before_production", verdict),
+            )
+            return True
         self._move(
             unit, "prepared", close_attempt=(attempt, "ok", False, {}),
             gate=("before_production", verdict) if verdict else None,
@@ -1410,12 +1495,14 @@ class Runner:
             return self._console_ended(unit, job, step="run", retry_state="prepared")
         if not policy.outputs_produced(self._manifest(unit)):
             run = self._open_console_end(unit, "completed")
+            self._production_ended(unit, "outputs_not_validated")
             self._fail(unit, step="run", result={"ok": False, "reason": "outputs_not_validated", "job_id": job_id},
                        retry_state="prepared", console_run=run, job_id=job_id)
             return True
         return self._run_done(unit)
 
     def _run_done(self, unit: dict[str, Any]) -> bool:
+        self._production_ended(unit, "outputs_produced")
         size = self.ports.disk.tree_bytes(str(self._workspace(unit)))
         self._move(
             unit, "run_done", outputs_produced=1, peak_workspace_bytes=size,
@@ -1476,6 +1563,9 @@ class Runner:
                     raw, boundary, detail = "released", "5", f"deleted after validated outputs; {gate_note}"
                 elif policy.classify_result(result) == policy.REFUSED:
                     detail = f"deletion refused: {result.get('codes') or result.get('detail')}"
+                elif policy.classify_result(result) == policy.CONTRACT:
+                    self._pause("contract", f"The raw cleanup of unit {unit['unit_key']}: {result.get('reason')}: {result.get('detail')}")
+                    return False
                 else:
                     tried = self.ledger.count_attempts(unit["unit_key"], "release", ("failed",))
                     record = {"step": "release", "outcome": "failed", "counted": False,
@@ -1510,6 +1600,8 @@ class Runner:
         info = _loads(unit["terminal_detail"])
         reason = str(info.get("reason") or pending)
         raw, detail, boundary = self._discard_raw(unit)
+        if raw == "pause":
+            return False
         if raw == "wait":
             tried = self.ledger.count_attempts(unit["unit_key"], "discard", ("failed",))
             record = {"step": "discard", "outcome": "failed", "counted": False, "detail": {"detail": detail}}
@@ -1533,8 +1625,10 @@ class Runner:
         return True
 
     def _discard_raw(self, unit: Mapping[str, Any]) -> tuple[str, str, str | None]:
-        """(raw disposition, detail, boundary crossed) for a unit ending without validated output, or
-        ("wait", ...) to try again. Each deletion is the one Interactive performs for the unit's state."""
+        """(raw disposition, detail, boundary crossed) for a unit ending without validated output, ("wait", ...)
+        to try again, or ("pause", ...) when the campaign paused on a contract. Each deletion is the one
+        Interactive performs for the unit's state: its cleanup for outputs that validated, else its discard
+        (InteractivePort.discard: the approval-taking one once plan item 14 lands, the fallback until then)."""
         manifest = self._manifest(unit) if unit["manifest_path"] else None
         if manifest is None:
             return "none", "no raw data were downloaded", None
@@ -1557,6 +1651,8 @@ class Runner:
                 return "released", f"deleted: the unit {unit['pending_terminal']}, its outputs validated", "5"
             if policy.classify_result(result) == policy.REFUSED:
                 return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
+            if policy.classify_result(result) == policy.CONTRACT:
+                return self._contract_pause(unit, "raw cleanup", result)
             return "wait", str(result.get("blockers") or result.get("detail") or result.get("reason") or "not deleted"), None
         result = self.ports.interactive.discard(
             manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
@@ -1566,13 +1662,22 @@ class Runner:
             return "discarded", f"deleted: the unit {unit['pending_terminal']}", "5"
         if policy.classify_result(result) == policy.REFUSED:
             return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
+        if policy.classify_result(result) == policy.CONTRACT:
+            return self._contract_pause(unit, "raw discard", result)
         blockers = [str(code) for code in result.get("blockers") or []]
         detail = str(result.get("detail") or result.get("reason") or "not deleted")
         if policy.discard_blocked_for_good(blockers):
             # A failed run that left an mzTab-M: Interactive discards no such unit's raw data, and asking
-            # again changes nothing (plan item 14 is the discard that would).
+            # again changes nothing. Nothing here works around that by touching the unit's output: the raw
+            # data are held, counted apart, until Interactive's own discard deletes them (plan item 14).
             return "held", f"not deleted ({', '.join(blockers)}): {detail}", None
         return "wait", detail, None
+
+    def _contract_pause(self, unit: Mapping[str, Any], step: str, result: Mapping[str, Any]) -> tuple[str, str, None]:
+        """A deletion this Interactive cannot make as called (a tool or parameter it lacks): the campaign's
+        contract, not the unit's end. The unit stays where it is until an operator resumes."""
+        self._pause("contract", f"The {step} of unit {unit['unit_key']}: {result.get('reason')}: {result.get('detail')}")
+        return "pause", str(result.get("detail") or ""), None
 
     def _state_waiting_retry(self, unit: dict[str, Any]) -> bool:
         due = policy.parse_iso(unit["next_attempt_at"])
@@ -1596,15 +1701,24 @@ class Runner:
 
     # ---- records --------------------------------------------------------------------------------------
 
-    def _record_run(self, unit: Mapping[str, Any], status: str, exit_code: int | None) -> None:
-        """The Catalog's analysis_run row for a unit that started a production run. Never fatal."""
-        job = unit.get("run_job_id")
+    def _record_run(
+        self, unit: Mapping[str, Any], status: str, exit_code: int | None, *, job_id: str | None = None,
+        final: bool = True,
+    ) -> None:
+        """The Catalog's analysis_run row for one production run of a unit, keyed <unit>:<job>. Never fatal.
+
+        Every production attempt is recorded as it ends (final false: its own end, no gate verdict), failed
+        ones included; the unit's end then completes the record of its last run with how the unit ended
+        and the final gate's verdict. The Catalog keeps what a later call leaves empty.
+        """
+        job = job_id or unit.get("run_job_id")
         if not job:
             return
         workspace = self._workspace(unit)
         manifest = self._manifest(unit) or {}
         mztab_path, mztab_sha256 = "", ""
-        for item in (manifest.get("mztab_validation") or {}).get("files") or []:
+        validated_job = str((manifest.get("finalized_run") or {}).get("job_id") or job)
+        for item in (manifest.get("mztab_validation") or {}).get("files") or [] if validated_job == job else []:
             path = Path(str(item.get("file") or ""))
             try:
                 mztab_path = path.resolve().relative_to(workspace.resolve()).as_posix()
@@ -1612,13 +1726,12 @@ class Runner:
             except (OSError, ValueError):
                 mztab_path, mztab_sha256 = "", ""
             break
-        values = {
+        values: dict[str, Any] = {
             "run_id": f"{unit['unit_key']}:{job}", "unit_id": unit["catalog_unit_id"], "status": status.replace(" ", "_"),
             "class_proposal_id": unit.get("class_proposal_id") or "",
             "interactive_version": str((self.pins.get("interactive") or {}).get("version") or ""),
             "msdial_version": str((self.pins.get("console") or {}).get("version") or ""),
             "mztab_path": mztab_path, "mztab_sha256": mztab_sha256,
-            "gate_verdict": policy.gate_verdict_token(exit_code), "gate_exit_code": exit_code,
             "provenance": {
                 "campaign_id": self.campaign["campaign_id"], "approval_id": self.approval["approval_id"],
                 "manifest_digest": self.campaign["manifest_digest"],
@@ -1626,11 +1739,20 @@ class Runner:
                 "extractor_sha256": str((self.pins.get("extractor") or {}).get("binary_sha256") or ""),
                 "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
                 "minimum_peak_height": unit.get("minimum_peak_height"), "threshold_step": unit.get("threshold_step"),
+                "attempt_status": status.replace(" ", "_") if not final else None,
             },
         }
-        result = self.ports.catalog.record_run(**values)
+        if final:
+            values.update(gate_verdict=policy.gate_verdict_token(exit_code), gate_exit_code=exit_code)
+            values["provenance"].pop("attempt_status")
+        result = self.ports.catalog.record_run(**self.redact(values))
         if result.get("ok") is False:
             self._event("catalog_run_not_recorded", {"run_id": values["run_id"], "detail": result.get("detail")}, unit["unit_key"])
+
+    def _production_ended(self, unit: Mapping[str, Any], status: str) -> None:
+        """Record the production attempt of a unit in 'running' as it ends, before the transition that says so."""
+        if unit.get("state") == "running":
+            self._record_run(unit, status, None, job_id=unit.get("run_job_id"), final=False)
 
     def _write_record(
         self, unit: Mapping[str, Any], state: str, reason: str, raw: str, raw_detail: str, *, final_exit: int | None = None
@@ -1646,6 +1768,7 @@ class Runner:
         verdicts = [
             {"point": item["point"], "outcome": item["outcome"], "exit_code": item["exit_code"],
              "stage_reached": item["stage_reached"], "fail_ids": json.loads(item["fail_ids_json"]),
+             "blocking_fail_ids": json.loads(item["blocking_fail_ids_json"]), "run_policy_source": item["run_policy_source"],
              "strict_hold_ids": json.loads(item["strict_hold_ids_json"])}
             for item in self.ledger.gate_verdicts(unit["unit_key"])
         ]

@@ -47,12 +47,20 @@ VALIDATED_STATUSES = frozenset({"mztab_validated", "completed", "cleanup_pending
 RAW_CLEANED_STATUS = "raw_cleaned"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 # Fourier-transform analysers, for the diagnostic's threshold step (1000 rather than 100). Read from the
-# catalog's instrument text, which is the submitter's own words.
+# catalog's instrument text, which is the submitter's own words: "Thermo Scientific Exactive" and "Exactive
+# Plus" name no Q, "IQ-X tribrid" no Orbitrap, and "Bruker APEX-Qe 9.4T" is an FT-ICR.
 _FOURIER_INSTRUMENT = re.compile(
-    r"orbitrap|q[\s-]?exactive|exploris|fusion|lumos|eclipse|astral|ltq[\s-]?ft|ft[\s-]?icr|fticr|"
-    r"solarix|fourier",
+    r"orbitrap|exactive|exploris|fusion|lumos|eclipse|astral|tribrid|ltq[\s-]?ft|ft[\s-]?icr|fticr|"
+    r"solarix|apex|fourier",
     re.IGNORECASE,
 )
+# The before-production checks whose FAIL stops a unit's MS-DIAL run (the user's rule of 2026-10-01): the
+# ones that break results. A FAIL of any other check (CLS-1/2/3, ORD-1, PKH-1 and the rest) is recorded and
+# the unit runs. The gate says so itself in each check's run_policy once it carries one; this list is what
+# the runner reads when it does not.
+BLOCKS_RUN = "blocks_run"
+RECORD_ONLY = "record_only"
+BLOCKS_RUN_CHECKS = ("ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1")
 
 
 class DispositionError(ValueError):
@@ -74,6 +82,10 @@ class Disposition:
     split_key: dict[str, Any] | None
     decided_at: str
     extractor: dict[str, Any]
+    # Interactive 0.5.17: true only when the unit was a campaign unit as it was decided, so the disposition
+    # set execution_allowed, the status and each input's acquisition type. Outside a campaign it is advice,
+    # and the runner acts on no disposition that is not applied.
+    applied: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -85,11 +97,14 @@ class Disposition:
             "split_key": self.split_key,
             "decided_at": self.decided_at,
             "extractor": dict(self.extractor),
+            "applied": self.applied,
         }
 
 
 def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
-    """The unit manifest's campaign_disposition, None when Interactive wrote none, or DispositionError."""
+    """The unit manifest's campaign_disposition, None when Interactive wrote none, or DispositionError.
+
+    A record without "applied" (written before Interactive 0.5.17) reads as not applied."""
     record = manifest.get("campaign_disposition") if isinstance(manifest, Mapping) else None
     if record is None:
         return None
@@ -128,6 +143,9 @@ def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
     if not isinstance(extractor, Mapping) or not _SHA256.fullmatch(str(extractor.get("sha256") or "")):
         problems.append("extractor names no 64-digit sha256")
         extractor = {}
+    applied = record.get("applied", False)
+    if not isinstance(applied, bool):
+        problems.append("applied is neither true nor false")
     if problems:
         raise DispositionError("campaign_disposition: " + "; ".join(problems) + ".")
     return Disposition(
@@ -138,6 +156,7 @@ def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
         split_key=dict(split_key) if isinstance(split_key, Mapping) else None,
         decided_at=str(record.get("decided_at") or ""),
         extractor=dict(extractor),
+        applied=applied is True,
     )
 
 
@@ -252,12 +271,18 @@ class CampaignPolicy:
 # How a tool result is read. Every Interactive tool the runner calls answers {"ok": false, "reason": ...}
 # for a failure it caught (mcp_server._structured_validation_errors); the ports wrap anything that
 # escapes that as reason "exception".
-OK, FAILED, BUSY, FAULT, REFUSED = "ok", "failed", "busy", "fault", "refused"
+OK, FAILED, BUSY, FAULT, REFUSED, CONTRACT = "ok", "failed", "busy", "fault", "refused", "contract"
+# Refusals that are the campaign's, not the unit's, and that time does not mend: a tool or parameter this
+# Interactive does not have, a reply of another shape, and (0.5.17) an extractor that is not a verified,
+# pinned build. Each would recur for every unit, so the campaign pauses for an operator instead of failing
+# units one by one and deleting their raw data.
+CONTRACT_REASONS = frozenset({"unsupported", "malformed", "raw_metadata_extractor_refused"})
 
 
 def classify_result(result: Any) -> str:
-    """ok, failed (counts against the unit), busy (wait, counts nothing), fault (pause the campaign) or
-    refused (the campaign approval does not cover it)."""
+    """ok, failed (counts against the unit), busy (wait, counts nothing), fault (pause the campaign and look
+    again later), contract (pause the campaign for an operator) or refused (the campaign approval does not
+    cover it)."""
     if not isinstance(result, Mapping):
         return FAILED
     if result.get("ok") is not False:
@@ -269,6 +294,8 @@ def classify_result(result: Any) -> str:
         return BUSY
     if reason == "backend_unavailable":
         return FAULT
+    if reason in CONTRACT_REASONS:
+        return CONTRACT
     return FAILED
 
 
@@ -295,7 +322,8 @@ def interruption_counts(interruptions_before: int, policy: CampaignPolicy) -> bo
 
 def _failure_texts(detail: Mapping[str, Any]) -> tuple[str, set[str]]:
     """The error text and exception type names a download failure's record carries, wherever they sit:
-    the job's error, the manifest's download_failure, a tool's detail."""
+    the job's error, the manifest's download_failure, a tool's detail. Only the error the lease ended on:
+    an earlier attempt that stalled and was retried says nothing about why the last one failed."""
     texts: list[str] = []
     types: set[str] = set()
     failure = detail.get("failure")
@@ -334,6 +362,9 @@ def lease_size_limit(detail: Mapping[str, Any]) -> int | None:
 _NETWORK_TYPES = frozenset({
     "URLError", "TimeoutError", "timeout", "ConnectionError", "ConnectionResetError", "ConnectionAbortedError",
     "ConnectionRefusedError", "RemoteDisconnected", "IncompleteRead", "gaierror", "SSLError", "SSLEOFError",
+    # Interactive 0.5.18: a read that got no byte for its idle timeout, a lost connection or a short body,
+    # each retried from its .part three times before the lease gives up (repository_reanalysis).
+    "DownloadStalled", "DownloadConnectionLost", "DownloadIncomplete", "RetryableDownloadError",
 })
 _NETWORK_TEXT = re.compile(
     r"\bHTTP(?: Error)? (?:5\d\d|429)\b|urlopen error|timed out|Connection (?:reset|aborted|refused)|"
@@ -347,6 +378,9 @@ def network_failure(detail: Mapping[str, Any], outcome: str = "failed") -> bool:
     """Whether a download failed on the network rather than on the unit's own objects: a server error or
     a rate limit, a timeout, a reset, a name that did not resolve, or bytes that stopped arriving."""
     if outcome == "stalled":
+        return True
+    failure = detail.get("failure")
+    if isinstance(failure, Mapping) and failure.get("retryable") is True:
         return True
     text, types = _failure_texts(detail)
     return bool(types & _NETWORK_TYPES) or bool(_NETWORK_TEXT.search(text))
@@ -501,17 +535,64 @@ def gate_verdict_token(exit_code: int | None) -> str:
     return {0: "pass", 2: "fail", 3: "unusable", 4: "held"}.get(exit_code, "not_run" if exit_code is None else "other")
 
 
+def run_blocking_failures(report: Mapping[str, Any]) -> tuple[list[str], str]:
+    """The FAILed checks of a gate --json report that stop a unit's run, and where that rule came from.
+
+    Each check's run_policy ("blocks_run" or "record_only"), when the gate states one, or a top-level
+    run_policy naming them; otherwise BLOCKS_RUN_CHECKS ("runner_default"). Statuses are the gate's own
+    lowercase words ("fail"), compared without case. Only a FAIL blocks: a check left not evaluable or a
+    WARN is recorded, and the unit runs.
+    """
+    checks = [item for item in report.get("checks") or [] if isinstance(item, Mapping)]
+    declared = report.get("run_policy")
+    top: dict[str, str] = {}
+    if isinstance(declared, Mapping):
+        for key, value in declared.items():
+            if key in (BLOCKS_RUN, RECORD_ONLY) and isinstance(value, (list, tuple)):
+                top.update({str(check): key for check in value})
+            elif isinstance(value, str):
+                top[str(key)] = value
+    stated = any("run_policy" in item for item in checks) or bool(top)
+    blocking: set[str] = set()
+    for item in checks:
+        if str(item.get("status") or "").casefold() != "fail":
+            continue
+        check = str(item.get("check_id") or "")
+        rule = item.get("run_policy") if "run_policy" in item else top.get(check)
+        if (rule == BLOCKS_RUN) if stated else (check in BLOCKS_RUN_CHECKS):
+            blocking.add(check)
+    return sorted(blocking), ("gate" if stated else "runner_default")
+
+
 # ---- pins ------------------------------------------------------------------------------------------
 
 # What identifies each pinned thing. Paths are recorded but not compared: the Console and the extractor
 # may be reached by another spelling, and a library is named by file name only.
 PIN_IDENTITY = {
     "console": ("binary_sha256", "assembly_sha256", "inventory_sha256"),
-    "extractor": ("binary_sha256", "inventory_sha256"),
+    # provenance_status and pinned: the build record still verifies, and its commits are still one of
+    # Interactive's PINNED_BUILDS (0.5.17). Interactive refuses a campaign preflight otherwise.
+    "extractor": ("binary_sha256", "inventory_sha256", "provenance_status", "pinned"),
     "interactive": ("version", "commit", "dirty"),
     "catalog": ("version", "commit", "dirty"),
     "gate": ("commit", "dirty"),
 }
+CODE_PINS = ("interactive", "catalog", "gate")
+
+
+def pin_problems(pins: Mapping[str, Any]) -> list[str]:
+    """Why these pins cannot be approved. A checkout with uncommitted changes, or whose state could not be
+    read, is not identified by its commit: the code that ran could change under the same pin, unseen."""
+    problems = []
+    for name in CODE_PINS:
+        pin = pins.get(name)
+        if not isinstance(pin, Mapping):
+            continue
+        if pin.get("dirty") is True:
+            problems.append(f"the {name} checkout has uncommitted changes; commit them and plan again")
+        elif pin.get("dirty") is None or not str(pin.get("commit") or "").strip():
+            problems.append(f"the {name} checkout's state could not be read ({pin.get('error') or 'no commit'})")
+    return problems
 
 
 def pin_differences(recorded: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:

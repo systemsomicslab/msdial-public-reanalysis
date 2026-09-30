@@ -19,11 +19,12 @@ only; the server's post-run hook records a pending plan under a campaign.
 THE CAMPAIGN AUTHORIZATION IS PASSED, NEVER confirmed=True. Every entry point that would otherwise need
 confirmed=true is given campaign_authorization_path, and Interactive validates the approval and writes
 the crossing into the unit manifest before it acts. The one exception is written out in
-InteractivePort.discard: until Interactive exposes an authorized discard (plan item 14), the port makes
-the same check msdial_cleanup_repository_raw makes for a cleanup - campaign_authorization.authorize
-for boundary 5, then record_campaign_authorization - before it calls discard_download_lease, and only
-once discard_download_lease's own refusals are known not to apply, as the cleanup records its crossing
-only for a preview that is ready.
+InteractivePort.discard: until Interactive exposes an authorized discard (plan item 14, found by its
+signature the day it lands), the port makes the same check msdial_cleanup_repository_raw makes for a
+cleanup - campaign_authorization.authorize for boundary 5, then record_campaign_authorization - before it
+calls discard_download_lease, and only once discard_download_lease's own refusals are known not to
+apply, as the cleanup records its crossing only for a preview that is ready. Nothing here deletes a
+unit's output or its mzTab-M, and nothing works around a refusal that protects them.
 
 Fake ports with the same methods drive tests/test_campaign_machine.py and test_campaign_resume.py; no
 test downloads anything or starts a Console.
@@ -215,7 +216,7 @@ class PinReader:
 
         inspection = inspect_raw_metadata_extractor(self.extractor_path)
         keys = (
-            "path", "exists", "binary_sha256", "inventory_sha256", "provenance_status", "pinned",
+            "path", "exists", "binary_sha256", "inventory_sha256", "provenance_status", "pinned", "pin_state",
             "msrawdataworkbench_commit", "msdialworkbench_commit", "product_version",
         )
         return {key: inspection.get(key) for key in keys if key in inspection}
@@ -234,7 +235,8 @@ class PinReader:
         interactive_root = self.interactive_root or Path(msdial_app.__file__).resolve().parents[1]
         catalog_root = self.catalog_root or Path(msdial_repository_catalog.__file__).resolve().parents[2]
         return {
-            "interactive": {"version": msdial_app.__version__, **git_state(interactive_root)},
+            "interactive": {"version": msdial_app.__version__, **git_state(interactive_root),
+                            "lease_uses_store": lease_uses_store()},
             "catalog": {"version": getattr(msdial_repository_catalog, "__version__", ""), **git_state(catalog_root)},
             "gate": git_state(self.gate_root),
         }
@@ -259,6 +261,32 @@ def _exception_result(error: BaseException, tool: str) -> dict[str, Any]:
         "detail": str(error) or type(error).__name__,
         "tool": tool,
     }
+
+
+class _ToolRefusal(Exception):
+    """An ok:false reply from an approval-taking tool, carried to the one place that reads refusals."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__(str(result.get("detail") or result.get("reason") or "refused"))
+        self.result = result
+
+
+def lease_uses_store(tools: Any = None) -> bool:
+    """Whether Interactive's lease fetches through its accession download store (plan item 15), which is what
+    makes the distinct bytes, not the per-unit sum, the transfer. Read from the tool it adds."""
+    if tools is None:
+        from msdial_app import mcp_server as tools
+    return hasattr(tools, "msdial_download_store_status")
+
+
+def default_extractor_path(interactive_root: str | Path) -> Path:
+    """Where the newest built pin of Interactive's PINNED_BUILDS is, beside the Interactive checkout:
+    <parent>\\RawMetadataExtractor-<raw>-<common>\\msrawdataworkbench\\...\\RawMetadataConsoleApp.exe."""
+    from msdial_app import raw_metadata_extractor as extractor
+
+    built = next(item for item in extractor.PINNED_BUILDS if item["state"] == extractor.PIN_BUILT)
+    root = extractor.extractor_build_root(Path(interactive_root).resolve().parent, built[extractor.RAW_TREE], built[extractor.COMMON_TREE])
+    return extractor.extractor_output_directory(root / extractor.RAW_TREE) / extractor.EXTRACTOR_BINARY
 
 
 class InteractivePort:
@@ -299,16 +327,25 @@ class InteractivePort:
             return _exception_result(error, name)
         return result if isinstance(result, dict) else {"ok": False, "reason": "malformed", "detail": repr(result)}
 
+    def _takes(self, name: str, parameter: str) -> bool:
+        function = getattr(self.tools, name, None)
+        return function is not None and parameter in inspect.signature(function).parameters
+
     def capabilities(self) -> dict[str, Any]:
+        """What this Interactive offers the runner, read from its code: names and signatures, nothing run."""
         import msdial_app
 
-        discard = inspect.signature(self.rr.discard_download_lease).parameters
         return {
             "version": msdial_app.__version__,
             "classify_preflight": hasattr(self.rr, "classify_preflight"),
-            "authorized_discard": bool({"campaign_authorization", "campaign_authorization_path"} & set(discard)),
+            # 0.5.17: the preflight takes the approval, and a disposition says whether it was applied.
+            "preflight_authorization": self._takes("msdial_repository_raw_metadata_preflight", "campaign_authorization_path"),
+            "disposition_hold": hasattr(self.rr, "disposition_hold"),
+            "authorized_cleanup": self._takes("msdial_cleanup_repository_raw", "campaign_authorization_path"),
+            "authorized_discard": self._authorized_discard() is not None,
             "split_parent_release": hasattr(self.rr, "cleanup_split_parent"),
             "cancel_job": hasattr(self.tools, "msdial_cancel_job"),
+            "lease_uses_store": lease_uses_store(self.tools),
         }
 
     def download(
@@ -359,12 +396,29 @@ class InteractivePort:
             return None
 
     def preflight(self, *, manifest_path: str, extractor_path: str, authorization_path: str) -> dict[str, Any]:
-        # The extractor has no outer limit here: Interactive's own per-chunk limits are authoritative.
+        # The extractor has no outer limit here: Interactive's own per-chunk limits are authoritative. The
+        # approval makes the unit a campaign unit (0.5.17): its disposition is applied, and only the pinned,
+        # verified extractor is run.
         return self._call(
             "msdial_repository_raw_metadata_preflight",
             manifest_path=manifest_path, extractor_path=extractor_path, max_inputs=0, confirm_untargeted=False,
-            optional={"campaign_authorization_path": authorization_path},
+            campaign_authorization_path=authorization_path,
         )
+
+    def classify(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+        """Interactive's classify_preflight: decide and apply the disposition of a unit whose preflight is
+        recorded, without reading a header again. {"held": {...}} when disposition_hold holds the unit."""
+        function = getattr(self.rr, "classify_preflight", None)
+        if function is None:
+            return {"ok": False, "reason": "unsupported", "detail": "Interactive has no classify_preflight (0.5.17)."}
+        try:
+            result = function(Path(manifest_path), campaign_authorization_path=authorization_path)
+        except self.ca.CampaignAuthorizationError as error:
+            return {"ok": False, "reason": "campaign_authorization_refused", "codes": list(error.codes), "detail": str(error)}
+        except Exception as error:  # noqa: BLE001
+            return _exception_result(error, "classify_preflight")
+        return {"ok": True, "applied": result.get("applied") is True, "held": result.get("held"),
+                "disposition": result.get("disposition")}
 
     def split(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
         return self._call(
@@ -457,23 +511,62 @@ class InteractivePort:
             blockers.append({"code": "finalisation_held", "detail": f"{len(holds)} finalisation hold(s) on the raw directory"})
         return blockers
 
+    # discard_download_lease's refusals, by the words it raises them with, as DISCARD_BLOCKERS codes: what an
+    # approval-taking discard (plan item 14) says when it will not delete, so the machine can tell a refusal
+    # that waiting mends from one it does not.
+    _DISCARD_REFUSALS = (
+        ("mzTab-M output exists", "mztab_output_exists"),
+        ("must use the normal cleanup", "validated_status"),
+        ("still downloading", "lease_live"),
+        ("outside the expected project workspace", "raw_outside_workspace"),
+        ("finalisation_held", "finalisation_held"),
+    )
+
+    def _authorized_discard(self) -> Callable[[Path, str], dict[str, Any]] | None:
+        """Interactive's own discard that takes the campaign approval (plan item 14), found by its signature:
+        an MCP tool msdial_discard_repository_raw, or discard_download_lease with a campaign_authorization
+        parameter. It checks the approval and records the crossing itself. None until it exists."""
+        if self._takes("msdial_discard_repository_raw", "campaign_authorization_path"):
+            def tool(path: Path, authorization: str) -> dict[str, Any]:
+                result = self._call("msdial_discard_repository_raw", manifest_path=str(path), confirmed=False,
+                                    campaign_authorization_path=authorization)
+                if result.get("ok") is False:
+                    raise _ToolRefusal(result)
+                return result
+
+            return tool
+        parameters = inspect.signature(self.rr.discard_download_lease).parameters
+        for key in ("campaign_authorization_path", "campaign_authorization"):
+            if key in parameters:
+                return lambda path, authorization, key=key: self.rr.discard_download_lease(path, **{key: authorization})
+        return None
+
     def discard(
         self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "",
     ) -> dict[str, Any]:
         """Delete the raw data of a unit that produced no validated output, under boundary 5.
 
-        {"deleted": false, "blockers": [codes]} when the fallback finds that Interactive would refuse; no
-        crossing is recorded then.
+        Interactive's approval-taking discard when it has one. Until then the documented fallback: the
+        finalisation holds are retried first (Interactive moving MS-DIAL's containers out of the raw tree into
+        output, as its cleanup does), then discard_download_lease's own refusals are read, and only a discard
+        that will happen is authorized, recorded and made. It never deletes anything but the raw tree, and
+        never the unit's output or its mzTab-M: a failed run that left an mzTab-M keeps its raw data
+        ({"deleted": false, "blockers": ["mztab_output_exists"]}), with no crossing recorded.
         """
         path = Path(manifest_path)
-        parameters = inspect.signature(self.rr.discard_download_lease).parameters
+        authorized = self._authorized_discard()
         try:
-            if "campaign_authorization_path" in parameters:
-                result = self.rr.discard_download_lease(path, campaign_authorization_path=authorization_path)
-            elif "campaign_authorization" in parameters:
-                result = self.rr.discard_download_lease(path, campaign_authorization=authorization_path)
+            if authorized is not None:
+                result = authorized(path, authorization_path)
             else:
+                from msdial_app.run_finalisation import raw_deletion_holds, resolve_finalisation_holds
+
                 manifest = self.rr.read_manifest(path)
+                if raw_deletion_holds(path, dict(manifest)):
+                    resolve_finalisation_holds(path)
+                    if hasattr(self.rr, "refresh_retained_artifacts"):
+                        self.rr.refresh_retained_artifacts(path)
+                    manifest = self.rr.read_manifest(path)
                 blockers = self.discard_blockers(path, manifest)
                 if blockers:
                     return {"ok": True, "deleted": False, "blockers": [item["code"] for item in blockers],
@@ -487,9 +580,22 @@ class InteractivePort:
                 result = self.rr.discard_download_lease(path, confirmed=True)
         except self.ca.CampaignAuthorizationError as error:
             return {"ok": False, "reason": "campaign_authorization_refused", "codes": list(error.codes), "detail": str(error)}
+        except _ToolRefusal as refusal:
+            return self._discard_refusal(refusal.result, str(refusal.result.get("detail") or ""))
         except Exception as error:  # noqa: BLE001
-            return _exception_result(error, "discard_download_lease")
-        return {"ok": True, "deleted": bool(result.get("deleted")), "detail": result.get("raw_directory")}
+            return self._discard_refusal(_exception_result(error, "discard_download_lease"), str(error))
+        if not result.get("deleted"):
+            # A preview that was not ready, as the approval-taking cleanup answers one.
+            text = "; ".join(str(item) for item in result.get("blockers") or []) or str(result.get("message") or "")
+            return {"ok": True, "deleted": False, "blockers": [code for words, code in self._DISCARD_REFUSALS if words in text],
+                    "detail": text or "not deleted"}
+        return {"ok": True, "deleted": True, "detail": result.get("raw_directory")}
+
+    def _discard_refusal(self, result: dict[str, Any], text: str) -> dict[str, Any]:
+        codes = [code for words, code in self._DISCARD_REFUSALS if words in text]
+        if codes and policy.classify_result(result) not in (policy.REFUSED, policy.CONTRACT):
+            return {"ok": True, "deleted": False, "blockers": codes, "detail": text}
+        return result
 
     def release_split_parent(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
         function = getattr(self.rr, "cleanup_split_parent", None)
@@ -718,11 +824,17 @@ class GatePort:
         except ValueError:
             verdict["detail"] = completed.stderr.decode("utf-8", errors="replace")[-2000:]
             return verdict
-        checks = report.get("checks") or []
-        verdict["fail_ids"] = sorted({item["check_id"] for item in checks if item.get("status") == "FAIL"})
-        verdict["warn_ids"] = sorted({item["check_id"] for item in checks if item.get("status") == "WARN"})
+        checks = [item for item in report.get("checks") or [] if isinstance(item, Mapping)]
+
+        def ids(status: str) -> list[str]:
+            # The gate writes its statuses lowercase ("fail", "warn").
+            return sorted({str(item.get("check_id")) for item in checks if str(item.get("status") or "").casefold() == status})
+
+        verdict["fail_ids"] = ids("fail")
+        verdict["warn_ids"] = ids("warn")
         verdict["strict_hold_ids"] = list(report.get("strict_failures") or [])
         verdict["stage_reached"] = (report.get("progress") or {}).get("stage_reached")
+        verdict["blocking_fail_ids"], verdict["run_policy_source"] = policy.run_blocking_failures(report)
         return verdict
 
 

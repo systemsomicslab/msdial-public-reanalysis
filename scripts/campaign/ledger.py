@@ -275,6 +275,9 @@ CREATE TABLE IF NOT EXISTS gate_verdict(
     fail_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(fail_ids_json)),
     warn_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(warn_ids_json)),
     strict_hold_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(strict_hold_ids_json)),
+    -- The FAILs that stop a unit's run (blocks_run), and whether the gate or the runner's list said so.
+    blocking_fail_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blocking_fail_ids_json)),
+    run_policy_source TEXT,
     report_path TEXT,
     report_sha256 TEXT,
     gate_commit TEXT NOT NULL,
@@ -773,13 +776,15 @@ class Ledger:
     def _insert_gate(db: sqlite3.Connection, unit_key: str, point: str, verdict: dict[str, Any], *, now: str) -> None:
         db.execute(
             "INSERT INTO gate_verdict(unit_key, at, point, stage_arg, strict, outcome, exit_code, stage_reached, "
-            "fail_ids_json, warn_ids_json, strict_hold_ids_json, report_path, report_sha256, gate_commit, detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "fail_ids_json, warn_ids_json, strict_hold_ids_json, blocking_fail_ids_json, run_policy_source, "
+            "report_path, report_sha256, gate_commit, detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 unit_key, now, point, verdict.get("stage", "all"), int(bool(verdict.get("strict", True))),
                 verdict["outcome"], verdict.get("exit_code"), verdict.get("stage_reached"),
                 _json(verdict.get("fail_ids") or []), _json(verdict.get("warn_ids") or []),
-                _json(verdict.get("strict_hold_ids") or []), verdict.get("report_path"),
+                _json(verdict.get("strict_hold_ids") or []), _json(verdict.get("blocking_fail_ids") or []),
+                verdict.get("run_policy_source"), verdict.get("report_path"),
                 verdict.get("report_sha256"), verdict.get("gate_commit") or "", verdict.get("detail"),
             ),
         )

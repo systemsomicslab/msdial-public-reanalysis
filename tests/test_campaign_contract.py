@@ -49,7 +49,9 @@ INTERACTIVE_TOOLS = {
     },
     "msdial_interactive_job": {"job_id", "detail", "log_lines", "host", "port"},
     "msdial_cancel_job": {"job_id", "reason", "host", "port"},
-    "msdial_repository_raw_metadata_preflight": {"manifest_path", "extractor_path", "max_inputs", "confirm_untargeted", "host", "port"},
+    "msdial_repository_raw_metadata_preflight": {
+        "manifest_path", "extractor_path", "max_inputs", "confirm_untargeted", "campaign_authorization_path", "host", "port",
+    },
     "msdial_split_repository_unit": {"manifest_path", "confirmed", "campaign_authorization_path", "host", "port"},
     "msdial_prepare_repository_reanalysis": {
         "manifest_path", "confirmed", "allow_partial_mapping", "campaign_authorization_path", "host", "port",
@@ -89,7 +91,41 @@ REPOSITORY_FUNCTIONS = {
     "discard_download_lease": {"manifest_path", "confirmed"},
     "live_run_attempt": {"manifest_path"},
     "lease_owner_state": {"manifest"},
+    "classify_preflight": {"manifest_path", "campaign_authorization_path"},
+    "disposition_hold": {"manifest"},
 }
+
+
+def campaign_unit(root: Path, status: str = "download_failed", units: tuple[str, ...] = ("u1",)) -> dict:
+    """A campaign authorization covering u1 and a unit workspace of u1 with raw data, as a runner leaves them."""
+    campaign_manifest = root / "campaign-manifest.json"
+    campaign_manifest.write_bytes(b'{"campaign_id":"c1"}')
+    authorization = root / "campaign-authorization.json"
+    authorization.write_text(json.dumps({
+        "schema": plan.AUTHORIZATION_SCHEMA, "approval_id": "A1", "campaign_id": "c1",
+        "manifest_digest": plan.digest_of(campaign_manifest.read_bytes()),
+        "campaign_manifest_path": str(campaign_manifest), "approved_by": "Test Person",
+        "approved_at": "2026-10-01T00:00:00+00:00", "statement": "Approved.", "covers": [1, 3, 4, 5, "split"],
+        "units": list(units), "raw_retention_policy": "delete_after_validated_output", "libraries": [], "revoked_at": None,
+    }), encoding="utf-8")
+    workspace = root / "analysis" / "metabolights" / "MTBLS1" / "u1"
+    raw = workspace / "raw" / "data" / "S1.mzML"
+    raw.parent.mkdir(parents=True)
+    raw.write_bytes(b"x" * 1000)
+    (workspace / "output").mkdir()
+    (workspace / "provenance").mkdir()
+    manifest_path = workspace / "provenance" / "run-manifest.json"
+    manifest_path.write_text(json.dumps({
+        "status": status, "project": {"analysis_unit_id": "u1"}, "workspace": str(workspace),
+        "raw_directory": str(workspace / "raw"), "output_directory": str(workspace / "output"),
+        "raw_retention_policy": "delete_after_validated_output", "cleanup_allowed": False,
+    }), encoding="utf-8")
+    return {"authorization": authorization, "workspace": workspace, "raw": raw, "manifest_path": manifest_path}
+
+
+def boundary_5_crossings(manifest_path: Path) -> list:
+    recorded = json.loads(manifest_path.read_text(encoding="utf-8")).get("campaign_authorizations") or []
+    return [item for item in recorded if str(item.get("boundary")) == "5"]
 
 
 @unittest.skipUnless(AVAILABLE, "the Interactive and Catalog checkouts are not where this test looks")
@@ -206,8 +242,13 @@ class InteractiveContractTests(unittest.TestCase):
         result = port._call("msdial_cancel_job", job_id="x", no_such_parameter=1)
         self.assertEqual(result["reason"], "unsupported")
         capabilities = port.capabilities()
-        self.assertEqual(set(capabilities), {"version", "classify_preflight", "authorized_discard", "split_parent_release", "cancel_job"})
-        self.assertTrue(capabilities["cancel_job"])
+        self.assertEqual(set(capabilities), {
+            "version", "classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup",
+            "authorized_discard", "split_parent_release", "cancel_job", "lease_uses_store",
+        })
+        # What the runner cannot run without, since Interactive 0.5.17 (verify-env refuses otherwise).
+        for name in ("cancel_job", "classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup"):
+            self.assertTrue(capabilities[name], name)
 
     def test_a_discard_interactive_would_refuse_records_no_crossing(self) -> None:
         """Interactive refuses to discard raw data beside an mzTab-M. The port's fallback finds that out
@@ -264,6 +305,109 @@ class InteractiveContractTests(unittest.TestCase):
             self.assertTrue(result["deleted"], result)
             self.assertEqual(len(crossings()), 1)
             self.assertFalse((workspace / "raw").exists())
+
+    def test_the_default_extractor_is_the_newest_built_pin(self) -> None:
+        import msdial_app
+        from msdial_app import raw_metadata_extractor as extractor
+
+        built = next(item for item in extractor.PINNED_BUILDS if item["state"] == extractor.PIN_BUILT)
+        path = ports.default_extractor_path(Path(r"D:/0_SourceCode/msdial_interactive_app"))
+        self.assertEqual(path.parts[-7:], (
+            f"RawMetadataExtractor-{built[extractor.RAW_TREE][:9]}-{built[extractor.COMMON_TREE][:9]}", "msrawdataworkbench",
+            "RawMetadataConsoleApp", "bin", "Release", "net48", "RawMetadataConsoleApp.exe"))
+        if tuple(int(part) for part in msdial_app.__version__.split(".")[:3]) >= (0, 5, 19):
+            self.assertTrue(built[extractor.RAW_TREE].startswith("a12293c61"), "the pin of Interactive 0.5.19")
+
+    def test_the_preflight_is_given_the_approval(self) -> None:
+        port = ports.InteractivePort(port=8766)
+        seen = {}
+        real = self.tools.msdial_repository_raw_metadata_preflight
+
+        @functools.wraps(real)  # the port reads the real signature
+        def preflight(**arguments):
+            seen.update(arguments)
+            return {"completed": True, "extractor_found": True}
+
+        with mock.patch.object(self.tools, "msdial_repository_raw_metadata_preflight", preflight):
+            port.preflight(manifest_path="m.json", extractor_path="x.exe", authorization_path="auth.json")
+        self.assertEqual((seen["campaign_authorization_path"], seen["max_inputs"], seen["confirm_untargeted"]),
+                         ("auth.json", 0, False))
+
+    def test_classify_preflight_holds_a_unit_with_no_preflight_and_refuses_another_units_approval(self) -> None:
+        port = ports.InteractivePort(port=8766)
+        with tempfile.TemporaryDirectory() as directory:
+            unit = campaign_unit(Path(directory), status="raw_metadata_required")
+            result = port.classify(manifest_path=str(unit["manifest_path"]), authorization_path=str(unit["authorization"]))
+            self.assertEqual((result["ok"], result["applied"], result["held"]["reason"]),
+                             (True, False, "raw_metadata_preflight_missing"))
+            self.assertNotIn("campaign_disposition", json.loads(unit["manifest_path"].read_text(encoding="utf-8")),
+                             "a held unit is left as it is")
+        with tempfile.TemporaryDirectory() as directory:
+            unit = campaign_unit(Path(directory), units=("u2",))
+            result = port.classify(manifest_path=str(unit["manifest_path"]), authorization_path=str(unit["authorization"]))
+            self.assertEqual(policy.classify_result(result), policy.REFUSED)
+
+    def test_an_approval_taking_discard_is_used_the_day_it_exists(self) -> None:
+        """Plan item 14's discard is found by its signature, and it checks and records the approval itself:
+        the port then records no crossing of its own. Its refusals are read as the fallback's codes."""
+        port = ports.InteractivePort(port=8766)
+        calls = []
+
+        def discard_download_lease(manifest_path, confirmed=False, campaign_authorization_path=""):
+            calls.append((str(manifest_path), campaign_authorization_path))
+            if "refuse" in str(manifest_path):
+                raise ValueError("mzTab-M output exists; finalize the run before deleting raw data.")
+            return {"deleted": True, "raw_directory": "raw"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            unit = campaign_unit(Path(directory))
+            with mock.patch.object(self.rr, "discard_download_lease", discard_download_lease), \
+                    mock.patch.object(port.ca, "authorize", side_effect=AssertionError("the port authorizes nothing itself")):
+                self.assertTrue(port.capabilities()["authorized_discard"])
+                result = port.discard(manifest_path=str(unit["manifest_path"]), authorization_path="auth.json", unit_id="u1")
+                self.assertEqual((result["ok"], result["deleted"]), (True, True))
+                refused = port.discard(manifest_path=str(Path(directory) / "refuse.json"), authorization_path="auth.json", unit_id="u1")
+            self.assertEqual((refused["deleted"], refused["blockers"]), (False, ["mztab_output_exists"]))
+            self.assertEqual(calls[0], (str(unit["manifest_path"]), "auth.json"))
+            self.assertEqual(boundary_5_crossings(unit["manifest_path"]), [])
+
+    def test_the_fallback_moves_the_containers_out_before_it_discards(self) -> None:
+        """A finalisation hold (MS-DIAL's containers still in the raw tree) is retried first, as Interactive's
+        cleanup does; the discard follows only once no hold stands, and a hold that stands records nothing."""
+        from msdial_app import run_finalisation
+
+        port = ports.InteractivePort(port=8766)
+        if port.capabilities()["authorized_discard"]:
+            self.skipTest("Interactive has its own authorized discard; the port's fallback is not used")
+        for resolves in (True, False):
+            with self.subTest(resolves=resolves), tempfile.TemporaryDirectory() as directory:
+                unit = campaign_unit(Path(directory))
+                manifest = json.loads(unit["manifest_path"].read_text(encoding="utf-8"))
+                manifest[run_finalisation.HOLDS] = [{"id": "h1", "blocks": [run_finalisation.BLOCKS_RAW_DELETION],
+                                                     "step": "relocate_intermediates", "job_id": "rn1", "reason": "locked"}]
+                unit["manifest_path"].write_text(json.dumps(manifest), encoding="utf-8")
+
+                def resolve(path, log=None):
+                    if resolves:  # Interactive moved the containers and cleared its hold
+                        current = json.loads(Path(path).read_text(encoding="utf-8"))
+                        current[run_finalisation.HOLDS] = []
+                        Path(path).write_text(json.dumps(current), encoding="utf-8")
+                        return []
+                    return list(manifest[run_finalisation.HOLDS])
+
+                with mock.patch.object(run_finalisation, "resolve_finalisation_holds", side_effect=resolve) as retried:
+                    result = port.discard(manifest_path=str(unit["manifest_path"]), authorization_path=str(unit["authorization"]),
+                                          unit_id="u1")
+                self.assertEqual(retried.call_count, 1)
+                if resolves:
+                    self.assertTrue(result["deleted"], result)
+                    self.assertEqual(len(boundary_5_crossings(unit["manifest_path"])), 1)
+                else:
+                    self.assertEqual((result["deleted"], result["blockers"]), (False, ["finalisation_held"]))
+                    self.assertFalse(policy.discard_blocked_for_good(result["blockers"]), "a hold may yet be resolved")
+                    self.assertEqual(boundary_5_crossings(unit["manifest_path"]), [])
+                    self.assertTrue(unit["raw"].is_file())
+                self.assertTrue((unit["workspace"] / "output").is_dir(), "the output is never touched")
 
     def test_a_blocked_download_names_the_bytes_interactive_needs(self) -> None:
         port = ports.InteractivePort(port=8766)
@@ -357,6 +501,65 @@ class CatalogContractTests(unittest.TestCase):
                 gate_verdict=policy.gate_verdict_token(4), gate_exit_code=4, database=str(database),
             )
             self.assertEqual((result.get("recorded"), "Unknown analysis unit" in result.get("message", "")), (False, True))
+
+    def test_the_runs_the_runner_records_are_accepted_with_their_class_proposal(self) -> None:
+        """Every status the runner sends for a production attempt and for a unit's end, with the unit's saved
+        Class decision, for the unit and for a split part of it (<unit>-<part>, recorded under the unit)."""
+        import sqlite3
+
+        from msdial_repository_catalog.storage import Catalog
+
+        from campaign import machine
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "catalog.sqlite"
+            with Catalog(database) as catalog:
+                catalog.initialize()
+            connection = sqlite3.connect(database)
+            with connection:
+                connection.execute("INSERT INTO study(study_id, repository, accession, source_hash) VALUES ('s1', 'metabolights', 'MTBLS9000', 'h')")
+                connection.execute(
+                    "INSERT INTO analysis_unit(unit_id, study_id, source_subrecord_id, separation, acquisition_mode, ion_mode, "
+                    "ion_mobility, instrument, untargeted, signature, target_omics) "
+                    "VALUES ('u1', 's1', 'u1', 'LC-MS', 'DDA', 'Positive', 'Unknown', 'Agilent', NULL, 'u1', 'Metabolomics')"
+                )
+                for index in range(2):
+                    connection.execute("INSERT INTO sample(sample_pk, unit_id, sample_id, raw_file) VALUES (?, 'u1', ?, ?)",
+                                       (f"pk{index}", f"S{index}", f"S{index}.mzML"))
+                    connection.execute(
+                        "INSERT INTO raw_file(file_id, unit_id, path, role, size_bytes, download_url, sample_id) "
+                        "VALUES (?, 'u1', ?, 'raw', 10, ?, ?)", (f"f{index}", f"S{index}.mzML", f"https://x/S{index}.mzML", f"S{index}"))
+            connection.close()
+            port = ports.CatalogPort(database)
+            decision = port.class_decision("u1", "annotation")
+            saved = port.save_class(unit_id="u1", purpose="annotation", kind=decision["kind"], ratification={
+                "approval_id": "approval-1", "manifest_digest": "sha256:" + "0" * 64, "campaign_id": "test-campaign",
+                "proposal_id": decision["proposal_id"]})
+            self.assertTrue(saved["ok"], saved)
+            world = campaign_fakes.World(root / "world", ["u1"])
+            world_ports = world.ports()
+            world_ports.catalog = port
+            with world.open() as book:
+                runner = machine.Runner(book, world_ports, resources={"libraries": world.libraries})
+                unit = {**book.unit("u1"), "class_proposal_id": saved["proposal_id"], "run_job_id": "rn0003"}
+                for job, status in (("rn0001", "timed_out"), ("rn0002", "outputs_not_validated"), ("rn0003", "cancelled"),
+                                    ("rn0004", "interrupted"), ("rn0005", "failed"), ("rn0003", "outputs_produced")):
+                    runner._record_run({**unit, "run_job_id": job}, status, None, job_id=job, final=False)
+                for status, exit_code in (("outputs_produced", 4), ("failed", 2), ("skipped", None), ("excluded", None)):
+                    runner._record_run(unit, status, exit_code)
+                runner._record_run(unit, "completed", 0)
+                part = {**unit, "unit_key": "u1-dda", "role": "split_part", "parent_unit_key": "u1", "run_job_id": "rn0006"}
+                runner._record_run(part, "outputs_produced", None, job_id="rn0006", final=False)
+                runner._record_run(part, "outputs_produced", 4)
+                self.assertEqual(book.events("catalog_run_not_recorded"), [])
+            with Catalog(database) as catalog:
+                last = catalog.get_analysis_run("u1:rn0003")
+                self.assertEqual((last["status"], last["gate_verdict"], last["gate_exit_code"]), ("completed", "pass", 0))
+                self.assertEqual(last["class_proposal_id"], saved["proposal_id"])
+                self.assertEqual(last["provenance"]["attempt_status"], "outputs_produced")
+                self.assertEqual(catalog.get_analysis_run("u1:rn0001")["status"], "timed_out")
+                self.assertEqual(catalog.get_analysis_run("u1-dda:rn0006")["gate_verdict"], "held")
 
 
 class PlanContractTests(unittest.TestCase):
