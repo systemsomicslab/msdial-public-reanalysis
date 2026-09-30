@@ -437,6 +437,127 @@ class ArchiveBasisTests(unittest.TestCase):
         self.assertEqual(verifier.WARN, check.status)
         self.assertEqual("download_sha256", check.evidence["basis"])
 
+    def test_a_study_archive_whose_sha256_was_compared_is_named_by_it(self) -> None:
+        """Interactive says 'published SHA-256 matched' of such an archive; the gate said MD5."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary)
+            download = unit.archive("study.zip", {"study/S1.mzML": b"one"}, md5="ab" * 32)
+            download["declared_checksum_algorithm"] = "sha256"
+            unit.extracted_input("study/S1.mzML", download)
+            check = unit.sum1()
+            published = unit.publish("Of the 1 analysis input, 1 was extracted from an archive whose published "
+                                     "SHA-256 matched.")
+
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertEqual(["SHA-256"], check.evidence["archive_algorithms"])
+        self.assertIn("extracted from an archive whose published SHA-256 matched", check.detail)
+        self.assertNotIn("MD5", check.detail)
+        self.assertEqual(verifier.PASS, published.status)
+        self.assertEqual(1, published.evidence["permitted_wording_count"])
+
+
+def _mb_post_tar_unit(temporary: str) -> tuple[LineageUnit, dict]:
+    """MB-POST's project tar of per-sample zips, as Interactive 0.5.16's lease records it.
+
+    The Catalog lists the zips, each with its published MD5, all at the tar's one URL. The lease
+    compares each zip with its MD5 before it expands (the validator's archives, compared
+    before_expansion) and marks the zip's nested extraction record; the tar's download carries the
+    first zip's value, never compared with the tar. Each input row names only the tar as its source.
+    """
+    unit = LineageUnit(temporary, repository="mb_post")
+    zips = {sample: f"PK {sample}".encode() for sample in ("S1", "S2")}
+    md5s = {sample: hashlib.md5(data).hexdigest() for sample, data in zips.items()}
+    members = {f"MPST/FILES/{sample}.raw/_FUNC001.DAT": f"{sample} spectra".encode() for sample in zips}
+    expanded = ["\t".join((f"MPST/FILES/{sample}.raw.zip", "file", str(len(data)), "00000000", "", "1",
+                           "MPST.tar", f"MPST/FILES/{sample}.raw.zip", "expanded_archive"))
+                for sample, data in zips.items()]
+    download = unit.archive("MPST.tar", members, md5=md5s["S1"], verified=False, extra_rows=expanded)
+    unit.manifest["project"]["files"] = [{"name": f"FILES/{sample}.raw.zip", "checksum": md5s[sample]}
+                                         for sample in zips]
+    unit.validated()
+    unit.manifest["allowlist_checksum_validation"]["archives_verified_at_download"] = 0
+    record = unit.manifest["archive_extractions"][0]
+    record["crc_verified"] = False
+    record["nested"] = [{
+        "archive_name": f"{sample}.raw.zip", "archive_path": f"MPST/FILES/{sample}.raw.zip",
+        "destination_relative": f"MPST/FILES/{sample}.raw", "destination_rule": "container_stem",
+        "archive_sha256": _sha256(data), "archive_md5": md5s[sample], "crc_verified": True,
+        "rejected_members": [], "nested": [], "declared_name": f"FILES/{sample}.raw.zip",
+        "declared_checksum": md5s[sample], "declared_checksum_algorithm": "md5", "declared_checksum_verified": True,
+    } for sample, data in zips.items()]
+    for sample in zips:
+        unit.container_input(f"MPST/FILES/{sample}.raw", download)
+    return unit, record
+
+
+class NestedArchiveBasisTests(unittest.TestCase):
+    """An archive inside the download, compared with its own published checksum before it expanded."""
+
+    def test_each_zip_verified_before_it_expanded_vouches_for_its_container(self) -> None:
+        """THE DISAGREEMENT: Interactive's lease said 'published MD5 matched' and SUM-1 FAILed it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _record = _mb_post_tar_unit(temporary)
+            check = unit.sum1()
+
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertEqual("archive_verified", check.evidence["basis"])
+        self.assertEqual({"archive_verified": 2}, check.evidence["inputs_by_basis"])
+        self.assertEqual(2, check.evidence["archives_verified"], "each zip is an archive of its own")
+        self.assertEqual(0, check.evidence["archives_without_member_crc"])
+        self.assertIn(ARCHIVE_WORDING, check.detail)
+
+    def test_a_zip_whose_recorded_digest_is_not_its_published_value_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, record = _mb_post_tar_unit(temporary)
+            record["nested"][0]["archive_md5"] = "f" * 32
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"archive_md5_unverified": 1}, check.evidence["uncovered_reasons"])
+        self.assertEqual("S1.raw", check.evidence["uncovered"][0]["input"])
+
+    def test_a_zip_checksum_the_unit_never_declared_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _record = _mb_post_tar_unit(temporary)
+            unit.manifest["project"]["files"][1]["checksum"] = "e" * 32
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"archive_md5_unverified": 1}, check.evidence["uncovered_reasons"])
+        self.assertEqual("S2.raw", check.evidence["uncovered"][0]["input"])
+
+    def test_a_zip_the_validator_did_not_account_for_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _record = _mb_post_tar_unit(temporary)
+            unit.manifest["allowlist_checksum_validation"]["verified"] = 1
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"archive_md5_unverified": 2}, check.evidence["uncovered_reasons"])
+
+    def test_a_verified_zip_vouches_only_for_what_it_holds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, record = _mb_post_tar_unit(temporary)
+            record["nested"][1]["declared_checksum_verified"] = None
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual(1, check.evidence["inputs_uncovered"])
+        self.assertEqual("S2.raw", check.evidence["uncovered"][0]["input"])
+
+    def test_the_tars_listing_must_still_hold_the_container(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, record = _mb_post_tar_unit(temporary)
+            elsewhere = unit.data / "MPST" / "FILES" / "S3.raw"
+            elsewhere.mkdir()
+            record["nested"][1]["destination_relative"] = "MPST/FILES/S3.raw"
+            unit.manifest["input_lineage"]["rows"][1]["path"] = str(elsewhere)
+            unit.manifest["input_candidates"][1] = str(elsewhere)
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"missing_from_listing": 1}, check.evidence["uncovered_reasons"])
+
 
 # ---------------------------------------------------------------------------------------------
 # Files, folders and the table itself
