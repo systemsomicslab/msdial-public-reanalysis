@@ -2,7 +2,7 @@
   "schema": "msdial-public-reanalysis-trial-manifest.v1",
   "trial_id": "2026-09-20-ten-unit",
   "prepared_at": "2026-09-20T22:30:00+09:00",
-  "status": "Units approved 2026-09-20. Only MTBLS2207 has been downloaded (2026-09-23) and split into a DDA and a DIA run (2026-09-24). Both runs were run in production under Interactive 0.5.2 with the 31dea2b39 Console on 2026-09-27, each after its own boundary-4 confirmation; the DDA run had run once before, on 2026-09-26, and that run is superseded (units[n=5].runs). No other unit has been downloaded. On 2026-09-29 the production Console moved to c471463a5 (P1); neither run has been made with it. How far each run has got is not recorded here: run scripts/verify-run-invariants.py <run workspace> --stage all --strict --json (progress, checks_by_stage). What a run's record below says the gate returned is an observation on the date it names, not a stage.",
+  "status": "Units approved 2026-09-20. Only MTBLS2207 has been downloaded (2026-09-23) and split into a DDA and a DIA run (2026-09-24). On 2026-10-01 both runs were re-run for P1 on Console f56d4478a under Interactive 0.5.16 with the private VS21 negative MSP, under the recorded approval p1-mtbls2207-2026-10-01; the 2026-09-27 runs are superseded (units[n=5].runs). No other unit has been downloaded. How far each run has got is not recorded here: run scripts/verify-run-invariants.py <run workspace> --stage all --strict --json (progress, checks_by_stage). What a run's record below says the gate returned is an observation on the date it names, not a stage.",
   "purpose_of_the_trial": "Exercise every branch of the repository reanalysis pipeline against real public data, and have the result judged by a layer that did not run it. This is a pipeline test, not a biological study.",
   "evaluation": {
     "rule": "Two verdicts, reported separately and never combined. Part A says whether the pipeline is ready to be judged. Part B says how far each run got on real data. The gate derives it from the artifacts on disk and from fields the provenance manifest records, each paired with an artifact where one exists (B1 downloads, input_candidates and the unit's or its owner's status; B2 execution_allowed; B3 the Class proposal's status; B4 peak_height_diagnostics and its directory; B7 status, finalized_at and mztab_validation with an mzTab-M; B10 raw_retention_policy and retained_artifact_inventory). It never reads a stage written by hand, here or anywhere. The stages are defined by COMPLETION_STAGES in scripts/verify-run-invariants.py, which part_b_stages mirrors (a test holds them equal). A stage is reached when its artifacts exist, whether or not they are right; whether they are right is the gate's verdict, reported beside it by stage (checks_by_stage). A run is completed on real data when it reaches B10 and its gate, run with --stage all --strict, exits 0. A run whose SUM-2 or QA-1 leaves sentences a person must read is completed only once that person's reading is recorded (decided 2026-09-28): READ-1, at B9, holds it under --strict (exit 4) until scripts/record-reading.py has recorded, in provenance/readings.json, a reading of exactly those sentences (boundary 6). A unit is completed when every one of its runs is. A negative control is completed when it stops where its expected_stage says, for the reason it names.",
@@ -352,27 +352,58 @@
           "acquisition_mode": "DDA",
           "workspace": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dda",
           "production": {
-            "job_id": "1544889c25f44e48ba2ec88e94694097",
-            "finalized_at": "2026-09-27T08:42:27Z",
-            "interactive": "0.5.2",
-            "console_sha256": "80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a",
+            "job_id": "b2bf332328144df78b58c65fee8f2a74",
+            "finalized_at": "2026-09-30T15:39:42Z",
+            "interactive": "0.5.16",
+            "console": "f56d4478a",
+            "console_sha256": "e75519adcbffa2e28973486df693b2e6fbc3978f1d70dd05e9d5e4e70aa63e09",
             "minimum_peak_height": 9000,
-            "peak_height_diagnostic": "c8f2be9661634eedb55845bf5a36fca1",
-            "analytical_order": "raw_header_acquisition_start_time: NIST1950 (2019-12-18), IROA (2020-01-17), M3T-Std, M3T-Std_Plasma, M3T-Std_Yeast (2020-09-16), M3T-Std_Ecoli (2020-09-17)",
-            "alignment_spots": 8634,
+            "peak_height_diagnostic": "2746e0696f04444fbff608ccd0922a60 (9,880 peaks at zero threshold, 4,397 at 9000; step 1000)",
+            "alignment_spots": 8653,
             "evidence_source_column": {
-              "ReferenceSpectrum": 434,
-              "RuleBased": 65,
-              "WeakSpectrumMatch": 351,
-              "UnmatchedSpectrum": 139,
-              "PrecursorOnly": 3342,
-              "null": 4303
+              "ReferenceSpectrum": 675,
+              "RuleBased": 90,
+              "WeakSpectrumMatch": 486,
+              "UnmatchedSpectrum": 102,
+              "PrecursorOnly": 5270,
+              "null": 2030
             },
-            "msms_matched_spots": 499,
-            "qa": "review. Run-order/intensity r = -0.377 against |r| <= 0.3 fails; the other 6 of 7 criteria are not assessable (no QC, no blank).",
-            "gate_observed": "2026-09-27, --stage all --strict: exit 0, VERDICT ok, WARN SUM-1, MTH-1 and QA-1, DSK-1 deferred to the raw owner. An observation on that date, not a stage; run the gate again for the current verdict."
+            "msms_matched_spots": 765,
+            "qa": "review. Run-order/intensity r = -0.373 against |r| <= 0.3 fails; the other 6 of 7 criteria are not assessable (no QC, no blank).",
+            "finalisation": "mzTab-M: 2 library URIs and 6 ms_run locations rewritten, 1 library identity line added. 24 MS-DIAL intermediates (93.6 MB) moved to output\\msdial-intermediates; 60 files of earlier attempts recorded as superseded in the raw tree. Project-2610011237_Loaded.msp2.dbs (277,921,458 bytes) deleted and recorded.",
+            "libraries": "MSMS-Private-neg-VS21.msp (sha256 7e2581ab31461b5a9102158a6eaf73d0a1702b8564dd75a9281c9b86dc4d132f, private, named by file name and sha256 only) as the MSP high and low tiers; Msp20250303164224_NCDK-TUAT-LC25_converted_dev.lbm2 (10.5281/zenodo.21904324) as the LBM tier",
+            "approval": "Campaign authorization p1-mtbls2207-2026-10-01 (boundaries 3 and 4 for both parts, retention keep), recorded in each part's manifest; analysis\\_campaigns\\p1-mtbls2207-20261001",
+            "gate_observed": "2026-10-01, --stage all --strict: exit 0, VERDICT ok, 23 PASS, WARN SUM-1 and MTH-1, SEC-1 PASS on 9 shared artifacts. An observation on that date, not a stage; run the gate again for the current verdict."
           },
           "superseded": [
+            {
+              "job_id": "1544889c25f44e48ba2ec88e94694097",
+              "ran": "2026-09-27, Interactive 0.5.2, Console 31dea2b39, public VS20 negative MSP",
+              "snapshot": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dda\\superseded\\run-1544889c25f44e48ba2ec88e94694097, with output.sha256 and README.txt",
+              "why": "Re-run for P1 on Console f56d4478a: the earlier Console decoded mzML arrays without their last element and predates MsdialWorkbench#815, so adduct estimation used [M-H]- alone. The re-run also uses the private VS21 MSP in place of the public VS20 one.",
+              "record": {
+                "job_id": "1544889c25f44e48ba2ec88e94694097",
+                "finalized_at": "2026-09-27T08:42:27Z",
+                "interactive": "0.5.2",
+                "console_sha256": "80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a",
+                "minimum_peak_height": 9000,
+                "peak_height_diagnostic": "c8f2be9661634eedb55845bf5a36fca1",
+                "analytical_order": "raw_header_acquisition_start_time: NIST1950 (2019-12-18), IROA (2020-01-17), M3T-Std, M3T-Std_Plasma, M3T-Std_Yeast (2020-09-16), M3T-Std_Ecoli (2020-09-17)",
+                "alignment_spots": 8634,
+                "evidence_source_column": {
+                  "ReferenceSpectrum": 434,
+                  "RuleBased": 65,
+                  "WeakSpectrumMatch": 351,
+                  "UnmatchedSpectrum": 139,
+                  "PrecursorOnly": 3342,
+                  "null": 4303
+                },
+                "msms_matched_spots": 499,
+                "qa": "review. Run-order/intensity r = -0.377 against |r| <= 0.3 fails; the other 6 of 7 criteria are not assessable (no QC, no blank).",
+                "gate_observed": "2026-09-27, --stage all --strict: exit 0, VERDICT ok, WARN SUM-1, MTH-1 and QA-1, DSK-1 deferred to the raw owner. An observation on that date, not a stage; run the gate again for the current verdict."
+              },
+              "compared_with_the_rerun": "Spots 8634 -> 8653, MS/MS matched 499 -> 765, ReferenceSpectrum 434 -> 675. Adduct types move from almost all [M-H]- to a spread that includes [2M-H]-, [M+Cl]-, [M+Na-2H]- and [M-2H]2-. The re-run changes four things at once (VS21 in place of VS20, MsdialWorkbench#815, the decode fix, and the other master commits), so these differences are not attributed to any one of them."
+            },
             {
               "job_id": "770075627f414a56a1e64fadbde2935e",
               "ran": "2026-09-26, Interactive 0.5.0, the same Console",
@@ -387,26 +418,59 @@
           "acquisition_mode": "DIA",
           "workspace": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dia",
           "production": {
-            "job_id": "c151c7356cb942869551e070f83e57ce",
-            "finalized_at": "2026-09-27T09:17:25Z",
-            "interactive": "0.5.2",
-            "console_sha256": "80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a",
+            "job_id": "d6216b08c44f4861a0384c2d2d407bd2",
+            "finalized_at": "2026-09-30T15:44:54Z",
+            "interactive": "0.5.16",
+            "console": "f56d4478a",
+            "console_sha256": "e75519adcbffa2e28973486df693b2e6fbc3978f1d70dd05e9d5e4e70aa63e09",
             "acquisition_type": "SWATH",
             "minimum_peak_height": 0,
-            "peak_height_diagnostic": "712a9c53f9884a6897ecfff6531400d3",
-            "analytical_order": "raw_header_acquisition_start_time: IROA (2020-02-07), M3T-Std_Plasma, M3T-Std_Yeast, M3T-Std (2020-09-16), M3T-Std_Ecoli (2020-09-17)",
-            "alignment_spots": 18098,
+            "peak_height_diagnostic": "8336b542a2534507a734b90c0508ba93 (4,893 peaks at zero threshold, within the range; threshold stays 0)",
+            "alignment_spots": 18175,
             "evidence_source_column": {
-              "ReferenceSpectrum": 575,
-              "RuleBased": 335,
-              "WeakSpectrumMatch": 4284,
-              "UnmatchedSpectrum": 1777,
-              "null": 11127
+              "ReferenceSpectrum": 1439,
+              "RuleBased": 363,
+              "WeakSpectrumMatch": 8938,
+              "UnmatchedSpectrum": 1539,
+              "null": 5896
             },
-            "msms_matched_spots": 910,
-            "qa": "review. Run-order/intensity r = -0.499 against |r| <= 0.3 fails; the other 6 of 7 criteria are not assessable (no QC, no blank).",
-            "gate_observed": "2026-09-27, --stage all --strict: exit 0, VERDICT ok, 21 PASS, WARN SUM-1, MTH-1 and QA-1, DSK-1 deferred to the raw owner. An observation on that date, not a stage; run the gate again for the current verdict."
-          }
+            "msms_matched_spots": 1802,
+            "qa": "review. Run-order/intensity r = -0.502 against |r| <= 0.3 fails; the other 6 of 7 criteria are not assessable (no QC, no blank).",
+            "finalisation": "mzTab-M: 2 library URIs and 5 ms_run locations rewritten, 1 library identity line added. 21 MS-DIAL intermediates (145.4 MB) moved to output\\msdial-intermediates; 33 files of earlier attempts recorded as superseded in the raw tree. Project-2610011240_Loaded.msp2.dbs (277,921,458 bytes) deleted and recorded.",
+            "libraries": "MSMS-Private-neg-VS21.msp (sha256 7e2581ab31461b5a9102158a6eaf73d0a1702b8564dd75a9281c9b86dc4d132f, private, named by file name and sha256 only) as the MSP high and low tiers; Msp20250303164224_NCDK-TUAT-LC25_converted_dev.lbm2 (10.5281/zenodo.21904324) as the LBM tier",
+            "approval": "Campaign authorization p1-mtbls2207-2026-10-01 (boundaries 3 and 4 for both parts, retention keep), recorded in each part's manifest; analysis\\_campaigns\\p1-mtbls2207-20261001",
+            "gate_observed": "2026-10-01, --stage all --strict: exit 0, VERDICT ok, 23 PASS, WARN SUM-1 and MTH-1, SEC-1 PASS on 9 shared artifacts. An observation on that date, not a stage; run the gate again for the current verdict."
+          },
+          "superseded": [
+            {
+              "job_id": "c151c7356cb942869551e070f83e57ce",
+              "ran": "2026-09-27, Interactive 0.5.2, Console 31dea2b39, public VS20 negative MSP",
+              "snapshot": "metabolights\\MTBLS2207\\a22083b091a0ccd04489-dia\\superseded\\run-c151c7356cb942869551e070f83e57ce, with output.sha256 and README.txt",
+              "why": "Re-run for P1 on Console f56d4478a: the earlier Console decoded mzML arrays without their last element and predates MsdialWorkbench#815, so adduct estimation used [M-H]- alone. The re-run also uses the private VS21 MSP in place of the public VS20 one.",
+              "record": {
+                "job_id": "c151c7356cb942869551e070f83e57ce",
+                "finalized_at": "2026-09-27T09:17:25Z",
+                "interactive": "0.5.2",
+                "console_sha256": "80469d6cd569e246edf45efd12d08e692e6656cfb4e2a55f3841413b971b1e6a",
+                "acquisition_type": "SWATH",
+                "minimum_peak_height": 0,
+                "peak_height_diagnostic": "712a9c53f9884a6897ecfff6531400d3",
+                "analytical_order": "raw_header_acquisition_start_time: IROA (2020-02-07), M3T-Std_Plasma, M3T-Std_Yeast, M3T-Std (2020-09-16), M3T-Std_Ecoli (2020-09-17)",
+                "alignment_spots": 18098,
+                "evidence_source_column": {
+                  "ReferenceSpectrum": 575,
+                  "RuleBased": 335,
+                  "WeakSpectrumMatch": 4284,
+                  "UnmatchedSpectrum": 1777,
+                  "null": 11127
+                },
+                "msms_matched_spots": 910,
+                "qa": "review. Run-order/intensity r = -0.499 against |r| <= 0.3 fails; the other 6 of 7 criteria are not assessable (no QC, no blank).",
+                "gate_observed": "2026-09-27, --stage all --strict: exit 0, VERDICT ok, 21 PASS, WARN SUM-1, MTH-1 and QA-1, DSK-1 deferred to the raw owner. An observation on that date, not a stage; run the gate again for the current verdict."
+              },
+              "compared_with_the_rerun": "Spots 18098 -> 18175, MS/MS matched 910 -> 1802, ReferenceSpectrum 575 -> 1439. Adduct types move from almost all [M-H]- to a spread that includes [2M-H]-, [M+Cl]-, [M+Na-2H]- and [M-2H]2-. The re-run changes four things at once (VS21 in place of VS20, MsdialWorkbench#815, the decode fix, and the other master commits), so these differences are not attributed to any one of them."
+            }
+          ]
         }
       ],
       "repository": "metabolights",
@@ -657,11 +721,22 @@
   "preconditions": [
     {
       "id": "P1",
-      "state": "open",
-      "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master c471463a576626650e0886e26bd064cca53a7ae3 (31dea2b39 plus MsdialWorkbench#810, #811, #813, #814, #815 and #816) in the MsdialWorkbench-console-c471463a5 worktree, binary sha256 8ecfe11a3bb9f5978a584843fe342aa8dc3d7b3584a0796da617b8064dac6314, --version 5.5.260929, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-29.",
-      "verified": "2026-09-29. Built net48 Release through msdial_build_console_from_local_source with select_after_build=false, from a detached worktree at origin/master, clean before and after the build: 0 errors. The provenance record verifies (binary sha256 as above, git_head c471463a5, git_dirty false); --version prints 5.5.260929 and commit c471463a5; Interactive detects automatic_alignment_rt_correction, lcms_alignment_qa_matrix and rt_correction_review. MsdialCoreTestAppTests at the same commit, in a separate worktree: 68 of 68 pass, on net8.0, not on this net48 binary. Not exercised: any analysis with this binary, and no before/after comparison with 31dea2b39 like the one the previous pin had (previous_pins).",
+      "state": "met",
+      "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from MsdialWorkbench f56d4478a6e57e6b88782da8bdf04bcb207d9afd (master f0583493a plus one commit that pins RawDataHandler 1.3.9769.328, draft PR MsdialWorkbench#820) in the MsdialWorkbench-console-f56d4478a folder, binary sha256 e75519adcbffa2e28973486df693b2e6fbc3978f1d70dd05e9d5e4e70aa63e09, --version 5.5.260930, with msdial-console-build-provenance.json beside it (git_dirty false). RawDataHandler 1.3.9769.328 is msrawdataworkbench 592b6db (master b34c857 plus the mzML last-element decode fix, merged as #40), built without obfuscation into a local package feed; it is for local use only and is not published. Decision 2026-10-01.",
+      "verified": "2026-10-01. Provenance verified (git_head f56d4478a, dirty false) and saved as the default Console. Before selection, a harness read all 2,114 spectra of M3T-Std_neg_DDA_1mz.mzML through both Consoles' RawDataHandler: c471463a5 returned every spectrum one peak short (the two one-peak MS2 spectra empty); f56d4478a matched an independent Python decode on every peak count, last m/z, last intensity and whole-spectrum sha256. Both MTBLS2207 parts were then re-run on it (units[n=5].runs): peak-height diagnostics measured again with this Console, production, mzTab-M validation, publication artifacts, and verify-run-invariants.py --stage all --strict exit 0 on both parts.",
       "detail": "What it changes from 31dea2b39, as the pull requests describe it. #815: a method file's Searched adduct ions take effect; before it the Console estimated adducts with [M+H]+ or [M-H]- alone whatever the list said, while method.keys.json recorded the key as applied. #813: on/off keys are read in both directions, and a value other than true or false is now unusable (an MTH-1 FAIL) where it was silently taken. #811: the keys LcmsProcess reads for itself are recorded as applied; for MTBLS2207's method files MTH-1's unrecognised count falls from 29 to 26 at parse level (observed 2026-09-29 by calling each Console's parser; no production run has recorded it). #810: automatic alignment-only RT correction, off unless the method asks for it; since msdial-public-reanalysis#16 CNT-1 does not count its audit TSVs as samples. #814 is DIMS only; #816 is the LBM CCS filter. Neither MTBLS2207 run has been made with this binary: both record 31dea2b39, so P1 is open until a production run records this one, and whether they are re-run is in open_decisions_for_the_user. The 31dea2b39 build stays unchanged at its path, since both runs and their peak-height diagnostics were made with it. Since 2026-09-29 the saved Console setting resolves to this binary too, so a call that omits console_path runs it; production runs still pass it explicitly. A rebuild of the same commit gives a different sha256 (embedded worktree path, build date, Splash), so this worktree is never rebuilt, and the next production Console is built in its own worktree named by its commit. Met earlier by 31dea2b39 (2026-09-27), 9ee32dd24 (2026-09-25) and feature/annotation-evidence-record at 9cbf058cd99d5e1e5b3e6578d020c49d075cb735 (2026-09-20). Master moved on 2026-09-29 to f0583493a (#809: the alignment-light matrix export uses the file-backed quant accessor; #817: the RT correction library is loaded once from the final path, and the six Console-only settings take the last line that sets them, as the main reader already did; #818: long key warnings are summarised, and method.keys.json gains a 'repeated' list). Called by reflection on both MTBLS2207 method files, f0583493a applies exactly the parameters c471463a5 does: neither file states a key twice or under two spellings. The pin stays c471463a5. The retained MTBLS2207 key records were written by 31dea2b39, the previous pin.",
       "previous_pins": [
+        {
+          "commit": "c471463a576626650e0886e26bd064cca53a7ae3",
+          "worktree": "MsdialWorkbench-console-c471463a5",
+          "binary_sha256": "8ecfe11a3bb9f5978a584843fe342aa8dc3d7b3584a0796da617b8064dac6314",
+          "version": "5.5.260929",
+          "pinned": "2026-09-29",
+          "replaced": "2026-10-01",
+          "what": "Each production run is given, as console_path, the MS-DIAL Console built clean from master c471463a576626650e0886e26bd064cca53a7ae3 (31dea2b39 plus MsdialWorkbench#810, #811, #813, #814, #815 and #816) in the MsdialWorkbench-console-c471463a5 worktree, binary sha256 8ecfe11a3bb9f5978a584843fe342aa8dc3d7b3584a0796da617b8064dac6314, --version 5.5.260929, with msdial-console-build-provenance.json beside it (git_dirty false). Decision 2026-09-29.",
+          "verified": "2026-09-29. Built net48 Release through msdial_build_console_from_local_source with select_after_build=false, from a detached worktree at origin/master, clean before and after the build: 0 errors. The provenance record verifies (binary sha256 as above, git_head c471463a5, git_dirty false); --version prints 5.5.260929 and commit c471463a5; Interactive detects automatic_alignment_rt_correction, lcms_alignment_qa_matrix and rt_correction_review. MsdialCoreTestAppTests at the same commit, in a separate worktree: 68 of 68 pass, on net8.0, not on this net48 binary. Not exercised: any analysis with this binary, and no before/after comparison with 31dea2b39 like the one the previous pin had (previous_pins).",
+          "why_replaced": "No production run was ever made with it. Its RawDataHandler 1.3.9699.469 decodes every mzML binary array without its last element (msrawdataworkbench#40), and master had moved on to f0583493a (#809, #817, #818)."
+        },
         {
           "commit": "31dea2b3913d58db27c318159380b02d7aeac4eb",
           "worktree": "MsdialWorkbench-console-31dea2b39",
@@ -748,9 +823,7 @@
       "status": "Per run and per text: only after that person has read the sentences in the conversation and said what they found; a changed text is read again. Not exercised: on 2026-09-29 READ-1 found no sentence to read in either MTBLS2207 run."
     }
   ],
-  "open_decisions_for_the_user": [
-    "Whether both MTBLS2207 runs are re-run with the c471463a5 Console (P1). They were made with 31dea2b39, before MsdialWorkbench#815, so their adduct estimation used [M-H]- alone although their method files list 20 negative adducts; their unannotated features carry only [M-H]- or [M-2H]2- (read 2026-09-29), consistent with that but not a proof of it. A re-run needs its own boundary-4 confirmation and, as decided on 2026-09-26 when the previous pin moved, peak-height diagnostics measured with the same Console."
-  ],
+  "open_decisions_for_the_user": [],
   "library": {
     "decision": "LBM2 on every unit, plus MSP high-confidence and MSP low-confidence in the unit's own polarity. User confirmed 2026-09-20: the LBM tier applies to the metabolomics units too.",
     "recovered_from": "analysis/mb_post/MPST000007/6f27431da49ec82f3734/output/workflow-settings.json and msp_annotator_settings.tsv",
@@ -971,8 +1044,14 @@
     {
       "at": "2026-09-29",
       "by": "user",
-      "decision": "Where a unit's analytical order is the file listing or a sequence number read out of the file names, Interactive does not assess the run-order criterion, whatever pattern the Classes make in it (option ウ, every listing order; the sequence number was added the same day). This settles ORD-2's single-Class WARN at its source, so READ-1 is not extended to it.",
+      "decision": "Where a unit's analytical order is the file listing or a sequence number read out of the file names, Interactive does not assess the run-order criterion, whatever pattern the Classes make in it (option \u30a6, every listing order; the sequence number was added the same day). This settles ORD-2's single-Class WARN at its source, so READ-1 is not extended to it.",
       "result": "Implemented 2026-09-29: msdial-interactive-app#40 (Interactive 0.5.4) records the order's source in the unit manifest (order_source) and withholds the criterion against the listing or a file-name sequence with the reason 'the injection order was not recorded for every file'; msdial-public-reanalysis#18 teaches QA-1 that reason, and ORD-2 refuses a run-order criterion reported against either recorded source and the reason given for an order recorded otherwise."
+    },
+    {
+      "at": "2026-10-01",
+      "by": "user",
+      "decision": "Console f56d4478a (MsdialWorkbench master f0583493a with RawDataHandler 1.3.9769.328, carrying the mzML last-element decode fix) becomes the production default and pin, and both MTBLS2207 parts are re-run on it for P1. Answer: \u5207\u308a\u66ff\u3048\u308b (Recommended). The re-run itself was asked for on 2026-09-30: 3. \u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+      "result": "2026-10-01: saved as the default Console (provenance verified); both parts re-run with fresh peak-height diagnostics under the recorded approval p1-mtbls2207-2026-10-01; --stage all --strict exit 0 on both. P1 met."
     }
   ]
 }
