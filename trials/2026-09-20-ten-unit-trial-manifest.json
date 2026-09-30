@@ -1054,6 +1054,64 @@
       "result": "Implemented 2026-09-29: msdial-interactive-app#40 (Interactive 0.5.4) records the order's source in the unit manifest (order_source) and withholds the criterion against the listing or a file-name sequence with the reason 'the injection order was not recorded for every file'; msdial-public-reanalysis#18 teaches QA-1 that reason, and ORD-2 refuses a run-order criterion reported against either recorded source and the reason given for an order recorded otherwise."
     },
     {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "For the unattended full-repository campaign, a vendor folder (a Waters .raw, or an Agilent or Bruker .d directory) counts as one data file: one input and one analysis CSV row, however many files it holds. The analysis CSV is generated automatically.",
+      "result": "The Catalog lists one analysis input per vendor container since msdial_repository_catalog#12. On 2026-09-30 Interactive did not yet take folder inputs or build the CSV from them."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "The campaign asks no per-unit confirmation. One campaign-level approval, recorded as Interactive's msdial-campaign-authorization.v1 record, covers boundaries 1, 3, 4 and 5 and the automatic split for the units its manifest lists. The goal is that every unit produces all MS-DIAL output files; their verification comes afterwards. A unit's failure never stops the campaign.",
+      "result": "The record and its check are msdial-interactive-app#42 (Interactive 0.5.9), which refuses a record that claims boundary 2 or 6; the Catalog stores a ratified Class decision since msdial_repository_catalog#13. The matching amendment to CLAUDE.md and the batch skill was drafted the same day and takes effect only when the user approves its wording."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "Acquisition, in the campaign: where the repository metadata leave it unknown, it is read from the raw headers with the RawDataHandler raw-metadata extractor, and where it is still unknown the unit is not run. There is no per-unit size limit: the purpose is the annotation of all experimental spectra.",
+      "result": "A pinned extractor was built and verified on 2026-09-30 from msrawdataworkbench 592b6db and MsdialWorkbench f0583493a; Interactive does not use it yet. On the local demo data it reads Waters DDA as Unknown (confidence 0.30), which this rule would leave unrun; the wiff2 demo files fail with a NullReferenceException in the SCIEX reader, as they do with the current extractor; and it writes an analysis.sqlite into a Bruker BAF .d that has none."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "LC-IM-MS is excluded this time: the campaign is LC-MS only. Ion-mobility data (Bruker TDF/timsTOF, Waters ion mobility, Agilent ion mobility) are excluded with a recorded reason.",
+      "result": "In the extractor's verification the Waters IMMS and Agilent IM demo data are detected as ion mobility."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "In the campaign, mzXML-only data are converted to mzML with Interactive's converter and run. .7z, .rar, bare .gz and .lzma objects are extracted. An object that several units share is downloaded once.",
+      "result": "The converter is msdial-interactive-app#44 (Interactive 0.5.11) and the download store #46 (0.5.13); on 2026-09-30 the lease used neither. The lease extracts .7z, .rar, bare .gz and .lzma since #49 (0.5.16)."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "An AIF file whose collision-energy target list is empty only gets a recorded warning; it is neither skipped nor excluded."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "Raw data, in the campaign: they are deleted once all MS-DIAL outputs are present and the mzTab-M validates, whatever the gate's verdict. A failed unit is retried twice, then its raw data are deleted. The raw data of skipped and excluded units are deleted too. Before the raw data go, MS-DIAL's intermediates are moved into the unit's output, and the loaded-library copy (.dbs) is deleted.",
+      "result": "The move and the .dbs deletion are implemented for campaign units in msdial-interactive-app#48 (Interactive 0.5.15), and msdial_cleanup_repository_raw deletes a validated unit's raw data under an approval that covers boundary 5. On 2026-09-30 no approval could stand in for discarding a failed, skipped or excluded unit's raw data, or for releasing a split parent's."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "Libraries for the campaign: the private VS21 MSP pair, identified by file name and sha256 only, never by location, and the public LBM2. A private library's location is never written into code, tests, logs or shared artifacts; tests use synthetic paths.",
+      "result": "Interactive keeps library locations out of shared artifacts and the mzTab-M since msdial-interactive-app#48 (0.5.15), and SEC-1 looks for them there since msdial-public-reanalysis#20."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "The mzML base64 decoder's last-element defect is fixed at its source, in msrawdataworkbench master ecb5a86 (#40).",
+      "result": "A Console carrying the fix is built at D:\\0_SourceCode\\MsdialWorkbench-console-f56d4478a from MsdialWorkbench f56d4478a, which is master f0583493a plus the RawDataHandler 1.3.9769.328 pin (draft MsdialWorkbench#820). It is verified and not selected: P1 stays at c471463a5 until the production Console is decided."
+    },
+    {
+      "at": "2026-09-30",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "The Catalog, Interactive and the gate are our code now."
+    },
+    {
       "at": "2026-10-01",
       "by": "user",
       "decision": "Console f56d4478a (MsdialWorkbench master f0583493a with RawDataHandler 1.3.9769.328, carrying the mzML last-element decode fix) becomes the production default and pin, and both MTBLS2207 parts are re-run on it for P1. Answer: \u5207\u308a\u66ff\u3048\u308b (Recommended). The re-run itself was asked for on 2026-09-30: 3. \u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
