@@ -416,9 +416,12 @@ class _Cover:
     basis: str = ""
     reason: str = ""
     detail: str = ""
-    # The file's own sha256 and size where a record gives them, for a conversion to be compared with.
+    # The file's own sha256 and size where a record gives them, for a conversion to be compared with,
+    # and the declared checksum that was compared with it, with its algorithm.
     sha256: str = ""
     size: int | None = None
+    declared: str = ""
+    algorithm: str = ""
     archive: str = ""
     crc_verified: object = None
     converted: bool = False
@@ -426,6 +429,13 @@ class _Cover:
 
 def _uncovered(reason: str, detail: str) -> _Cover:
     return _Cover(reason=reason, detail=detail)
+
+
+def _claimed_checksum(checksums: dict) -> str:
+    """The declared checksum a lineage row says was verified, or "" where it says none was."""
+    if checksums.get("declared_verified") is True:
+        return str(checksums.get("declared") or "").strip().casefold()
+    return ""
 
 
 def _weakest(covers: list[_Cover]) -> _Cover:
@@ -443,12 +453,17 @@ class _InputLineage:
     """The manifest's input_lineage table, resolved input by input to what vouches for its bytes.
 
     Each row is read by its kind, and every basis is checked against the primary record it names,
-    never against the row alone:
+    never against the row alone. A row's word that its declared checksum was verified is one such
+    basis, and holds only where a record bears it out: the download of the input itself, which
+    compared that very value; or the allow-list validator, whose count accounts for every checksum the
+    unit declares, and which compared this value because the unit declares it for a file of this
+    input's name. A member's claim to its archive's own checksum is refused: that checksum vouches for
+    the archive, and through it for the member only by the archive basis below.
 
-    - file: a repository object downloaded as itself. Its own declared checksum, verified at download
-      or by the allow-list validator ("verified"); or, for a repository that publishes none and a unit
-      that declares none, the sha256 recorded at download ("download_sha256"). A row's word that a
-      checksum was verified counts only for a checksum the repository declared for this unit.
+    - file: a repository object downloaded as itself, at the row's own path. Its own declared checksum,
+      verified at download or by the allow-list validator ("verified"); or, for a repository that
+      publishes none and a unit that declares none, the sha256 recorded at download
+      ("download_sha256").
     - extracted_member and archived_container: out of an archive. Its own declared checksum where one
       was compared ("verified"). Otherwise the archive's: the download record must hold the archive's
       sha256, its published MD5 must have matched ("archive_verified"; for a repository publishing
@@ -460,9 +475,12 @@ class _InputLineage:
       input_conversions (msdial-mzxml-conversion.v1 records, as a list or as an object's "records")
       names it as its output, with the output's sha256; the row's
       source.conversion.source_sha256 is the sha256 that record read; and the mzXML it read is itself
-      covered, through source.conversion.source_row when the row carries one, otherwise through the
-      download or the archive listing that holds it, with the same sha256 (or, for an archive member,
-      which is not hashed, the listed size). The mzXML's basis is the converted input's.
+      covered, through the table's own row for that mzXML, or source.conversion.source_row when the
+      table has none (a carried row must describe that mzXML, and be the table's row where there is
+      one), otherwise through the download or the archive listing that holds it. The record's hashes
+      must agree with what the cover knows of those bytes: the sha256 of a download, the declared
+      checksum a validator compared where the record carries that algorithm, and, for an archive
+      member, which is not hashed, the listed size. The mzXML's basis is the converted input's.
 
     An input with no row, or with two different rows, is covered by nothing.
     """
@@ -491,18 +509,22 @@ class _InputLineage:
         declared = [item for item in files if str(item.get("checksum") or "").strip()]
         self.unit_declares_checksums = bool(declared) or any(
             str(item.get("declared_checksum") or "").strip() for item in self.downloads)
-        # What the repository published, which a row's "declared and verified" must be one of.
-        self.published_checksums = {str(item.get("checksum")).strip().casefold() for item in declared} | {
-            str(item.get("declared_checksum")).strip().casefold() for item in self.downloads
-            if str(item.get("declared_checksum") or "").strip()}
+        # Each checksum the unit declares, by the name of the file it declares it for.
+        self.declared_files = [(_declared_name(item.get("name")), str(item.get("checksum")).strip().casefold())
+                               for item in declared]
         validation = owner.get("allowlist_checksum_validation")
         verified = validation.get("verified") if isinstance(validation, dict) else None
-        # The validator raises on a mismatch or on a name it cannot resolve, so a count equal to the
-        # declared checksums means each one was compared with the file it names.
-        self.declared_names = (
-            {_declared_name(item.get("name")) for item in declared}
-            if declared and isinstance(verified, int) and verified == len(declared) else set()
-        )
+        at_download = validation.get("archives_verified_at_download") if isinstance(validation, dict) else None
+        # An archive's declared checksum is compared with its download and counted apart, where a lease
+        # records that count; it is never more than the declared names that are archives.
+        archives = sum(1 for name, _ in self.declared_files if name.endswith(ARCHIVE_SUFFIXES))
+        at_download = min(at_download, archives) if isinstance(at_download, int) and at_download > 0 else 0
+        # The validator raises on a mismatch or on a name it cannot resolve, so a count that accounts for
+        # every declared checksum means each one was compared with the file it names. Anything less, and
+        # nothing says which of them were compared.
+        self.validator_accounts = (bool(declared) and isinstance(verified, int)
+                                   and verified + at_download == len(declared))
+        self.declared_names = {name for name, _ in self.declared_files} if self.validator_accounts else set()
         self.input_directory = str(owner.get("input_directory") or "")
         raw_extracted = owner.get("extracted_files")
         self.extracted = {_path_key(item) for item in raw_extracted} if isinstance(raw_extracted, list) else set()
@@ -539,16 +561,12 @@ class _InputLineage:
         source = row.get("source") if isinstance(row.get("source"), dict) else {}
         checksums = row.get("checksums") if isinstance(row.get("checksums"), dict) else {}
         path = str(row.get("path") or "")
-        if (kind in ("file", "extracted_member") and checksums.get("declared_verified") is True
-                and str(checksums.get("declared") or "").strip()):
-            if str(checksums["declared"]).strip().casefold() not in self.published_checksums:
-                return _uncovered("declared_checksum_unknown", "the checksum its row says was verified is not one "
-                                  "the repository declared for this unit")
-            return _Cover("verified", sha256=str(checksums.get("sha256") or "").casefold())
         if kind == "file":
             return self._file(path, source, checksums)
         if kind == "extracted_member":
             archive = source.get("archive")
+            if _claimed_checksum(checksums):
+                return self._claimed_member(path, archive if isinstance(archive, dict) else {}, checksums)
             if not isinstance(archive, dict):
                 return _uncovered("no_archive_source", "its row names no archive it came out of")
             return self._from_archive(path, archive, str(source.get("member") or ""), directory=False)
@@ -589,7 +607,14 @@ class _InputLineage:
         return str(download.get("sha256") or "").strip().casefold()
 
     def _file(self, path: str, source: dict, checksums: dict) -> _Cover:
-        download = self.downloads_by_path.get(_path_key(source.get("download_path") or path))
+        # Interactive writes a file row only for an input that is itself a download, at the same path.
+        # A row naming another download as its own is a lineage that is wrong, and borrows that
+        # object's checksums for bytes it never vouched for.
+        named = str(source.get("download_path") or "").strip()
+        if named and not _same_path(named, path):
+            return _uncovered("download_path_mismatch",
+                              f"its row names the download of {Path(named).name} as its own")
+        download = self.downloads_by_path.get(_path_key(path))
         if download is None:
             reused = source.get("origin") == "not_downloaded_by_this_lease"
             return _uncovered("not_downloaded", "it is not a recorded download"
@@ -600,11 +625,69 @@ class _InputLineage:
         recorded = str(checksums.get("sha256") or "").strip().casefold()
         if recorded and recorded != sha256:
             return _uncovered("sha256_disagrees", "its lineage row and its download record give different sha256")
-        cover = self._declaration(download, archive=False)
+        claimed = _claimed_checksum(checksums)
+        if claimed:
+            cover = self._confirmed_claim(path, claimed, checksums, download=download)
+            if not cover.basis:
+                return cover
+        else:
+            cover = self._declaration(download, archive=False)
         cover.sha256 = sha256
         size = download.get("size_bytes")
         cover.size = size if isinstance(size, int) else None
         return cover
+
+    def _confirmed_claim(self, path: str, claimed: str, checksums: dict, *, download: dict | None = None) -> _Cover:
+        """A row's word that its declared checksum was verified, held against the record that did it.
+
+        The download of the input itself compared its declared MD5, and records whether it matched.
+        The allow-list validator compared every checksum the unit declares with the file of that name,
+        and records only how many; so its word counts for a checksum the unit declares for a file of
+        this input's name, and only while that count accounts for all of them.
+        """
+        if (download is not None and download.get("declared_checksum_verified") is True
+                and str(download.get("declared_checksum") or "").strip().casefold() == claimed):
+            # The download loop compares a declared value with the MD5 it computed, and nothing else.
+            return _Cover("verified", declared=claimed, algorithm="md5")
+        relative = _relative_name(path, self.input_directory) if self.input_directory else Path(path).name.casefold()
+        if not any(checksum == claimed and _names_cover(relative, name) for name, checksum in self.declared_files):
+            return _uncovered("declared_checksum_unknown", "the checksum its row says was verified is not one the "
+                              "repository declared for a file of its name")
+        if not self.validator_accounts:
+            return _uncovered("declared_checksum_unaccounted",
+                              "its row says its declared checksum was verified, but the allow-list validator's "
+                              "count does not account for every checksum the unit declares")
+        return _Cover("verified", declared=claimed,
+                      algorithm=str(checksums.get("declared_algorithm") or "").strip().casefold())
+
+    def _claimed_member(self, path: str, archive: dict, checksums: dict) -> _Cover:
+        """A member of an archive whose row says its own declared checksum was verified."""
+        claimed = _claimed_checksum(checksums)
+        # The archive's own checksums: what was computed as it arrived, and a declared value only where
+        # it was verified as the archive's. MB-POST's tar carries the first member's declared checksum,
+        # never compared with the tar, and that member's claim to it is its own.
+        own = set()
+        download = self._archive_download(archive)
+        for record in (archive, download or {}):
+            own.update(str(record.get(key) or "").strip().casefold() for key in ("md5", "sha256"))
+            if record.get("declared_checksum_verified") is True:
+                own.add(str(record.get("declared_checksum") or "").strip().casefold())
+        own.discard("")
+        if claimed in own:
+            return _uncovered("archive_checksum_as_own", "its row gives the checksum of the archive it came out of "
+                              "as its own")
+        cover = self._confirmed_claim(path, claimed, checksums)
+        if cover.basis:
+            cover.sha256 = str(checksums.get("sha256") or "").strip().casefold()
+        return cover
+
+    def _archive_download(self, archive: dict) -> dict | None:
+        """The download record of the archive a row names, by its sha256, else by its download path."""
+        claimed = str(archive.get("sha256") or "").strip().casefold()
+        download = self.downloads_by_sha256.get(claimed) if claimed else None
+        if download is None and str(archive.get("download_path") or "").strip():
+            download = self.downloads_by_path.get(_path_key(archive["download_path"]))
+        return download
 
     def _downloads_under(self, folder: str) -> list[dict]:
         """The downloads inside a folder, from one index over every download's parents.
@@ -659,9 +742,7 @@ class _InputLineage:
 
     def _from_archive(self, path: str, archive: dict, member: str, *, directory: bool) -> _Cover:
         claimed = str(archive.get("sha256") or "").strip().casefold()
-        download = self.downloads_by_sha256.get(claimed) if claimed else None
-        if download is None and str(archive.get("download_path") or "").strip():
-            download = self.downloads_by_path.get(_path_key(archive["download_path"]))
+        download = self._archive_download(archive)
         if download is None:
             return _uncovered("archive_not_downloaded", "the archive it came out of is not a recorded download")
         sha256 = self._download_sha256(download)
@@ -749,8 +830,21 @@ class _InputLineage:
         if reference.get("source_path") and read.get("path") and not _same_path(reference["source_path"], read["path"]):
             return _uncovered("source_path_mismatch", "its row and its conversion record name different mzXML files")
         source_name = Path(source_path).name or "its source"
-        source_row = reference.get("source_row") if isinstance(reference.get("source_row"), dict) else (
-            self._derived_row(source_path))
+        # The mzXML the record read is the one to be covered, whatever row vouches for it: a carried row
+        # for another file would let that file's cover stand for bytes nobody checked.
+        table = (self.rows.get(_path_key(source_path)) or []) if source_path.strip() else []
+        if any(row != table[0] for row in table[1:]):
+            return _uncovered("ambiguous_lineage_row",
+                              f"the lineage table has {len(table)} different rows for its source {source_name}")
+        carried = reference.get("source_row") if isinstance(reference.get("source_row"), dict) else None
+        if carried is not None and not (source_path.strip() and _same_path(carried.get("path") or "", source_path)):
+            described = Path(str(carried.get("path") or "")).name or "no file"
+            return _uncovered("source_row_mismatch", f"the source row it carries describes {described}, not the "
+                              f"{source_name} its conversion record read")
+        if carried is not None and table and carried != table[0]:
+            return _uncovered("source_row_mismatch", f"the source row it carries is not the lineage table's row for "
+                              f"{source_name}")
+        source_row = table[0] if table else carried if carried is not None else self._derived_row(source_path)
         if source_row is None:
             return _uncovered("source_not_traced", f"{source_name} is neither a recorded download nor listed in an "
                               "archive extraction")
@@ -760,10 +854,17 @@ class _InputLineage:
         if cover.sha256 and cover.sha256 != source_sha256:
             return _uncovered("source_sha256_mismatch", f"the conversion read other bytes than the {source_name} "
                               "that was downloaded")
+        # A member verified by the allow-list validator is not hashed in the lineage; its declared
+        # checksum is what was compared, and the record keeps the sha256 and sha1 of what it read.
+        read_digest = (str(read.get(cover.algorithm) or "").strip().casefold()
+                       if cover.algorithm in ("md5", "sha1", "sha256") else "")
+        if cover.declared and read_digest and read_digest != cover.declared:
+            return _uncovered("source_checksum_mismatch", f"the conversion read other bytes than the {source_name} "
+                              f"whose declared {cover.algorithm} was verified")
         read_bytes = read.get("bytes")
         if cover.size is not None and isinstance(read_bytes, int) and cover.size != read_bytes:
-            return _uncovered("source_size_mismatch", f"the conversion read {read_bytes} bytes and the listing "
-                              f"records {cover.size} for {source_name}")
+            return _uncovered("source_size_mismatch", f"the conversion read {read_bytes} bytes and the record that "
+                              f"covers {source_name} gives {cover.size}")
         return _Cover(cover.basis, sha256=output_sha256, archive=cover.archive, crc_verified=cover.crc_verified,
                       converted=True)
 
@@ -772,9 +873,6 @@ class _InputLineage:
         if not path.strip():
             return None
         key = _path_key(path)
-        rows = self.rows.get(key) or []
-        if len(rows) == 1:
-            return rows[0]
         if key in self.downloads_by_path:
             return {"kind": "file", "path": path, "source": {"download_path": self.downloads_by_path[key].get("path")}}
         for record in self.extraction_records or []:

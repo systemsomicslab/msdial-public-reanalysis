@@ -97,6 +97,13 @@ class LineageUnit:
         self.manifest["project"]["files"].append({"name": name, "checksum": md5})
         return download
 
+    def validated(self) -> None:
+        """What the allow-list validator records once it has compared every checksum the unit declares."""
+        files = self.manifest["project"]["files"]
+        declared = sum(1 for item in files if item.get("checksum"))
+        self.manifest["allowlist_checksum_validation"] = {"required": declared > 0, "verified": declared,
+                                                          "skipped": len(files) - declared}
+
     def archive(self, name: str, members: dict[str, bytes], *, md5: str = MD5, verified: bool = True,
                 listed: dict[str, bytes] | None = None, rejected: list | None = None,
                 extra_rows: list[str] | None = None) -> dict:
@@ -355,6 +362,7 @@ class ArchiveBasisTests(unittest.TestCase):
             unit = LineageUnit(temporary, repository="mb_post")
             download = unit.download("MPST000007.tar", b"tar", md5="", archive=True)
             unit.manifest["project"]["files"].append({"name": "a.lcd", "checksum": MD5})
+            unit.validated()
             (unit.data / "a.lcd").write_bytes(b"a")
             unit.extracted_input("a.lcd", download, {"declared": MD5, "declared_algorithm": "md5",
                                                      "declared_verified": True})
@@ -614,6 +622,122 @@ class FileBasisTests(unittest.TestCase):
         self.assertEqual("archive_verified", check.evidence["basis"])
 
 
+MD5_B = "fedcba9876543210fedcba9876543210"
+
+
+def _claim(checksum: str, algorithm: str = "md5") -> dict:
+    """A lineage row's word that its declared checksum was verified."""
+    return {"declared": checksum, "declared_algorithm": algorithm, "declared_verified": True}
+
+
+class RowClaimTests(unittest.TestCase):
+    """A row's word that its checksum was verified holds only where the record that verified it says so."""
+
+    def test_a_member_claim_the_validator_never_made_is_refused(self) -> None:
+        """MB-POST with a validator that compared nothing: a member's claim is not borne out."""
+        for claimed, reason in ((MD5, "declared_checksum_unknown"), (MD5_B, "declared_checksum_unaccounted")):
+            with self.subTest(claimed=claimed), tempfile.TemporaryDirectory() as temporary:
+                unit = LineageUnit(temporary, repository="mb_post")
+                download = unit.download("MPST000007.tar", b"tar", md5="", archive=True)
+                unit.manifest["project"]["files"] += [{"name": "a.lcd", "checksum": MD5},
+                                                      {"name": "b.lcd", "checksum": MD5_B}]
+                unit.manifest["allowlist_checksum_validation"] = {"required": False, "verified": 0, "skipped": 2}
+                (unit.data / "b.lcd").write_bytes(b"b")
+                # MD5 is a.lcd's checksum, not b.lcd's; MD5_B is b.lcd's, but nothing compared it.
+                unit.extracted_input("b.lcd", download, _claim(claimed))
+                check = unit.sum1()
+                legacy = {key: value for key, value in unit.manifest.items() if key != "input_lineage"}
+
+                self.assertEqual(verifier.FAIL, check.status)
+                self.assertEqual({reason: 1}, check.evidence["uncovered_reasons"])
+                # The legacy reading of the same unit refuses it too.
+                self.assertEqual("insufficient", verifier._checksum_basis(legacy)[0])
+
+    def test_a_member_claiming_its_archives_checksum_is_refused(self) -> None:
+        """The archive's MD5 vouches for its members only through the archive basis, as a WARN."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = _workbench_archive_unit(temporary)
+            for row in unit.manifest["input_lineage"]["rows"]:
+                row["checksums"] = _claim(MD5)
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"archive_checksum_as_own": 2}, check.evidence["uncovered_reasons"])
+
+    def test_an_mb_post_member_keeps_the_checksum_its_tar_carries(self) -> None:
+        """MB-POST's tar download carries its first member's declared value, never compared with the tar."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary, repository="mb_post")
+            download = unit.download("MPST000007.tar", b"tar", md5=MD5, verified=False, archive=True)
+            unit.manifest["project"]["files"][0]["checksum"] = ""
+            unit.manifest["project"]["files"].append({"name": "a.lcd", "checksum": MD5})
+            unit.validated()
+            (unit.data / "a.lcd").write_bytes(b"a")
+            unit.extracted_input("a.lcd", download, _claim(MD5))
+            check = unit.sum1()
+
+        self.assertEqual(verifier.PASS, check.status)
+
+    def test_a_file_row_claiming_verified_without_a_download_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = _workbench_archive_unit(temporary)
+            ghost = unit.data / "ghost.mzML"
+            ghost.write_bytes(b"never downloaded")
+            unit._row(ghost, "file", {"url": "", "download_path": str(ghost)}, {"sha256": "", **_claim(MD5)})
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"not_downloaded": 1}, check.evidence["uncovered_reasons"])
+
+    def test_a_file_claim_its_download_did_not_make_is_refused(self) -> None:
+        """The download compared nothing, and the validator's count does not say it compared this."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary)
+            row = unit.file_input(unit.download("S1.mzML", b"one", verified=False))
+            row["checksums"].update(_claim(MD5))
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"declared_checksum_unaccounted": 1}, check.evidence["uncovered_reasons"])
+
+    def test_a_file_claim_to_another_checksum_than_its_download_verified_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary)
+            row = unit.file_input(unit.download("S1.mzML", b"one"))
+            row["checksums"].update(_claim(MD5_B))
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"declared_checksum_unknown": 1}, check.evidence["uncovered_reasons"])
+
+    def test_a_file_whose_declared_sha256_the_validator_compared_passes(self) -> None:
+        """The download compares only an MD5; a declared sha256 is compared by the validator."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary)
+            declared = _sha256(b"one")
+            row = unit.file_input(unit.download("S1.mzML", b"one", md5=declared, verified=False))
+            unit.validated()
+            row["checksums"].update(_claim(declared, "sha256"))
+            check = unit.sum1()
+
+        self.assertEqual(verifier.PASS, check.status)
+        self.assertEqual("verified", check.evidence["basis"])
+
+    def test_a_file_row_naming_another_download_is_refused(self) -> None:
+        """S2 was never downloaded; its row borrows S1's verified download."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary)
+            s1 = unit.download("S1.mzML", b"one")
+            s2 = unit.data / "S2.mzML"
+            s2.write_bytes(b"two, from an old workspace")
+            unit._row(s2, "file", {"url": s1["source_url"], "download_path": s1["path"]}, {"sha256": s1["sha256"]})
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"download_path_mismatch": 1}, check.evidence["uncovered_reasons"])
+        self.assertIn("S1.mzML", check.detail)
+
+
 class LegacyManifestTests(unittest.TestCase):
     def test_a_manifest_without_the_table_is_read_as_before(self) -> None:
         """The same Workbench unit, written before input_lineage existed, is refused as it always was."""
@@ -740,6 +864,7 @@ class ConversionLineageTests(unittest.TestCase):
             unit = LineageUnit(temporary, repository="mb_post")
             download = unit.download("MPST000009.tar", b"tar", md5="", archive=True)
             unit.manifest["project"]["files"].append({"name": "S1.mzXML", "checksum": MD5})
+            unit.validated()
             source = unit.data / "S1.mzXML"
             source.write_bytes(b"<mzXML/>")
             source_row = {"path": str(source), "kind": "extracted_member",
@@ -750,6 +875,82 @@ class ConversionLineageTests(unittest.TestCase):
 
         self.assertEqual(verifier.PASS, check.status)
         self.assertEqual(1, check.evidence["converted_inputs"])
+
+    def test_a_carried_source_row_for_another_mzxml_is_refused(self) -> None:
+        """The conversion read b.mzXML, which nothing verified; the row it carries is a.mzXML's."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary, repository="mb_post")
+            download = unit.download("MPST000009.tar", b"tar", md5="", archive=True)
+            unit.manifest["project"]["files"].append({"name": "a.mzXML", "checksum": MD5})
+            unit.validated()
+            a = unit.data / "a.mzXML"
+            a.write_bytes(b"<mzXML>a</mzXML>")
+            b = unit.data / "b.mzXML"
+            b.write_bytes(b"<mzXML>b</mzXML>")
+            source_row = {"path": str(a), "kind": "extracted_member",
+                          "source": {"archive": _archive_source(download), "member": "a.mzXML"},
+                          "checksums": _claim(MD5)}
+            unit.converted_input(b, source_row=source_row)
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"source_row_mismatch": 1}, check.evidence["uncovered_reasons"])
+        self.assertIn("a.mzXML", check.detail)
+
+    def test_a_carried_source_row_other_than_the_tables_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary, repository="mb_post")
+            download = unit.download("MPST000009.tar", b"tar", md5="", archive=True)
+            unit.manifest["project"]["files"].append({"name": "S1.mzXML", "checksum": MD5})
+            unit.validated()
+            source = unit.data / "S1.mzXML"
+            source.write_bytes(b"<mzXML/>")
+            table_row = {"path": str(source), "kind": "extracted_member",
+                         "source": {"archive": _archive_source(download), "member": "S1.mzXML"}, "checksums": {}}
+            unit.manifest["input_lineage"]["rows"].append(table_row)
+            unit.converted_input(source, source_row={**table_row, "checksums": _claim(MD5)})
+            check = unit.sum1()
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"source_row_mismatch": 1}, check.evidence["uncovered_reasons"])
+
+    def test_the_tables_row_for_the_source_is_followed(self) -> None:
+        """Without a carried row, the table's own row for the mzXML is what covers it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = LineageUnit(temporary, repository="mb_post")
+            download = unit.download("MPST000009.tar", b"tar", md5="", archive=True)
+            unit.manifest["project"]["files"].append({"name": "S1.mzXML", "checksum": MD5})
+            unit.validated()
+            source = unit.data / "S1.mzXML"
+            source.write_bytes(b"<mzXML/>")
+            unit.manifest["input_lineage"]["rows"].append(
+                {"path": str(source), "kind": "extracted_member",
+                 "source": {"archive": _archive_source(download), "member": "S1.mzXML"}, "checksums": _claim(MD5)})
+            unit.converted_input(source)
+            check = unit.sum1()
+
+        self.assertEqual(verifier.PASS, check.status)
+        self.assertEqual(1, check.evidence["converted_inputs"])
+
+    def test_a_conversion_of_other_bytes_than_the_validator_compared_is_refused(self) -> None:
+        """A member is not hashed in the lineage; the declared checksum compared is held to the record."""
+        for algorithm, digest in (("sha256", hashlib.sha256), ("sha1", hashlib.sha1)):
+            with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as temporary:
+                unit = LineageUnit(temporary, repository="mb_post")
+                download = unit.download("MPST000009.tar", b"tar", md5="", archive=True)
+                declared = digest(b"<mzXML/>").hexdigest()
+                unit.manifest["project"]["files"].append({"name": "S1.mzXML", "checksum": declared})
+                unit.validated()
+                source = unit.data / "S1.mzXML"
+                source.write_bytes(b"<mzXML>changed after it was compared</mzXML>")
+                source_row = {"path": str(source), "kind": "extracted_member",
+                              "source": {"archive": _archive_source(download), "member": "S1.mzXML"},
+                              "checksums": _claim(declared, algorithm)}
+                unit.converted_input(source, source_row=source_row)
+                check = unit.sum1()
+
+                self.assertEqual(verifier.FAIL, check.status)
+                self.assertEqual({"source_checksum_mismatch": 1}, check.evidence["uncovered_reasons"])
 
 
 # ---------------------------------------------------------------------------------------------
