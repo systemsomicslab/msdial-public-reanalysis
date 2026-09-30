@@ -319,6 +319,185 @@ def check_preflight_claim(report: Report, provenance: dict | None, reason: str) 
     )
 
 
+# Interactive's raw_metadata_extractor.PINNED_BUILDS, the approved (msrawdataworkbench, MsdialWorkbench)
+# commit pairs of the raw-metadata extractor, newest first: a "built" pair is one a campaign may run, a
+# "planned" one was approved and never built. Mirrored rather than imported, because the gate judges what
+# Interactive recorded without running Interactive's code, and in one place only;
+# tests/test_verify_extractor_and_release.py holds it equal to the table at EXTRACTOR_PINS_MIRRORED_FROM.
+EXTRACTOR_PINS_MIRRORED_FROM = "89a97bc"
+EXTRACTOR_RAW_TREE = "msrawdataworkbench"
+EXTRACTOR_COMMON_TREE = "MsdialWorkbench"
+EXTRACTOR_PIN_BUILT = "built"
+EXTRACTOR_PINNED_BUILDS = (
+    {"msrawdataworkbench": "a12293c612a4e29b23d1d584f1c19556d76863f6",
+     "MsdialWorkbench": "f0583493a44e73723f53ae312e33955f62052dd7", "state": "built"},
+    {"msrawdataworkbench": "592b6dbce72177fa14d3e7cd407557b1c64a3046",
+     "MsdialWorkbench": "f0583493a44e73723f53ae312e33955f62052dd7", "state": "built"},
+    {"msrawdataworkbench": "b34c857a5328e8f08c1918b3d890e7dae50b7d6d",
+     "MsdialWorkbench": "c471463a576626650e0886e26bd064cca53a7ae3", "state": "planned"},
+)
+# What inspect_raw_metadata_extractor calls a build whose record no longer describes it: the record
+# names other files than the ones that ran, or source trees with uncommitted changes.
+EXTRACTOR_STALE = "stale_mismatch"
+EXTRACTOR_DIRTY = "dirty_source"
+EXTRACTOR_VERIFIED = "verified"
+PRE2_TITLE = "The raw headers were read by a verified, pinned extractor"
+
+
+def _extractor_pin(raw_commit: object, common_commit: object) -> dict | None:
+    raw, common = str(raw_commit or "").strip().casefold(), str(common_commit or "").strip().casefold()
+    return next((dict(entry) for entry in EXTRACTOR_PINNED_BUILDS
+                 if entry[EXTRACTOR_RAW_TREE] == raw and entry[EXTRACTOR_COMMON_TREE] == common), None)
+
+
+def _campaign_crossings(provenance: dict | None) -> list[dict]:
+    """The campaign approvals the unit crossed a boundary under: its own, or else its raw owner's."""
+    record = provenance if isinstance(provenance, dict) else {}
+    own = record.get("campaign_authorizations")
+    own = [item for item in own if isinstance(item, dict)] if isinstance(own, list) else []
+    if own or not isinstance(record.get("split_from"), dict):
+        return own
+    owner, _ = _raw_owner_manifest(record)
+    crossings = (owner or {}).get("campaign_authorizations")
+    return [item for item in crossings if isinstance(item, dict)] if isinstance(crossings, list) else []
+
+
+def _under_campaign(provenance: dict | None) -> bool:
+    record = provenance if isinstance(provenance, dict) else {}
+    disposition = record.get("campaign_disposition")
+    return bool(_campaign_crossings(record)) or (isinstance(disposition, dict) and disposition.get("applied") is True)
+
+
+def _recorded_extractor(provenance: dict | None) -> dict:
+    preflight = (provenance or {}).get("raw_metadata_preflight") if isinstance(provenance, dict) else None
+    extractor = preflight.get("extractor") if isinstance(preflight, dict) else None
+    return extractor if isinstance(extractor, dict) else {}
+
+
+def check_extractor_identity(report: Report, provenance: dict | None, reason: str) -> None:
+    """PRE-2. The build that read the raw headers is one whose source is known.
+
+    The extractor decides a unit's acquisition mode, polarity and separation, and with them whether it
+    runs, splits or is skipped, and a campaign deletes the raw data afterwards. Until Interactive 0.5.17 a
+    preflight recorded the extractor by path, size and modification time, and the binary in use had been
+    built from a working checkout with uncommitted changes: its verdicts named no code. Since then each
+    preflight records the extractor's sha256, its build record's verdict (provenance_status) and the pair
+    of commits the record names, and a campaign runs only a verified build of a pinned pair.
+
+    No sha256 is a legacy record: WARN. A record Interactive itself called stale or dirty names code that
+    did not run: FAIL. A verified build of a pair EXTRACTOR_PINNED_BUILDS lists as built: PASS. Anything
+    else - no build record, or a pair not pinned - is a WARN outside a campaign and a FAIL inside one,
+    because Interactive refuses such an extractor to a campaign, so a campaign unit recording one ran
+    outside the rule. A pair Interactive recorded as pinned and this mirror does not list is a WARN: the
+    mirror may be behind Interactive, which is not a fact about the unit.
+    """
+    stage = "before-production"
+    if provenance is None:
+        report.add("PRE-2", stage, PRE2_TITLE, NOT_EVALUABLE, reason)
+        return
+    preflight = provenance.get("raw_metadata_preflight")
+    if not isinstance(preflight, dict) or not preflight:
+        # Not required, as for PRE-1: a unit whose acquisition mode the repository already settled never
+        # needed a header read, so no extractor decided anything here.
+        report.add("PRE-2", stage, PRE2_TITLE, NOT_EVALUABLE,
+                   "No raw-header preflight is recorded in the manifest, so no extractor ran.", required=False)
+        return
+    extractor = _recorded_extractor(provenance)
+    sha256 = str(extractor.get("sha256") or "").strip().casefold()
+    status = str(extractor.get("provenance_status") or "").strip()
+    raw_commit = str(extractor.get("msrawdataworkbench_commit") or "").strip()
+    common_commit = str(extractor.get("msdialworkbench_commit") or "").strip()
+    pin = _extractor_pin(raw_commit, common_commit)
+    campaign = _under_campaign(provenance)
+    # Checksums and commits only: the path is this machine's, and the gate's report may travel.
+    evidence = {
+        "sha256": sha256, "inventory_sha256": str(extractor.get("inventory_sha256") or ""),
+        "provenance_status": status, "msrawdataworkbench_commit": raw_commit,
+        "msdialworkbench_commit": common_commit, "recorded_pinned": extractor.get("pinned"),
+        "recorded_pin_state": str(extractor.get("pin_state") or ""),
+        "gate_pin_state": pin["state"] if pin else "", "pins_mirrored_from": EXTRACTOR_PINS_MIRRORED_FROM,
+        "under_campaign": campaign,
+    }
+    if not sha256:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, WARN,
+            ("The preflight records its extractor by path, size and modification time only, as Interactive did "
+             "before 0.5.17" if extractor else "The preflight records no extractor at all")
+            + ", so which build read these headers, and from which source, is not established. Its verdicts are "
+            "not tied to code.", **evidence)
+        return
+    if not _SHA256_TEXT.fullmatch(sha256):
+        report.add("PRE-2", stage, PRE2_TITLE, WARN,
+                   f"The preflight records an extractor checksum that is not a sha256 ({sha256[:24]!r}), so the build "
+                   "that read these headers is not established.", **evidence)
+        return
+    pair = (f"msrawdataworkbench {raw_commit[:9]} with MsdialWorkbench {common_commit[:9]}"
+            if raw_commit and common_commit else "no recorded commits")
+    if status == EXTRACTOR_STALE:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, FAIL,
+            f"The extractor that read these headers (sha256 {sha256[:12]}) was stale when it ran: its build record "
+            f"describes other files than the ones on disk, so {pair} is not the code that decided this unit's "
+            "acquisition mode.", **evidence)
+        return
+    if status == EXTRACTOR_DIRTY:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, FAIL,
+            f"The extractor that read these headers (sha256 {sha256[:12]}) was built from source trees with "
+            f"uncommitted changes, so {pair} does not describe the code that decided this unit's acquisition "
+            "mode.", **evidence)
+        return
+    notes: list[str] = []
+    if isinstance(provenance.get("split_from"), dict):
+        owner, _ = _raw_owner_manifest(provenance)
+        parent_sha = str(_recorded_extractor(owner).get("sha256") or "").strip().casefold()
+        evidence["parent_sha256"] = parent_sha
+        if parent_sha and parent_sha != sha256:
+            notes.append(f"This part's headers were read by extractor {sha256[:12]}, and the split was decided from "
+                         f"its parent's read by {parent_sha[:12]}: the split and the part's verdicts come from two "
+                         "different builds.")
+    disposition = provenance.get("campaign_disposition")
+    decided = disposition.get("extractor") if isinstance(disposition, dict) else None
+    decided_by = str((decided or {}).get("sha256") or "").strip().casefold() if isinstance(decided, dict) else ""
+    if decided_by and decided_by != sha256:
+        evidence["disposition_sha256"] = decided_by
+        notes.append(f"The campaign disposition names extractor {decided_by[:12]}, not the {sha256[:12]} the "
+                     "preflight records.")
+    tail = (" " + " ".join(notes)) if notes else ""
+    built = bool(pin and pin["state"] == EXTRACTOR_PIN_BUILT)
+    if status == EXTRACTOR_VERIFIED and built:
+        current = EXTRACTOR_PINNED_BUILDS[0]
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, WARN if notes else PASS,
+            f"The headers were read by extractor {sha256[:12]}, a verified build of {pair}, a pinned pair"
+            + ("" if pin == current else f" though not the current pin ({current[EXTRACTOR_RAW_TREE][:9]})")
+            + "." + tail, **evidence)
+        return
+    if status == EXTRACTOR_VERIFIED and extractor.get("pinned") is True:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, WARN,
+            f"Interactive recorded extractor {sha256[:12]} as a verified build of the pinned pair {pair}, and the "
+            f"gate's mirror of PINNED_BUILDS (Interactive {EXTRACTOR_PINS_MIRRORED_FROM}) does not list that pair as "
+            "built: the mirror is behind Interactive, or the record is wrong." + tail, **evidence)
+        return
+    if status == EXTRACTOR_VERIFIED:
+        why = f"a verified build of {pair}, a pair " + ("that was planned and never built" if pin else "no pin names")
+    else:
+        why = (f"identified by its checksum alone: its build record was {status or 'not recorded'}, so no source "
+               "revision names it")
+    if campaign:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, FAIL,
+            f"The headers were read by extractor {sha256[:12]}, {why}. This unit ran under a campaign approval, and "
+            "a campaign runs only a verified build of a pinned pair; Interactive refuses any other, so this "
+            "preflight ran outside the rule." + tail, **evidence)
+        return
+    report.add(
+        "PRE-2", stage, PRE2_TITLE, WARN,
+        f"The headers were read by extractor {sha256[:12]}, {why}. Outside a campaign that is allowed, but its "
+        "verdicts are not tied to reviewed code." + tail, **evidence)
+
+
 def _raw_owner_manifest(provenance: dict | None) -> tuple[dict | None, str]:
     """The manifest of the unit that downloaded this unit's raw data.
 
@@ -6126,6 +6305,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_split_part_partitions_its_parent(report, provenance, provenance_reason)
         check_execution_allowed(report, provenance, provenance_reason)
         check_preflight_claim(report, provenance, provenance_reason)
+        check_extractor_identity(report, provenance, provenance_reason)
         check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_checksum_coverage(report, provenance, provenance_reason)
         check_converted_inputs_are_their_conversions(report, provenance, provenance_reason, csv_rows, csv_reason)
@@ -6195,7 +6375,7 @@ COMPLETION_STAGES = (
      "the raw owner's manifest lists its downloads, and every input is on disk or the raw tree was released "
      "by the confirmed cleanup (status raw_cleaned)",
      ("SUM-1", "CONV-1")),
-    ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1")),
+    ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1", "PRE-2")),
     ("B3", "class_settled",
      "a ratified Class proposal, or where the Catalog abstains a ratified abstention (accepted, confirmed or approved)",
      ("CLS-3",)),

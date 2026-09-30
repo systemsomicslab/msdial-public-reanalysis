@@ -1,0 +1,264 @@
+"""PRE-2: the raw headers that decide a campaign unit were read by a verified build of a pinned pair.
+
+The extractor decides which units run, split or are skipped, and a campaign deletes their raw data
+afterwards, so its verdicts have to name code. These tests pin what the gate says of the extractor a
+preflight recorded, and hold the gate's mirror of Interactive's pinned builds equal to Interactive's own
+table.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+TESTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS))
+import test_verify_split_and_progress as split  # noqa: E402  (loads the gate)
+
+verifier = split.verifier
+_status, _check, _write, _edit = split._status, split._check, split._write, split._edit
+
+CURRENT_PIN = verifier.EXTRACTOR_PINNED_BUILDS[0]
+OLDER_PIN = verifier.EXTRACTOR_PINNED_BUILDS[1]
+PLANNED_PIN = next(entry for entry in verifier.EXTRACTOR_PINNED_BUILDS if entry["state"] != "built")
+SHA = "e" * 64
+APPROVAL = "campaign-2026-10-01"
+
+
+def _extractor(pin: dict | None = CURRENT_PIN, *, sha256: str = SHA, status: str = "verified",
+               pinned: bool | None = None) -> dict:
+    """An extractor record as Interactive's _extractor_record writes it (0.5.17 and later)."""
+    return {
+        "path": "C:\\synthetic\\RawMetadataConsoleApp.exe", "size_bytes": 19968,
+        "modified_at": "2026-10-01T00:00:00+00:00", "sha256": sha256, "inventory_sha256": "f" * 64,
+        "file_count": 120, "provenance_status": status, "provenance_path": "C:\\synthetic\\record.json",
+        "msrawdataworkbench_commit": (pin or {}).get("msrawdataworkbench", ""),
+        "msdialworkbench_commit": (pin or {}).get("MsdialWorkbench", ""),
+        "product_version": "1.0.0+x",
+        "pinned": (bool(pin) and pin["state"] == "built" and status == "verified") if pinned is None else pinned,
+        "pin_state": (pin or {}).get("state", ""), "selected_from": "setting",
+    }
+
+
+def _crossing(boundary, *, unit: str = "unit", retention: str = "delete_after_validated_output",
+              entry_point: str = "msdial_cleanup_repository_raw") -> dict:
+    """A boundary crossing as campaign_authorization.validate returns it and the unit manifest keeps it."""
+    return {
+        "schema": "msdial-campaign-authorization.v1", "approval_id": APPROVAL, "campaign_id": "campaign",
+        "manifest_digest": "sha256:" + "a" * 64, "authorization_path": "C:\\synthetic\\authorization.json",
+        "authorization_sha256": "b" * 64, "raw_retention_policy": retention, "boundary": boundary,
+        "unit_id": unit, "covered_as": "listed", "entry_point": entry_point,
+        "validated_at": "2026-10-01T00:00:00+00:00",
+    }
+
+
+def _unit(root: Path, name: str = "unit", *, raw: bool = True, **manifest) -> Path:
+    """One unit workspace under an accession directory, with a raw tree holding one input."""
+    workspace = root / name
+    (workspace / "output").mkdir(parents=True)
+    candidate = workspace / "raw" / "data" / "s0.mzML"
+    if raw:
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(b"x" * 10)
+    record = {
+        "project": {"analysis_unit_id": name, "repository": "metabolights"},
+        "execution_allowed": True,
+        "raw_directory": str(workspace / "raw"),
+        "workspace": str(workspace),
+        "input_candidates": [str(candidate)],
+        "downloads": [{"path": str(candidate), "sha256": "ab" * 32}],
+        "raw_retention_policy": "delete_after_validated_output",
+    }
+    record.update(manifest)
+    _write(workspace / "provenance" / "run-manifest.json", record)
+    return workspace
+
+
+# ---------------------------------------------------------------------------------------------
+# PRE-2
+# ---------------------------------------------------------------------------------------------
+
+class ExtractorIdentityTests(unittest.TestCase):
+    def _gate(self, temporary: str, extractor: dict | None, **manifest):
+        preflight = {"exit_code": 0, "summary": {"per_file": []}}
+        if extractor is not None:
+            preflight["extractor"] = extractor
+        workspace = _unit(Path(temporary), raw_metadata_preflight=preflight, **manifest)
+        return _check(verifier.verify(workspace, "before-production"), "PRE-2")
+
+    def test_a_legacy_record_without_a_checksum_warns(self) -> None:
+        """MTBLS2207's record: path, size and mtime only. A WARN, which --strict does not hold."""
+        with tempfile.TemporaryDirectory() as temporary:
+            check = self._gate(temporary, {"path": "C:\\x\\RawMetadataConsoleApp.exe", "size_bytes": 19968,
+                                           "modified_at": "2026-09-06T07:23:42+00:00"})
+
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertIn("path, size and modification time only", check.detail)
+        self.assertFalse(check.strict_failure)
+
+    def test_a_verified_build_of_the_current_pin_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            check = self._gate(temporary, _extractor(), campaign_authorizations=[_crossing(4)])
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual("built", check.evidence["gate_pin_state"])
+        self.assertNotIn("C:\\synthetic", json.dumps(check.evidence), "the evidence names no location")
+
+    def test_a_verified_build_of_an_older_built_pin_passes_and_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            check = self._gate(temporary, _extractor(OLDER_PIN))
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn("not the current pin", check.detail)
+
+    def test_a_stale_or_dirty_build_is_refused(self) -> None:
+        for status in ("stale_mismatch", "dirty_source"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                check = self._gate(temporary, _extractor(status=status, pinned=False))
+
+            self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+    def test_an_unpinned_build_warns_outside_a_campaign_and_is_refused_in_one(self) -> None:
+        cases = (("planned pair", _extractor(PLANNED_PIN)), ("no pin", _extractor(None)),
+                 ("no build record", _extractor(CURRENT_PIN, status="absent", pinned=False)))
+        for name, extractor in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                outside = self._gate(temporary, extractor)
+            with self.subTest(name, campaign=True), tempfile.TemporaryDirectory() as temporary:
+                inside = self._gate(temporary, extractor, campaign_authorizations=[_crossing(1)])
+            with self.subTest(name, disposition=True), tempfile.TemporaryDirectory() as temporary:
+                decided = self._gate(temporary, extractor, campaign_disposition={
+                    "schema": "msdial-campaign-disposition.v1", "disposition": "run", "applied": True})
+
+            self.assertEqual(verifier.WARN, outside.status, outside.detail)
+            self.assertEqual(verifier.FAIL, inside.status, inside.detail)
+            self.assertEqual(verifier.FAIL, decided.status, decided.detail)
+
+    def test_a_pin_the_mirror_does_not_know_is_not_a_fact_about_the_unit(self) -> None:
+        """Interactive may pin a build before the gate's mirror is updated; that is a WARN, never a FAIL."""
+        unknown = {"msrawdataworkbench": "1" * 40, "MsdialWorkbench": "2" * 40, "state": "built"}
+        with tempfile.TemporaryDirectory() as temporary:
+            check = self._gate(temporary, _extractor(unknown, pinned=True), campaign_authorizations=[_crossing(1)])
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("mirror", check.detail)
+
+    def test_a_part_read_by_another_build_than_its_split_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = split.SplitFixture(Path(temporary))
+            _edit(fixture.parent_manifest, raw_metadata_preflight={"exit_code": 0, "summary": {},
+                                                                   "extractor": _extractor(sha256="1" * 64)})
+            _edit(fixture.part_manifest(0), raw_metadata_preflight={"exit_code": 0, "summary": {},
+                                                                    "extractor": _extractor()})
+            _edit(fixture.part_manifest(1), raw_metadata_preflight={"exit_code": 0, "summary": {},
+                                                                    "extractor": _extractor(sha256="1" * 64)})
+            differs, same = (_check(fixture.gate(part), "PRE-2") for part in (0, 1))
+
+        self.assertEqual(verifier.WARN, differs.status, differs.detail)
+        self.assertIn("two different builds", differs.detail)
+        self.assertEqual(verifier.PASS, same.status, same.detail)
+
+    def test_a_disposition_decided_by_another_build_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            check = self._gate(temporary, _extractor(), campaign_disposition={
+                "disposition": "run", "applied": True, "extractor": {"sha256": "1" * 64}})
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+
+    def test_no_preflight_is_not_owed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary))
+            check = _check(verifier.verify(workspace, "before-production"), "PRE-2")
+
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status)
+        self.assertFalse(check.required)
+
+    def test_pre2_judges_b2(self) -> None:
+        judged = next(checks for code, _name, _meaning, checks in verifier.COMPLETION_STAGES if code == "B2")
+        self.assertIn("PRE-2", judged)
+
+
+def _pinned_builds(source: str) -> list[dict]:
+    """Interactive's PINNED_BUILDS, read from its source without importing or running it."""
+    tree = ast.parse(source)
+    names: dict[str, str] = {}
+    table = None
+    for node in tree.body:
+        targets, value = [], None
+        if isinstance(node, ast.Assign):
+            targets, value = [item.id for item in node.targets if isinstance(item, ast.Name)], node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets, value = [node.target.id], node.value
+        for name in targets:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                names[name] = value.value
+            if name == "PINNED_BUILDS":
+                table = value
+    if not isinstance(table, (ast.Tuple, ast.List)):
+        raise ValueError("PINNED_BUILDS is not a literal table")
+
+    def value_of(node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            return names[node.id]
+        raise ValueError(ast.dump(node))
+
+    rows = []
+    for element in table.elts:
+        row = {value_of(key): value_of(value) for key, value in zip(element.keys, element.values)}
+        rows.append({key: row[key] for key in (names["RAW_TREE"], names["COMMON_TREE"], "state")})
+    return rows
+
+
+class ExtractorPinMirrorTests(unittest.TestCase):
+    """The gate's EXTRACTOR_PINNED_BUILDS is Interactive's PINNED_BUILDS, at the commit it names."""
+
+    MODULE = "msdial_app/raw_metadata_extractor.py"
+
+    def _interactive(self) -> Path:
+        root = Path(os.environ.get("MSDIAL_INTERACTIVE_APP") or r"D:\0_SourceCode\msdial_interactive_app")
+        if not (root / ".git").exists():
+            self.skipTest(f"no Interactive checkout at {root} (set MSDIAL_INTERACTIVE_APP)")
+        return root
+
+    def _git(self, root: Path, *arguments: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(root), *arguments], capture_output=True, text=True,
+                              encoding="utf-8", timeout=60)
+
+    def test_the_parser_reads_a_table_written_with_names(self) -> None:
+        source = ('A = "raw"\nB = "common"\nBUILT = "built"\n'
+                  'PINNED_BUILDS: tuple = ({A: "1" * 0 or "11", B: "22", "state": BUILT, "note": "x"},)\n')
+        with self.assertRaises(ValueError):
+            _pinned_builds(source)  # an expression is not a literal: the mirror must not guess
+        source = ('RAW_TREE = "raw"\nCOMMON_TREE = "common"\n'
+                  'PINNED_BUILDS = ({RAW_TREE: "11", COMMON_TREE: "22", "state": "built"},)\n')
+        self.assertEqual([{"raw": "11", "common": "22", "state": "built"}], _pinned_builds(source))
+
+    def test_the_mirror_is_interactives_table_at_the_commit_it_names(self) -> None:
+        root = self._interactive()
+        shown = self._git(root, "show", f"{verifier.EXTRACTOR_PINS_MIRRORED_FROM}:{self.MODULE}")
+        if shown.returncode != 0:
+            self.skipTest(f"Interactive {verifier.EXTRACTOR_PINS_MIRRORED_FROM} is not in {root}")
+        self.assertEqual(_pinned_builds(shown.stdout), [dict(entry) for entry in verifier.EXTRACTOR_PINNED_BUILDS])
+
+    def test_an_interactive_checkout_past_the_mirror_has_not_moved_its_pins(self) -> None:
+        """Checked against the checkout's HEAD whenever it descends from the mirrored commit."""
+        root = self._interactive()
+        descends = self._git(root, "merge-base", "--is-ancestor", verifier.EXTRACTOR_PINS_MIRRORED_FROM, "HEAD")
+        if descends.returncode != 0:
+            self.skipTest(f"the checkout's HEAD does not descend from {verifier.EXTRACTOR_PINS_MIRRORED_FROM}")
+        shown = self._git(root, "show", f"HEAD:{self.MODULE}")
+        self.assertEqual(0, shown.returncode, shown.stderr)
+        self.assertEqual(_pinned_builds(shown.stdout), [dict(entry) for entry in verifier.EXTRACTOR_PINNED_BUILDS],
+                         "Interactive's PINNED_BUILDS moved: mirror it again and name the commit")
+
+
+if __name__ == "__main__":
+    unittest.main()
