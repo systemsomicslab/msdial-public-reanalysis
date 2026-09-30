@@ -32,11 +32,21 @@ For a repository range:
 5. Classify units as eligible, excluded, or requiring review using the supported
    scope in `CLAUDE.md`: untargeted LC-MS/MS acquired by DDA or DIA/AIF/SWATH.
    If acquisition is unknown, require raw-header preflight; never guess DDA.
-   mzML is an input. mzXML and mzData are `requires_conversion`: MS-DIAL has no
-   reader for them, so the unit is excluded before download until a reviewed
-   ProteoWizard conversion has produced an mzML manifest with its own
-   provenance. The exclusion is unit-wide: one listed file or one sample naming
-   an `.mzXML` excludes the unit, even when its other inputs are readable.
+   The preflight reads the headers with the raw-metadata extractor, which a
+   campaign pins, and a unit whose mode is still unknown after it is not run.
+   Each input's record carries `console_acquisition_type` (DDA, SWATH or AIF),
+   and the analysis CSV's `acquisition_type` takes that value and no other: the
+   Console silently turns any value it cannot parse into DDA. An AIF file whose
+   collision-energy target list is empty gets a recorded warning and still
+   runs. Ion-mobility data are excluded, with the reason recorded (LC-MS only).
+   mzML is an input, and so is a vendor folder (Waters `.raw`, Agilent or Bruker
+   `.d`): one folder is one input and one CSV row, and its files are only
+   downloaded. mzXML that is a sample's only encoding is converted to mzML by
+   Interactive's converter, and the conversion is recorded as that input's
+   provenance; until the unit's manifest records it, the mzXML stays
+   `requires_conversion` and the unit does not run. mzData stays
+   `requires_conversion` and excludes the unit: there is no reader and no
+   converter for it.
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
@@ -49,17 +59,28 @@ For a repository range:
    Class/contrast review needs, and proposed output directory for each unit.
 9. Ask for one batch-level approval of the manifest and size budget. Keep the
    per-download and per-production-run confirmation boundaries required by the
-   tools.
+   tools, unless the approval is a recorded campaign approval of the manifest's
+   digest (`CLAUDE.md`, Confirmation boundaries): for the units it lists, that
+   record is those confirmations, and the campaign runner carries it (see
+   Unattended operation).
 10. Call `msdial_repository_reanalysis_plan` and
    `msdial_download_repository_raw` with the same `analysis_unit_handoff_path` for
    each approved unit. For accession-bundle downloads, verify the resulting
-   manifest admits only allow-listed paths into the analysis CSV.
+   manifest admits only allow-listed paths into the analysis CSV. The lease
+   extracts zip, tar, `.7z`, `.rar`, bare `.gz` and `.lzma` objects and records
+   each extraction with its member listing (`archive_extractions`). An object
+   that several units list is to be fetched once, into the accession's download
+   store `_dl`, with each unit reading its own tree of it; the lease does not
+   use the store yet.
    When raw-header preflight reports `Mixed`, the unit holds more than one
    acquisition mode and cannot run as one. Preview `msdial_split_repository_unit`
    with `confirmed=false`, show the parts, and split only on an explicit
-   confirmation. Never run the Mixed parent. Each part is its own run, with its
-   own workspace, preflight, diagnostic, gates and boundary-4 confirmation; the
-   parts share the parent's `raw\`, and the parent stays the raw owner.
+   confirmation. Under a campaign approval that covers the split, split instead
+   as the unit's `campaign_disposition` says (`disposition: split`, with its
+   `split_key`). Never run the Mixed parent. Each part is its own run, with its
+   own workspace, preflight, diagnostic, gates and boundary-4 confirmation (in a
+   campaign, the approval's); the parts share the parent's `raw\`, and the
+   parent stays the raw owner.
 11. Before production, run `msdial_start_peak_count_diagnostic` on a mid-run QC,
    or the non-blank Sample nearest the run-order midpoint when there is no QC.
    Interactive picks one itself only from `analytical_order`. Since 0.5.2,
@@ -81,7 +102,9 @@ For a repository range:
 12. Write the production bundle with `msdial_prepare_guided_analysis`, with the
    accepted `minimum_peak_height` in the answers, then run the
    `before-production` gate (see below) against it and stop the unit on a
-   refusal. The gate reads `output\method.txt`, so it cannot run before this.
+   refusal (in a campaign, the runner records the refusal instead; see
+   Unattended operation). The gate reads `output\method.txt`, so it cannot run
+   before this.
    The diagnostic in step 11 does not touch the production files: it writes its
    own single-file `analysis_files.csv`, `method.txt` and `run-manifest.json`
    under `<workspace>\diagnostics\<diagnostic-job-id>`, and
@@ -161,8 +184,10 @@ What the gate cannot do:
   fix. Record the resolved binary path and its hash in the unit summary
   yourself.
 - It cannot see a unit that was never started. A batch's own state file is the
-  only record that a unit was selected; the server's job registry keeps only the
-  most recently updated jobs and downgrades running jobs on restart.
+  only record that a unit was selected; for a campaign that is the runner's
+  ledger under `<workspace_root>\_campaigns\<campaign_id>`. The server's job
+  registry keeps only the most recently updated jobs and downgrades running
+  jobs on restart.
 
 Server-side state on `msdial_interactive_app` `main`:
 
@@ -173,15 +198,28 @@ Server-side state on `msdial_interactive_app` `main`:
   `provenance\run-manifest.json`, and the Console left its `.dcl`, `.pai2` and
   `_tags.xml` beside the representative raw file, as it does on every run.
   Verify the row count anyway; that is what CNT-1 is for.
-- Raw data is never deleted without a separate explicit confirmation. Keeping
-  `raw_retention_policy` at `keep` is still the right default for an unattended
-  run, because it removes the decision rather than answering it. An accepted
-  retention policy records intent and is not that confirmation: preview
-  `msdial_cleanup_repository_raw`, show the exact directory and the retained
-  inventory, and ask immediately before deleting. A split unit cannot be
-  cleaned up yet: its parts share the parent's raw tree, which lies outside a
-  part's workspace, and the parent is not a completed run, so the tool refuses
-  both. Its raw data stay until split-parent cleanup exists.
+- Raw data is never deleted without a separate explicit confirmation, or a
+  campaign approval that covers boundary 5 for the unit. Outside a campaign,
+  keeping `raw_retention_policy` at `keep` is still the right default for an
+  unattended run, because it removes the decision rather than answering it. An
+  accepted retention policy records intent and is not that confirmation:
+  preview `msdial_cleanup_repository_raw`, show the exact directory and the
+  retained inventory, and ask immediately before deleting. Given
+  `campaign_authorization_path`, the tool deletes without `confirmed=true` only
+  when the approval covers boundary 5 for the unit and states
+  `delete_after_validated_output`, the unit's manifest recorded that same
+  policy at download, and the preview is ready; it writes the crossing into the
+  manifest first. For a campaign unit, the run's MS-DIAL containers are moved
+  into `output\msdial-intermediates` and its `<project>_Loaded.msp2.dbs` is
+  deleted when the run is finalised; a container that could not be moved is
+  recorded in `finalisation_holds` and holds the deletion. Two parts of the
+  campaign's deletion rule have no approval-taking entry point on main yet.
+  `discard_download_lease`, which releases a failed, skipped or excluded unit's
+  raw data, takes no campaign approval, and cleanup accepts only a validated
+  run. A split unit cannot be cleaned up: its parts share the parent's raw
+  tree, which lies outside a part's workspace, and the parent is not a
+  completed run, so the tool refuses both, and its raw data stay until
+  split-parent release exists.
 - A unit whose manifest says `execution_allowed` is not true is refused before
   MS-DIAL starts, and so is a workflow whose polarity, output directory or input
   set disagrees with the manifest.
@@ -192,18 +230,46 @@ Server-side state on `msdial_interactive_app` `main`:
 ## Unattended operation
 
 An unattended run may only proceed inside a manifest the user has already
-approved. It may not widen `maximum_gb` to clear a size blocker, may not set
-`allow_partial_mapping=true`, and may not change `raw_retention_policy`. When
-the loop reaches a decision that needs a confirmation it does not hold, stop the
-unit, write a failure record beside its artifacts, and continue with the next
-unit; do not proceed and do not retry blindly.
+approved. For a campaign, that approval is the recorded campaign approval of
+the manifest's digest (`CLAUDE.md`, Confirmation boundaries), and the execution
+path is the campaign runner, `scripts/campaign-runner.py`. It calls the
+Interactive and Catalog functions the MCP tools expose, in its own process, and
+where a tool would ask for `confirmed=true` it passes the approval instead:
+`campaign_authorization_path` to Interactive, `ratification` to the Catalog. No
+step the approval covers acts before Interactive or the Catalog has checked it
+and recorded the crossing, and the runner never records a reading (boundary 6).
+It decides no eligibility: it reads the unit's `campaign_disposition`, which
+only Interactive's `classify_preflight` writes, and runs, splits, skips or
+excludes the unit as that record says.
+
+An unattended run may not widen `maximum_gb` beyond what its approval states,
+may not set `allow_partial_mapping=true`, and may not change
+`raw_retention_policy`. When the loop reaches a decision that needs a
+confirmation it does not hold (an official-library download, or a unit the
+approval does not list), stop the unit, write a failure record beside its
+artifacts, and continue with the next unit; do not proceed. A pin that changes
+pauses the whole campaign until a new approval is recorded. A failed unit is
+retried only as the approval states (twice, in this campaign), never blindly,
+and one unit's failure never stops the campaign.
+
+In a campaign the runner runs the gate at each of its points and keeps every
+report for the verification that follows the campaign; a verdict holds neither
+the MS-DIAL run nor the raw-data deletion. Report a unit whose outputs are all
+present and whose mzTab-M validates as `outputs produced`, not `completed`: a
+run is completed only when it reaches B10 and its gate, run with
+`--stage all --strict`, exits 0, which a run whose QA-1 or SUM-2 left sentences
+does only once a person's reading is recorded.
 
 Record `manifest_path`, `output_root`, `input_path`, the `analysis_unit_id` and
-every job ID into the batch's own state file as each tool returns. The server's
-job registry keeps only the most recently updated jobs and downgrades running
-jobs to `interrupted` on restart, and no tool accepts a manifest path as a way
-back into a unit, so a handle that is not recorded client-side is lost.
+every job ID into the batch's own state file (for a campaign, the ledger) as
+each tool returns. The server's job registry keeps only the most recently
+updated jobs and downgrades running jobs to `interrupted` on restart. The
+preflight, split, preparation, peak-height estimate, QA, publication and cleanup
+tools accept the unit's `manifest_path` as a way back into it, so that is the
+handle to keep above all.
 
 Treat any tool result that is not a mapping, or that is a string beginning
-`Error executing tool `, as an opaque server failure: stop that unit, write the
-failure record, and do not retry. The reason is not recoverable client-side.
+`Error executing tool `, as an opaque server failure: stop that unit and write
+the failure record. The runner, which calls the functions in-process, treats an
+exception they raise the same way. Outside a campaign, do not retry: the reason
+is not recoverable client-side. Inside one, the retry rule above applies.

@@ -2,7 +2,7 @@
 
 This project uses Claude as a scientific workflow reviewer and orchestrator.
 Use the two local MCP servers rather than shell scripts for scientific workflow
-execution.
+execution. The one exception is the campaign runner (see MCP responsibilities).
 
 When the task is software development across the MS-DIAL family rather than a
 single reanalysis run, first read the master prompt in the private repository
@@ -40,6 +40,18 @@ Catalog handoffs are local file-backed contracts. After
 `analysis_unit_handoff_paths`. Do not inline or truncate full sample/file
 manifests in the model context. Treat any handoff consistency error as a stop.
 
+The campaign runner, `scripts/campaign-runner.py`, is the execution path for
+the units of an approved campaign (see Confirmation boundaries), and only for
+them. It calls the same Interactive and Catalog functions the MCP tools expose,
+in its own process, so a campaign unit passes every check an interactive one
+does. Where a tool would ask for `confirmed=true` it passes the campaign
+approval instead (`campaign_authorization_path` to Interactive, `ratification`
+to the Catalog), and no step the approval covers acts before Interactive or the
+Catalog has checked it and recorded the crossing. It decides no eligibility: it
+reads the unit's `campaign_disposition`, which only Interactive's
+`classify_preflight` writes, and runs, splits, skips or excludes the unit as
+that record says.
+
 ## Local storage
 
 Use this mandatory default repository reanalysis root:
@@ -55,20 +67,40 @@ directory, in the user profile, or in a temporary directory. Interactive creates
 `<workspace_root>\<repository>\<accession>\raw`, `provenance`, and `output`.
 Require explicit confirmation before using any different absolute path.
 
+Two kinds of directory under the workspace root are not analysis units and are
+never run as one. `<workspace_root>\<repository>\<accession>\_dl` is the
+accession's download store: it holds each repository object once, however many
+units list it, and each unit gets its own raw tree built from it, because
+MS-DIAL writes beside the files it reads. The store is raw data, under the same
+deletion rule. `<workspace_root>\_campaigns\<campaign_id>` holds a campaign's
+ledger and approval, which name each library by file name and sha256, never by
+location.
+
 ## Supported production scope
 
 - This public-repository campaign accepts LC-MS/MS only.
 - Acquisition must be untargeted DDA or DIA/AIF/SWATH with an MS1 survey and
   product-ion spectra.
-- mzML is supported. mzXML and mzData are not MS-DIAL inputs; classify them as
-  `requires_conversion`, stop before download/execution, and require a reviewed
-  ProteoWizard-to-mzML conversion with new provenance.
+- mzML is supported, and so is a vendor folder: a Waters `.raw`, or an Agilent
+  or Bruker `.d` directory, or an archive holding one. A folder is one data
+  file, one input and one row of the analysis CSV, which is generated from the
+  unit's inputs; the files inside it are only downloaded.
+- mzXML is not an MS-DIAL input. Where it is a sample's only encoding,
+  Interactive's validated converter turns it into mzML and records the
+  conversion as that input's own provenance (source and output sha256,
+  converter identity, validation), and the mzML is the input. Until the unit's
+  manifest records that conversion, the mzXML stays `requires_conversion` and
+  the unit does not run. mzData has no converter: it is `requires_conversion`
+  and excludes the unit.
 - One project type, ion mode, acquisition mode, chromatography regime, and ion
   mobility regime per MS-DIAL run.
 - GC-MS, SRM/MRM, SIM, DI-MS, imaging MS, product-ion-only
   experiments, and unresolved mixed-polarity units are review or exclusion
   cases, not silent conversions. MS-DIAL Interactive can analyze some of these
   modes outside this campaign; that broader capability does not expand this scope.
+- LC-IM-MS is excluded from this campaign, which is LC-MS only. Ion-mobility
+  data (Bruker TDF/timsTOF, Waters and Agilent ion mobility) are excluded with
+  the reason recorded, whether the repository or the raw headers show it.
 
 ## Evidence and decisions
 
@@ -119,13 +151,53 @@ current conversation:
    that person and `--conclusion` is what they said. A reading is never the
    agent's own.
 
-An accepted raw-retention policy records intent but is not deletion approval.
-Preview `msdial_cleanup_repository_raw` and obtain a separate confirmation for
-the exact raw directory immediately before deletion.
+A campaign approval is the one exception. The user approves one campaign
+manifest, identified by its sha256 digest, in the conversation, and the
+approval is recorded with their words verbatim as an
+`msdial-campaign-authorization.v1` record. For the units that manifest lists,
+and the parts an automatic split derives from them, that record is the
+confirmation for boundaries 1, 3, 4 and 5 and for the split, under the rules
+the manifest states (among them its Class rule, its method rules and the
+deletion rule below) and with the pins it fixes. It never covers boundary 2 or
+6, a unit the manifest does not list, or anything the manifest does not state.
+
+Interactive checks the record at each boundary it guards and writes the
+crossing into the unit's manifest, and the Catalog stores it with the Class
+decision it ratifies, so every boundary a campaign unit crossed is an
+artifact, not a conversation fact. The pins are the Console and raw-metadata
+extractor binaries (by sha256), each library (by file name and sha256), and the
+Interactive, Catalog and gate commits. A change to any pin pauses the campaign
+until a new approval is recorded.
+
+Outside a campaign, an accepted raw-retention policy records intent but is not
+deletion approval. Preview `msdial_cleanup_repository_raw` and obtain a
+separate confirmation for the exact raw directory immediately before deletion.
 
 Dry-run previews must use `confirmed=false`. Default raw retention is `keep`.
 The preview must report both selected-unit bytes and actual required bundle
-bytes. The latter is the download approval and safety-limit quantity.
+bytes. The latter is the download approval and safety-limit quantity; under a
+campaign approval, the limit it is held against is the one the approval states.
+
+## Raw-data deletion in a campaign
+
+Under a campaign approval that states `delete_after_validated_output`, a
+unit's raw data are deleted with no further question:
+
+- once every MS-DIAL output its run planned is present and its mzTab-M
+  validates, whatever the gate's verdict;
+- once a failed unit has been retried twice without success;
+- when a unit that holds raw data is skipped or excluded.
+
+Every guard Interactive puts on a deletion still applies, the retained-artifact
+inventory a finished run's cleanup requires included. Before a finished run's
+raw data go, Interactive moves its MS-DIAL containers (the per-file `.dcl`,
+`.pai2` and `_tags.xml`, and the alignment files) from beside the inputs into
+`output\msdial-intermediates`, where the retained-artifact inventory lists them,
+and deletes the loaded-library copy `<project>_Loaded.msp2.dbs`; a container it
+cannot move holds the deletion. A split parent's raw tree, which its parts
+share, goes once every part has reached one of these ends, and an object in the
+download store once no unit still claims it. The gate's verdict does not hold
+the deletion; it is kept for the verification that follows the campaign.
 
 ## Batch behavior
 
@@ -136,7 +208,9 @@ sequentially at first. Use a unique output directory and exact `job_id` for each
 run. A failure in one unit must not erase or mutate another unit's artifacts.
 
 When raw preflight reports `Mixed`, preview and explicitly confirm
-`msdial_split_repository_unit`. Never execute the Mixed parent. Preflight every
+`msdial_split_repository_unit`; under a campaign approval that covers the
+split, the approval is that confirmation and the split follows the unit's
+`campaign_disposition`. Never execute the Mixed parent. Preflight every
 generated child independently and proceed only with children whose DDA or
 DIA/AIF/SWATH mode is resolved and accepted.
 
@@ -147,7 +221,9 @@ LBM rule-based lipid annotation, strict MSP search, and broad MSP candidate
 search. A lower-priority MS/MS reference match outranks a higher-priority
 precursor-only suggestion. Broad candidates are not equivalent to high-quality
 matches. Private VS20/VS21 MSP files may be used locally but must never be
-copied into bundles, logs, repositories, or shared reports.
+copied into bundles, logs, repositories, or shared reports. Their locations
+are never written into code, tests, logs or shared artifacts either: name a
+library by file name and sha256, and give tests synthetic paths.
 
 ## Required outputs
 
