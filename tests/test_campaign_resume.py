@@ -12,6 +12,8 @@ and just after it (the transaction is durable and nothing after it ran).
 
 from __future__ import annotations
 
+import contextlib
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -20,7 +22,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 import campaign_fakes as fakes  # noqa: E402
-from campaign import ledger  # noqa: E402
+from campaign import ledger, policy  # noqa: E402
 
 UNITS = ("u1", "u2", "u3")
 
@@ -57,13 +59,58 @@ def outcome(world: fakes.World) -> dict:
         # that comes back after an hour picks a retried unit up sooner than one that never stopped.
         "catalog_runs": sorted(run_id.split(":")[0] for run_id in world.catalog.runs),
         "class_saves": sorted(item["unit_id"] for item in world.catalog.saved),
+        # Why jobs were cancelled; a resumed runner may send a cancel again, which Interactive ignores.
+        "cancel_reasons": sorted({reason for _job, reason in world.interactive.cancels}),
     }
 
 
+class FloorDisk(fakes.FakeDisk):
+    """Free space drops below the download floor while a download that holds on (outcome "hold") has moved
+    some bytes and has not been asked to stop."""
+
+    def __init__(self, world: fakes.World) -> None:
+        super().__init__()
+        self.world = world
+
+    def usage(self, _path: str) -> tuple[int, int]:
+        for job in self.world.interactive.jobs.values():
+            if (job["kind"] == "download" and job["outcome"] == "hold" and job["status"] in ("queued", "running")
+                    and not job.get("cancel") and job["received"] >= 2000):
+                return 50 * 1000**3, self.total
+        return self.free, self.total
+
+
+def cancels_scripted(world: fakes.World) -> None:
+    """The three cancels: a stalled download, an operator's skip of a running Console, the disk floor."""
+    world.scripts["c1"] = fakes.UnitScript(downloads=["stall", "ok"])
+    world.scripts["c2"] = fakes.UnitScript(runs=["hold"])
+    world.scripts["c3"] = fakes.UnitScript(downloads=["hold", "ok"])
+    world.disk = FloorDisk(world)
+    asked = {"skip": False}
+    start_run = world.interactive.start_run
+
+    def start_run_then_skip(**arguments):
+        result = start_run(**arguments)
+        if "c2" in arguments["answers"]["workflow_overrides"]["repository_run_manifest"] and not asked["skip"]:
+            asked["skip"] = True
+            with contextlib.closing(sqlite3.connect(world.ledger_path)) as connection:
+                connection.execute(
+                    "INSERT INTO request(at, action, unit_key, reason, requested_by) VALUES (?, 'skip', 'c2', 'not this one', 'Test Person')",
+                    (policy.iso(world.clock.now()),),
+                )
+                connection.commit()
+        return result
+
+    world.interactive.start_run = start_run_then_skip
+
+
 class ResumeTests(unittest.TestCase):
+    units: tuple[str, ...] = UNITS
+    script = staticmethod(scripted)
+
     def fresh(self, directory: str) -> fakes.World:
-        world = fakes.World(Path(directory), list(UNITS))
-        scripted(world)
+        world = fakes.World(Path(directory), list(self.units))
+        self.script(world)
         return world
 
     def baseline(self) -> tuple[dict, int]:
@@ -118,6 +165,30 @@ class ResumeTests(unittest.TestCase):
                 with self.subTest(phase=phase, commit=at):
                     self.assertEqual(self.crash_and_resume(at, phase), expected)
 
+    def test_a_cancel_recorded_and_never_sent_is_sent_after_a_restart(self) -> None:
+        """The runner records why it cancels before it asks, so a resumed runner knows the reason; one that
+        died between the two sends the cancel at the job's next poll."""
+        with tempfile.TemporaryDirectory() as directory:
+            world = fakes.World(Path(directory), ["u1"])
+            world.scripts["u1"] = fakes.UnitScript(downloads=["stall", "ok"])
+
+            def crash_after_the_record(phase: str) -> None:
+                if phase != "after" or world.interactive.cancels:
+                    return
+                with contextlib.closing(sqlite3.connect(world.ledger_path)) as connection:
+                    if connection.execute("SELECT COUNT(*) FROM campaign_event WHERE kind = 'cancel_requested'").fetchone()[0]:
+                        raise fakes.Crash()
+
+            with self.assertRaises(fakes.Crash):
+                world.run(commit_hook=crash_after_the_record)
+            self.assertEqual(world.interactive.cancels, [])
+            world.clock.sleep(60)
+            world.run()
+            with world.open() as book:
+                self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 1))
+                self.assertEqual(len(book.events("cancel_requested")), 1)
+            self.assertEqual([reason for _job, reason in world.interactive.cancels], ["stalled"])
+
     def test_an_ambiguous_console_start_is_adopted_after_a_restart(self) -> None:
         """The start call reached the backend, and the runner died before it wrote down the job."""
         with tempfile.TemporaryDirectory() as directory:
@@ -171,6 +242,32 @@ class ResumeTests(unittest.TestCase):
             with world.open() as first, world.open() as second:
                 self.assertTrue(first.take_lock(1, 1.0, "h", "2026-10-01T00:00:00+00:00", holder_alive=lambda _r: True)[0])
                 self.assertFalse(second.take_lock(2, 2.0, "h", "2026-10-01T00:00:00+00:00", holder_alive=lambda _r: True)[0])
+
+
+class CancelResumeTests(ResumeTests):
+    """The crash at every commit again, on the three paths that cancel a job: a stall, a skip, the floor."""
+
+    units = ("c1", "c2", "c3")
+    script = staticmethod(cancels_scripted)
+
+    def test_a_crash_at_every_commit_resumes_to_the_same_end(self) -> None:
+        expected, commits = self.baseline()
+        self.assertEqual(expected["units"]["c1"][:3], ("done", "outputs_produced", 1))
+        self.assertEqual(expected["units"]["c2"][:4], ("skipped", "operator_skip", 0, "discarded"))
+        self.assertEqual(expected["units"]["c3"][:3], ("done", "outputs_produced", 0))
+        self.assertEqual(expected["downloads"], ["c1", "c1", "c2", "c3", "c3"])
+        self.assertEqual(expected["cancel_reasons"], ["disk", "skip", "stalled"])
+        self.assertEqual(expected["open_attempts"], 0)
+        for phase in ("before", "after"):
+            for at in range(1, commits + 1):
+                with self.subTest(phase=phase, commit=at):
+                    self.assertEqual(self.crash_and_resume(at, phase), expected)
+
+    # The other tests are the base class's; they do not depend on the scenario and run once there.
+    test_a_cancel_recorded_and_never_sent_is_sent_after_a_restart = None
+    test_an_ambiguous_console_start_is_adopted_after_a_restart = None
+    test_a_start_that_never_reached_the_backend_is_made_again = None
+    test_a_second_runner_cannot_take_a_live_campaign = None
 
 
 if __name__ == "__main__":

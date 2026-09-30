@@ -14,6 +14,7 @@ D:\\0_SourceCode\\msdial_repository_catalog, or MSDIAL_INTERACTIVE_ROOT and MSDI
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import inspect
 import json
@@ -207,6 +208,75 @@ class InteractiveContractTests(unittest.TestCase):
         capabilities = port.capabilities()
         self.assertEqual(set(capabilities), {"version", "classify_preflight", "authorized_discard", "split_parent_release", "cancel_job"})
         self.assertTrue(capabilities["cancel_job"])
+
+    def test_a_discard_interactive_would_refuse_records_no_crossing(self) -> None:
+        """Interactive refuses to discard raw data beside an mzTab-M. The port's fallback finds that out
+        before it records a boundary-5 crossing; a failed download is discarded under one crossing."""
+        port = ports.InteractivePort(port=8766)
+        if port.capabilities()["authorized_discard"]:
+            self.skipTest("Interactive has its own authorized discard; the port's fallback is not used")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            campaign_manifest = root / "campaign-manifest.json"
+            campaign_manifest.write_bytes(b'{"campaign_id":"c1"}')
+            authorization = root / "campaign-authorization.json"
+            authorization.write_text(json.dumps({
+                "schema": plan.AUTHORIZATION_SCHEMA, "approval_id": "A1", "campaign_id": "c1",
+                "manifest_digest": plan.digest_of(campaign_manifest.read_bytes()),
+                "campaign_manifest_path": str(campaign_manifest), "approved_by": "Test Person",
+                "approved_at": "2026-10-01T00:00:00+00:00", "statement": "Approved.", "covers": [1, 3, 4, 5, "split"],
+                "units": ["u1"], "raw_retention_policy": "delete_after_validated_output", "libraries": [], "revoked_at": None,
+            }), encoding="utf-8")
+            workspace = root / "analysis" / "metabolights" / "MTBLS1" / "u1"
+            raw = workspace / "raw" / "data" / "S1.mzML"
+            raw.parent.mkdir(parents=True)
+            raw.write_bytes(b"x" * 1000)
+            (workspace / "output").mkdir()
+            (workspace / "provenance").mkdir()
+            manifest_path = workspace / "provenance" / "run-manifest.json"
+            mztab = workspace / "output" / "u1.mzTab"
+            mztab.write_text("MTD\tmzTab-version\t2.0.0-M\n", encoding="utf-8")
+
+            def write(status: str) -> None:
+                manifest_path.write_text(json.dumps({
+                    "status": status, "project": {"analysis_unit_id": "u1"}, "workspace": str(workspace),
+                    "raw_directory": str(workspace / "raw"), "output_directory": str(workspace / "output"),
+                    "raw_retention_policy": "delete_after_validated_output", "cleanup_allowed": False,
+                }), encoding="utf-8")
+
+            def crossings() -> list:
+                recorded = json.loads(manifest_path.read_text(encoding="utf-8")).get("campaign_authorizations") or []
+                return [item for item in recorded if str(item.get("boundary")) == "5"]
+
+            for status, codes in (("validation_failed", ["mztab_output_exists"]),
+                                  ("mztab_validated", ["validated_status", "mztab_output_exists"])):
+                with self.subTest(status):
+                    write(status)
+                    for _ in range(3):  # the first try and both retries
+                        result = port.discard(manifest_path=str(manifest_path), authorization_path=str(authorization), unit_id="u1")
+                        self.assertEqual((result["ok"], result["deleted"], result["blockers"]), (True, False, codes))
+                    self.assertTrue(policy.discard_blocked_for_good(result["blockers"]))
+                    self.assertEqual(crossings(), [], "no crossing for a deletion that did not happen")
+                    self.assertTrue(raw.is_file())
+            mztab.unlink()
+            write("download_failed")
+            result = port.discard(manifest_path=str(manifest_path), authorization_path=str(authorization), unit_id="u1")
+            self.assertTrue(result["deleted"], result)
+            self.assertEqual(len(crossings()), 1)
+            self.assertFalse((workspace / "raw").exists())
+
+    def test_a_blocked_download_names_the_bytes_interactive_needs(self) -> None:
+        port = ports.InteractivePort(port=8766)
+        preview = {"blocking_reasons": ["size_limit:exceeded"], "required_download_bytes": 5 * 1000**4, "maximum_gb": 1.0}
+
+        @functools.wraps(self.tools.msdial_download_repository_raw)  # the port reads the real signature
+        def blocked(**_arguments):
+            return {"started": False, "blocked": True, "preview": preview}
+
+        with mock.patch.object(self.tools, "msdial_download_repository_raw", blocked):
+            result = port.download(repository="metabolights", accession="MTBLS1", workspace_root="D:/analysis", maximum_gb=1,
+                                   raw_retention_policy="keep", handoff_path="h.json", analysis_purpose="p", authorization_path="")
+        self.assertEqual((result["reason"], result["required_download_bytes"]), ("blocked", 5 * 1000**4))
 
     def test_the_authorization_record_the_runner_writes_is_the_one_interactive_accepts(self) -> None:
         from msdial_app.campaign_authorization import CampaignAuthorization, CampaignAuthorizationError

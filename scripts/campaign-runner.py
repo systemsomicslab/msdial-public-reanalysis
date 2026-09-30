@@ -8,7 +8,8 @@ ports.py) under the rules the user decided on 2026-09-30 (scripts/campaign/polic
 THE ORDER OF USE
     python scripts/campaign-runner.py plan --campaign ID --pool declared --purpose "..." \\
         --retention delete_after_validated_output --console <MSDIALCUI.exe> --extractor <RawMetadataConsoleApp.exe> \\
-        --profile <profile.json> [--resources <campaign-resources.local.json>] [--catalog <db>]
+        --profile <profile.json> [--resources <campaign-resources.local.json>] [--catalog <db>] \\
+        [--replan-from <an earlier campaign whose approval is revoked> ...]
         read-only on the Catalog and the analysis root; writes campaign-manifest.json and prints its digest
     python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
         --by NAME --statement "the person's words" --covers 1,3,4,5,split
@@ -111,6 +112,11 @@ def command_plan(args: argparse.Namespace) -> int:
         "libraries": reader.library_identities(),
         **reader.code(),
     }
+    try:
+        replan = plan.replan_states(Path(args.workspace_root), args.replan_from) if args.replan_from else None
+    except plan.PlanError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_REFUSED
     catalog = ports.read_only_catalog(catalog_path)
     try:
         manifest = plan.build_manifest(
@@ -119,6 +125,7 @@ def command_plan(args: argparse.Namespace) -> int:
             profile=profile, campaign_policy=campaign_policy,
             class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, args.purpose),
             catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
+            replan=replan,
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
@@ -372,7 +379,7 @@ def command_pause(args: argparse.Namespace) -> int:
 
 def command_resume(args: argparse.Namespace) -> int:
     with _open(args) as book:
-        resumed = book.resume(_now(), kinds=["operator", "disk", "fault"], detail={"by": "operator", "reason": args.reason})
+        resumed = book.resume(_now(), kinds=["operator", "contract", "disk", "fault"], detail={"by": "operator", "reason": args.reason})
     print("Resumed." if resumed else "Nothing to resume (a pin pause lifts only when the pins match again).")
     return EXIT_OK
 
@@ -439,6 +446,8 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--profile", help=f"the shared answers ({'msdial-campaign-profile.v1'})")
     plan.add_argument("--policy", help="campaign policy overrides (JSON)")
     plan.add_argument("--out", help="write the manifest here instead of the campaign directory (a dry run)")
+    plan.add_argument("--replan-from", action="append", default=[], metavar="CAMPAIGN",
+                      help="an earlier campaign, its approval revoked, whose units that did not end done are planned again")
     plan.set_defaults(handler=command_plan)
 
     approve = commands.add_parser("approve", help="record the person's approval of one manifest digest")

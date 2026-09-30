@@ -94,6 +94,8 @@ class RetryTests(unittest.TestCase):
             policy.CampaignPolicy.from_dict({"max_attempts": 5})
         with self.assertRaises(ValueError):
             policy.CampaignPolicy.from_dict({"outer_extractor_timeout": 10})
+        with self.assertRaises(ValueError):
+            policy.CampaignPolicy.from_dict({"outage_units": 1})
         rules = policy.CampaignPolicy.from_dict({"prefetch": 1, "disk": {"reserve_bytes": 5}})
         self.assertEqual((rules.prefetch, rules.disk.reserve_bytes), (1, 5))
         self.assertEqual(policy.CampaignPolicy.from_dict(rules.as_dict()), rules)
@@ -156,8 +158,40 @@ class DiskTests(unittest.TestCase):
         self.assertFalse(short.admit)
         self.assertFalse(short.never_fits, "short now is not too big ever")
         self.assertTrue(policy.disk_verdict(901, 1000, 1000, rules).never_fits)
-        self.assertEqual(policy.download_bound_gb(500 * 1000**3, 1000 * 1000**3, rules), (500 * 1000**3 - 100) / 1000**3)
-        self.assertEqual(policy.download_bound_gb(10, 1000, rules), 1.0)
+        # What the volume could hold above its reserve, whatever is free now: the floor pauses a short disk.
+        self.assertEqual(policy.download_bound_gb(1000 * 1000**3, rules), (1000 * 1000**3 - 100) / 1000**3)
+        self.assertEqual(policy.download_bound_gb(1000, rules), 1.0)
+
+
+class DownloadFailureTests(unittest.TestCase):
+    def test_the_lease_limit_is_read_from_interactives_own_words(self) -> None:
+        self.assertEqual(policy.lease_size_limit({"error": "Remote object is 9000 bytes; limit is 500 bytes."}), 9000)
+        self.assertEqual(policy.lease_size_limit({"error": "Download exceeded the 500-byte safety limit."}), 501)
+        self.assertEqual(policy.lease_size_limit({"failure": {"reason": (
+            "Required repository bundle is 7000 bytes; the download lease limit is 500 bytes.")}}), 7000)
+        self.assertIsNone(policy.lease_size_limit({"error": "HTTP Error 503: Service Unavailable"}))
+
+    def test_a_network_failure_is_told_from_the_units_own(self) -> None:
+        for detail in (
+            {"error": "HTTP 503"}, {"error": "HTTP Error 502: Bad Gateway"}, {"error": "HTTP Error 429: Too Many Requests"},
+            {"failure": {"reason": "<urlopen error [Errno 11001] getaddrinfo failed>", "error_type": "URLError"}},
+            {"error": "The read operation timed out"}, {"failure": {"error_type": "ConnectionResetError", "reason": "x"}},
+        ):
+            with self.subTest(detail):
+                self.assertTrue(policy.network_failure(detail))
+        self.assertTrue(policy.network_failure({"error": "cancelled"}, "stalled"), "bytes that stop are the network's")
+        for detail in (
+            {"error": "HTTP Error 404: Not Found"}, {"error": "Checksum mismatch for S1.mzML"},
+            {"failure": {"reason": "archive_member_escapes", "error_type": "ArchiveError"}},
+        ):
+            with self.subTest(detail):
+                self.assertFalse(policy.network_failure(detail))
+
+    def test_a_discard_blocked_for_good_is_not_waited_for(self) -> None:
+        self.assertTrue(policy.discard_blocked_for_good(["mztab_output_exists"]))
+        self.assertTrue(policy.discard_blocked_for_good(["finalisation_held", "validated_status"]))
+        self.assertFalse(policy.discard_blocked_for_good(["lease_live", "finalisation_held"]))
+        self.assertFalse(policy.discard_blocked_for_good([]))
 
 
 class OutputsTests(unittest.TestCase):

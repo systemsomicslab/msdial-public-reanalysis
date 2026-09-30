@@ -68,15 +68,23 @@ class FakeDisk:
 class UnitScript:
     """What the fake backend does for one unit, attempt by attempt."""
 
-    downloads: list[str] = field(default_factory=lambda: ["ok"])  # ok, fail, stall, blocked, interrupt
+    # ok; fail (HTTP 503); corrupt (a checksum that does not match, not the network); stall; hold (bytes keep
+    # arriving and the job never ends until it is cancelled); blocked; interrupt
+    downloads: list[str] = field(default_factory=lambda: ["ok"])
     disposition: str = "run"  # run, split, skip, exclude, none, malformed
     split_modes: tuple[str, ...] = ("DDA", "SWATH")
     diagnostics: list[str] = field(default_factory=lambda: ["ok"])  # ok, timeout, fail, lose_reply
-    runs: list[str] = field(default_factory=lambda: ["ok"])  # ok, timeout, fail, invalid, lose_reply, busy_reply
+    # ok, timeout, fail, invalid (an mzTab-M that does not validate), late_fail (the mzTab-M validated and
+    # the job failed after), hold, lose_reply, busy_reply
+    runs: list[str] = field(default_factory=lambda: ["ok"])
     cleanup: str = "ok"  # ok, blocked
     # How long each job runs, in 30-second polls of fake time. A job ends when its time is up, whether or
     # not anyone is polling it, as a real job does while the runner is down.
     ticks: int = 2
+    # What Interactive's size checks see: the preview's required_download_bytes (size_limit:exceeded above
+    # maximum_gb) and the bytes the lease streams (it stops past maximum_gb). 0 is small.
+    required_bytes: int = 0
+    remote_bytes: int = 0
 
 
 def _write(path: Path, value: Any) -> None:
@@ -164,6 +172,10 @@ class FakeInteractive:
         outcome = self._next(unit, "download", script.downloads)
         if outcome == "blocked":
             return {"ok": False, "reason": "blocked", "blocking_reasons": ["analysis_input:container_shared_by_samples"]}
+        maximum = int(float(arguments["maximum_gb"]) * 1000**3)
+        if script.required_bytes > maximum:
+            return {"ok": False, "reason": "blocked", "blocking_reasons": ["size_limit:exceeded"],
+                    "required_download_bytes": script.required_bytes, "maximum_gb": arguments["maximum_gb"]}
         job = self._job_id("dl")
         workspace = self._workspace(arguments["repository"], arguments["accession"], unit)
         manifest_path = workspace / "provenance" / "run-manifest.json"
@@ -176,7 +188,8 @@ class FakeInteractive:
                                          "entry_point": "msdial_download_repository_raw"}],
         })
         self.jobs[job] = {"id": job, "kind": "download", "status": "running", "done_at": self._due(script.ticks), "received": 0,
-                          "outcome": outcome, "unit": unit, "manifest_path": str(manifest_path)}
+                          "outcome": outcome, "unit": unit, "manifest_path": str(manifest_path), "maximum_bytes": maximum,
+                          "remote_bytes": script.remote_bytes}
         self.download_starts.append(unit)
         return {"ok": True, "job_id": job}
 
@@ -186,7 +199,7 @@ class FakeInteractive:
     def settle(self) -> None:
         """End every job whose time is up: the backend works whether or not the runner is watching."""
         for job in list(self.jobs.values()):
-            if job["status"] in ("queued", "running") and job["outcome"] != "stall" and self.world.clock.now() >= job["done_at"]:
+            if job["status"] in ("queued", "running") and job["outcome"] not in ("stall", "hold") and self.world.clock.now() >= job["done_at"]:
                 self._finish(job, "cancelled" if job.get("cancel") else job["outcome"])
 
     def restart(self) -> None:
@@ -220,12 +233,21 @@ class FakeInteractive:
             job["received"] += 1000
             if (self.store.read(job["manifest_path"]) or {}).get("status") == "downloading":
                 self._update(job["manifest_path"], lambda manifest: manifest.update(download_progress_at=self._stamp()))
-        if self.world.clock.now() >= job["done_at"]:
+        if self.world.clock.now() >= job["done_at"] and job["outcome"] != "hold":
             self._finish(job, job["outcome"])
 
     def _finish(self, job: dict[str, Any], outcome: str) -> None:
         manifest_path = job["manifest_path"]
         if job["kind"] == "download":
+            if outcome == "ok" and self.world.outage:
+                outcome = "fail"
+            if outcome == "ok" and job.get("remote_bytes", 0) > job.get("maximum_bytes", 0) > 0:
+                # The lease streams to maximum_gb and stops (repository_reanalysis: the safety limit).
+                error = f"Download exceeded the {job['maximum_bytes']}-byte safety limit."
+                self._update(manifest_path, lambda manifest: manifest.update(
+                    status="download_failed", download_failure={"reason": error, "error_type": "ValueError"}))
+                job.update(status="failed", error=error)
+                return
             if outcome == "ok":
                 workspace = Path(manifest_path).parent.parent
                 (workspace / "raw" / "data").mkdir(parents=True, exist_ok=True)
@@ -237,8 +259,15 @@ class FakeInteractive:
                 job.update(status="failed", stop_reason="cancelled", error="cancelled")
             elif outcome == "interrupt":
                 job.update(status="interrupted")
+            elif outcome == "corrupt":
+                error = "Checksum mismatch for S1.mzML: the repository declares another md5."
+                self._update(manifest_path, lambda manifest: manifest.update(
+                    status="download_failed", download_failure={"reason": error, "error_type": "ValueError"}))
+                job.update(status="failed", error=error)
             else:
-                self._update(manifest_path, lambda manifest: manifest.update(status="download_failed"))
+                self._update(manifest_path, lambda manifest: manifest.update(
+                    status="download_failed", download_failure={"reason": "HTTP Error 503: Service Unavailable",
+                                                                 "error_type": "HTTPError"}))
                 job.update(status="failed", error="HTTP 503")
             return
         exit_code = {"ok": 0, "invalid": 0, "timeout": -3, "cancelled": -4}.get(outcome, 1)
@@ -248,7 +277,7 @@ class FakeInteractive:
             for item in manifest.get("run_attempts") or []:
                 if item.get("job_id") == job["id"]:
                     item.update(ended_at=self._stamp(), exit_code=exit_code)
-            if kind == "run" and outcome == "ok":
+            if kind == "run" and outcome in ("ok", "late_fail"):
                 output = Path(manifest["output_directory"])
                 output.mkdir(parents=True, exist_ok=True)
                 (output / "result.mztab").write_text("MTD\tmzTab-version\t2.0.0-M\n", encoding="utf-8")
@@ -256,6 +285,10 @@ class FakeInteractive:
                                 finalized_run={"job_id": job["id"]},
                                 mztab_validation={"files": [{"file": str(output / "result.mztab")}]})
             elif kind == "run" and outcome == "invalid":
+                # The Console wrote its mzTab-M, and it did not validate.
+                output = Path(manifest["output_directory"])
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "result.mztab").write_text("MTD\tmzTab-version\t2.0.0-M\n", encoding="utf-8")
                 manifest.update(status="validation_failed", cleanup_allowed=False)
 
         self._update(manifest_path, close)
@@ -398,9 +431,29 @@ class FakeInteractive:
         self._update(manifest_path, lambda current: current.update(status="raw_cleaned"))
         return {"ok": True, "deleted": True}
 
+    def discard_blockers(self, manifest: dict[str, Any]) -> list[str]:
+        """What discard_download_lease refuses on, as InteractivePort.discard_blockers reads it."""
+        codes = []
+        status = manifest.get("status")
+        if status in ("mztab_validated", "completed", "raw_cleaned"):
+            codes.append("validated_status")
+        if status == "downloading" and self.lease_state(manifest) != "gone":
+            codes.append("lease_live")
+        output = Path(str(manifest.get("output_directory") or ""))
+        if str(manifest.get("output_directory") or "") and output.is_dir() and any(
+            path.is_file() and path.suffix.casefold() == ".mztab" for path in output.rglob("*")
+        ):
+            codes.append("mztab_output_exists")
+        if any("raw_deletion" in (hold.get("blocks") or []) for hold in manifest.get("finalisation_holds") or []):
+            codes.append("finalisation_held")
+        return codes
+
     def discard(self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "") -> dict[str, Any]:
         self.calls.append(("discard", {"manifest_path": manifest_path, "unit_id": unit_id}))
         manifest = self.store.read(manifest_path) or {}
+        blockers = self.discard_blockers(manifest)
+        if blockers:
+            return {"ok": True, "deleted": False, "blockers": blockers, "detail": "Interactive would refuse: " + ", ".join(blockers)}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
         self._update(manifest_path, lambda current: current.update(status="discarded"))
         return {"ok": True, "deleted": True}
@@ -498,6 +551,8 @@ class World:
         self.clock = FakeClock()
         self.disk = FakeDisk()
         self.scripts: dict[str, UnitScript] = {}
+        # While set, every download that would have finished fails with HTTP 503: the repository is down.
+        self.outage = False
         self.extractor_sha = SHA["extractor"]
         self.instrument_family = "QTOF"
         self.private_directory = root / "private libraries" / "vault"

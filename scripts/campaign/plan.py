@@ -12,8 +12,13 @@ listed with its reason:
 - no_files: the Catalog lists no raw file for it, so there is nothing to download (111 declared units);
 - ion_mobility: ion mobility Enabled, or a TIMS, Synapt, Vion, 6560 or Cyclic instrument. This campaign
   is LC-MS only; LC-IM-MS is excluded this time (decided 2026-09-30);
-- preexisting_workspace: <workspace_root>\\<repository>\\<accession> already exists (MTBLS2207, MTBLS341,
-  ST002419, MPST000007, MPST000008). The runner never writes into a workspace it did not make;
+- preexisting_workspace: <workspace_root>\\<repository>\\<accession> holds something no campaign made
+  (MTBLS2207, MTBLS341, ST002419, MPST000007, MPST000008: an accession-level workspace, or a unit
+  workspace of an earlier run). The runner never writes into a workspace it did not make;
+- campaign_workspace: the unit's own workspace was made by an earlier campaign, and the plan was not
+  asked to take that campaign's unfinished units again (--replan-from). A campaign's workspaces are
+  known by the authorization copy the runner writes into provenance before anything else is written
+  there, so the siblings of a unit a campaign touched are planned as before;
 - mzdata_only: every analysis file is mzData, which MS-DIAL cannot read and nothing here converts
   (mzXML is converted by Interactive and runs);
 - no_download_object: files are listed, but none carries a URL;
@@ -60,8 +65,14 @@ SELECTION_RULES = {
     "acquisition_unknown": "separation LC-MS; acquisition Unknown (read from the raw headers); untargeted not false; one polarity",
 }
 EXCLUSION_REASONS = (
-    "no_files", "ion_mobility", "preexisting_workspace", "mzdata_only", "no_download_object", "class_undecided",
+    "no_files", "ion_mobility", "preexisting_workspace", "campaign_workspace", "mzdata_only", "no_download_object",
+    "class_undecided",
 )
+# Entries of an accession directory that are not a workspace: Interactive's download store (0.5.13), which
+# serves the units beside it.
+NOT_WORKSPACES = frozenset({"_dl"})
+# A unit a prior campaign ended in one of these, or has a job running for, is not planned again.
+NOT_REPLANNED = frozenset({"done", "split_done", "downloading", "diagnosing", "running"})
 ION_MOBILITY_INSTRUMENT = re.compile(r"tims|synapt|vion|6560|cyclic", re.IGNORECASE)
 MZDATA_SUFFIXES = (".mzdata", ".mzdata.xml")
 ANALYSIS_ROLES = ("raw", "converted")
@@ -117,15 +128,82 @@ def select_units(connection: sqlite3.Connection, pool: str) -> list[dict[str, An
     return units
 
 
-def exclusion_reasons(unit: Mapping[str, Any], workspace_root: Path) -> list[str]:
+def campaign_of(workspace: Path) -> str | None:
+    """The campaign that made a unit workspace, or None.
+
+    The runner copies the campaign's authorization into <workspace>\\provenance before anything else is
+    written there (the Class step), and the parts of a split get theirs as they are made.
+    """
+    try:
+        record = json.loads((workspace / "provenance" / "campaign-authorization.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(record, dict) and record.get("schema") == AUTHORIZATION_SCHEMA and str(record.get("campaign_id") or "").strip():
+        return str(record["campaign_id"])
+    return None
+
+
+def replan_states(workspace_root: Path, campaign_ids: Iterable[str]) -> dict[str, dict[str, str]]:
+    """{campaign id: {unit key: state}} of the prior campaigns whose unfinished units may be planned again.
+
+    Only a campaign whose approval is revoked: a live one's units are its own, and its runner would take
+    them up again beside the new campaign's. Read-only.
+    """
+    result: dict[str, dict[str, str]] = {}
+    for campaign_id in campaign_ids:
+        path = Path(workspace_root) / "_campaigns" / str(campaign_id) / "ledger.sqlite"
+        if not path.is_file():
+            raise PlanError(f"Campaign {campaign_id} has no ledger at {path}.")
+        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        try:
+            approval = connection.execute("SELECT approval_id, revoked_at FROM approval").fetchone()
+            if approval is None or approval[1] is None:
+                raise PlanError(
+                    f"Campaign {campaign_id}'s approval is not revoked; revoke it before its units are planned again."
+                )
+            result[str(campaign_id)] = {str(key): str(state) for key, state in connection.execute("SELECT unit_key, state FROM unit")}
+        finally:
+            connection.close()
+    return result
+
+
+def workspace_exclusion(
+    unit: Mapping[str, Any], workspace_root: Path, replan: Mapping[str, Mapping[str, str]] | None = None,
+) -> tuple[str | None, str]:
+    """preexisting_workspace, campaign_workspace or None for this unit's workspace, with what was found."""
+    accession = workspace_root / str(unit["repository"]) / str(unit["accession"])
+    if not accession.is_dir():
+        return None, ""
+    foreign = sorted(
+        entry.name for entry in accession.iterdir()
+        if entry.name not in NOT_WORKSPACES and not (entry.is_dir() and campaign_of(entry))
+    )
+    if foreign:
+        return "preexisting_workspace", f"{accession.name} holds {', '.join(foreign[:5])}"
+    own = accession / str(unit["unit_id"])
+    made_by = campaign_of(own) if own.is_dir() else None
+    if made_by is None:
+        return None, ""
+    state = (replan or {}).get(made_by, {}).get(str(unit["unit_id"]))
+    if state is not None and state not in NOT_REPLANNED:
+        return None, ""
+    if made_by not in (replan or {}):
+        return "campaign_workspace", f"made by campaign {made_by}"
+    return "campaign_workspace", f"made by campaign {made_by}, where the unit is {state or 'unknown'}"
+
+
+def exclusion_reasons(
+    unit: Mapping[str, Any], workspace_root: Path, replan: Mapping[str, Mapping[str, str]] | None = None,
+) -> list[str]:
     """Every static reason this unit will not run, in EXCLUSION_REASONS order."""
     reasons = []
     if not unit["file_count"]:
         reasons.append("no_files")
     if str(unit["ion_mobility"] or "") == "Enabled" or ION_MOBILITY_INSTRUMENT.search(str(unit["instrument"] or "")):
         reasons.append("ion_mobility")
-    if (workspace_root / str(unit["repository"]) / str(unit["accession"])).is_dir():
-        reasons.append("preexisting_workspace")
+    workspace, _detail = workspace_exclusion(unit, workspace_root, replan)
+    if workspace:
+        reasons.append(workspace)
     paths = unit.get("analysis_paths") or []
     if paths and all(path.endswith(MZDATA_SUFFIXES) for path in paths):
         reasons.append("mzdata_only")
@@ -200,8 +278,12 @@ def build_manifest(
     catalog_database: str,
     now: datetime | None = None,
     progress: Callable[[str], None] | None = None,
+    replan: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """The manifest for one pool. `catalog` is a read-only Catalog; nothing is written anywhere."""
+    """The manifest for one pool. `catalog` is a read-only Catalog; nothing is written anywhere.
+
+    `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
+    """
     if not str(campaign_id or "").strip() or not re.fullmatch(r"[A-Za-z0-9._-]+", str(campaign_id)):
         raise PlanError("A campaign id is letters, digits, '.', '_' and '-'.")
     if not str(analysis_purpose or "").strip():
@@ -219,9 +301,10 @@ def build_manifest(
     excluded: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     for unit in selected:
-        reasons = exclusion_reasons(unit, workspace_root)
+        reasons = exclusion_reasons(unit, workspace_root, replan)
         if reasons:
-            excluded.append(_exclusion(unit, reasons))
+            _reason, found = workspace_exclusion(unit, workspace_root, replan)
+            excluded.append(_exclusion(unit, reasons, detail=found))
         else:
             candidates.append(unit)
     decisions: dict[str, dict[str, Any]] = {}
@@ -258,6 +341,8 @@ def build_manifest(
     units = []
     for order_index, (unit, planned) in enumerate(included):
         decision = decisions[unit["unit_id"]]
+        own = workspace_root / str(unit["repository"]) / str(unit["accession"]) / str(unit["unit_id"])
+        prior = campaign_of(own) if own.is_dir() else None
         units.append({
             "unit_id": unit["unit_id"],
             "repository": unit["repository"],
@@ -279,6 +364,8 @@ def build_manifest(
             "class_kind": decision["kind"],
             "class_fields": list(decision.get("selected_fields") or []),
             "class_assignments": int(decision.get("assignment_count") or 0),
+            **({"replanned_from": {"campaign_id": prior, "state": (replan or {}).get(prior, {}).get(unit["unit_id"])}}
+               if prior else {}),
         })
     used_groups = []
     for group in group_order:
@@ -314,6 +401,7 @@ def build_manifest(
         "groups": used_groups,
         "exclusions": excluded,
         "totals": totals,
+        **({"replanned_from": sorted(replan)} if replan else {}),
     }
 
 
@@ -452,7 +540,11 @@ def ledger_rows(manifest: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list
 
 
 def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
+    """What a person approves. The transfer is printed as the lease makes it: Interactive's lease fetches
+    each unit's objects for that unit (its download store is not used by the lease yet), so the bytes moved
+    and held are the per-unit sum, and the distinct bytes are what sharing would move."""
     totals = manifest["totals"]
+    version = str((manifest.get("pins", {}).get("interactive") or {}).get("version") or "?")
 
     def tb(value: int) -> str:
         return f"{value / 1000**4:.2f} TB"
@@ -463,9 +555,13 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     ]
     for reason, count in totals["excluded_by_reason"].items():
         lines.append(f"    excluded {reason}: {count}")
+    lower = " at least" if totals["units_of_unknown_size"] else ""
     lines += [
         f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}",
-        f"  distinct bytes: {tb(totals['distinct_bytes_known'])} of known size; lower bound {tb(totals['distinct_bytes_lower_bound'])}",
+        f"  transfer and disk:{lower} {tb(totals['per_unit_known_bytes'])}, each unit fetching its own copy of what "
+        f"units share (Interactive {version}'s lease does not share objects)",
+        f"  distinct bytes, once the lease shares objects through the download store: {tb(totals['distinct_bytes_known'])} "
+        f"of known size; lower bound {tb(totals['distinct_bytes_lower_bound'])}",
         f"  unknown sizes: {totals['unknown_size_objects']} objects "
         f"({totals['empty_digest_objects']} declare the digest of zero bytes), {totals['units_of_unknown_size']} units",
         f"  units with archives {totals['units_with_archives']}; Class {totals['class_kinds']}",

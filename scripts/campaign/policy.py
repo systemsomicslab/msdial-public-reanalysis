@@ -156,6 +156,11 @@ class DiskPolicy:
     known bytes times the factor plus unknown_size_reserve_bytes, and while it downloads the free space
     is watched: below download_floor_bytes the download is cancelled (its partial file is kept for a
     resume) and the campaign pauses until space returns.
+
+    THE FLOOR ACTS FIRST. maximum_gb, the limit Interactive's lease enforces while it streams, is what the
+    volume could hold above its reserve (download_bound_gb), not what is free now. A limit taken from the
+    free space would end a large download of unknown size as a failed unit - and its retry at once, the
+    partial file then taking up the space - where the user's rule is a pause.
     """
 
     file_factor: float = 1.66
@@ -176,6 +181,10 @@ class CampaignPolicy:
     # A stop the unit did not cause (a reboot, a backend restart) is retried without counting against it,
     # this many times; past that it counts, so a unit that always kills its backend still ends.
     max_interruptions: int = 5
+    # Downloads of this many different units failing in a row on the network (a 5xx, a timeout, a reset,
+    # a stall) are a repository outage, not unit failures: the campaign pauses as a fault, and from the
+    # attempt that trips it on nothing counts against a unit. 0 turns the breaker off.
+    outage_units: int = 3
     prefetch: int = 0
     poll_seconds: float = 30.0
     busy_retry_seconds: float = 120.0
@@ -228,6 +237,8 @@ class CampaignPolicy:
             raise ValueError("retry_delays_seconds names a delay for every retry.")
         if self.prefetch < 0:
             raise ValueError("prefetch is 0 or more.")
+        if self.outage_units == 1 or self.outage_units < 0:
+            raise ValueError("outage_units is 0 (no breaker) or at least 2: one unit's failures are its own.")
         unknown = set(self.gate_points) - {"before_production", "pre_cleanup", "final"}
         if unknown:
             raise ValueError(f"Unknown gate points: {', '.join(sorted(unknown))}.")
@@ -280,6 +291,65 @@ def after_failure(failures_before: int, now: datetime, policy: CampaignPolicy) -
 def interruption_counts(interruptions_before: int, policy: CampaignPolicy) -> bool:
     """Whether an interruption (a stop the unit did not cause) now counts as a failure."""
     return interruptions_before + 1 > policy.max_interruptions
+
+
+def _failure_texts(detail: Mapping[str, Any]) -> tuple[str, set[str]]:
+    """The error text and exception type names a download failure's record carries, wherever they sit:
+    the job's error, the manifest's download_failure, a tool's detail."""
+    texts: list[str] = []
+    types: set[str] = set()
+    failure = detail.get("failure")
+    for record in (detail, failure if isinstance(failure, Mapping) else {}):
+        for key in ("error", "reason", "detail"):
+            if record.get(key):
+                texts.append(str(record[key]))
+        if record.get("error_type"):
+            types.add(str(record["error_type"]))
+    return " | ".join(texts), types
+
+
+# Interactive's lease refusing to go past maximum_gb (repository_reanalysis: the Content-Length check, the
+# streaming check, and the lease's own check of the required bytes).
+_LEASE_LIMIT = (
+    re.compile(r"Remote object is (\d+) bytes; limit is \d+ bytes"),
+    re.compile(r"Download exceeded the (\d+)-byte safety limit"),
+    re.compile(r"Required repository bundle is (\d+) bytes; the (?:download lease|approved) limit is \d+ bytes"),
+)
+
+
+def lease_size_limit(detail: Mapping[str, Any]) -> int | None:
+    """The bytes a download needed, when it ended because the lease reached maximum_gb, else None.
+
+    The user set no per-unit size limit, so maximum_gb is only the disk bound and such an end is a short
+    disk, never the unit's failure. The figure is the size Interactive names, or one byte past the limit.
+    """
+    text, _types = _failure_texts(detail)
+    for index, pattern in enumerate(_LEASE_LIMIT):
+        match = pattern.search(text)
+        if match:
+            return int(match.group(1)) + (1 if index == 1 else 0)
+    return None
+
+
+_NETWORK_TYPES = frozenset({
+    "URLError", "TimeoutError", "timeout", "ConnectionError", "ConnectionResetError", "ConnectionAbortedError",
+    "ConnectionRefusedError", "RemoteDisconnected", "IncompleteRead", "gaierror", "SSLError", "SSLEOFError",
+})
+_NETWORK_TEXT = re.compile(
+    r"\bHTTP(?: Error)? (?:5\d\d|429)\b|urlopen error|timed out|Connection (?:reset|aborted|refused)|"
+    r"forcibly closed|Remote end closed|IncompleteRead|getaddrinfo failed|Name or service not known|"
+    r"Temporary failure in name resolution|EOF occurred in violation of protocol",
+    re.IGNORECASE,
+)
+
+
+def network_failure(detail: Mapping[str, Any], outcome: str = "failed") -> bool:
+    """Whether a download failed on the network rather than on the unit's own objects: a server error or
+    a rate limit, a timeout, a reset, a name that did not resolve, or bytes that stopped arriving."""
+    if outcome == "stalled":
+        return True
+    text, types = _failure_texts(detail)
+    return bool(types & _NETWORK_TYPES) or bool(_NETWORK_TEXT.search(text))
 
 
 # ---- stalls -----------------------------------------------------------------------------------------
@@ -378,16 +448,34 @@ def disk_verdict(need: int, free: int, total: int, policy: DiskPolicy) -> DiskVe
     )
 
 
-def download_bound_gb(free: int, total: int, policy: DiskPolicy) -> float:
+def download_bound_gb(total: int, policy: DiskPolicy) -> float:
     """maximum_gb for a download: the disk bound, since the user set no per-unit size limit.
 
-    Interactive requires maximum_gb above 0 and refuses a unit whose required bytes exceed it; the bound
-    is what the volume can hold above its reserve, never below 1 GB so the call itself is well formed.
+    Interactive requires maximum_gb above 0, refuses a unit whose required bytes exceed it, and stops a
+    lease that streams past it. The bound is what the whole volume could hold above its reserve, so only
+    a unit that could never fit meets it; a disk that is short now is the free-space floor's to pause
+    (DiskPolicy). Never below 1 GB, so the call itself is well formed.
     """
-    return max(1.0, (free - disk_reserve(total, policy)) / 1000**3)
+    return max(1.0, (int(total) - disk_reserve(total, policy)) / 1000**3)
 
 
 # ---- outputs and raw data --------------------------------------------------------------------------
+
+# Why discard_download_lease would refuse, as InteractivePort.discard reads it before it records a crossing.
+# The permanent ones do not change by waiting: a validated run takes the normal cleanup instead, and a run
+# that left an mzTab-M it could not validate keeps its raw data until Interactive has a discard for it.
+DISCARD_BLOCKERS = {
+    "validated_status": True,
+    "lease_live": False,
+    "mztab_output_exists": True,
+    "raw_outside_workspace": True,
+    "finalisation_held": False,
+}
+
+
+def discard_blocked_for_good(blockers: Iterable[str]) -> bool:
+    return any(DISCARD_BLOCKERS.get(str(code), False) for code in blockers)
+
 
 def outputs_produced(manifest: Mapping[str, Any] | None) -> bool:
     """Every MS-DIAL output present and the mzTab-M validated, as Interactive's run job records it.

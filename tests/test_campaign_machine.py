@@ -22,6 +22,8 @@ sys.path.insert(0, str(TESTS))
 import campaign_fakes as fakes  # noqa: E402
 from campaign import ledger, machine, policy, ports  # noqa: E402
 
+GB = 1000**3
+
 
 class Base(unittest.TestCase):
     def world(self, units=("u1",), **options) -> fakes.World:
@@ -300,16 +302,26 @@ class DispositionTests(Base):
                 world = self.world(("u1", "u2"))
                 world.scripts["u1"] = fakes.UnitScript(disposition=kind)
                 book = self.finish(world, max_iterations=40)
-                self.assertEqual(book.runner()["pause_kind"], "fault")
+                self.assertEqual(book.runner()["pause_kind"], "contract")
                 self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("downloaded", 0))
                 self.assertEqual(book.unit("u2")["state"], "pending", "nothing else starts on a broken contract")
 
-    def test_a_disposition_from_another_extractor_pauses_on_the_pin(self) -> None:
-        world = self.world()
+    def test_a_disposition_from_another_extractor_pauses_until_an_operator_resumes(self) -> None:
+        world = self.world(("u1", "u2"))
         world.extractor_sha = "f" * 64
-        book = self.finish(world, max_iterations=20)
-        self.assertEqual(book.runner()["pause_kind"], "pin")
+        book = self.finish(world, max_iterations=40)
+        self.assertEqual(book.runner()["pause_kind"], "contract")
         self.assertEqual(book.unit("u1")["state"], "downloaded")
+        preflights = [name for name, _ in world.interactive.calls if name == "preflight"]
+        self.assertEqual(len(preflights), 1, "the pause does not lift itself and run the preflight again")
+        self.assertEqual(len(book.events("resumed")), 0)
+        self.assertEqual(book.unit("u2")["state"], "pending")
+        # The operator looked into it; the preflight then runs again, under the pinned extractor this time.
+        world.extractor_sha = fakes.SHA["extractor"]
+        self.assertTrue(book.resume(policy.iso(world.clock.now()), kinds=["contract"]))
+        book.close()
+        book = self.finish(world)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
 
     def test_a_split_parent_is_released_once_its_last_part_ends(self) -> None:
         for supported in (False, True):
@@ -320,7 +332,8 @@ class DispositionTests(Base):
                 book = self.finish(world)
                 parent = book.unit("u1")
                 self.assertEqual((parent["state"], parent["role"]), ("split_done", "split_parent"))
-                self.assertEqual(parent["raw_disposition"], "released" if supported else "kept")
+                self.assertEqual(parent["raw_disposition"], "released" if supported else "held",
+                                 "raw data the rules delete and Interactive cannot yet are held, not kept")
                 parts = [unit for unit in book.units() if unit["parent_unit_key"] == "u1"]
                 self.assertEqual([unit["unit_key"] for unit in parts], ["u1-DDA", "u1-SWATH"])
                 self.assertTrue(all(unit["state"] == "done" and unit["raw_disposition"] == "deferred_to_parent" for unit in parts))
@@ -409,7 +422,8 @@ class DiskTests(Base):
         world.disk.free = 600 * 1000**3
         book = self.finish(world, max_iterations=10)
         self.assertEqual(book.runner()["pause_kind"], "disk")
-        self.assertEqual(book.unit("u1")["state"], "handoff_ready")
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["resume_state"]), ("deferred_disk", "handoff_ready"),
+                         "out of the hand while it waits")
         self.assertEqual(world.interactive.download_starts, [])
         self.assertEqual([event["action"] for event in book.disk_events()], ["pause"])
         book.close()
@@ -437,21 +451,22 @@ class DiskTests(Base):
         self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "downloading")
         world.disk.free = 50 * 1000**3
         self.step_until(world, book, runner, lambda: book.runner()["pause_kind"] == "disk")
-        self.assertEqual(book.unit("u1")["state"], "handoff_ready")
+        self.assertEqual(book.unit("u1")["state"], "deferred_disk")
         self.assertIn("cancel_download", [event["action"] for event in book.disk_events()])
         world.disk.free = 10 * 1000**4
         runner.run(until_idle=True, max_iterations=2000)
         self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
         self.assertEqual(world.interactive.download_starts.count("u1"), 2)
 
-    def test_a_held_raw_deletion_is_retried_then_the_raw_data_are_kept(self) -> None:
+    def test_a_raw_deletion_interactive_keeps_refusing_is_retried_then_held(self) -> None:
         world = self.world()
         world.scripts["u1"] = fakes.UnitScript(cleanup="blocked")
         book = self.finish(world)
         unit = book.unit("u1")
-        self.assertEqual((unit["state"], unit["raw_disposition"], unit["failures"]), ("done", "kept", 0))
+        self.assertEqual((unit["state"], unit["raw_disposition"], unit["failures"]), ("done", "held", 0))
         self.assertIn("finalisation_held", unit["raw_detail"])
         self.assertEqual([name for name, _ in world.interactive.calls].count("cleanup"), 3)
+        self.assertEqual(machine.summary(book)["raw_held"]["unit_keys"], ["u1"])
 
 
 class PinTests(Base):
@@ -485,6 +500,260 @@ class PrivacyTests(Base):
             if path.is_file() and path.suffix in (".json", ".csv", ".tsv"):
                 content = path.read_text(encoding="utf-8", errors="replace").casefold()
                 self.assertFalse("private libraries" in content, f"a private library location reached {path.name}")
+
+
+class RawAwareDisk(fakes.FakeDisk):
+    """Free space falls by 10 GB for every unit whose raw data are still on the volume."""
+
+    def __init__(self, world: fakes.World, free: int, total: int) -> None:
+        super().__init__(free, total)
+        self.world = world
+
+    def usage(self, _path: str) -> tuple[int, int]:
+        present = [path for path in self.world.workspace_root.rglob("raw") if path.is_dir() and any(path.rglob("*.mzML"))]
+        return self.free - 10 * GB * len(present), self.total
+
+
+class HeldRawTests(Base):
+    def test_a_run_that_never_validates_ends_failed_with_its_raw_data_held(self) -> None:
+        """Interactive discards no raw data beside an mzTab-M, and cleans up only a validated run: the raw
+        data are held, said so once, and no boundary-5 crossing is recorded for a deletion that did not happen."""
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(runs=["invalid", "invalid", "invalid"])
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["raw_disposition"]), ("failed", 3, "held"))
+        self.assertIn("mztab_output_exists", unit["raw_detail"])
+        self.assertTrue((Path(unit["workspace"]) / "raw" / "data" / "S1.mzML").is_file(), "the raw data are still there")
+        self.assertNotIn("5", self.boundaries(book, "u1"))
+        discards = [arguments for name, arguments in world.interactive.calls if name == "discard" and arguments["unit_id"] == "u1"]
+        self.assertEqual(len(discards), 1, "a refusal that waiting does not change is not asked again")
+        held = machine.summary(book)["raw_held"]
+        self.assertEqual((held["units"], held["unit_keys"], held["downloaded_bytes"]), (1, ["u1"], 1000))
+        record = json.loads((Path(unit["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["raw_disposition"], "held")
+        self.assertEqual(book.unit("u2")["state"], "done")
+
+    def test_a_failed_unit_whose_outputs_validated_is_cleaned_up_not_discarded(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(runs=["late_fail", "late_fail", "late_fail"])
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["raw_disposition"]), ("failed", "released"))
+        self.assertEqual(self.boundaries(book, "u1")[-1], "5")
+        self.assertFalse((Path(unit["workspace"]) / "raw").exists())
+        names = [name for name, _ in world.interactive.calls]
+        self.assertIn("cleanup", names)
+        self.assertNotIn("discard", names)
+
+
+class DiskHandTests(Base):
+    def test_a_unit_that_does_not_fit_leaves_the_hand_to_the_retry_that_frees_the_space(self) -> None:
+        """u1 fails its run and waits to retry with its raw data on the volume; u2 does not fit beside them.
+        u2 waiting in the hand would keep u1's retry out for ever; deferred, it lets the retry run."""
+        world = self.world(("u1", "u2"))
+        world.disk = RawAwareDisk(world, free=520 * GB, total=2 * 1000**4)  # reserve max(500 GB, 5 %) = 500 GB
+        world.scripts["u1"] = fakes.UnitScript(runs=["fail", "ok"])
+        book = self.finish(world, max_iterations=2000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+        self.assertIn("deferred_disk", [row["to_state"] for row in book.transitions("u2")])
+        self.assertIsNone(book.runner()["pause_kind"])
+        self.assertEqual([event["action"] for event in book.disk_events() if event["unit_key"] == "u2"][:3],
+                         ["pause", "resume", "admit"])
+
+    def test_new_work_waits_behind_a_unit_deferred_for_disk(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.disk.free = 600 * GB  # under the 1 TB reserve of a 20 TB volume
+        book = self.finish(world, max_iterations=20)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u2")["state"]), ("deferred_disk", "pending"))
+        self.assertEqual([item["unit_id"] for item in world.catalog.saved], ["u1"], "nothing new starts on a short disk")
+        self.assertEqual(book.runner()["pause_kind"], "disk")
+
+    def test_interactives_size_limit_defers_the_unit_and_is_asked_once(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(required_bytes=30 * 1000**4)  # a 20 TB volume never holds it
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["known_bytes"], unit["failures"]), ("deferred_disk", 30 * 1000**4, 0))
+        self.assertEqual([arguments for name, arguments in world.interactive.calls
+                          if name == "download" and "u1" in arguments["handoff_path"]].__len__(), 1)
+        self.assertEqual([(row["step"], row["outcome"], row["counted"]) for row in book.attempts("u1")
+                          if row["step"] == "download_start"], [("download_start", "blocked", 0)])
+        self.assertIn("never_fits", [event["action"] for event in book.disk_events()])
+        self.assertEqual(book.unit("u2")["state"], "done")
+
+    def test_the_download_bound_is_what_the_volume_holds_not_what_is_free(self) -> None:
+        world = self.world(size_known=False, known_bytes=0)
+        world.disk.free = 1300 * GB  # 300 GB above the reserve: enough to start, less than the unit may need
+        book = self.finish(world)
+        bound = next(arguments["maximum_gb"] for name, arguments in world.interactive.calls if name == "download")
+        self.assertEqual(bound, (20 * 1000**4 - 1000**4) / GB)
+        self.assertEqual(book.unit("u1")["state"], "done")
+
+    def test_a_lease_that_reaches_the_bound_is_a_short_disk_not_a_failure(self) -> None:
+        world = self.world(("u1", "u2"), size_known=False, known_bytes=0)
+        world.scripts["u1"] = fakes.UnitScript(remote_bytes=25 * 1000**4)
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"]), ("deferred_disk", 0))
+        self.assertEqual([row for row in book.attempts("u1") if row["counted"]], [])
+        self.assertEqual([row["outcome"] for row in book.attempts("u1") if row["step"] == "download"], ["blocked"])
+        self.assertGreater(unit["known_bytes"], 19 * 1000**4)
+        self.assertEqual(world.interactive.download_starts.count("u1"), 1, "not retried at once into the same limit")
+        self.assertEqual(book.unit("u2")["state"], "done")
+
+    def test_an_overdue_retry_waiting_for_the_hand_does_not_make_the_loop_spin(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(runs=["fail", "ok"])
+        world.scripts["u2"] = fakes.UnitScript(ticks=2000)
+        polls = []
+        original = world.interactive.job
+
+        def job(job_id):
+            polls.append(world.clock.now())
+            return original(job_id)
+
+        world.interactive.job = job
+        with world.open() as book:
+            world.runner(book).run(max_iterations=600)
+            self.assertEqual(book.unit("u1")["state"], "waiting_retry")
+        gaps = sorted((later - earlier).total_seconds() for earlier, later in zip(polls[-200:], polls[-199:]))
+        self.assertGreaterEqual(gaps[len(gaps) // 2], 29.0)
+
+
+class EndStepErrorTests(Base):
+    def test_an_error_ending_a_unit_is_retried_later_without_counting(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(downloads=["fail", "fail", "fail"])
+        broken = {"now": True}
+        original = world.gate.run
+
+        def gate(workspace, point, report_path):
+            if Path(workspace).name == "u1" and point == "final" and broken["now"]:
+                raise OSError("the report could not be written")
+            return original(workspace, point, report_path)
+
+        world.gate.run = gate
+        with world.open() as book:
+            world.runner(book).run(max_iterations=400)
+            unit = book.unit("u1")
+            self.assertEqual((unit["state"], unit["resume_state"], unit["pending_terminal"]), ("waiting_retry", "discarding", "failed"))
+            self.assertEqual(unit["failures"], 3, "the end's errors are not the unit's")
+            self.assertLess(len(book.transitions("u1")), 40, "no loop without a pause")
+            self.assertGreater(world.clock.slept, 0)
+            self.assertEqual(book.unit("u2")["state"], "done", "the hand is free meanwhile")
+            self.assertFalse([row for row in book.attempts("u1") if row["step"] == "discarding_step" and row["counted"]])
+        broken["now"] = False
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"], unit["raw_disposition"]), ("failed", "download_failed", "discarded"))
+
+    def test_an_excluded_unit_whose_end_errors_is_still_excluded(self) -> None:
+        world = self.world(("u1",))
+        world.scripts["u1"] = fakes.UnitScript(disposition="exclude")
+        left = {"errors": 4}
+        original = world.gate.run
+
+        def gate(workspace, point, report_path):
+            if point == "final" and left["errors"] > 0:
+                left["errors"] -= 1
+                raise OSError("transient")
+            return original(workspace, point, report_path)
+
+        world.gate.run = gate
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "waiting_retry")
+        # An operator's retry brings the wait forward; what the unit is ending as stays.
+        book.add_request("retry", "u1", "try the end again now", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=2000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"], unit["failures"]), ("excluded", "preflight_exclude", 0))
+        self.assertEqual(unit["raw_disposition"], "discarded")
+
+    def test_a_unit_with_outputs_is_never_failed_by_an_error_at_its_end(self) -> None:
+        world = self.world(("u1",))
+        left = {"errors": 5}
+        original = world.gate.run
+
+        def gate(workspace, point, report_path):
+            if point == "final" and left["errors"] > 0:
+                left["errors"] -= 1
+                raise PermissionError("the file is held by another process")
+            return original(workspace, point, report_path)
+
+        world.gate.run = gate
+        book = self.finish(world, max_iterations=4000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"], unit["failures"]), ("done", "outputs_produced", 0))
+        self.assertEqual(unit["raw_disposition"], "released", "what became of the raw data is not rewritten")
+        self.assertEqual(len([row for row in book.attempts("u1") if row["step"] == "releasing_step"]), 5)
+
+
+class FaultTests(Base):
+    def test_the_fault_recheck_comes_an_hour_after_the_first_fault(self) -> None:
+        """Two jobs in flight whose polls fail in turn used to move paused_at every poll, so the hourly
+        recheck, the only place the backend is restarted, never came."""
+        world = self.world(("u1", "u2"), policy_values={"prefetch": 1})
+        world.scripts["u1"] = fakes.UnitScript(ticks=400)
+        world.scripts["u2"] = fakes.UnitScript(ticks=400)
+        down = {"now": False}
+        ensured = []
+
+        class Backend:
+            def ensure(self_inner) -> dict:
+                ensured.append(world.clock.now())
+                down["now"] = False
+                return {"ok": True, "started": True, "pid": 1}
+
+        original = world.interactive.job
+        world.interactive.job = lambda job_id: (
+            {"ok": False, "reason": "backend_unavailable", "detail": "Could not connect"} if down["now"] else original(job_id)
+        )
+        ports_ = world.ports()
+        ports_.backend = Backend()
+        with world.open() as book:
+            runner = machine.Runner(book, ports_, resources={"libraries": world.libraries})
+            self.step_until(world, book, runner,
+                            lambda: all(book.unit(key)["state"] in machine.IN_FLIGHT for key in ("u1", "u2")))
+            down["now"] = True
+            started = world.clock.now()
+            for _ in range(360):
+                runner.iterate()
+                world.clock.sleep(30)
+            self.assertEqual(len(ensured), 1)
+            self.assertLessEqual((ensured[0] - started).total_seconds(), 3600 + 60)
+            self.assertEqual(len(book.events("paused")), 1)
+            runner.run(until_idle=True, max_iterations=4000)
+            self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+
+
+class OutageTests(Base):
+    def test_a_repository_outage_pauses_the_campaign_instead_of_failing_its_units(self) -> None:
+        units = [f"u{index:02d}" for index in range(20)]
+        world = self.world(units)
+        world.outage = True
+        with world.open() as book:
+            world.runner(book).run(max_iterations=3000)
+            self.assertEqual([key for key in units if book.unit(key)["state"] == "failed"], [])
+            self.assertEqual(book.runner()["pause_kind"], "fault")
+            counted = sum(1 for row in book.attempts() if row["counted"])
+            self.assertEqual(counted, 2, "only the failures before the outage was recognised count")
+            faults = [row for row in book.attempts() if row["outcome"] == "fault"]
+            self.assertGreater(len(faults), 5, "the download is tried again at every recheck, uncounted")
+        world.outage = False
+        book = self.finish(world, max_iterations=20000)
+        self.assertEqual({book.unit(key)["state"] for key in units}, {"done"})
+        self.assertLessEqual(max(book.unit(key)["failures"] for key in units), 1)
+
+    def test_failures_of_the_units_own_objects_are_not_an_outage(self) -> None:
+        world = self.world(("u1", "u2", "u3"))
+        for key in ("u1", "u2", "u3"):
+            world.scripts[key] = fakes.UnitScript(downloads=["corrupt"])
+        book = self.finish(world)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["failed"] * 3)
+        self.assertEqual(book.events("paused"), [])
 
 
 class GatePortTests(unittest.TestCase):

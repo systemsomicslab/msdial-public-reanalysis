@@ -48,11 +48,18 @@ STATES = ACTIVE_STATES + WAITING_STATES + TERMINAL_STATES
 # Where a unit waiting on something can resume: any state with work of its own.
 RESUMABLE_STATES = tuple(state for state in ACTIVE_STATES if state != "split_parent")
 BOUNDARIES = ("1", "3", "4", "5", "split")
-RAW_DISPOSITIONS = ("none", "present", "released", "discarded", "kept", "deferred_to_parent")
+# held: raw data the rules delete and Interactive did not (a failed run that left an mzTab-M, a deletion a
+# finalisation hold kept refusing). kept: raw data the rules keep (retention keep, no live boundary 5).
+RAW_DISPOSITIONS = ("none", "present", "released", "discarded", "kept", "held", "deferred_to_parent")
 ATTEMPT_OUTCOMES = (
     "ok", "failed", "timeout", "cancelled", "interrupted", "stalled", "refused", "busy", "blocked", "fault",
 )
-PAUSE_KINDS = ("operator", "disk", "pin", "fault")
+# contract: Interactive broke the contract the runner reads (no disposition, a malformed one, one decided by
+# another extractor). Time does not mend it, so only an operator lifts it.
+PAUSE_KINDS = ("operator", "contract", "pin", "fault", "disk")
+# A pause never gives way to a lesser one: a disk that runs short while the operator has paused the
+# campaign must not lift the operator's pause by replacing it.
+PAUSE_RANK = {kind: len(PAUSE_KINDS) - index for index, kind in enumerate(PAUSE_KINDS)}
 
 
 def _in(values: Iterable[str]) -> str:
@@ -667,6 +674,16 @@ class Ledger:
             ),
         )
 
+    def recent_attempts(self, steps: Iterable[str], limit: int = 200) -> list[dict[str, Any]]:
+        """The newest closed attempts of these steps across every unit, newest first."""
+        wanted = list(steps)
+        rows = self.connection.execute(
+            f"SELECT * FROM attempt WHERE ended_at IS NOT NULL AND step IN ({', '.join('?' for _ in wanted)}) "
+            "ORDER BY attempt_id DESC LIMIT ?",
+            [*wanted, int(limit)],
+        )
+        return [dict(row) for row in rows]
+
     def count_attempts(self, unit_key: str, step: str, outcomes: Iterable[str]) -> int:
         wanted = list(outcomes)
         row = self.connection.execute(
@@ -848,9 +865,19 @@ class Ledger:
             )
 
     def pause(self, kind: str, reason: str, now: str) -> None:
+        """Pause the campaign, or say more about the pause it is in.
+
+        A pause of the kind already in force keeps its paused_at and takes the newer reason: the hourly
+        fault recheck counts from the first fault, not from the last job that could not be polled. A
+        lesser pause does not replace a greater one (PAUSE_RANK).
+        """
         with self.transaction() as db:
             current = dict(db.execute("SELECT * FROM runner WHERE id = 1").fetchone())
-            if current["paused"] and current["pause_kind"] == kind and current["pause_reason"] == reason:
+            if current["paused"] and current["pause_kind"] == kind:
+                if current["pause_reason"] != reason:
+                    db.execute("UPDATE runner SET pause_reason = ? WHERE id = 1", (reason,))
+                return
+            if current["paused"] and PAUSE_RANK.get(current["pause_kind"], 0) > PAUSE_RANK[kind]:
                 return
             db.execute(
                 "UPDATE runner SET paused = 1, pause_kind = ?, pause_reason = ?, paused_at = ? WHERE id = 1",

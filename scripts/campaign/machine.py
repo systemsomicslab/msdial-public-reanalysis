@@ -4,7 +4,9 @@ ONE UNIT IN HAND. The runner advances the units in the approved order, with at m
 between their Class decision and their end (prefetch is 0 by default), and never more than one MS-DIAL
 Console at a time: the ledger's console_slot is a singleton, and Interactive refuses a second Console on
 one unit. A unit that waits - for a retry, for disk, for its turn as a split part - leaves the hand, so
-the next unit starts: a unit failure never stops the campaign.
+the next unit starts: a unit failure never stops the campaign. A unit waiting for disk holds back only
+new work behind it; a retry or a split part, which already has its raw data and is what frees space,
+still enters the hand.
 
 EVERY STEP IS A COMMITTED TRANSITION. A step opens an attempt (committed), makes its one call, and then
 commits the unit's next state, the attempt's end and whatever else records why, in one transaction.
@@ -21,9 +23,10 @@ Console and the extractor were fixed by the approved manifest; a change pauses t
 THE RULES are the user's, as policy.py writes them down: a failed unit is retried twice and then its raw
 data are deleted; raw data are deleted once the outputs are produced and the mzTab-M validates, with the
 gate verdict recorded beside the deletion, whatever it is; skipped and excluded units' raw data are
-deleted too; a short disk pauses the campaign. The runner never records a person's reading (boundary 6):
-READ-1 holding the gate at exit 4 is a state it stores, and such a unit is reported as "outputs
-produced", never "completed".
+deleted too; a short disk pauses the campaign. Raw data the rules delete and Interactive would not are
+"held", counted apart (summary), never reported as kept or deleted. The runner never records a
+person's reading (boundary 6): READ-1 holding the gate at exit 4 is a state it stores, and such a unit is
+reported as "outputs produced", never "completed".
 """
 
 from __future__ import annotations
@@ -45,6 +48,12 @@ UNIT_RECORD_SCHEMA = "msdial-campaign-unit-record.v1"
 STATUS_SCHEMA = "msdial-campaign-status.v1"
 IN_FLIGHT = ("downloading", "diagnosing", "running")
 IDLE = ("pending",) + ledger_module.WAITING_STATES
+# Pauses under which nothing new starts; jobs already running are still watched to their end.
+BLOCKING_PAUSES = ("operator", "contract", "pin", "fault")
+# A unit's end once its outputs exist, and the discard that ends one without them. A step here that raises
+# is tried again later without counting against the unit, still ending as it was going to: nothing after
+# the outputs exist turns a unit into a failed one, or rewrites what became of its raw data.
+END_STATES = ("run_done", "published", "gated", "releasing", "discarding")
 JOB_COLUMN = {"downloading": "download_job_id", "diagnosing": "diagnostic_job_id", "running": "run_job_id"}
 # Interactive's entry points that write a boundary-4 crossing, with the job id, before the job exists.
 CONSOLE_ENTRY_POINT = {"tuning": "peak_count_diagnostic", "run": "agent_run"}
@@ -184,6 +193,9 @@ class Runner:
         self.stop = stop or (lambda: False)
         self._progress: dict[str, tuple[int, datetime]] = {}
         self._poll_errors: dict[str, int] = {}
+        # Jobs this process has sent a cancel for. A cancel the ledger records and this process has not sent
+        # (a crash between the two) is sent at the job's next poll.
+        self._cancels_sent: set[str] = set()
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -276,7 +288,8 @@ class Runner:
         now = self.now()
         for unit in self.ledger.units(("waiting_retry",)):
             due = policy.parse_iso(unit["next_attempt_at"])
-            if due is not None:
+            # A retry already due waits for room in the hand, which the next poll looks for anyway.
+            if due is not None and due > now:
                 wait = min(wait, max(1.0, (due - now).total_seconds()))
         return wait
 
@@ -292,20 +305,22 @@ class Runner:
                 if self._backend_ok():
                     self.ledger.resume(self.stamp(), kinds=["fault"], detail={"recheck": "retrying the step"})
                     pause = None
+        elif pause == "disk" and not self._waiting_for_disk():
+            self.ledger.resume(self.stamp(), kinds=["disk"], detail={"disk": "no unit waits for space any more"})
         # Jobs in flight are always watched: their end is recorded even while the campaign is paused.
         for unit in self.ledger.units(IN_FLIGHT):
             progressed |= self._guard(unit)
-        if self._paused() in ("operator", "pin", "fault"):
+        if self._paused() in BLOCKING_PAUSES:
             return progressed
         for unit in self.ledger.units(("split_parent",)):
             progressed |= self._guard(unit)
         for unit in self._in_hand():
-            if self._paused() in ("operator", "pin", "fault"):
+            if self._paused() in BLOCKING_PAUSES:
                 return progressed
             current = self.ledger.unit(unit["unit_key"])
             if current["state"] not in IN_FLIGHT and current["state"] not in ledger_module.TERMINAL_STATES:
                 progressed |= self._guard(current)
-        while len(self._in_hand()) < 1 + self.policy.prefetch and self._paused() not in ("operator", "pin", "fault"):
+        while len(self._in_hand()) < 1 + self.policy.prefetch and self._paused() not in BLOCKING_PAUSES:
             candidate = self._next_candidate()
             if candidate is None:
                 break
@@ -325,20 +340,41 @@ class Runner:
         ]
 
     def _next_candidate(self) -> dict[str, Any] | None:
+        """The next unit to take into the hand, in the approved order.
+
+        A unit deferred for disk, while it does not fit, holds back the pending units behind it: a short
+        disk pauses new work, as the user's rule says. It does not hold back a retry or a split part: those
+        already have their raw data on the volume, and their end is what gives the space back. A unit no
+        volume could hold holds nothing back.
+        """
         now = self.now()
+        held_back = False
         for unit in self.ledger.units(IDLE):
             state = unit["state"]
-            if state == "pending" or state == "queued":
+            if state == "pending":
+                if not held_back:
+                    return unit
+            elif state == "queued":
                 return unit
-            if state == "waiting_retry":
+            elif state == "waiting_retry":
                 due = policy.parse_iso(unit["next_attempt_at"])
                 if due is None or due <= now:
                     return unit
-            if state == "deferred_disk":
+            elif state == "deferred_disk":
                 verdict = self._disk_verdict(unit)
-                if verdict.admit and not verdict.never_fits:
+                if verdict.never_fits:
+                    continue
+                if verdict.admit:
                     return unit
+                held_back = True
         return None
+
+    def _waiting_for_disk(self) -> bool:
+        """Whether a unit still waits for space: deferred for it, or about to be looked at (handoff_ready),
+        whose admission lifts the disk pause with its own record."""
+        if self.ledger.units(("handoff_ready",)):
+            return True
+        return any(not self._disk_verdict(unit).never_fits for unit in self.ledger.units(("deferred_disk",)))
 
     def _guard(self, unit: dict[str, Any]) -> bool:
         """One step of one unit. A failure of the unit is recorded and the loop goes on."""
@@ -377,6 +413,11 @@ class Runner:
                 restart = {"downloading": "handoff_ready", "diagnosing": "metadata_prepared", "running": "prepared"}
                 self._fail(current, step=f"{current['state']}_poll", result={"ok": False, "reason": "exception", **detail},
                            retry_state=restart[current["state"]], console_run=self._open_console_end(current, "failed"))
+                return True
+            if current["state"] in END_STATES:
+                for attempt in self.ledger.open_attempts(unit["unit_key"]):
+                    self.ledger.close_attempt(attempt["attempt_id"], "failed", self.stamp(), detail=self.redact(detail))
+                self._step_retry(current, step=f"{current['state']}_step", detail=detail)
                 return True
             if current["state"] not in ledger_module.RESUMABLE_STATES:
                 # A split parent, or a unit waiting its turn: looked at again next time, nothing to undo.
@@ -419,17 +460,16 @@ class Runner:
         detail = self.redact(dict(result) if isinstance(result, Mapping) else {"result": repr(result)})
         if job_id:
             detail["job_id"] = job_id
+        if unit.get("outputs_produced") and kind in (policy.FAILED, policy.BUSY):
+            # A unit whose outputs exist is never failed (END_STATES): its step is tried again.
+            self._step_retry(unit, step=step, detail=detail, attempt_id=attempt_id)
+            return
 
         def attempt(result_outcome: str, counted: bool) -> dict[str, Any]:
             if attempt_id is not None:
                 return {"close_attempt": (attempt_id, result_outcome, counted, detail)}
             return {"new_attempt": {"step": step, "outcome": result_outcome, "counted": counted, "detail": detail}}
 
-        # A unit waiting to resume its discard keeps what it was ending as.
-        keep = (
-            {"pending_terminal": unit.get("pending_terminal"), "terminal_detail": unit.get("terminal_detail")}
-            if retry_state == "discarding" else {}
-        )
         if kind == policy.REFUSED:
             self._move(
                 unit, "stopped_no_approval", terminal_reason="campaign_authorization_refused",
@@ -441,7 +481,7 @@ class Runner:
             due = self.now() + timedelta(seconds=float(self.policy.busy_retry_seconds))
             self._move(
                 unit, "waiting_retry", resume_state=retry_state, next_attempt_at=policy.iso(due),
-                detail={"step": step, "busy": True}, end_console_run=console_run, **keep, **attempt("busy", False),
+                detail={"step": step, "busy": True}, end_console_run=console_run, **attempt("busy", False),
             )
             return
         if kind == policy.FAULT:
@@ -456,7 +496,7 @@ class Runner:
             self._move(
                 unit, "waiting_retry", resume_state=retry_state, next_attempt_at=decision.next_attempt_at,
                 failures=decision.failures, detail={"step": step, "failures": decision.failures},
-                end_console_run=console_run, **keep, **attempt(outcome, True),
+                end_console_run=console_run, **attempt(outcome, True),
             )
             return
         # The first attempt and both retries failed: the unit ends as failed, and its raw data go.
@@ -465,6 +505,34 @@ class Runner:
             terminal_detail=json.dumps({"reason": f"{step}_failed", "detail": detail}, ensure_ascii=False, sort_keys=True),
             detail={"step": step, "failures": decision.failures, "retries_exhausted": True},
             end_console_run=console_run, **attempt(outcome, True),
+        )
+
+    def _step_retry(
+        self, unit: dict[str, Any], *, step: str, detail: Mapping[str, Any], attempt_id: int | None = None
+    ) -> None:
+        """A step of a unit's end (END_STATES) that went wrong: looked at again after the retry delays, then
+        every longest delay, never counted and never ending the unit otherwise than it was going to end.
+
+        An error there is the campaign's (a full disk, a file Windows holds, a gate report that could not
+        be written), not the unit's: counted, it used to end a skipped unit as failed and a unit whose
+        outputs were produced and whose raw data were released as failed with its raw data "kept".
+        """
+        state = unit["state"]
+        tried = self.ledger.count_attempts(unit["unit_key"], step, ("failed",))
+        delays = self.policy.retry_delays_seconds or (self.policy.fault_recheck_seconds,)
+        due = self.now() + timedelta(seconds=float(delays[min(tried, len(delays) - 1)]))
+        record = self.redact(dict(detail))
+        extra: dict[str, Any] = (
+            {"close_attempt": (attempt_id, "failed", False, record)} if attempt_id is not None
+            else {"new_attempt": {"step": step, "outcome": "failed", "counted": False, "detail": record}}
+        )
+        keep = (
+            {"pending_terminal": unit.get("pending_terminal"), "terminal_detail": unit.get("terminal_detail")}
+            if state == "discarding" else {}
+        )
+        self._move(
+            unit, "waiting_retry", resume_state=state, next_attempt_at=policy.iso(due),
+            detail={"step": step, "step_error": True, "tried": tried + 1}, **keep, **extra,
         )
 
     def _interrupted(
@@ -586,7 +654,8 @@ class Runner:
             else:
                 if state == "waiting_retry":
                     self._move(unit, "waiting_retry", resume_state=unit["resume_state"], next_attempt_at=self.stamp(),
-                               pending_terminal=unit.get("pending_terminal"), detail={"request_id": request["request_id"]})
+                               pending_terminal=unit.get("pending_terminal"), terminal_detail=unit.get("terminal_detail"),
+                               detail={"request_id": request["request_id"]})
                     detail = "retry brought forward"
                 elif state == "deferred_disk":
                     self._move(unit, unit["resume_state"] or "handoff_ready", detail={"request_id": request["request_id"]})
@@ -712,16 +781,16 @@ class Runner:
             self._move(unit, "deferred_disk", resume_state="handoff_ready", detail={"disk": verdict.as_dict()})
             return True
         if not verdict.admit:
-            if self._paused() != "disk":
-                self.ledger.disk_event("pause", self.stamp(), **values)
-            self._pause("disk", f"Unit {unit['unit_key']} needs {verdict.need} bytes above the reserve; {verdict.free} are free.")
-            return False
+            # Out of the hand, so a retry that already holds raw data can run and give the space back.
+            return self._defer_for_disk(
+                unit, reason=f"Unit {unit['unit_key']} needs {verdict.need} bytes above the reserve; {verdict.free} are free."
+            )
         if self._paused() == "disk":
             self.ledger.resume(self.stamp(), kinds=["disk"], detail={"unit_key": unit["unit_key"]})
             self.ledger.disk_event("resume", self.stamp(), **values)
         self.ledger.disk_event("admit", self.stamp(), **values)
         _free, total = self.ports.disk.usage(self.campaign["workspace_root"])
-        bound = policy.download_bound_gb(verdict.free, total, self.policy.disk)
+        bound = policy.download_bound_gb(total, self.policy.disk)
         arguments = {
             "repository": unit["repository"], "accession": unit["accession"],
             "workspace_root": self.campaign["workspace_root"], "maximum_gb": bound,
@@ -751,10 +820,15 @@ class Runner:
         if result.get("reason") == "blocked":
             blockers = list(result.get("blocking_reasons") or [])
             if "size_limit:exceeded" in blockers:
-                # Interactive's own size figure is above the disk bound: a short disk, not a verdict.
-                self.ledger.close_attempt(attempt, "blocked", self.stamp(), detail={"blocking_reasons": blockers})
-                self._pause("disk", f"Unit {unit['unit_key']}: Interactive needs more than the {bound:.1f} GB the disk allows.")
-                return False
+                # Interactive's own figure (a shared bundle's declared bytes, say) is above what the volume
+                # could hold above its reserve: the unit needs more than the plan knew. It waits for a disk
+                # that holds it, and Interactive is not asked again meanwhile.
+                required = int(result.get("required_download_bytes") or 0)
+                return self._defer_for_disk(
+                    unit, known_bytes=max(int(unit["known_bytes"] or 0), required, int(bound * 1000**3) + 1),
+                    reason=f"Unit {unit['unit_key']}: Interactive needs {required} bytes, above the {bound:.1f} GB the volume holds.",
+                    close_attempt=(attempt, "blocked", False, {"blocking_reasons": blockers, "required_download_bytes": required}),
+                )
             # Interactive refused the unit before any byte: its decision, recorded and not retried.
             self._move(
                 unit, "discarding", pending_terminal="excluded",
@@ -762,18 +836,97 @@ class Runner:
                 close_attempt=(attempt, "blocked", False, {"blocking_reasons": blockers}),
             )
             return True
-        self._fail(unit, step="download", result=result, retry_state="handoff_ready", attempt_id=attempt)
+        return self._download_failed(unit, result=result, attempt_id=attempt)
+
+    def _defer_for_disk(
+        self, unit: dict[str, Any], *, reason: str, known_bytes: int | None = None, **record: Any
+    ) -> bool:
+        """Take a unit the disk cannot hold now out of the hand, to be admitted again once it fits.
+
+        A unit that kept the hand while it waited could wait for ever: the retry of a unit whose raw data
+        take the space could then never run and give it back. `record` is the attempt that ended here.
+        """
+        fields = {} if known_bytes is None else {"known_bytes": int(known_bytes)}
+        verdict = self._disk_verdict({**unit, **fields})
+        self._move(unit, "deferred_disk", resume_state="handoff_ready", detail={"disk": verdict.as_dict()}, **fields, **record)
+        values = {"volume": self.campaign["workspace_root"], "free": verdict.free, "reserve": verdict.reserve,
+                  "need": verdict.need, "unit_key": unit["unit_key"]}
+        if verdict.never_fits:
+            self.ledger.disk_event("never_fits", self.stamp(), **values)
+        elif not verdict.admit:
+            if self._paused() != "disk":
+                self.ledger.disk_event("pause", self.stamp(), **values)
+            self._pause("disk", reason)
         return True
 
+    def _download_failed(
+        self, unit: dict[str, Any], *, result: dict[str, Any], outcome: str = "failed",
+        attempt_id: int | None = None, job_id: str | None = None,
+    ) -> bool:
+        """A download that failed: the unit's failure, unless it completes a repository outage."""
+        if policy.classify_result(result) == policy.FAILED and policy.network_failure(result, outcome):
+            result = {**result, "network": True}
+            streak = self._outage_streak(unit["unit_key"])
+            if self.policy.outage_units and len(streak) >= self.policy.outage_units:
+                detail = self.redact({**result, "outage_units": sorted(streak), **({"job_id": job_id} if job_id else {})})
+                self._move(
+                    unit, "handoff_ready", detail={"outage": True},
+                    **({"close_attempt": (attempt_id, "fault", False, detail)} if attempt_id is not None
+                       else {"new_attempt": {"step": "download", "outcome": "fault", "counted": False, "detail": detail}}),
+                )
+                self._pause(
+                    "fault",
+                    f"Downloads of {len(streak)} different units failed on the network in a row (last {unit['unit_key']}): "
+                    "a repository outage, not unit failures. The download is tried again at the fault recheck, uncounted.",
+                )
+                return True
+        self._fail(unit, step="download", result=result, retry_state="handoff_ready", attempt_id=attempt_id,
+                   outcome=outcome, job_id=job_id)
+        return True
+
+    def _outage_streak(self, unit_key: str) -> set[str]:
+        """The units whose downloads failed on the network since the last download that finished, this one
+        included. A failure of any other kind ends the run: bytes arrived, so the network worked."""
+        units = {unit_key}
+        for row in self.ledger.recent_attempts(("download", "download_start")):
+            outcome = row["outcome"]
+            if outcome == "ok":
+                if row["step"] == "download":
+                    break
+                continue
+            if outcome not in ("failed", "stalled", "fault"):
+                continue
+            if not _loads(row["detail_json"]).get("network"):
+                break
+            units.add(row["unit_key"])
+        return units
+
     def _cancel(self, unit: Mapping[str, Any], job_id: str | None, reason: str) -> None:
+        """Stop a job, with why recorded first: a resumed runner reads the reason from the record, and a
+        cancel recorded and never sent (a crash between the two) is sent at the job's next poll
+        (_resend_cancel). msdial_cancel_job answers a finished job without acting, so sending twice is safe."""
         if not job_id:
             return
-        for event in self.ledger.events("cancel_requested"):
-            detail = _loads(event["detail_json"])
-            if detail.get("job_id") == job_id and detail.get("reason") == reason:
-                return
-        self._event("cancel_requested", {"job_id": job_id, "reason": reason}, unit["unit_key"])
-        self.ports.interactive.cancel(job_id, reason)
+        recorded = any(
+            _loads(event["detail_json"]).get("job_id") == job_id and _loads(event["detail_json"]).get("reason") == reason
+            for event in self.ledger.events("cancel_requested")
+        )
+        if not recorded:
+            self._event("cancel_requested", {"job_id": job_id, "reason": reason}, unit["unit_key"])
+        self._send_cancel(job_id, reason)
+
+    def _send_cancel(self, job_id: str, reason: str) -> None:
+        if job_id in self._cancels_sent:
+            return
+        result = self.ports.interactive.cancel(job_id, reason)
+        if isinstance(result, Mapping) and result.get("ok") is not False:
+            self._cancels_sent.add(job_id)
+
+    def _resend_cancel(self, job_id: str | None) -> None:
+        if job_id and job_id not in self._cancels_sent:
+            reason = self._cancel_reason(job_id)
+            if reason:
+                self._send_cancel(job_id, reason)
 
     def _cancel_reason(self, job_id: str) -> str:
         reason = ""
@@ -793,6 +946,7 @@ class Runner:
             return self._download_lost(unit)
         status = str(job.get("status") or "")
         if status in ("queued", "running"):
+            self._resend_cancel(job_id)
             self._watch_download(unit, job)
             return False
         if status == "completed":
@@ -807,21 +961,26 @@ class Runner:
         raw = str(manifest.get("raw_directory") or "")
         size = self.ports.disk.tree_bytes(raw) if raw else 0
         self._progress.pop(unit["download_job_id"] or "", None)
+        # A download that finished, which ends a run of network failures (_outage_streak).
+        finished = {"step": "download", "outcome": "ok", "counted": False,
+                    "detail": {"job_id": unit["download_job_id"], "bytes": size}}
         if self._cancel_reason(unit["download_job_id"] or "") == "skip":
             self._move(
                 unit, "discarding", pending_terminal="skipped", manifest_path=manifest_path, downloaded_bytes=size,
-                terminal_detail=json.dumps({"reason": "operator_skip"}), raw_disposition="present",
+                terminal_detail=json.dumps({"reason": "operator_skip"}), raw_disposition="present", new_attempt=finished,
             )
             return True
-        self._move(unit, "downloaded", manifest_path=manifest_path, downloaded_bytes=size, raw_disposition="present")
+        self._move(unit, "downloaded", manifest_path=manifest_path, downloaded_bytes=size, raw_disposition="present",
+                   new_attempt=finished)
         return True
 
     def _download_ended(self, unit: dict[str, Any], status: str, reason: str, detail: dict[str, Any]) -> bool:
         if reason == "disk":
             # Cancelled because the disk ran short: nothing the unit did. It resumes from its .part file.
-            self._move(unit, "handoff_ready", new_attempt={"step": "download", "outcome": "cancelled", "counted": False, "detail": detail})
-            self._pause("disk", f"Download of unit {unit['unit_key']} was stopped because free space ran below the floor.")
-            return True
+            return self._defer_for_disk(
+                unit, reason=f"Download of unit {unit['unit_key']} was stopped because free space ran below the floor.",
+                new_attempt={"step": "download", "outcome": "cancelled", "counted": False, "detail": detail},
+            )
         if reason == "skip":
             self._move(
                 unit, "discarding", pending_terminal="skipped", terminal_detail=json.dumps({"reason": "operator_skip"}),
@@ -831,10 +990,18 @@ class Runner:
         if status == "interrupted":
             self._interrupted(unit, step="download", retry_state="handoff_ready", detail=detail)
             return True
+        needed = policy.lease_size_limit(detail)
+        if needed is not None:
+            # The lease reached maximum_gb, the volume above its reserve: a disk that cannot hold the unit,
+            # never its failure. Its partial files stay for a resume.
+            return self._defer_for_disk(
+                unit, known_bytes=max(int(unit["known_bytes"] or 0), needed),
+                reason=f"Unit {unit['unit_key']}'s download reached the disk bound; it needs at least {needed} bytes.",
+                new_attempt={"step": "download", "outcome": "blocked", "counted": False, "detail": detail},
+            )
         outcome = "stalled" if reason == "stalled" else "failed"
-        self._fail(unit, step="download", result={"ok": False, "reason": outcome, **detail}, retry_state="handoff_ready",
-                   outcome=outcome, job_id=unit["download_job_id"])
-        return True
+        return self._download_failed(unit, result={"ok": False, "reason": outcome, **detail}, outcome=outcome,
+                                     job_id=unit["download_job_id"])
 
     def _download_lost(self, unit: dict[str, Any]) -> bool:
         """The backend no longer knows the job: the unit manifest says what became of the lease."""
@@ -898,25 +1065,34 @@ class Runner:
             self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"extractor_found": False})
             self._pause("fault", "The pinned raw-metadata extractor was not found by Interactive.")
             return False
+        # A broken contract pauses as "contract", which only an operator lifts: a pause that lifted itself
+        # would run the preflight again, hours for a large unit, only to find the same record.
         try:
             disposition = policy.read_disposition(self._manifest(unit) or {})
         except policy.DispositionError as error:
             self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"contract": str(error)})
-            self._pause("fault", f"Unit {unit['unit_key']}: {error}")
+            self._pause("contract", f"Unit {unit['unit_key']}: {error}")
             return False
         if disposition is None:
             self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"contract": "no campaign_disposition"})
             self._pause(
-                "fault",
+                "contract",
                 "Interactive wrote no campaign_disposition after the preflight; this runner reads that decision "
                 "and makes none of its own (classify_preflight, plan item 11).",
             )
             return False
         pinned = str((self.pins.get("extractor") or {}).get("binary_sha256") or "")
         if pinned and disposition.extractor.get("sha256") != pinned:
+            # The pinned binary is where it was (the pin check found no difference before the unit started),
+            # so Interactive ran another one, or reused verdicts another one made.
             self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"extractor": disposition.extractor})
-            self._event("pin_changed", {"differences": ["extractor.disposition_sha256"]}, unit["unit_key"])
-            self._pause("pin", f"Unit {unit['unit_key']} was classified by an extractor other than the pinned one.")
+            self._event("contract_broken", {"extractor_sha256": disposition.extractor.get("sha256"), "pinned_sha256": pinned},
+                        unit["unit_key"])
+            self._pause(
+                "contract",
+                f"Unit {unit['unit_key']} was classified by extractor {str(disposition.extractor.get('sha256'))[:12]}, "
+                f"not the pinned {pinned[:12]}. Resume once that is understood; the preflight then runs again.",
+            )
             return False
         record = disposition.as_dict()
         close = (attempt, "ok", False, {"disposition": disposition.disposition, "reasons": list(disposition.reasons),
@@ -985,6 +1161,7 @@ class Runner:
             if result.get("ok") is not False and result.get("deleted"):
                 raw, boundary, detail = "released", "5", "released after its parts' validated outputs"
             else:
+                raw = "kept" if policy.classify_result(result) == policy.REFUSED else "held"
                 detail = str(result.get("detail") or result.get("reason") or "not released")
                 self._event("split_parent_release_held", {"detail": detail}, unit["unit_key"])
         else:
@@ -995,6 +1172,7 @@ class Runner:
             if result.get("ok") is not False and result.get("deleted"):
                 raw, boundary, detail = "discarded", "5", "no part produced validated outputs"
             else:
+                raw = "kept" if policy.classify_result(result) == policy.REFUSED else "held"
                 detail = str(result.get("detail") or result.get("reason") or "not discarded")
         reason = "parts_ended"
         self._write_record(unit, "split_done", reason, raw, detail)
@@ -1149,6 +1327,7 @@ class Runner:
             return self._console_lost(unit, step="diagnostic", retry_state="metadata_prepared")
         status = str(job.get("status") or "")
         if status in ("queued", "running"):
+            self._resend_cancel(job_id)
             return False
         if status != "completed":
             return self._console_ended(unit, job, step="diagnostic", retry_state="metadata_prepared")
@@ -1225,6 +1404,7 @@ class Runner:
             return self._console_lost(unit, step="run", retry_state="prepared")
         status = str(job.get("status") or "")
         if status in ("queued", "running"):
+            self._resend_cancel(job_id)
             return False
         if status != "completed":
             return self._console_ended(unit, job, step="run", retry_state="prepared")
@@ -1307,6 +1487,7 @@ class Runner:
                         return True
                     self.ledger.close_attempt(self.ledger.open_attempt(unit["unit_key"], "release", self.stamp()),
                                               "failed", self.stamp(), detail=record["detail"])
+                    raw = "held"
                     detail = f"not deleted: {result.get('blockers') or result.get('detail') or result.get('reason')}"
         self._move(unit, "releasing", raw_disposition=raw, raw_detail=self.redact(detail), boundary=boundary)
         return True
@@ -1338,7 +1519,7 @@ class Runner:
                            terminal_detail=unit["terminal_detail"], new_attempt=record,
                            next_attempt_at=policy.iso(self.now() + timedelta(seconds=float(delay))))
                 return True
-            raw = "kept"
+            raw = "held"
         # The gate reads a unit manifest; a unit that never downloaded has none to read.
         verdict = self._gate(unit, "final") if unit["manifest_path"] and Path(unit["manifest_path"]).is_file() else None
         exit_code = verdict.get("exit_code") if verdict else None
@@ -1352,6 +1533,8 @@ class Runner:
         return True
 
     def _discard_raw(self, unit: Mapping[str, Any]) -> tuple[str, str, str | None]:
+        """(raw disposition, detail, boundary crossed) for a unit ending without validated output, or
+        ("wait", ...) to try again. Each deletion is the one Interactive performs for the unit's state."""
         manifest = self._manifest(unit) if unit["manifest_path"] else None
         if manifest is None:
             return "none", "no raw data were downloaded", None
@@ -1359,10 +1542,22 @@ class Runner:
             return "deferred_to_parent", "deleted with the split parent once every part has ended", None
         if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
             return "kept", "the campaign keeps raw data", None
-        if manifest.get("status") == "discarded":
+        status = manifest.get("status")
+        if status == "discarded":
             return "discarded", "deleted", "5"
+        if status == policy.RAW_CLEANED_STATUS:
+            return "released", "deleted by the cleanup of its validated outputs", "5"
         if not self._live("5"):
             return "kept", "no live approval covers boundary 5", None
+        if policy.outputs_produced(manifest):
+            # The run validated although its job ended otherwise: Interactive deletes such raw data only by
+            # the normal cleanup, and discards only what produced no validated output.
+            result = self.ports.interactive.cleanup(manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit))
+            if result.get("ok") is not False and result.get("deleted"):
+                return "released", f"deleted: the unit {unit['pending_terminal']}, its outputs validated", "5"
+            if policy.classify_result(result) == policy.REFUSED:
+                return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
+            return "wait", str(result.get("blockers") or result.get("detail") or result.get("reason") or "not deleted"), None
         result = self.ports.interactive.discard(
             manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
             unit_id=unit["unit_key"], parent_unit_id=unit["parent_unit_key"] or "",
@@ -1371,7 +1566,13 @@ class Runner:
             return "discarded", f"deleted: the unit {unit['pending_terminal']}", "5"
         if policy.classify_result(result) == policy.REFUSED:
             return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
-        return "wait", str(result.get("detail") or result.get("reason") or "not deleted"), None
+        blockers = [str(code) for code in result.get("blockers") or []]
+        detail = str(result.get("detail") or result.get("reason") or "not deleted")
+        if policy.discard_blocked_for_good(blockers):
+            # A failed run that left an mzTab-M: Interactive discards no such unit's raw data, and asking
+            # again changes nothing (plan item 14 is the discard that would).
+            return "held", f"not deleted ({', '.join(blockers)}): {detail}", None
+        return "wait", detail, None
 
     def _state_waiting_retry(self, unit: dict[str, Any]) -> bool:
         due = policy.parse_iso(unit["next_attempt_at"])
@@ -1517,12 +1718,17 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         states[unit["state"]] = states.get(unit["state"], 0) + 1
         raw[unit["raw_disposition"]] = raw.get(unit["raw_disposition"], 0) + 1
     runner = ledger.runner()
+    held = [unit for unit in units if unit["raw_disposition"] == "held"]
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
         policy.OUTPUTS_PRODUCED: sum(1 for unit in units if unit["outputs_produced"]),
         policy.COMPLETED: sum(1 for unit in units if unit["outputs_produced"] and unit["gate_exit_final"] == 0),
         "raw_disposition": dict(sorted(raw.items())),
+        # Still on the volume, against the rules: the disk guard sees them as used space, and so should the
+        # person reading this.
+        "raw_held": {"units": len(held), "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in held),
+                     "unit_keys": [unit["unit_key"] for unit in held]},
         "paused": {"kind": runner["pause_kind"], "reason": runner["pause_reason"], "at": runner["paused_at"]}
         if runner["paused"] else None,
         "terms": {

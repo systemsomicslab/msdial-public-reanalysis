@@ -179,6 +179,27 @@ class LedgerTests(unittest.TestCase):
         self.assertTrue(self.book.resume(NOW, kinds=["disk"]))
         self.assertEqual(self.book.runner()["paused"], 0)
 
+    def test_a_pause_of_the_same_kind_keeps_its_start(self) -> None:
+        """Two jobs whose polls fail in turn must not move paused_at every poll: the hourly fault recheck
+        counts from the first fault."""
+        self.book.pause("fault", "download job A did not answer", NOW)
+        self.book.pause("fault", "run job B did not answer", "2026-10-01T00:30:00+00:00")
+        runner = self.book.runner()
+        self.assertEqual((runner["pause_kind"], runner["paused_at"]), ("fault", NOW))
+        self.assertEqual(runner["pause_reason"], "run job B did not answer", "the newer reason is kept")
+        self.assertEqual(len(self.book.events("paused")), 1)
+
+    def test_a_lesser_pause_does_not_replace_a_greater_one(self) -> None:
+        self.book.pause("operator", "the operator's reason", NOW)
+        for kind in ("disk", "fault", "pin", "contract"):
+            self.book.pause(kind, "a unit's reason", NOW)
+        self.assertEqual(self.book.runner()["pause_kind"], "operator", "a short disk does not lift the operator's pause")
+        self.assertTrue(self.book.resume(NOW, kinds=["operator"]))
+        self.book.pause("disk", "short", NOW)
+        self.book.pause("contract", "no disposition", NOW)
+        self.assertEqual(self.book.runner()["pause_kind"], "contract")
+        self.assertEqual(ledger.PAUSE_RANK["operator"], max(ledger.PAUSE_RANK.values()))
+
     def test_unknown_columns_are_refused(self) -> None:
         with self.assertRaises(ledger.LedgerError):
             self.book.update("u1", NOW, library_path="somewhere")

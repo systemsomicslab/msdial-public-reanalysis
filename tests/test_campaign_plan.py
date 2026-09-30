@@ -98,9 +98,10 @@ class PlanTests(unittest.TestCase):
         self.database.parent.mkdir()
         build_catalog(self.database)
         self.workspace_root = self.root / "analysis"
-        (self.workspace_root / "metabolights" / "MTBLSPRE").mkdir(parents=True)
+        # An accession-level workspace of an earlier run, as MTBLS341 has.
+        (self.workspace_root / "metabolights" / "MTBLSPRE" / "provenance").mkdir(parents=True)
 
-    def manifest(self, pool: str) -> dict:
+    def manifest(self, pool: str, replan: dict | None = None) -> dict:
         catalog = ports.read_only_catalog(self.database)
         try:
             return plan.build_manifest(
@@ -108,10 +109,18 @@ class PlanTests(unittest.TestCase):
                 raw_retention_policy="delete_after_validated_output", pins={"catalog": {"version": "0.6.1"}, "libraries": []},
                 profile=None, campaign_policy=policy.CampaignPolicy(),
                 class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, "annotation"),
-                catalog_database=str(self.database),
+                catalog_database=str(self.database), replan=replan,
             )
         finally:
             catalog.close()
+
+    def campaign_workspace(self, repository: str, accession: str, unit_id: str, campaign_id: str) -> Path:
+        """A unit workspace as the runner makes one: the authorization copy first, in provenance."""
+        workspace = self.workspace_root / repository / accession / unit_id
+        (workspace / "provenance").mkdir(parents=True)
+        (workspace / "provenance" / "campaign-authorization.json").write_text(
+            json.dumps({"schema": plan.AUTHORIZATION_SCHEMA, "campaign_id": campaign_id, "approval_id": "A0"}), encoding="utf-8")
+        return workspace
 
     def test_the_declared_pool_and_its_exclusions(self) -> None:
         before = hashlib.sha256(self.database.read_bytes()).hexdigest()
@@ -139,6 +148,62 @@ class PlanTests(unittest.TestCase):
         self.assertEqual((totals["planned_units"], totals["download_groups"], totals["distinct_objects"]), (3, 2, 4))
         self.assertEqual((totals["distinct_bytes_known"], totals["unknown_size_objects"], totals["units_of_unknown_size"]),
                          (8 * GB, 1, 2))
+
+    def test_a_campaigns_workspace_holds_back_only_its_own_unit(self) -> None:
+        """uB and uC share ST000002. A campaign that took uB made its workspace; uC is planned as before,
+        where the whole accession used to be excluded for good once any unit of it had run."""
+        self.campaign_workspace("metabolomics_workbench", "ST000002", "uB", "earlier")
+        (self.workspace_root / "metabolomics_workbench" / "ST000002" / "_dl").mkdir()  # Interactive's download store
+        manifest = self.manifest("declared")
+        exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+        self.assertEqual(exclusions["uB"]["reason"], "campaign_workspace")
+        self.assertIn("made by campaign earlier", exclusions["uB"]["detail"])
+        self.assertIn("uC", [unit["unit_id"] for unit in manifest["units"]])
+        self.assertEqual(exclusions["uG"]["reason"], "preexisting_workspace")
+        self.assertIn("provenance", exclusions["uG"]["detail"])
+
+    def test_a_unit_workspace_no_campaign_made_excludes_its_accession(self) -> None:
+        legacy = self.workspace_root / "metabolights" / "MTBLS1" / "an-earlier-unit" / "provenance"
+        legacy.mkdir(parents=True)
+        (legacy / "run-manifest.json").write_text("{}", encoding="utf-8")
+        manifest = self.manifest("declared")
+        self.assertEqual({item["unit_id"]: item["reason"] for item in manifest["exclusions"]}["uA"], "preexisting_workspace")
+
+    def test_a_revoked_campaigns_unfinished_units_are_planned_again(self) -> None:
+        world = campaign_fakes.World(self.root, ["uB", "uC"])  # its ledger is analysis\_campaigns\test-campaign
+        with world.open() as book:
+            book.connection.execute("UPDATE unit SET state = 'failed', terminal_reason = 'download_failed' WHERE unit_key = 'uB'")
+            book.connection.execute("UPDATE unit SET state = 'done', terminal_reason = 'outputs_produced' WHERE unit_key = 'uC'")
+        for unit in ("uB", "uC"):
+            self.campaign_workspace("metabolomics_workbench", "ST000002", unit, "test-campaign")
+        with self.assertRaises(plan.PlanError, msg="a live campaign's units are its own"):
+            plan.replan_states(self.workspace_root, ["test-campaign"])
+        code, _out, err = self.cli("plan", "--campaign", "again", "--pool", "declared", "--purpose", "annotation",
+                                   "--retention", "keep", "--catalog", str(self.database), "--replan-from", "test-campaign")
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("not revoked", err)
+        reasons = {item["unit_id"]: item["reason"] for item in self.manifest("declared")["exclusions"]}
+        self.assertEqual((reasons["uB"], reasons["uC"]), ("campaign_workspace", "campaign_workspace"))
+        with world.open() as book:
+            book.revoke("approval-1", "Test Person", "the pins changed; planning again", "2026-10-02T00:00:00+00:00")
+        replan = plan.replan_states(self.workspace_root, ["test-campaign"])
+        manifest = self.manifest("declared", replan=replan)
+        units = {unit["unit_id"]: unit for unit in manifest["units"]}
+        self.assertEqual(units["uB"]["replanned_from"], {"campaign_id": "test-campaign", "state": "failed"})
+        exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+        self.assertEqual(exclusions["uC"]["reason"], "campaign_workspace", "a unit that ended done is not run again")
+        self.assertIn("where the unit is done", exclusions["uC"]["detail"])
+        self.assertEqual(manifest["replanned_from"], ["test-campaign"])
+
+    def test_the_summary_prints_the_transfer_the_lease_makes(self) -> None:
+        manifest = self.manifest("declared")
+        manifest["pins"]["interactive"] = {"version": "0.5.16"}
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        per_unit = f"{manifest['totals']['per_unit_known_bytes'] / 1000**4:.2f} TB"
+        self.assertIn(f"transfer and disk: at least {per_unit}, each unit fetching its own copy", text)
+        self.assertIn("Interactive 0.5.16's lease does not share objects", text)
+        self.assertIn("distinct bytes, once the lease shares objects", text)
+        self.assertGreater(manifest["totals"]["per_unit_known_bytes"], manifest["totals"]["distinct_bytes_known"] - 1)
 
     def test_the_acquisition_unknown_pool_is_its_own_manifest(self) -> None:
         manifest = self.manifest("acquisition_unknown")

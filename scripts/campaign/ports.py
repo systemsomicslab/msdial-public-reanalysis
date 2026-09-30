@@ -21,7 +21,9 @@ confirmed=true is given campaign_authorization_path, and Interactive validates t
 the crossing into the unit manifest before it acts. The one exception is written out in
 InteractivePort.discard: until Interactive exposes an authorized discard (plan item 14), the port makes
 the same check msdial_cleanup_repository_raw makes for a cleanup - campaign_authorization.authorize
-for boundary 5, then record_campaign_authorization - before it calls discard_download_lease.
+for boundary 5, then record_campaign_authorization - before it calls discard_download_lease, and only
+once discard_download_lease's own refusals are known not to apply, as the cleanup records its crossing
+only for a preview that is ready.
 
 Fake ports with the same methods drive tests/test_campaign_machine.py and test_campaign_resume.py; no
 test downloads anything or starts a Console.
@@ -326,7 +328,13 @@ class InteractivePort:
             return {"ok": True, "job_id": str(result["job_id"]), "campaign_authorization": result.get("campaign_authorization")}
         preview = result.get("preview") or {}
         if result.get("blocked"):
-            return {"ok": False, "reason": "blocked", "blocking_reasons": list(preview.get("blocking_reasons") or [])}
+            # The bytes Interactive would have to move: with size_limit:exceeded the machine compares them
+            # with what the volume could ever hold instead of asking again.
+            return {
+                "ok": False, "reason": "blocked", "blocking_reasons": list(preview.get("blocking_reasons") or []),
+                "required_download_bytes": preview.get("required_download_bytes"),
+                "maximum_gb": preview.get("maximum_gb"),
+            }
         return {"ok": False, "reason": "not_authorized", "detail": str(result.get("message") or "The download did not start.")}
 
     def job(self, job_id: str) -> dict[str, Any]:
@@ -419,10 +427,44 @@ class InteractivePort:
             return {"ok": True, "deleted": True, "detail": result.get("raw_directory")}
         return {"ok": True, "deleted": False, "blockers": list(result.get("blockers") or []), "detail": result.get("message")}
 
+    def discard_blockers(self, manifest_path: Path, manifest: Mapping[str, Any]) -> list[dict[str, str]]:
+        """What discard_download_lease would refuse on, in the order it checks, with Interactive's own tests.
+
+        Interactive's discard has no preview that checks anything (confirmed=false returns before its
+        checks), so the fallback reads them here first: a boundary-5 crossing records a deletion that is
+        going to happen, not one Interactive then refuses. The codes are policy.DISCARD_BLOCKERS.
+        """
+        from msdial_app.mztab_validation import find_mztab_files
+        from msdial_app.run_finalisation import raw_deletion_holds
+
+        blockers = []
+        status = str(manifest.get("status") or "")
+        if status in {"mztab_validated", "completed", "raw_cleaned"}:
+            blockers.append({"code": "validated_status", "detail": f"the unit's run is {status}; the normal cleanup applies"})
+        if status == "downloading":
+            owner = self.rr.lease_owner_state(dict(manifest))
+            if owner.get("state") != "gone":
+                blockers.append({"code": "lease_live", "detail": str(owner.get("reason") or "the lease may still run")})
+        if find_mztab_files(Path(str(manifest.get("output_directory") or ""))):
+            blockers.append({"code": "mztab_output_exists",
+                             "detail": "the run left an mzTab-M; Interactive refuses to discard such a unit's raw data"})
+        raw = Path(str(manifest.get("raw_directory") or "")).resolve()
+        workspace = Path(str(manifest.get("workspace") or "")).resolve()
+        if raw.parent != workspace or raw.name != "raw":
+            blockers.append({"code": "raw_outside_workspace", "detail": "the raw directory is not <workspace>\\raw"})
+        holds = raw_deletion_holds(manifest_path, dict(manifest))
+        if holds:
+            blockers.append({"code": "finalisation_held", "detail": f"{len(holds)} finalisation hold(s) on the raw directory"})
+        return blockers
+
     def discard(
         self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "",
     ) -> dict[str, Any]:
-        """Delete the raw data of a unit that produced no validated output, under boundary 5."""
+        """Delete the raw data of a unit that produced no validated output, under boundary 5.
+
+        {"deleted": false, "blockers": [codes]} when the fallback finds that Interactive would refuse; no
+        crossing is recorded then.
+        """
         path = Path(manifest_path)
         parameters = inspect.signature(self.rr.discard_download_lease).parameters
         try:
@@ -432,6 +474,10 @@ class InteractivePort:
                 result = self.rr.discard_download_lease(path, campaign_authorization=authorization_path)
             else:
                 manifest = self.rr.read_manifest(path)
+                blockers = self.discard_blockers(path, manifest)
+                if blockers:
+                    return {"ok": True, "deleted": False, "blockers": [item["code"] for item in blockers],
+                            "detail": "; ".join(item["detail"] for item in blockers)}
                 crossing = self.ca.authorize(
                     authorization_path, unit_id, 5, entry_point="campaign_runner.discard",
                     parent_unit_id=parent_unit_id,
