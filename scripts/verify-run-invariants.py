@@ -3591,7 +3591,9 @@ def check_binary_identity_is_recorded(
 # a shared bundle. Any other drive-letter, UNC or file-URI path is refused in an artifact that declares
 # Interactive's shared-path policy (msdial-interactive.shared-paths.v1, or any value: a declaration
 # binds) and warned about in one that does not, which is every artifact written before the policy
-# existed, MTBLS2207's among them.
+# existed, MTBLS2207's among them. A file or member named as a zip or a workbook that does not open as
+# one is unread, never scanned as text: empty, headerless or an error page saved under the name, what it
+# was meant to hold is not there to read.
 SHARED_PATHS_MEMBER = "SHARED-PATHS.json"
 SEC1_TITLE = "No private path in a shared artifact"
 SEC1_REPORT = "MS_DIAL_publication_report.json"
@@ -3607,6 +3609,7 @@ LOCAL_ONLY_MEMBER = re.compile(
     r"\.(?:mdproject|mddata|dcl|pai2)$|^(?:datamining-handoff|guided-answers)\.json$", re.IGNORECASE)
 PRIVATE_LICENCE = re.compile(r"private|institutional|proprietary|in-house", re.IGNORECASE)
 ZIP_MAGIC = b"PK\x03\x04"
+SEC1_CONTAINER_NAME = re.compile(r"\.(?:zip|xlsx)$", re.IGNORECASE)  # must open as a zip, whatever it holds
 SEC1_DEPTH = 2                          # a bundle, and the workbook inside it
 SEC1_NESTED_LIMIT = 256 * 1024 * 1024   # a nested container is read into memory to be opened
 SEC1_LINE_LIMIT = 1024 * 1024           # a longer line is read in pieces
@@ -3944,6 +3947,12 @@ def _sec1_leaf(handle, where: str, size: int, scope: _Sec1Scope, needles: _Sec1N
         findings.fail(where, f"the content of library {needles.sha256[digest.hexdigest()]}")
 
 
+def _sec1_not_a_zip(header: bytes) -> str:
+    """Why a file named as a zip was not opened as one. Streamed as text instead, it would pass with
+    nothing it was meant to hold read."""
+    return ("empty" if not header else "no zip header") + ", although its name makes it a zip archive"
+
+
 def _sec1_container(archive: zipfile.ZipFile, where: str, depth: int, scope: _Sec1Scope,
                     needles: _Sec1Needles, findings: _Sec1Findings) -> None:
     for info in archive.infolist():
@@ -3961,7 +3970,11 @@ def _sec1_container(archive: zipfile.ZipFile, where: str, depth: int, scope: _Se
             nested = False
             if scope.content:
                 with archive.open(info) as handle:
-                    nested = handle.read(4) == ZIP_MAGIC
+                    header = handle.read(4)
+                nested = header == ZIP_MAGIC
+                if not nested and SEC1_CONTAINER_NAME.search(base):
+                    findings.unread.append(f"{member} ({_sec1_not_a_zip(header)})")
+                    continue
             if not nested:
                 with archive.open(info) as handle:
                     _sec1_leaf(handle, member, info.file_size, scope, needles, findings)
@@ -3979,7 +3992,11 @@ def _sec1_artifact(path: Path, where: str, scope: _Sec1Scope, needles: _Sec1Need
                    findings: _Sec1Findings) -> None:
     try:
         with path.open("rb") as handle:
-            container = handle.read(4) == ZIP_MAGIC
+            header = handle.read(4)
+        container = header == ZIP_MAGIC
+        if not container and SEC1_CONTAINER_NAME.search(path.name):
+            findings.unread.append(f"{where} ({_sec1_not_a_zip(header)})")
+            return
         if container:
             with zipfile.ZipFile(path) as archive:
                 _sec1_container(archive, where, 1, scope, needles, findings)

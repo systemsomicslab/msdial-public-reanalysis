@@ -1560,6 +1560,60 @@ class SharedArtifactTests(unittest.TestCase):
         self.assertEqual(verifier.WARN, check.status, check.detail)
         self.assertIn("the private-library rules were not applied", check.detail)
 
+    def test_a_file_named_as_a_zip_that_does_not_open_as_one_is_unread_not_passed(self) -> None:
+        """A crashed write, a lost header, an error page saved under the name. Told apart by their first
+        bytes rather than their names, each was streamed as text and passed with nothing it held read."""
+        cases = {
+            "an empty publication bundle": ("MS_DIAL_publication_reporting_bundle.zip", b""),
+            "a publication bundle with its header zeroed": ("MS_DIAL_publication_reporting_bundle.zip", None),
+            "an empty workflow bundle": ("msdial-workflow-bundle.zip", b""),
+            "an error page saved as the workflow bundle": ("msdial-workflow-bundle.zip",
+                                                           b"<html>502 Bad Gateway</html>"),
+            "an empty workbook": ("Supplementary_Table_MS_DIAL.xlsx", b""),
+            "a workbook that is text": ("Supplementary_Table_MS_DIAL.xlsx", b"Library\tname\tSynthetic.msp\n"),
+            "an empty local bundle": ("msdial-project-artifacts.zip", b""),
+        }
+        for name, (artifact, content) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary, policy=True)
+                path = builder.output / artifact
+                if content is None:
+                    # Deflated, so its private location is nowhere in the bytes a text scan would read.
+                    data = bytearray(_zip(path, {
+                        "Supplementary_Table_MS_DIAL.tsv": f"Library\tpath\t{PRIVATE_MSP}\n" * 50}).read_bytes())
+                    data[0:4] = b"\x00" * 4
+                    content = bytes(data)
+                path.write_bytes(content)
+                check = self._sec1(builder)
+
+                self.assertEqual(verifier.WARN, check.status, check.detail)
+                self.assertIn("could not be read", check.detail)
+                self.assertEqual([artifact], [entry.split(" (", 1)[0] for entry in check.evidence["unread"]])
+
+    def test_a_member_named_as_a_zip_that_does_not_open_as_one_is_unread_not_passed(self) -> None:
+        members = {"an empty workbook": ("Supplementary_Table_MS_DIAL.xlsx", b""),
+                   "an error page saved as a nested bundle": ("supplement/extra.zip", b"<html>502 Bad Gateway</html>")}
+        for name, (member, content) in members.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary, policy=True)
+                _zip(builder.output / "MS_DIAL_publication_reporting_bundle.zip", {member: content})
+                check = self._sec1(builder)
+
+                self.assertEqual(verifier.WARN, check.status, check.detail)
+                self.assertEqual([f"MS_DIAL_publication_reporting_bundle.zip:{member}"],
+                                 [entry.split(" (", 1)[0] for entry in check.evidence["unread"]])
+
+    def test_a_member_under_any_other_name_is_still_opened_by_its_header(self) -> None:
+        """The name decides only for a zip or a workbook; a container under another name is still read."""
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, policy=True)
+            _zip(builder.output / "MS_DIAL_publication_reporting_bundle.zip",
+                 {"supplement/table.bin": _workbook(sheet1=PRIVATE_MSP)})
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("table.bin:xl/worksheets/sheet1.xml: the location of private library", check.detail)
+
     def test_no_library_record_at_all_is_not_a_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             builder = WorkspaceBuilder(Path(temporary)).provenance()
