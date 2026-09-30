@@ -29,8 +29,12 @@ tombstone. What that rule leaves for a person to look at is what this script fin
 It also warns about abandoned partial transfers, objects modified in place since they were recorded,
 indexes and claims that point at no object, and locks whose heartbeat has lapsed.
 
-Nothing here writes, moves or deletes anything. It is safe to run while a campaign runs; a record being
-replaced at that instant is reported as unreadable, and a second run settles it.
+Nothing here writes, moves or deletes anything. It is safe to run while a campaign runs. A file that
+goes between the listing and the stat is not counted. The store changes an object only under its
+o-<id> lock and points a URL at one only under the URL's u-<key> lock, so what looks wrong with an object
+while one of them is fresh - bytes an install has placed and not yet recorded, say - is reported as
+object_busy, for information, and so is a condition gone by the time it is looked at again. A record
+being replaced at that instant is reported as unreadable, and a second run settles it.
 
 Usage:
     python scripts/verify-download-store.py <store | accession directory | workspace root> [--json]
@@ -72,6 +76,8 @@ MEMBERS_HEADER = ("path", "size", "crc", "mtime_ns")
 _ESCAPED = re.compile(r"\\[\\tnr]")
 _UNESCAPED = {"\\\\": "\\", "\\t": "\t", "\\n": "\n", "\\r": "\r"}
 _LISTED = 20
+# Where an object directory holds bytes: the object, its extraction, and an extraction under way.
+OBJECT_PARTS = ("obj", "t", "t.partial")
 
 
 def _gate():
@@ -103,7 +109,17 @@ def _has_files(root: Path) -> bool:
 
 
 def _tree_size(root: Path) -> int:
-    return sum(item.stat().st_size for item in root.rglob("*") if item.is_file()) if root.is_dir() else 0
+    if not root.is_dir():
+        return 0
+    return sum(details.st_size for item in root.rglob("*") if item.is_file()
+               for details in [gate._stat_quietly(item)] if details is not None)
+
+
+def _pointed_ids(index: dict) -> set:
+    """The object ids an index record points at now or pointed at before."""
+    ids = {index.get("object_id")} | {item.get("object_id") for item in index.get("history") or []
+                                      if isinstance(item, dict)}
+    return {str(object_id) for object_id in ids if object_id}
 
 
 def _members(path: Path) -> "list[dict] | None":
@@ -130,6 +146,32 @@ def _members(path: Path) -> "list[dict] | None":
     return rows
 
 
+def _changed_members(directory: Path) -> "list[str] | None":
+    """The members of an object whose size or mtime_ns differ from members.tsv; None when it is unreadable."""
+    rows = _members(directory / "members.tsv")
+    if rows is None:
+        return None
+    changed = []
+    for row in rows:
+        details = gate._stat_quietly(directory.joinpath(*PurePosixPath(row["path"]).parts))
+        if details is None:
+            changed.append(f"{row['path']} (missing)")
+        elif (details.st_size, details.st_mtime_ns) != (row["size"], row["mtime_ns"]):
+            changed.append(row["path"])
+    return changed
+
+
+def _consumers(object_id: str, keys: "list[str]", indexes: dict, claims: dict) -> "tuple[list, list]":
+    """(live, releasing): the claims on the object's URLs that keep it, and those that could release it."""
+    on_urls = [record for key in keys for record in claims.get(key, [])]
+    live = [record for record in on_urls if record.get("state") in gate.STORE_LIVE_CLAIM_STATES
+            and (record.get("object_id") == object_id
+                 or (not record.get("object_id") and (indexes.get(str(record.get("url_key"))) or {}).get("object_id")
+                     == object_id))]
+    releasing = [record for record in on_urls if record.get("object_id") in (None, "", object_id)]
+    return live, releasing
+
+
 class StoreCheck:
     def __init__(self, store: Path) -> None:
         self.store = store
@@ -138,6 +180,42 @@ class StoreCheck:
 
     def add(self, severity: str, kind: str, detail: str, **where) -> None:
         self.findings.append({"severity": severity, "kind": kind, "detail": detail, **where})
+
+    def _held(self, names: "list[str]") -> str:
+        """The first of these store locks whose heartbeat is fresh now, or ""."""
+        now = time.time()
+        for name in names:
+            details = gate._stat_quietly(self.store / "locks" / f"{name}.lock")
+            if details is not None and now - details.st_mtime <= LOCK_STALE_SECONDS:
+                return name
+        return ""
+
+    def _busy(self, object_id: str, kind: str, still, keys: "list[str]" = ()) -> bool:
+        """Whether what looked like `kind` on this object is the store at work rather than a finding.
+
+        The lock is looked at after the condition was seen, and the condition (`still`) again after that,
+        so work that ended in between is not reported either. True means an INFO was recorded instead.
+        """
+        held = self._held([f"o-{object_id}"] + [f"u-{key}" for key in keys])
+        if not held and still():
+            return False
+        why = f"lock {held} is fresh" if held else "it changed as it was read"
+        self.add(INFO, "object_busy", f"Object {object_id} was being worked on while it was checked ({why}), so what "
+                                      f"looked like {kind} is left for a later run to judge.",
+                 object_id=object_id, deferred=kind, lock=held or None)
+        return True
+
+    def _records_now(self, keys: "list[str]") -> "tuple[dict, dict]":
+        """The index and claim records of these URLs as they are now, read again."""
+        indexes: dict[str, dict] = {}
+        claims: dict[str, list[dict]] = {}
+        for key in keys:
+            record, _ = gate._read_json(self.store / "index" / f"{key}.json")
+            if record is not None:
+                indexes[key] = record
+            claims[key] = [record for path in _records(self.store / "claims" / key)
+                           for record in [gate._read_json(path)[0]] if record is not None]
+        return indexes, claims
 
     def _read(self, path: Path, what: str, **where) -> "dict | None":
         record, reason = gate._read_json(path)
@@ -223,16 +301,18 @@ class StoreCheck:
     def _object(self, directory: Path, indexes: dict, claims: dict, pointed: dict, claimed: dict,
                 tombstones: list, states: Counter) -> None:
         object_id = directory.name
-        holds = {part: _has_files(directory / part) for part in ("obj", "t", "t.partial")}
+        holds = {part: _has_files(directory / part) for part in OBJECT_PARTS}
         has_bytes = any(holds.values())
         size = sum(_tree_size(directory / part) for part, held in holds.items() if held)
         entry_path = directory / "entry.json"
         if not entry_path.is_file():
             states["no_record"] += 1
             if has_bytes:
-                self.add(FAIL, "orphan_object", f"Object {object_id} holds {size:,} bytes and no entry.json, so "
-                                                 "nothing says what they are or who uses them.",
-                         object_id=object_id, bytes=size)
+                # An install places the bytes and then writes entry.json, both under o-<id>.
+                if not self._busy(object_id, "orphan_object", lambda: not entry_path.is_file()):
+                    self.add(FAIL, "orphan_object", f"Object {object_id} holds {size:,} bytes and no entry.json, so "
+                                                     "nothing says what they are or who uses them.",
+                             object_id=object_id, bytes=size)
             else:
                 self.add(WARN, "incomplete_object", f"Object directory {object_id} holds neither bytes nor a record.",
                          object_id=object_id)
@@ -255,7 +335,9 @@ class StoreCheck:
                                "approval_id": under.get("approval_id"), "collected_bytes": entry.get("collected_bytes"),
                                "released_by": sorted({str(item.get("unit_id") or "") for item in
                                                       entry.get("release_record") or [] if isinstance(item, dict)})})
-            if has_bytes:
+            # A tombstone installed again gets its bytes before its record says ready, under o-<id>.
+            if has_bytes and not self._busy(object_id, "tombstone_with_bytes",
+                                            lambda: self._state_now(entry_path) == COLLECTED):
                 self.add(FAIL, "tombstone_with_bytes", f"Object {object_id} ({name}) is recorded as collected at "
                                                         f"{entry.get('collected_at')}, and {size:,} bytes of it remain.",
                          object_id=object_id, bytes=size)
@@ -272,13 +354,22 @@ class StoreCheck:
                      object_id=object_id, bytes=size)
         keys = sorted({str(item.get("url_key")) for item in entry.get("urls") or []
                        if isinstance(item, dict) and item.get("url_key")})
-        on_urls = [record for key in keys for record in claims.get(key, [])]
-        live = [record for record in on_urls if record.get("state") in gate.STORE_LIVE_CLAIM_STATES
-                and (record.get("object_id") == object_id
-                     or (not record.get("object_id") and (indexes.get(str(record.get("url_key"))) or {}).get("object_id")
-                         == object_id))]
-        releasing = [record for record in on_urls if record.get("object_id") in (None, "", object_id)]
+        live, releasing = _consumers(object_id, keys, indexes, claims)
         reached = object_id in pointed or object_id in claimed
+        if has_bytes and not (reached and (live or releasing)):
+            # The records were read before this object was. A fetch installs an object, then points its
+            # URL's index at it and records its claim, all under u-<key>: read them again once it is free.
+            def still() -> bool:
+                nonlocal reached, live, releasing
+                fresh_indexes, fresh_claims = self._records_now(keys)
+                reached = reached or any(object_id in _pointed_ids(index) for index in fresh_indexes.values()) \
+                    or any(str(record.get("object_id") or "") == object_id
+                           for records in fresh_claims.values() for record in records)
+                live, releasing = _consumers(object_id, keys, fresh_indexes, fresh_claims)
+                return not (reached and (live or releasing))
+
+            if self._busy(object_id, "no_releasing_unit" if reached else "orphan_object", still, keys):
+                return
         if has_bytes and not reached:
             self.add(FAIL, "orphan_object", f"Object {object_id} ({name}, {size:,} bytes) is reached by no index and "
                                              "named by no claim: nothing will ever link to it or release it.",
@@ -289,27 +380,28 @@ class StoreCheck:
                                                  "live or released, so no approval can name a unit to collect it for: "
                                                  "gc keeps it for ever.", object_id=object_id, bytes=size)
         if state == READY:
-            if not (directory / "obj" / name).is_file():
+            missing = lambda: not (directory / "obj" / name).is_file()  # noqa: E731
+            # gc unlinks a ready object's files before it writes the tombstone, under o-<id>.
+            if missing() and not self._busy(object_id, "object_file_missing", missing):
                 self.add(WARN, "object_file_missing", f"Object {object_id} is recorded as ready, and obj/{name} is "
                                                        "not there.", object_id=object_id)
             self._members(directory, object_id, name)
 
+    @staticmethod
+    def _state_now(entry_path: Path) -> str:
+        record, _ = gate._read_json(entry_path)
+        return str((record or {}).get("state") or "")
+
     def _members(self, directory: Path, object_id: str, name: str) -> None:
-        rows = _members(directory / "members.tsv")
-        if rows is None:
+        changed = _changed_members(directory)
+        # A re-extraction rewrites the tree and then members.tsv, and gc unlinks the files, under o-<id>.
+        if changed != [] and self._busy(object_id, "unreadable_members" if changed is None else "modified_in_place",
+                                        lambda: _changed_members(directory) != []):
+            return
+        if changed is None:
             self.add(WARN, "unreadable_members", f"Object {object_id}'s members.tsv cannot be read, so whether a unit "
                                                   "wrote into its files in place is not established.", object_id=object_id)
             return
-        changed = []
-        for row in rows:
-            path = directory.joinpath(*PurePosixPath(row["path"]).parts)
-            try:
-                details = path.stat()
-            except FileNotFoundError:
-                changed.append(f"{row['path']} (missing)")
-                continue
-            if (details.st_size, details.st_mtime_ns) != (row["size"], row["mtime_ns"]):
-                changed.append(row["path"])
         if changed:
             self.add(WARN, "modified_in_place", f"{len(changed)} file(s) of object {object_id} ({name}) differ from "
                                                  f"their recorded size and mtime: {', '.join(changed[:3])}. A hardlink is "
@@ -358,8 +450,9 @@ class StoreCheck:
             live = [record for record in claims.get(key, []) if record.get("state") in gate.STORE_LIVE_CLAIM_STATES]
             if live:
                 continue
-            size = sum(path.stat().st_size for path in _children(self.store / "partial")
-                       if path.is_file() and path.name.split(".", 1)[0] == key and path.suffix != ".json")
+            size = sum(details.st_size for path in _children(self.store / "partial")
+                       if path.is_file() and path.name.split(".", 1)[0] == key and path.suffix != ".json"
+                       for details in [gate._stat_quietly(path)] if details is not None)
             self.add(WARN, "abandoned_partial", f"The partial transfer {key} ({size:,} bytes) has no live claim on its URL; "
                                                  "gc removes it once an approval covers the units that released it.",
                      url_key=key, bytes=size)
@@ -367,9 +460,12 @@ class StoreCheck:
     def _locks(self) -> None:
         now = time.time()
         for path in _children(self.store / "locks"):
-            if path.suffix != ".lock":
+            details = gate._stat_quietly(path) if path.suffix == ".lock" else None
+            if details is None:
+                # Not a lock, or one released between the listing and the stat: a c-<key> lock comes and
+                # goes around every claim write.
                 continue
-            age = now - path.stat().st_mtime
+            age = now - details.st_mtime
             if age > LOCK_STALE_SECONDS:
                 self.add(WARN, "stale_lock", f"Lock {path.name}'s heartbeat lapsed {age / 60:.0f} minutes ago. Its holder "
                                               "has stopped refreshing it; the store breaks it once the holder is dead.",
@@ -410,10 +506,17 @@ def main(argv: list[str]) -> int:
         print(f"No download store ({gate.STORE_DIRECTORY}) was found at or under {arguments.path}.", file=sys.stderr)
         return 3
     results = [StoreCheck(store).run() for store in stores]
+    # Findings quote object names, URLs and unit ids, and a piped stdout takes the console code page
+    # (cp1252 here, cp932 on a Japanese Windows): a name it cannot encode would end the check with a
+    # traceback and exit 1, which is no verdict. JSON escapes what it cannot print; text replaces it.
     if arguments.json:
         print(json.dumps({"ok": not any(result["counts"][FAIL] for result in results), "stores": results},
-                         indent=2, ensure_ascii=False))
+                         indent=2, ensure_ascii=True))
     else:
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
         print(render(results))
     return 2 if any(result["counts"][FAIL] for result in results) else 0
 

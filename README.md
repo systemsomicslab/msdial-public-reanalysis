@@ -155,6 +155,10 @@ claimed, which the store's collection can never delete, and a tombstone whose
 bytes remain or that names no approval covering boundary 5. It lists every
 tombstone, and warns about abandoned partial transfers, linked files modified in
 place and locks whose heartbeat has lapsed. Exit 3 means no store was found.
+It may run beside a campaign: an object the store holds a fresh lock on, or one
+that changed as it was read, is reported as `object_busy` for information and
+left for a later run, and its output escapes what the console code page cannot
+print rather than ending without a verdict.
 
 ## Codex pre-audit
 

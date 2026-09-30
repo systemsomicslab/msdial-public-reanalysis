@@ -4738,6 +4738,19 @@ def _file_record(details: os.stat_result) -> "tuple[int, int] | None":
     return (details.st_dev, details.st_ino) if details.st_ino else None
 
 
+def _stat_quietly(path: Path) -> "os.stat_result | None":
+    """A name's stat, or None for a name that went between the listing and the stat.
+
+    A campaign keeps writing while the gate reads: the store's gc unlinks object trees, a raw deletion
+    removes a unit's, and on Windows a name being deleted refuses access until its last handle closes.
+    A file that is gone is not counted; that is not a reason for the gate to end without a verdict.
+    """
+    try:
+        return path.stat()
+    except (FileNotFoundError, PermissionError):
+        return None
+
+
 class _Occupancy:
     """Bytes under a unit's raw trees, each file record counted once however many names it has.
 
@@ -4757,9 +4770,9 @@ class _Occupancy:
         if not root.exists():
             return 0
         for item in root.rglob("*"):
-            if not item.is_file():
+            details = _stat_quietly(item) if item.is_file() else None
+            if details is None:
                 continue
-            details = item.stat()
             self.names += 1
             self.logical_bytes += details.st_size
             record = _file_record(details)
@@ -4783,10 +4796,10 @@ class _Occupancy:
                 if not root.is_dir():
                     continue
                 for item in root.rglob("*"):
-                    if item.is_file():
-                        record = _file_record(item.stat())
-                        if record is not None and record in self.shared:
-                            held.add(record)
+                    details = _stat_quietly(item) if item.is_file() else None
+                    record = _file_record(details) if details is not None else None
+                    if record is not None and record in self.shared:
+                        held.add(record)
         return sum(self.shared[record] for record in held), len(held)
 
 

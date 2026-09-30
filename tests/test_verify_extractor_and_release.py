@@ -25,9 +25,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
@@ -869,6 +871,159 @@ class DownloadStoreCheckerTests(unittest.TestCase):
             after = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in root.rglob("*")}
 
         self.assertEqual(before, after)
+
+
+class StoreCheckerWhileACampaignRunsTests(unittest.TestCase):
+    """The checker is run beside a campaign: by a runner with stdout piped, and while the store works."""
+
+    def test_a_name_the_console_code_page_cannot_encode_still_gets_a_verdict(self) -> None:
+        """A piped stdout takes the code page: cp932 on a Japanese Windows has no e-acute."""
+        name = "donn\u00e9es_\u690d\u7269_\u03a9.zip"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            StoreBuilder(root).object("1" * 64, name, url=f"https://x/{name}")  # no claim: a FAIL naming it
+            env = dict(os.environ, PYTHONIOENCODING="cp932", PYTHONDONTWRITEBYTECODE="1")
+            env.pop("PYTHONUTF8", None)
+            runs = {mode: subprocess.run([sys.executable, str(TESTS.parent / "scripts" / "verify-download-store.py"),
+                                          str(root), *([mode] if mode else [])], capture_output=True, env=env)
+                    for mode in ("", "--json")}
+
+        for mode, run in runs.items():
+            self.assertEqual(2, run.returncode, f"{mode or 'text'}: {run.stderr.decode('cp932', 'replace')[-400:]}")
+        self.assertIn(b"donn\\xe9es_", runs[""].stdout)
+        result = json.loads(runs["--json"].stdout.decode("ascii"))
+        self.assertEqual(["no_releasing_unit"], _kinds(result, "fail"))
+        self.assertIn(name, result["stores"][0]["findings"][0]["detail"])
+
+    def test_files_that_go_between_the_listing_and_the_stat_are_not_a_crash(self) -> None:
+        """A c-<key> lock comes and goes around every claim write; gc unlinks trees; installs drop partials."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            builder = StoreBuilder(root)
+            directory = builder.object("2" * 64, "a.zip", url="https://x/a.zip", tree={"a.mzML": b"a"},
+                                       claims={"unit-a": "released"})
+            for name in ("locks", "partial"):
+                (builder.root / name).mkdir()
+            churned = [builder.root / "locks" / f"c-{index:04d}.lock" for index in range(20)] \
+                + [builder.root / "partial" / f"{index:024d}.part" for index in range(10)] \
+                + [directory / "t" / f"extra-{index}.mzML" for index in range(10)]
+            stop = threading.Event()
+
+            def churn(paths: list[Path]) -> None:
+                while not stop.is_set():
+                    for path in paths:
+                        with contextlib.suppress(OSError):
+                            path.write_bytes(b"{}")
+                            path.unlink()
+
+            threads = [threading.Thread(target=churn, args=(churned[index::4],)) for index in range(4)]
+            for thread in threads:
+                thread.start()
+            errors = []
+            try:
+                for _ in range(150):
+                    try:
+                        store_checker.StoreCheck(builder.root).run()
+                    except Exception as error:  # noqa: BLE001 - the crash is what is tested for
+                        errors.append(f"{type(error).__name__}: {error}")
+            finally:
+                stop.set()
+                for thread in threads:
+                    thread.join()
+
+        self.assertEqual([], errors[:3])
+
+    def test_the_gates_store_walk_survives_a_file_gc_removes(self) -> None:
+        """DSK-1 walks the store's object trees for the records a unit links to, while gc may unlink them."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = _unit(root, raw_retention_policy="keep")
+            directory = StoreBuilder(root).object("3" * 64, "study.zip", url="https://x/study.zip",
+                                                  tree={"a.mzML": b"a" * 300}, claims={"unit": "materialized"})
+            os.link(directory / "t" / "a.mzML", workspace / "raw" / "data" / "a.mzML")
+            gone = directory / "t" / "gone.mzML"
+            real_is_file = Path.is_file
+
+            def listed_then_gone(self: Path) -> bool:
+                # gone.mzML is listed and reported a file, then unlinked before its stat: gc at that instant.
+                return True if self == gone else real_is_file(self)
+
+            real_rglob = Path.rglob
+
+            def rglob(self: Path, pattern: str):
+                yield from real_rglob(self, pattern)
+                if self == directory / "t":
+                    yield gone
+
+            with mock.patch.object(Path, "is_file", listed_then_gone), mock.patch.object(Path, "rglob", rglob):
+                check = _check(verifier.verify(workspace, "before-publish"), "DSK-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(300, check.evidence["linked_from_store_bytes"])
+
+    def _lock(self, builder: StoreBuilder, name: str, *, age: float = 0.0) -> None:
+        (builder.root / "locks").mkdir(exist_ok=True)
+        path = builder.root / "locks" / f"{name}.lock"
+        path.write_text("{}", encoding="utf-8")
+        if age:
+            os.utime(path, (time.time() - age, time.time() - age))
+
+    def test_bytes_an_install_has_placed_and_not_yet_recorded_are_busy_not_orphaned(self) -> None:
+        """_install places obj/<name> and then writes entry.json, both under o-<id>."""
+        for name, age, kinds in (("fresh lock", 0.0, ["object_busy"]), ("lapsed lock", 3600.0, ["orphan_object"])):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = StoreBuilder(Path(temporary))
+                builder.object("4" * 64, "o.zip", url="https://x/o.zip", entry=False)
+                self._lock(builder, "o-" + "4" * 16, age=age)
+                code, result = _run_store_checker(Path(temporary))
+
+            self.assertEqual(kinds, _kinds(result, "info" if age == 0.0 else "fail"))
+            self.assertEqual(0 if age == 0.0 else 2, code, result)
+
+    def test_an_object_whose_url_is_being_pointed_at_it_is_busy_not_orphaned(self) -> None:
+        """A fetch installs the object, then points the URL's index and records the claim, under u-<key>."""
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = StoreBuilder(Path(temporary))
+            builder.object("5" * 64, "o.zip", url="https://x/o.zip", index=False)
+            self._lock(builder, "u-" + builder.key("https://x/o.zip"))
+            code, result = _run_store_checker(Path(temporary))
+
+        self.assertEqual(0, code, result)
+        self.assertEqual(["object_busy"], _kinds(result, "info"))
+
+    def test_records_written_while_the_object_was_checked_are_read_again(self) -> None:
+        """The fetch finished between the checker's reading of the index and its reading of the object."""
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = StoreBuilder(Path(temporary))
+            url = "https://x/o.zip"
+            builder.object("6" * 64, "o.zip", url=url, index=False)
+
+            class FetchEndsNow(store_checker.StoreCheck):
+                def _held(self, names):
+                    # The lock is free by the time it is looked at, and the fetch's records are written.
+                    _write(builder.root / "index" / f"{builder.key(url)}.json",
+                           {"schema": "msdial-download-store-index.v1", "url": url, "url_key": builder.key(url),
+                            "object_id": "6" * 16, "history": []})
+                    builder.claim(url, "unit-a", "materialized", object_id="6" * 16)
+                    return ""
+
+            result = FetchEndsNow(builder.root).run()
+
+        self.assertEqual([], [item["kind"] for item in result["findings"] if item["severity"] == "fail"])
+        self.assertEqual(["object_busy"], [item["kind"] for item in result["findings"] if item["severity"] == "info"])
+
+    def test_a_tombstone_installed_again_is_busy_while_its_lock_is_held(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = StoreBuilder(Path(temporary))
+            directory = builder.object("7" * 64, "a.zip", url="https://x/a.zip", state="collected",
+                                       collected_under={"approval_id": APPROVAL, "boundary": 5})
+            (directory / "obj").mkdir()
+            (directory / "obj" / "a.zip").write_bytes(b"installed again")
+            self._lock(builder, "o-" + "7" * 16)
+            code, result = _run_store_checker(Path(temporary))
+
+        self.assertEqual(0, code, result)
+        self.assertEqual(["object_busy"], _kinds(result, "info"))
 
 
 if __name__ == "__main__":
