@@ -4621,8 +4621,68 @@ def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) 
 # storage
 # --------------------------------------------------------------------------------------------
 
-def _tree_bytes(path: Path) -> int:
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+# Interactive's accession-scoped download store (download_store.py): <repository>\<accession>\_dl beside the
+# unit workspaces, holding each object once under o\<id>\obj and its extraction under o\<id>\t. A unit reads
+# NTFS hardlinks to them from its own raw tree, so a unit's name for a file and the store's are one file record.
+STORE_DIRECTORY = "_dl"
+STORE_OBJECT_PARTS = ("obj", "t")
+
+
+def _file_record(details: os.stat_result) -> "tuple[int, int] | None":
+    """The file record a name points to, or None where the filesystem numbers none (st_ino 0)."""
+    return (details.st_dev, details.st_ino) if details.st_ino else None
+
+
+class _Occupancy:
+    """Bytes under a unit's raw trees, each file record counted once however many names it has.
+
+    A hardlink is a second name for one record, so summing the sizes of the names counts a linked file
+    twice within a unit and counts the store's bytes as the unit's own. Records with more than one name
+    are kept aside, so that those the accession store also holds can be reported as linked from it.
+    """
+
+    def __init__(self) -> None:
+        self.seen: set = set()
+        self.shared: dict = {}  # file record -> size, for records with other names
+        self.logical_bytes = 0
+        self.names = 0
+
+    def add(self, root: Path) -> int:
+        unique = 0
+        if not root.exists():
+            return 0
+        for item in root.rglob("*"):
+            if not item.is_file():
+                continue
+            details = item.stat()
+            self.names += 1
+            self.logical_bytes += details.st_size
+            record = _file_record(details)
+            if record is not None and record in self.seen:
+                continue
+            if record is not None:
+                self.seen.add(record)
+                if details.st_nlink > 1:
+                    self.shared[record] = details.st_size
+            unique += details.st_size
+        return unique
+
+    def linked_from(self, store: Path) -> "tuple[int, int]":
+        """(bytes, files) of the multiply-named records that the store holds too."""
+        if not self.shared or not store.is_dir():
+            return 0, 0
+        held: set = set()
+        for directory in sorted((store / "o").glob("*")):
+            for part in STORE_OBJECT_PARTS:
+                root = directory / part
+                if not root.is_dir():
+                    continue
+                for item in root.rglob("*"):
+                    if item.is_file():
+                        record = _file_record(item.stat())
+                        if record is not None and record in self.shared:
+                            held.add(record)
+        return sum(self.shared[record] for record in held), len(held)
 
 
 def _raw_directory(provenance: dict | None, workspace: Path) -> tuple[Path | None, dict | None, str]:
@@ -4669,24 +4729,41 @@ def check_storage_shape(report: Report, workspace: Path, stage: str,
                    "No raw directory is present; the raw tree may already have been released.",
                    required=False)
         return
-    archive = _tree_bytes(downloads) if downloads.exists() else 0
-    extracted = _tree_bytes(data) if data.exists() else 0
-    conversions = _tree_bytes(converted) if converted.exists() else 0
+    occupancy = _Occupancy()
+    # In this order, so a record named under two of them is counted where it was first found.
+    archive = occupancy.add(downloads)
+    extracted = occupancy.add(data)
+    conversions = occupancy.add(converted)
     total = archive + extracted + conversions
+    store = workspace.parent / STORE_DIRECTORY
+    linked, linked_files = occupancy.linked_from(store)
+    evidence = {
+        "archive_bytes": archive, "extracted_bytes": extracted, "converted_bytes": conversions, "total_bytes": total,
+        "logical_bytes": occupancy.logical_bytes, "file_names": occupancy.names,
+        "hardlinked_records": len(occupancy.shared), "linked_from_store_bytes": linked,
+        "linked_from_store_files": linked_files, "unit_only_bytes": total - linked,
+    }
+    recorded = provenance.get("raw_storage") if isinstance(provenance, dict) else None
+    if isinstance(recorded, dict):
+        evidence["recorded_raw_storage"] = {key: recorded.get(key) for key in (
+            "materialization", "logical_bytes", "bytes_linked_from_store", "bytes_copied") if key in recorded}
+    shared = (f"; {linked / 1e9:.2f} GB of it ({linked_files} file(s)) is linked from the accession store, "
+              "shared with the store's other consumers and freed only when the store collects it"
+              if linked else "")
     if archive and extracted:
         report.add(
             "DSK-1", stage, "Retained storage is accounted for", WARN,
             "The downloaded archive and its extraction are both retained, so the unit occupies "
             f"{total / 1e9:.2f} GB for {max(archive, extracted) / 1e9:.2f} GB of unique data"
-            + (f" and {conversions / 1e9:.2f} GB of mzML converted from mzXML" if conversions else "") + ". A "
+            + (f" and {conversions / 1e9:.2f} GB of mzML converted from mzXML" if conversions else "") + shared + ". A "
             "size approval quoted against the transfer figure understated actual disk use.",
-            archive_bytes=archive, extracted_bytes=extracted, converted_bytes=conversions, total_bytes=total,
+            **evidence,
         )
         return
     report.add("DSK-1", stage, "Retained storage is accounted for", PASS,
                f"The unit occupies {total / 1e9:.2f} GB"
-               + (f", {conversions / 1e9:.2f} GB of it mzML converted from mzXML" if conversions else "") + ".",
-               archive_bytes=archive, extracted_bytes=extracted, converted_bytes=conversions, total_bytes=total)
+               + (f", {conversions / 1e9:.2f} GB of it mzML converted from mzXML" if conversions else "") + shared + ".",
+               **evidence)
 
 
 # --------------------------------------------------------------------------------------------
@@ -5559,23 +5636,152 @@ def check_method_file_reached_the_console(report: Report, output: Path, stage: s
                applied_count=len(applied))
 
 
+# What the user decided about raw data in a campaign (2026-09-30): they are deleted once every MS-DIAL
+# output is present and the mzTab-M validates, whatever the gate's verdict; a unit that failed is retried
+# twice and then deleted; a skipped or excluded unit is deleted too. Interactive deletes a unit's raw tree
+# on one of two authorities only - a person's confirmed=true, or a campaign approval covering boundary 5,
+# whose crossing it writes into campaign_authorizations before anything is deleted - and records the
+# deletion as the status raw_cleaned (after a validated run) or discarded (without one). A split part owns
+# no tree: its parent's is released once every part has ended, recorded as the parent's raw_release.
+DELETE_RETENTION = "delete_after_validated_output"
+RAW_DELETION_BOUNDARY = "5"
+# The parent's record of that release (msdial-split-parent-raw-release.v1): its state, the parts it was
+# decided for, and the authority it was made under.
+SPLIT_RELEASE = "raw_release"
+SPLIT_RELEASE_DELETED = "deleted"
+# The campaign runner's own record of how a unit ended, beside its provenance and output.
+CAMPAIGN_RECORD_FILE = "campaign-record.json"
+CAMPAIGN_RECORD_SCHEMA = "msdial-campaign-unit-record.v1"
+CAMPAIGN_ENDS_WITHOUT_OUTPUT = ("failed", "skipped", "excluded")
+# The store's claim states that keep an object (download_store.LIVE_CLAIM_STATES), and how it names a
+# unit's claim file (download_store._unit_file_name): readable for a Catalog-style id, hashed otherwise.
+STORE_LIVE_CLAIM_STATES = ("pending", "materialized")
+_STORE_READABLE_UNIT = re.compile(r"[a-z0-9][a-z0-9._-]{0,99}")
+_STORE_RESERVED_NAMES = frozenset({"con", "prn", "aux", "nul"} | {f"com{index}" for index in range(1, 10)}
+                                  | {f"lpt{index}" for index in range(1, 10)})
+RET1_TITLE = "The retention decision matches the disk"
+
+
+def _store_claim_file_name(unit_id: str) -> str:
+    if (_STORE_READABLE_UNIT.fullmatch(unit_id) and not unit_id.endswith(".")
+            and unit_id.split(".", 1)[0] not in _STORE_RESERVED_NAMES):
+        return f"{unit_id}.json"
+    return f"_u_{hashlib.sha256(unit_id.encode('utf-8')).hexdigest()[:24]}.json"
+
+
+def _store_claims(store: Path, unit_id: str) -> "dict[str, int] | None":
+    """How many of the unit's claims in the accession store are in each state; None without a store."""
+    claims = store / "claims"
+    if not unit_id or not claims.is_dir():
+        return None
+    name = _store_claim_file_name(unit_id)
+    counts: Counter = Counter()
+    for directory in sorted(claims.iterdir()):
+        path = directory / name
+        if not path.is_file():
+            continue
+        record, _ = _read_json(path)
+        if record is None or str(record.get("unit_id") or "") != unit_id:
+            counts["unreadable"] += 1
+            continue
+        counts[str(record.get("state") or "unrecorded")] += 1
+    return dict(counts)
+
+
+def _deletion_crossings(*records: "dict | None") -> list[dict]:
+    """The boundary-5 crossings the unit, or the raw owner of its tree, recorded under a campaign approval."""
+    found: list[dict] = []
+    for record in records:
+        crossings = (record or {}).get("campaign_authorizations") if isinstance(record, dict) else None
+        for item in crossings if isinstance(crossings, list) else []:
+            if isinstance(item, dict) and str(item.get("boundary")).strip() == RAW_DELETION_BOUNDARY and item not in found:
+                found.append(item)
+    return found
+
+
+def _recorded_deletion(provenance: dict, owner: dict) -> "tuple[str, str]":
+    """(kind, where) of the deletion of the tree the unit reads, as its records state it, or ("", "")."""
+    for record, whose in ((provenance, "the unit's"), (owner, "the raw owner's")):
+        if whose == "the raw owner's" and record is provenance:
+            break
+        status = str(record.get("status") or "")
+        if status == "raw_cleaned":
+            return "raw_cleaned", f"{whose} status raw_cleaned ({record.get('raw_cleaned_at') or 'no time recorded'})"
+        if status == "discarded":
+            return "discarded", f"{whose} status discarded ({record.get('discarded_at') or 'no time recorded'})"
+    release = owner.get(SPLIT_RELEASE)
+    if isinstance(release, dict) and str(release.get("state") or "") == SPLIT_RELEASE_DELETED:
+        return "split_release", f"the split parent's raw_release ({release.get('deleted_at') or 'no time recorded'})"
+    return "", ""
+
+
+def _release_parts(release: object) -> "list[str] | None":
+    if not isinstance(release, dict) or not isinstance(release.get("parts"), list):
+        return None
+    return [str(item.get("analysis_unit_id") or "") for item in release["parts"] if isinstance(item, dict)]
+
+
+def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, str]":
+    """What the campaign's deletion rule lets this unit's raw data go for: (kind, detail), or ("", "").
+
+    Validated outputs, a recorded failure (after its retries: how many is the runner's decision, and a
+    failure record is what is required of it), or a skip or exclusion the campaign disposition decided.
+    The gate's own verdicts do not enter: the user decided that deletion follows the outputs, whatever
+    the gate says of them.
+    """
+    status = str(provenance.get("status") or "")
+    validation = provenance.get("mztab_validation")
+    summary = validation.get("summary") if isinstance(validation, dict) else None
+    if (status in VALIDATED_STATUSES and provenance.get("finalized_at") and isinstance(validation, dict)
+            and not (isinstance(summary, dict) and summary.get("failed"))):
+        return "validated", "its run was finalised and its mzTab-M validated"
+    failures = _run_failures(provenance)
+    if failures:
+        last = failures[-1]
+        return "failed", (f"{len(failures)} run failure(s) are recorded, the last "
+                          f"{str(last.get('reason') or 'with no reason')[:120]!r}")
+    if status == "download_failed" or provenance.get("download_failed_at") or isinstance(provenance.get("download_failure"), dict):
+        return "failed", "its download is recorded as failed"
+    if isinstance(provenance.get("stale_lease_discarded"), dict):
+        return "failed", "its lease's process stopped before it recorded its inputs or its failure"
+    disposition = provenance.get("campaign_disposition")
+    if isinstance(disposition, dict) and disposition.get("applied") is True \
+            and disposition.get("disposition") in ("skip", "exclude"):
+        kind = "skipped" if disposition["disposition"] == "skip" else "excluded"
+        reasons = [str(item) for item in disposition.get("reasons") or []][:3]
+        return kind, f"its campaign disposition {kind} it ({', '.join(reasons) or 'no reason recorded'})"
+    record, _ = _read_json(workspace / CAMPAIGN_RECORD_FILE)
+    if record is not None and record.get("schema") == CAMPAIGN_RECORD_SCHEMA \
+            and str(record.get("state") or "") in CAMPAIGN_ENDS_WITHOUT_OUTPUT:
+        return str(record["state"]), (f"the campaign runner ended it as {record['state']} "
+                                      f"({record.get('terminal_reason') or 'no reason recorded'})")
+    return "", ""
+
+
 def check_retention_policy_was_acted_on(
     report: Report, provenance: dict | None, reason: str, workspace: Path
 ) -> None:
-    """RET-1. The retention decision and the disk agree.
+    """RET-1. The retention decision and the disk agree, and a deletion had the authority it needed.
 
     The policy is chosen once, at download, by the person who approved the download, and written
     into the unit's manifest. Whether the raw tree is still there is a fact about the filesystem.
     Nothing compared them, so a unit could carry a complete audit record asserting a retention
     decision it never carried out, in either direction.
+
+    A deletion recorded while the tree is still on disk is refused, and so is a tree gone that the
+    unit's records show raw data in, with neither a recorded deletion nor a campaign approval covering
+    boundary 5 to account for it. A deletion under a campaign approval is correct once the outputs are
+    validated, or for a unit that failed, was skipped or was excluded, and refused for any other unit:
+    those are the only cases the user's rule deletes. A split part whose parent's release does not list
+    it is a WARN: its tree went without its own state being part of the decision.
     """
     stage = "before-publish"
     if provenance is None:
-        report.add("RET-1", stage, "The retention decision matches the disk", NOT_EVALUABLE, reason)
+        report.add("RET-1", stage, RET1_TITLE, NOT_EVALUABLE, reason)
         return
     raw, owner, unknown = _raw_directory(provenance, workspace)
     if raw is None or owner is None:
-        report.add("RET-1", stage, "The retention decision matches the disk", NOT_EVALUABLE,
+        report.add("RET-1", stage, RET1_TITLE, NOT_EVALUABLE,
                    f"This unit reads its raw tree from another unit, and {unknown}.")
         return
     # The owner's policy decides the owner's tree; a part's copy of it was taken at split time.
@@ -5583,7 +5789,7 @@ def check_retention_policy_was_acted_on(
     present = raw.is_dir() and any(raw.iterdir())
     if policy is None:
         report.add(
-            "RET-1", stage, "The retention decision matches the disk", FAIL,
+            "RET-1", stage, RET1_TITLE, FAIL,
             "The manifest records no raw_retention_policy. The deletion preview reads this field, "
             "so a person confirming an irreversible deletion would be shown a blank where the "
             "intent should be.", raw_present=present,
@@ -5591,36 +5797,130 @@ def check_retention_policy_was_acted_on(
         return
     policy = str(policy)
     status = str(provenance.get("status") or "")
-    if policy == "keep":
-        verdict = PASS if present else WARN
-        report.add("RET-1", stage, "The retention decision matches the disk", verdict,
-                   f"Policy is {policy!r} and the raw tree is {'present' if present else 'gone'}.",
+    if policy not in ("keep", DELETE_RETENTION):
+        report.add("RET-1", stage, RET1_TITLE, FAIL,
+                   f"The manifest records a retention policy of {policy!r}, which is neither 'keep' "
+                   "nor 'delete_after_validated_output'. It cannot have been acted on.",
                    policy=policy, raw_present=present)
         return
-    if policy == "delete_after_validated_output":
-        if present and status in VALIDATED_STATUSES - {"raw_cleaned"}:
-            report.add("RET-1", stage, "The retention decision matches the disk", WARN,
-                       "Policy is delete_after_validated_output, the output is validated, and the "
-                       "raw tree is still present. Deletion needs its own confirmation and has "
-                       "not been given one.", policy=policy, raw_present=present, status=status)
-            return
-        owner_status = str(owner.get("status") or "")
-        if not present and owner_status != "raw_cleaned" and status != "raw_cleaned":
-            # The Interactive has one deletion path, and it records raw_cleaned. A tree gone without
-            # it went without the confirmation that deletion needs.
-            report.add("RET-1", stage, "The retention decision matches the disk", WARN,
-                       "Policy is delete_after_validated_output and the raw tree is gone, but no "
-                       f"confirmed cleanup is recorded (status {owner_status or status!r}).",
-                       policy=policy, raw_present=present, status=status)
-            return
-        report.add("RET-1", stage, "The retention decision matches the disk", PASS,
-                   f"Policy is {policy!r}; raw tree {'present' if present else 'released'}, "
-                   f"status {status!r}.", policy=policy, raw_present=present, status=status)
+
+    part = isinstance(provenance.get("split_from"), dict)
+    unit_id = str((provenance.get("project") or {}).get("analysis_unit_id") or "")
+    owner_id = str((owner.get("project") or {}).get("analysis_unit_id") or "") if part else unit_id
+    deletion, deleted_where = _recorded_deletion(provenance, owner)
+    crossings = _deletion_crossings(provenance, owner if part else None)
+    release = owner.get(SPLIT_RELEASE)
+    store_claims = _store_claims(workspace.parent / STORE_DIRECTORY, owner_id)
+    evidence = {
+        "policy": policy, "raw_present": present, "status": status, "recorded_deletion": deletion,
+        "deletion_approvals": sorted({str(item.get("approval_id") or "") for item in crossings}),
+        "store_claims": store_claims,
+    }
+    notes: list[str] = []
+    # A release that names its parts and leaves this one out went without this part's state.
+    listed = _release_parts(release)
+    if listed is not None:
+        expected = [unit_id] if part else [
+            str(item.get("analysis_unit_id") or "") for item in provenance.get("split_into") or []
+            if isinstance(item, dict)]
+        missing = [item for item in expected if item and item not in listed]
+        evidence["release_parts"] = listed
+        if missing:
+            notes.append(f"The split parent's raw_release ({release.get('state') or 'no state'}) does not list "
+                         f"{', '.join(missing)}, so the release was decided without that part's state.")
+
+    def verdict(status_value: str, detail: str) -> None:
+        report.add("RET-1", stage, RET1_TITLE, WARN if status_value == PASS and notes else status_value,
+                   detail + ("" if not notes else " " + " ".join(notes)), **evidence)
+
+    if present and deletion:
+        verdict(FAIL, f"The raw tree is still on disk, and {deleted_where} records it as deleted. The record "
+                      "says a deletion happened that the filesystem contradicts, so whatever relies on it - the "
+                      "store's collection, a disk budget, the unit's own end state - is wrong.")
         return
-    report.add("RET-1", stage, "The retention decision matches the disk", FAIL,
-               f"The manifest records a retention policy of {policy!r}, which is neither 'keep' "
-               "nor 'delete_after_validated_output'. It cannot have been acted on.",
-               policy=policy, raw_present=present)
+    if present:
+        if crossings:
+            verdict(WARN, f"A deletion was authorized under campaign approval {evidence['deletion_approvals'][0]} "
+                          "(boundary 5), and the raw tree is still on disk: the deletion did not complete.")
+            return
+        if isinstance(release, dict) and str(release.get("state") or "") != SPLIT_RELEASE_DELETED:
+            verdict(WARN, f"The split parent's raw_release is {release.get('state') or 'without a state'!r} and "
+                          "the raw tree is still on disk: the release has not completed.")
+            return
+        if policy == DELETE_RETENTION and status in VALIDATED_STATUSES - {"raw_cleaned"}:
+            verdict(WARN, "Policy is delete_after_validated_output, the output is validated, and the raw tree is "
+                          "still present. The deletion is due; it needs a person's confirmation or a campaign "
+                          "approval covering boundary 5, and neither has been acted on yet.")
+            return
+        verdict(PASS, "Policy is 'keep' and the raw tree is present." if policy == "keep"
+                else f"Policy is {policy!r}; raw tree present, status {status!r}.")
+        return
+
+    # The tree is gone.
+    if not deletion:
+        if crossings:
+            verdict(WARN, f"The raw tree is gone under campaign approval {evidence['deletion_approvals'][0]} "
+                          "(boundary 5), and no deletion is recorded: the deletion's completion was not written.")
+            return
+        downloaded = bool(owner.get("downloads")) or bool(owner.get("input_candidates")) \
+            or bool(provenance.get("input_candidates"))
+        if downloaded:
+            verdict(FAIL, "The raw tree is gone, the unit's records show raw data were downloaded into it, and "
+                          "neither a recorded deletion (raw_cleaned, discarded or a split parent's release) nor a "
+                          "campaign approval covering boundary 5 accounts for it: the raw data were deleted without "
+                          "an authorization or a confirmation.")
+            return
+        if policy == "keep":
+            verdict(WARN, f"Policy is {policy!r} and the raw tree is gone.")
+            return
+        verdict(WARN, "Policy is delete_after_validated_output and the raw tree is gone, but no confirmed cleanup "
+                      f"is recorded (status {str(owner.get('status') or '') or status!r}).")
+        return
+
+    keeping = [str(item.get("approval_id") or "") for item in crossings
+               if str(item.get("raw_retention_policy") or "") != DELETE_RETENTION]
+    if keeping:
+        verdict(FAIL, f"The raw tree was deleted ({deleted_where}) under campaign approval {keeping[0]}, which "
+                      "keeps raw data: no approval that keeps raw data covers a deletion.")
+        return
+    if crossings:
+        authority = f"campaign approval {evidence['deletion_approvals'][0]} (boundary 5)"
+    elif deletion == "split_release" and release.get("authorized_by"):
+        authority = f"the release's recorded authority ({str(release.get('authorized_by'))[:120]})"
+    else:
+        # Interactive writes raw_cleaned and discarded only on confirmed=true or a boundary-5 crossing.
+        authority = "a person's confirmation"
+    if deletion == "split_release" and not part:
+        parts = _release_parts(release) or []
+        kind, why = ("released", f"its release lists {len(parts)} part(s)") if parts else ("", "")
+    else:
+        kind, why = _deletion_justification(provenance, workspace)
+    evidence.update(authority=authority, justification=kind)
+    if deletion == "raw_cleaned" and kind != "validated":
+        verdict(FAIL, f"The raw tree was deleted as a cleanup after validated output ({deleted_where}), and this "
+                      "unit records no validated mzTab-M: a cleanup was made of a run that did not validate.")
+        return
+    if not kind:
+        if crossings:
+            verdict(WARN, f"The raw tree was deleted ({deleted_where}) under {authority}, and the unit records "
+                          "neither validated outputs nor a failure, a skip or an exclusion. The campaign deletes raw "
+                          "data for none but those, so either the unit's failure record was never written or the "
+                          "deletion broke the rule.")
+            return
+        verdict(WARN, f"The raw tree was deleted ({deleted_where}) on {authority}, and the unit records neither "
+                      "validated outputs nor a failure, a skip or an exclusion, so why is not on record"
+                      + (f" beyond {str(provenance.get('discard_reason'))[:160]!r}" if provenance.get("discard_reason") else "")
+                      + ".")
+        return
+    if policy == "keep":
+        verdict(WARN, f"Policy is 'keep' and the raw tree was deleted ({deleted_where}) on {authority}: the "
+                      "deletion was authorized, and it is not what the retention decision recorded.")
+        return
+    live = sum((store_claims or {}).get(state, 0) for state in STORE_LIVE_CLAIM_STATES)
+    if live:
+        notes.append(f"{live} of the unit's claims in the accession store are still live, so the store keeps "
+                     "the objects this tree linked to until they are released.")
+    verdict(PASS, f"The raw tree was deleted ({deleted_where}) under {authority}: {why}.")
 
 
 def check_binary_identity_is_recorded(

@@ -1,16 +1,24 @@
-"""PRE-2: the raw headers that decide a campaign unit were read by a verified build of a pinned pair.
+"""PRE-2, RET-1 and DSK-1 for a campaign that deletes raw data.
 
-The extractor decides which units run, split or are skipped, and a campaign deletes their raw data
-afterwards, so its verdicts have to name code. These tests pin what the gate says of the extractor a
-preflight recorded, and hold the gate's mirror of Interactive's pinned builds equal to Interactive's own
-table.
+The user decided on 2026-09-30 that a campaign's raw data are deleted once every MS-DIAL output is
+present and the mzTab-M validates, whatever the gate's verdict; that a unit that failed is retried twice
+and then deleted; and that skipped and excluded units are deleted too. One campaign approval covering
+boundary 5 stands in for each deletion's confirmation. The raw headers that decide which units run are
+read by an extractor that must be a verified build of a pinned pair of commits, and every repository
+object is fetched once per accession into a store whose files units link to.
+
+These tests pin what the gate says of each of those records: which extractor read the headers (PRE-2),
+whether a deletion had the authority and the reason it needed (RET-1), and what a unit's raw tree
+occupies when its files are links (DSK-1).
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -78,6 +86,14 @@ def _unit(root: Path, name: str = "unit", *, raw: bool = True, **manifest) -> Pa
     record.update(manifest)
     _write(workspace / "provenance" / "run-manifest.json", record)
     return workspace
+
+
+VALIDATED = {"finalized_at": "2026-10-01T01:00:00+00:00", "mztab_validation": {"summary": {"failed": 0}},
+             "cleanup_allowed": True}
+
+
+def _ret1(workspace: Path):
+    return _check(verifier.verify(workspace, "before-publish"), "RET-1")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -258,6 +274,317 @@ class ExtractorPinMirrorTests(unittest.TestCase):
         self.assertEqual(0, shown.returncode, shown.stderr)
         self.assertEqual(_pinned_builds(shown.stdout), [dict(entry) for entry in verifier.EXTRACTOR_PINNED_BUILDS],
                          "Interactive's PINNED_BUILDS moved: mirror it again and name the commit")
+
+
+# ---------------------------------------------------------------------------------------------
+# RET-1
+# ---------------------------------------------------------------------------------------------
+
+class RetentionUnderACampaignTests(unittest.TestCase):
+    def test_a_validated_unit_deleted_under_the_campaign_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", raw_cleaned_at="2026-10-01T02:00:00+00:00",
+                              campaign_authorizations=[_crossing(4), _crossing(5)], **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn(APPROVAL, check.detail)
+        self.assertEqual("validated", check.evidence["justification"])
+
+    def test_the_gates_other_verdicts_do_not_enter(self) -> None:
+        """Deletion follows the outputs, whatever the gate says of them: here ELIG-1 fails."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", execution_allowed=False,
+                              downloads=[], campaign_authorizations=[_crossing(5)], **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            report = verifier.verify(workspace, "all")
+
+        self.assertEqual(verifier.FAIL, _status(report, "ELIG-1"))
+        self.assertEqual(verifier.PASS, _status(report, "RET-1"))
+
+    def test_a_failed_unit_deleted_after_its_retries_passes_on_its_failure_record(self) -> None:
+        failures = [{"reason": "Console exited 1", "exit_code": 1, "recorded_at": f"2026-10-01T0{i}:00:00+00:00"}
+                    for i in range(3)]
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="discarded", discarded_at="2026-10-01T04:00:00+00:00",
+                              run_failures=failures,
+                              campaign_authorizations=[_crossing(5, entry_point="campaign_runner.discard")])
+            shutil.rmtree(workspace / "raw")
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual("failed", check.evidence["justification"])
+
+    def test_a_skipped_or_excluded_unit_passes_on_its_disposition_or_the_runners_record(self) -> None:
+        for name, extra, record in (
+                ("skip", {"campaign_disposition": {"disposition": "skip", "applied": True,
+                                                   "reasons": ["acquisition_unresolved"]}}, None),
+                ("exclude", {"campaign_disposition": {"disposition": "exclude", "applied": True,
+                                                      "reasons": ["ion_mobility_out_of_scope"]}}, None),
+                ("runner", {}, {"schema": "msdial-campaign-unit-record.v1", "state": "failed",
+                                "terminal_reason": "gate_before_production_failed"})):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                workspace = _unit(Path(temporary), status="discarded",
+                                  campaign_authorizations=[_crossing(5)], **extra)
+                if record:
+                    _write(workspace / "campaign-record.json", record)
+                shutil.rmtree(workspace / "raw")
+                check = _ret1(workspace)
+
+            self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_a_deletion_with_no_reason_on_record_warns(self) -> None:
+        for crossings in ([_crossing(5)], []):
+            with self.subTest(campaign=bool(crossings)), tempfile.TemporaryDirectory() as temporary:
+                workspace = _unit(Path(temporary), status="discarded", campaign_authorizations=crossings)
+                shutil.rmtree(workspace / "raw")
+                check = _ret1(workspace)
+
+            self.assertEqual(verifier.WARN, check.status, check.detail)
+
+    def test_raw_cleaned_while_the_tree_is_present_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", campaign_authorizations=[_crossing(5)],
+                              **VALIDATED)
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("still on disk", check.detail)
+
+    def test_a_tree_deleted_without_an_authorization_or_a_confirmation_is_refused(self) -> None:
+        for policy in ("delete_after_validated_output", "keep"):
+            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as temporary:
+                workspace = _unit(Path(temporary), status="mztab_validated", raw_retention_policy=policy,
+                                  campaign_authorizations=[_crossing(3), _crossing(4)], **VALIDATED)
+                shutil.rmtree(workspace / "raw")
+                check = _ret1(workspace)
+
+            self.assertEqual(verifier.FAIL, check.status, check.detail)
+            self.assertIn("without an authorization or a confirmation", check.detail)
+
+    def test_an_authorized_deletion_whose_completion_was_not_written_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="cleanup_pending_confirmation",
+                              campaign_authorizations=[_crossing(5)], **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            gone = _ret1(workspace)
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="cleanup_pending_confirmation",
+                              campaign_authorizations=[_crossing(5)], **VALIDATED)
+            present = _ret1(workspace)
+
+        self.assertEqual(verifier.WARN, gone.status, gone.detail)
+        self.assertEqual(verifier.WARN, present.status, present.detail)
+        self.assertIn("did not complete", present.detail)
+
+    def test_an_approval_that_keeps_raw_data_authorizes_no_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned",
+                              campaign_authorizations=[_crossing(5, retention="keep")], **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+    def test_a_cleanup_of_a_run_that_did_not_validate_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", finalized_at="2026-10-01T01:00:00+00:00",
+                              mztab_validation={"summary": {"failed": 2}})
+            shutil.rmtree(workspace / "raw")
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+    def test_a_confirmed_cleanup_without_a_campaign_still_passes(self) -> None:
+        """Outside a campaign raw_cleaned is written only on a person's confirmed=true, as before."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn("confirmation", check.detail)
+
+    def test_a_live_store_claim_after_the_release_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = _unit(root, status="raw_cleaned", campaign_authorizations=[_crossing(5)], **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            StoreBuilder(root).object("a" * 64, "s0.mzML", url="https://x/s0.mzML", claims={"unit": "materialized"})
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual({"materialized": 1}, check.evidence["store_claims"])
+
+
+class ReleasedSplitParentTests(unittest.TestCase):
+    """The parent's raw tree is released once every part has ended, recorded as its raw_release."""
+
+    def _released(self, temporary: str, *, listed=("unit-dda", "unit-dia"), state: str = "deleted",
+                  remove: bool = True) -> split.SplitFixture:
+        fixture = split.SplitFixture(Path(temporary))
+        for part in range(2):
+            _edit(fixture.part_manifest(part), status="raw_cleaned", raw_released_by=str(fixture.parent_manifest),
+                  raw_cleaned_at="2026-10-01T05:00:00+00:00", raw_retention_policy="delete_after_validated_output",
+                  **VALIDATED)
+        _edit(fixture.parent_manifest, raw_retention_policy="delete_after_validated_output",
+              campaign_authorizations=[_crossing(5, entry_point="cleanup_split_parent")],
+              raw_release={"schema": "msdial-split-parent-raw-release.v1", "state": state, "kind": "released",
+                           "authorized_by": {"approval_id": APPROVAL}, "deleted_at": "2026-10-01T05:00:00+00:00",
+                           "parts": [{"analysis_unit_id": item, "status_at_release": "mztab_validated"}
+                                     for item in listed]})
+        if remove:
+            shutil.rmtree(fixture.parent_root / "raw")
+        return fixture
+
+    def test_both_parts_of_a_released_parent_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self._released(temporary)
+            reports = [verifier.verify(root, "all") for root in fixture.part_roots]
+            parent = _check(verifier.verify(fixture.parent_root, "before-publish"), "RET-1")
+
+        for report in reports:
+            self.assertEqual(verifier.PASS, _status(report, "RET-1"), _check(report, "RET-1").detail)
+            self.assertEqual(verifier.PASS, _status(report, "SPL-1"))
+            dsk = _check(report, "DSK-1")
+            self.assertEqual(verifier.NOT_EVALUABLE, dsk.status)
+            self.assertFalse(dsk.required)
+            self.assertTrue(report.progress["stages"]["B1"], "a released tree is not a lost download")
+        self.assertEqual(verifier.PASS, parent.status, parent.detail)
+
+    def test_a_part_the_release_does_not_list_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self._released(temporary, listed=("unit-dda",))
+            listed, missing = (_check(verifier.verify(root, "before-publish"), "RET-1") for root in fixture.part_roots)
+            parent = _check(verifier.verify(fixture.parent_root, "before-publish"), "RET-1")
+
+        self.assertEqual(verifier.PASS, listed.status, listed.detail)
+        self.assertEqual(verifier.WARN, missing.status, missing.detail)
+        self.assertIn("does not list unit-dia", missing.detail)
+        self.assertEqual(verifier.WARN, parent.status, parent.detail)
+
+    def test_a_part_claiming_raw_cleaned_while_its_tree_is_present_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self._released(temporary, state="deleting", remove=False)
+            check = _check(verifier.verify(fixture.part_roots[0], "before-publish"), "RET-1")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+    def test_a_release_recorded_as_deleted_while_the_tree_is_present_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self._released(temporary, remove=False)
+            for part in range(2):
+                _edit(fixture.part_manifest(part), status="mztab_validated")
+            parent = _check(verifier.verify(fixture.parent_root, "before-publish"), "RET-1")
+            part = _check(verifier.verify(fixture.part_roots[0], "before-publish"), "RET-1")
+
+        self.assertEqual(verifier.FAIL, parent.status, parent.detail)
+        self.assertEqual(verifier.FAIL, part.status, part.detail)
+
+
+# ---------------------------------------------------------------------------------------------
+# DSK-1
+# ---------------------------------------------------------------------------------------------
+
+class StoreBuilder:
+    """An accession's download store, laid out and recorded as Interactive's download_store.py does."""
+
+    def __init__(self, accession: Path) -> None:
+        self.root = accession / "_dl"
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def key(url: str) -> str:
+        return hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+
+    def object(self, sha256: str, name: str, *, url: str = "", body: bytes = b"object-bytes", tree: dict | None = None,
+               claims: dict | None = None, index: bool = True, state: str = "ready", entry: bool = True,
+               **extra) -> Path:
+        object_id = sha256[:16]
+        directory = self.root / "o" / object_id
+        rows = []
+        if state != "collected":
+            (directory / "obj").mkdir(parents=True)
+            (directory / "obj" / name).write_bytes(body)
+            rows.append(("obj/" + name, directory / "obj" / name))
+            for relative, content in (tree or {}).items():
+                path = directory / "t" / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+                rows.append(("t/" + relative, path))
+        directory.mkdir(parents=True, exist_ok=True)
+        key = self.key(url) if url else ""
+        if entry:
+            record = {"schema": "msdial-download-store-object.v1", "object_id": object_id, "state": state,
+                      "name": name, "size_bytes": len(body), "sha256": sha256, "md5": "c" * 32,
+                      "urls": [{"url": url, "url_key": key, "name": name}] if url else []}
+            record.update(extra)
+            _write(directory / "entry.json", record)
+        lines = ["path\tsize\tcrc\tmtime_ns"] + [
+            f"{relative}\t{path.stat().st_size}\t\t{path.stat().st_mtime_ns}" for relative, path in rows]
+        (directory / "members.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if url and index:
+            _write(self.root / "index" / f"{key}.json", {"schema": "msdial-download-store-index.v1", "url": url,
+                                                          "url_key": key, "object_id": object_id, "history": []})
+        for unit, claim_state in (claims or {}).items():
+            self.claim(url, unit, claim_state, object_id=object_id)
+        return directory
+
+    def claim(self, url: str, unit: str, state: str, *, object_id: str | None = None) -> Path:
+        key = self.key(url)
+        path = self.root / "claims" / key / f"{unit}.json"
+        record = {"schema": "msdial-download-store-claim.v1", "url": url, "url_key": key, "unit_id": unit,
+                  "state": state, "object_id": object_id, "claimed_at": "2026-10-01T00:00:00+00:00", "history": []}
+        if state == "released":
+            record.update(release_reason="raw_cleaned", released_at="2026-10-01T06:00:00+00:00")
+        _write(path, record)
+        return path
+
+
+class InodeAccountingTests(unittest.TestCase):
+    def test_a_file_record_with_two_names_is_counted_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), raw_retention_policy="keep")
+            data = workspace / "raw" / "data"
+            (data / "big.mzML").write_bytes(b"y" * 1000)
+            os.link(data / "big.mzML", data / "same.mzML")
+            check = _check(verifier.verify(workspace, "before-publish"), "DSK-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(1010, check.evidence["total_bytes"])
+        self.assertEqual(2010, check.evidence["logical_bytes"])
+        self.assertEqual(0, check.evidence["linked_from_store_bytes"])
+
+    def test_the_bytes_linked_from_the_store_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = _unit(root, raw_retention_policy="keep")
+            directory = StoreBuilder(root).object("d" * 64, "study.zip", url="https://x/study.zip",
+                                                  tree={"a.mzML": b"a" * 300, "b.mzML": b"b" * 700},
+                                                  claims={"unit": "materialized"})
+            data = workspace / "raw" / "data"
+            for name in ("a.mzML", "b.mzML"):
+                os.link(directory / "t" / name, data / name)
+            check = _check(verifier.verify(workspace, "before-publish"), "DSK-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(1010, check.evidence["total_bytes"])
+        self.assertEqual(1000, check.evidence["linked_from_store_bytes"])
+        self.assertEqual(2, check.evidence["linked_from_store_files"])
+        self.assertEqual(10, check.evidence["unit_only_bytes"])
+        self.assertIn("linked from the accession store", check.detail)
+
+    def test_an_archive_and_its_extraction_still_warn_counted_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), raw_retention_policy="keep")
+            downloads = workspace / "raw" / "downloads"
+            downloads.mkdir()
+            (downloads / "study.zip").write_bytes(b"z" * 500)
+            check = _check(verifier.verify(workspace, "before-publish"), "DSK-1")
+
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertEqual(510, check.evidence["total_bytes"])
 
 
 if __name__ == "__main__":
