@@ -256,15 +256,21 @@ never records a reading (boundary 6). It decides no eligibility: it reads the
 unit's `campaign_disposition`, which only Interactive's `classify_preflight`
 writes, and runs, splits, skips or excludes the unit as that record says.
 
-An unattended run may not widen `maximum_gb` beyond what its approval states,
-may not set `allow_partial_mapping=true`, and may not change
-`raw_retention_policy`. When the loop reaches a decision that needs a
-confirmation it does not hold (an official-library download, or a unit the
-approval does not list), stop the unit, write a failure record beside its
-artifacts, and continue with the next unit; do not proceed. A pin that changes
-pauses the whole campaign until a new approval is recorded. A failed unit is
-retried only as the approval states (twice, in this campaign), never blindly,
-and one unit's failure never stops the campaign.
+Outside a campaign, an unattended run may not widen `maximum_gb` to clear a
+size blocker. In a campaign there is no per-unit size limit (the user's
+decision of 2026-09-30): `maximum_gb` is the disk bound, the free space above
+the reserve that the approved manifest's policy states, as the runner computes
+it, and an unattended run may not raise it above that bound. The approval
+record states no size, so the runner passes the bound on every download; left
+out, Interactive's default of 20 GB applies. An unattended run may not set
+`allow_partial_mapping=true`, and may not change `raw_retention_policy`. When
+the loop reaches a decision that needs a confirmation it does not hold (an
+official-library download, or a unit the approval does not list), stop the
+unit, write a failure record beside its artifacts, and continue with the next
+unit; do not proceed. A pin that changes pauses the whole campaign until a new
+approval is recorded. A failed unit is retried only as the approved manifest's
+policy states (twice, in this campaign), never blindly, and one unit's failure
+never stops the campaign.
 
 In a campaign the runner runs the gate at each of its points and keeps every
 report for the verification that follows the campaign; a verdict holds neither

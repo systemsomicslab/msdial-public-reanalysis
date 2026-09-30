@@ -190,8 +190,13 @@ separate confirmation for the exact raw directory immediately before deletion.
 
 Dry-run previews must use `confirmed=false`. Default raw retention is `keep`.
 The preview must report both selected-unit bytes and actual required bundle
-bytes. The latter is the download approval and safety-limit quantity; under a
-campaign approval, the limit it is held against is the one the approval states.
+bytes. The latter is the download approval and safety-limit quantity. In a
+campaign there is no per-unit size limit (the user's decision of 2026-09-30):
+`maximum_gb` is the disk bound, the free space above the reserve that the
+approved manifest's policy states, as the runner computes it when the download
+starts, and an unattended run may not raise it above that bound. The approval
+record states no size, and Interactive holds a campaign download to
+`maximum_gb` as it does any other, so the runner always passes the bound.
 
 ## Raw-data deletion in a campaign
 
