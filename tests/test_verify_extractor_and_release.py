@@ -1,4 +1,4 @@
-"""PRE-2, RET-1 and DSK-1 for a campaign that deletes raw data.
+"""PRE-2, RET-1 and DSK-1 for a campaign that deletes raw data, and scripts/verify-download-store.py.
 
 The user decided on 2026-09-30 that a campaign's raw data are deleted once every MS-DIAL output is
 present and the mzTab-M validates, whatever the gate's verdict; that a unit that failed is retried twice
@@ -8,20 +8,24 @@ read by an extractor that must be a verified build of a pinned pair of commits, 
 object is fetched once per accession into a store whose files units link to.
 
 These tests pin what the gate says of each of those records: which extractor read the headers (PRE-2),
-whether a deletion had the authority and the reason it needed (RET-1), and what a unit's raw tree
-occupies when its files are links (DSK-1).
+whether a deletion had the authority and the reason it needed (RET-1), what a unit's raw tree occupies
+when its files are links (DSK-1), and what the store holds that nothing accounts for (the store checker).
 """
 
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -31,6 +35,11 @@ import test_verify_split_and_progress as split  # noqa: E402  (loads the gate)
 
 verifier = split.verifier
 _status, _check, _write, _edit = split._status, split._check, split._write, split._edit
+_SPEC = importlib.util.spec_from_file_location("verify_download_store",
+                                               TESTS.parent / "scripts" / "verify-download-store.py")
+assert _SPEC and _SPEC.loader
+store_checker = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(store_checker)
 
 CURRENT_PIN = verifier.EXTRACTOR_PINNED_BUILDS[0]
 OLDER_PIN = verifier.EXTRACTOR_PINNED_BUILDS[1]
@@ -585,6 +594,163 @@ class InodeAccountingTests(unittest.TestCase):
 
         self.assertEqual(verifier.WARN, check.status)
         self.assertEqual(510, check.evidence["total_bytes"])
+
+
+# ---------------------------------------------------------------------------------------------
+# scripts/verify-download-store.py
+# ---------------------------------------------------------------------------------------------
+
+def _run_store_checker(path: Path) -> tuple[int, dict]:
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = store_checker.main([str(path), "--json"])
+    return code, (json.loads(out.getvalue()) if out.getvalue() else {})
+
+
+def _kinds(result: dict, severity: str | None = None) -> list[str]:
+    return [item["kind"] for store in result.get("stores", []) for item in store["findings"]
+            if severity is None or item["severity"] == severity]
+
+
+class DownloadStoreCheckerTests(unittest.TestCase):
+    def test_a_store_every_object_of_which_is_accounted_for_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _unit(root, "unit-a", status="mztab_validated")
+            builder = StoreBuilder(root)
+            builder.object("1" * 64, "a.zip", url="https://x/a.zip", tree={"a.mzML": b"a"},
+                           claims={"unit-a": "materialized"})
+            builder.object("2" * 64, "b.zip", url="https://x/b.zip", claims={"unit-b": "pending"})
+            code, result = _run_store_checker(root)
+
+        self.assertEqual(0, code, result)
+        self.assertEqual([], _kinds(result, "fail"))
+        self.assertEqual(["pre_claimed"], _kinds(result, "info"))
+
+    def test_an_orphan_object_is_flagged(self) -> None:
+        for name, kwargs in (("no record", {"entry": False, "url": "https://x/o.zip"}),
+                             ("nothing reaches it", {"url": "https://x/o.zip", "index": False})):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                StoreBuilder(Path(temporary)).object("3" * 64, "o.zip", **kwargs)
+                code, result = _run_store_checker(Path(temporary))
+
+            self.assertEqual(2, code)
+            self.assertIn("orphan_object", _kinds(result, "fail"))
+
+    def test_a_live_claim_on_a_terminal_unit_is_flagged(self) -> None:
+        for status in ("raw_cleaned", "discarded"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _unit(root, "unit-a", raw=False, status=status)
+                StoreBuilder(root).object("4" * 64, "a.zip", url="https://x/a.zip", claims={"unit-a": "materialized"})
+                code, result = _run_store_checker(root)
+
+            self.assertEqual(2, code)
+            self.assertEqual(["live_claim_on_terminal_unit"], _kinds(result, "fail"))
+
+    def test_a_released_split_parent_releases_its_claims_too(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _unit(root, "unit", raw=False, status="split_by_acquisition",
+                  raw_release={"state": "deleted", "parts": []})
+            StoreBuilder(root).object("4" * 64, "a.zip", url="https://x/a.zip", claims={"unit": "pending"})
+            code, result = _run_store_checker(root)
+
+        self.assertEqual(2, code)
+        self.assertEqual(["live_claim_on_terminal_unit"], _kinds(result, "fail"))
+
+    def test_an_object_no_unit_ever_claimed_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            StoreBuilder(Path(temporary)).object("5" * 64, "a.zip", url="https://x/a.zip")
+            code, result = _run_store_checker(Path(temporary))
+
+        self.assertEqual(2, code)
+        self.assertEqual(["no_releasing_unit"], _kinds(result, "fail"))
+
+    def test_a_released_object_is_left_for_gc_without_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _unit(root, "unit-a", raw=False, status="raw_cleaned")
+            StoreBuilder(root).object("6" * 64, "a.zip", url="https://x/a.zip", claims={"unit-a": "released"})
+            code, result = _run_store_checker(root)
+
+        self.assertEqual(0, code, result)
+        self.assertEqual([], _kinds(result, "fail"))
+
+    def test_tombstones_are_listed_and_a_false_one_is_refused(self) -> None:
+        under = {"approval_id": APPROVAL, "boundary": 5, "units": [{"unit_id": "unit-a"}]}
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = StoreBuilder(Path(temporary))
+            builder.object("7" * 64, "a.zip", url="https://x/a.zip", state="collected", collected_under=under,
+                           collected_at="2026-10-01T07:00:00+00:00",
+                           release_record=[{"unit_id": "unit-a", "state": "released"}])
+            code, result = _run_store_checker(Path(temporary))
+        self.assertEqual(0, code, result)
+        tombstones = result["stores"][0]["tombstones"]
+        self.assertEqual([APPROVAL], [item["approval_id"] for item in tombstones])
+        self.assertEqual(["unit-a"], tombstones[0]["released_by"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = StoreBuilder(Path(temporary))
+            directory = builder.object("8" * 64, "a.zip", url="https://x/a.zip", state="collected", collected_under={})
+            (directory / "obj").mkdir()
+            (directory / "obj" / "a.zip").write_bytes(b"left behind")
+            code, result = _run_store_checker(Path(temporary))
+        self.assertEqual(2, code)
+        self.assertEqual({"tombstone_with_bytes", "tombstone_without_approval"}, set(_kinds(result, "fail")))
+
+    def test_an_abandoned_partial_and_a_lapsed_lock_are_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = StoreBuilder(Path(temporary))
+            key = builder.key("https://x/p.zip")
+            (builder.root / "partial").mkdir()
+            (builder.root / "partial" / f"{key}.part").write_bytes(b"half")
+            builder.claim("https://x/p.zip", "unit-a", "released")
+            (builder.root / "locks").mkdir()
+            lock = builder.root / "locks" / f"u-{key}.lock"
+            lock.write_text("{}", encoding="utf-8")
+            old = time.time() - 3600
+            os.utime(lock, (old, old))
+            code, result = _run_store_checker(Path(temporary))
+
+        self.assertEqual(0, code, result)
+        self.assertEqual({"abandoned_partial", "stale_lock"}, set(_kinds(result, "warn")))
+
+    def test_a_linked_file_written_in_place_is_a_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _unit(root, "unit-a", status="mztab_validated")
+            directory = StoreBuilder(root).object("9" * 64, "a.zip", url="https://x/a.zip", tree={"a.mzML": b"a"},
+                                                  claims={"unit-a": "materialized"})
+            (directory / "t" / "a.mzML").write_bytes(b"rewritten by a reader")
+            code, result = _run_store_checker(root)
+
+        self.assertEqual(0, code, result)
+        self.assertEqual(["modified_in_place"], _kinds(result, "warn"))
+
+    def test_a_workspace_root_is_searched_and_no_store_is_exit_3(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            accession = root / "metabolights" / "MTBLS1"
+            StoreBuilder(accession).object("5" * 64, "a.zip", url="https://x/a.zip")
+            code, result = _run_store_checker(root)
+            self.assertEqual(2, code)
+            self.assertEqual(1, len(result["stores"]))
+            empty = root / "empty"
+            empty.mkdir()
+            code, _ = _run_store_checker(empty)
+        self.assertEqual(3, code)
+
+    def test_the_checker_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _unit(root, "unit-a", raw=False, status="raw_cleaned")
+            StoreBuilder(root).object("4" * 64, "a.zip", url="https://x/a.zip", claims={"unit-a": "materialized"})
+            before = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in root.rglob("*")}
+            _run_store_checker(root)
+            after = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in root.rglob("*")}
+
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

@@ -146,6 +146,16 @@ by `COMPLETION_STAGES` in the gate, and the trial manifest's `evaluation` block
 mirrors them (a test holds the two equal); `--json` reports progress and the
 checks that judge each stage under `progress` and `checks_by_stage`.
 
+`scripts/verify-download-store.py <store | accession directory | workspace root>`
+reads an accession's download store (`<repository>\<accession>\_dl`, where each
+repository object is held once and linked into every unit that uses it) beside
+the unit manifests, and changes nothing. It refuses (exit 2) an orphan object, a
+claim still live for a unit whose raw tree is released, an object no unit ever
+claimed, which the store's collection can never delete, and a tombstone whose
+bytes remain or that names no approval covering boundary 5. It lists every
+tombstone, and warns about abandoned partial transfers, linked files modified in
+place and locks whose heartbeat has lapsed. Exit 3 means no store was found.
+
 ## Codex pre-audit
 
 The local Python test suites passed on 2026-09-02 after the re-audit fixes:
