@@ -212,6 +212,17 @@ the runner may call the discard with `confirmed=true` only after
 `campaign_authorization.authorize` has accepted boundary 5 for that unit and
 the crossing is recorded in the unit's manifest.
 
+For a failed unit whose output holds an mzTab-M, because the mzTab-M did not
+validate or because the run missed another planned export, the deletion rule
+wins: once its retries are spent its raw tree is discarded, and the mzTab-M,
+its validation and whatever else the run left in `output` are kept as the
+failure record's artifacts. Interactive cannot do that yet: its discard refuses
+any unit whose output holds an mzTab-M, and cleanup accepts only a validated
+run. Until the discard accepts such a unit under the approval, its raw data
+stay, the refusal is recorded as the reason in its failure record, and its
+bytes count against the disk budget. The runner never works around the guard,
+by deleting the mzTab-M or the raw tree itself.
+
 Every guard Interactive puts on a deletion still applies, the retained-artifact
 inventory a finished run's cleanup requires included. Before a finished run's
 raw data go, Interactive moves its MS-DIAL containers (the per-file `.dcl`,

@@ -1092,7 +1092,7 @@
       "at": "2026-09-30",
       "by": "user, relayed through the campaign workflow",
       "decision": "Raw data, in the campaign: they are deleted once all MS-DIAL outputs are present and the mzTab-M validates, whatever the gate's verdict. A failed unit is retried twice, then its raw data are deleted. The raw data of skipped and excluded units are deleted too. Before the raw data go, MS-DIAL's intermediates are moved into the unit's output, and the loaded-library copy (.dbs) is deleted.",
-      "result": "The move and the .dbs deletion are implemented for campaign units in msdial-interactive-app#48 (Interactive 0.5.15), and msdial_cleanup_repository_raw deletes a validated unit's raw data under an approval that covers boundary 5. On 2026-09-30 no approval could stand in for discarding a failed, skipped or excluded unit's raw data, or for releasing a split parent's."
+      "result": "The move and the .dbs deletion are implemented for campaign units in msdial-interactive-app#48 (Interactive 0.5.15), and msdial_cleanup_repository_raw deletes a validated unit's raw data under an approval that covers boundary 5. On 2026-09-30 no approval could stand in for discarding a failed, skipped or excluded unit's raw data, or for releasing a split parent's. Nor could a failed unit whose output held an mzTab-M be deleted at all: discard_download_lease refused any unit whose output held one, and cleanup accepted only a validated run, so the raw data of a run whose mzTab-M did not validate, or that left one while missing another planned export, stayed on disk."
     },
     {
       "at": "2026-09-30",

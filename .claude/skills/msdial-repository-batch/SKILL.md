@@ -212,16 +212,21 @@ Server-side state on `msdial_interactive_app` `main`:
   manifest first. For a campaign unit, the run's MS-DIAL containers are moved
   into `output\msdial-intermediates` and its `<project>_Loaded.msp2.dbs` is
   deleted when the run is finalised; a container that could not be moved is
-  recorded in `finalisation_holds` and holds the deletion. Two parts of the
+  recorded in `finalisation_holds` and holds the deletion. Three parts of the
   campaign's deletion rule have no approval-taking entry point on main yet.
   `discard_download_lease`, which releases a failed, skipped or excluded unit's
   raw data, takes no campaign approval: until it does, the runner calls it with
   `confirmed=true` only after `campaign_authorization.authorize` has accepted
   boundary 5 for the unit and the crossing is recorded in the unit's manifest
-  (`CLAUDE.md`, Raw-data deletion in a campaign), and cleanup accepts only a
-  validated run. A split unit cannot be cleaned up: its parts share the
-  parent's raw tree, which lies outside a part's workspace, and the parent is
-  not a completed run, so the tool refuses both, and its raw data stay until
+  (`CLAUDE.md`, Raw-data deletion in a campaign). It also refuses any unit
+  whose output holds an mzTab-M, and cleanup accepts only a validated run, so
+  neither can delete the raw data of a failed unit whose mzTab-M did not
+  validate, or whose run left one while missing another planned export: those
+  raw data stay, with the refusal recorded as the reason, until the discard
+  accepts such a unit under the approval and keeps its mzTab-M as a failure
+  artifact. A split unit cannot be cleaned up: its parts share the parent's raw
+  tree, which lies outside a part's workspace, and the parent is not a
+  completed run, so the tool refuses both, and its raw data stay until
   split-parent release exists.
 - A unit whose manifest says `execution_allowed` is not true is refused before
   MS-DIAL starts, and so is a workflow whose polarity, output directory or input
