@@ -489,6 +489,7 @@ class AcquisitionTypeTests(unittest.TestCase):
 
         self.assertEqual(verifier.PASS, check.status, check.detail)
         self.assertEqual({"console_acquisition_type": 3}, check.evidence["basis"])
+        self.assertEqual({"header": 3}, check.evidence["sources"])
 
     def test_a_dia_row_is_refused_because_the_console_reads_it_as_dda(self) -> None:
         check = self._acq1([("DIA", "SWATH")], ["DIA"])
@@ -578,6 +579,136 @@ class AcquisitionTypeTests(unittest.TestCase):
 
         self.assertEqual(verifier.NOT_EVALUABLE, check.status)
         self.assertFalse(check.required)
+        self.assertIn("Every row's acquisition_type is one the Console parses (DDA 1)", check.detail)
+
+    def _unread(self, values: list[str], **project) -> "verifier.Check":
+        """A unit whose mode came from the repository, with no per-file raw-header record."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = Unit(temporary)
+            unit.inputs([f"S{index}.mzML" for index in range(len(values))])
+            unit.manifest["project"].update(project)
+            unit.csv(unit.rows(values))
+            return _check(verifier.verify(unit.write(), "before-production"), "ACQ-1")
+
+    def test_without_a_preflight_a_value_outside_the_console_types_is_still_refused(self) -> None:
+        """MTBLS341, ST002419 and MPST000007 never needed a header read; the Console reads 'DIA' as DDA all the same."""
+        for value, read_as in (("DIA", "DDA"), ("SWATH ", "SWATH"), ("", "DDA"), ("MSE", "DDA"), ("None", "None")):
+            with self.subTest(value=value):
+                check = self._unread(["DDA", value])
+
+                self.assertEqual(verifier.FAIL, check.status)
+                self.assertTrue(check.required)
+                self.assertIn(f"S1: acquisition_type {value!r} is not DDA, SWATH or AIF, and the Console reads it as "
+                              f"{read_as}", check.detail)
+                self.assertIn("Of the 2 row(s), 1 carry an acquisition_type other than DDA, SWATH or AIF", check.detail)
+
+    def test_a_gcms_unit_may_run_as_none(self) -> None:
+        """ST002419: a GC-MS unit's CSV says None, which the Console parses; no header comparison is made."""
+        check = self._unread(["None"] * 2, separation="GC-MS", acquisition_mode="FullScan")
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status)
+        self.assertFalse(check.required)
+        self.assertIn("GC-MS unit", check.detail)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = Unit(temporary)
+            paths = unit.inputs(["G0.cdf"])
+            unit.manifest["project"].update(separation="GC-MS", acquisition_mode="FullScan")
+            unit.preflight([_record(paths[0], "FullScan", False)])
+            unit.csv(unit.rows(["None"]))
+            check = _check(verifier.verify(unit.write(), "before-production"), "ACQ-1")
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status, check.detail)
+        self.assertFalse(check.required)
+
+        check = self._unread(["DIA"], separation="GC-MS")
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("is not DDA, SWATH, AIF or None", check.detail)
+
+    def test_an_lc_unit_run_as_none_is_refused(self) -> None:
+        check = self._acq1([("DDA", "DDA")], ["None"])
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("'None' is not DDA, SWATH or AIF, and the Console reads it as None", check.detail)
+
+    def _decided(self, header: str, confidence: "float | None", console: "str | None", csv_type: str, *,
+                 basis: str = "declaration", windows: int | None = None, applied: bool = True,
+                 declared: str | None = None) -> "verifier.Check":
+        """One file whose Console type a campaign disposition decided (_apply_disposition), as Interactive
+        records it: console_acquisition_type and its basis on the per-file record, and, where the header
+        disagreed with the declaration, a declared_vs_header entry."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = Unit(temporary)
+            paths = unit.inputs(["S0.mzML"])
+            unit.preflight([_record(paths[0], header, console, confidence=confidence,
+                                    console_acquisition_basis=basis)],
+                           extractor=None if windows is None else [_extracted(paths[0], header, windows=windows)])
+            disagreement = {"file": paths[0], "declared": declared, "header": header, "confidence": confidence,
+                            "decided": declared}
+            unit.manifest["campaign_disposition"] = _disposition(
+                [], applied=applied, declared_vs_header=[] if declared is None else [disagreement])
+            unit.csv(unit.rows([csv_type]))
+            return _check(verifier.verify(unit.write(), "before-production"), "ACQ-1")
+
+    def test_a_weak_header_the_disposition_kept_the_declaration_over_is_a_warning(self) -> None:
+        """classify_preflight keeps the repository's declaration over a header below 0.8 that contradicts it,
+        and Interactive's execution gate admits the decided type. Whether a weak header should outrank the
+        declaration is a scientific decision; ACQ-1 names it, and refused every such unit."""
+        for header, confidence, console, declared, windows in (("DIA", 0.5, "DDA", "DDA", 22),
+                                                               ("DDA", 0.75, "SWATH", "DIA", None)):
+            with self.subTest(header=header):
+                check = self._decided(header, confidence, console, console, windows=windows, declared=declared)
+
+                self.assertEqual(verifier.WARN, check.status, check.detail)
+                self.assertIn(f"S0: its header says {header}, and the Console will deconvolute it as {console}, at "
+                              f"confidence {confidence:.2f}, below the 0.8 at which a header replaces the repository's "
+                              f"declaration, so the campaign disposition kept the declared {declared}", check.detail)
+                self.assertEqual({"declaration": 1}, check.evidence["sources"])
+
+    def test_a_contradicting_header_of_no_recorded_confidence_does_not_outrank_the_declaration(self) -> None:
+        """classify_preflight reads a missing confidence as 0, so the declaration it kept is named, not refused."""
+        check = self._decided("DIA", None, "DDA", "DDA", declared="DDA")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("at no recorded confidence, short of the 0.8", check.detail)
+
+    def test_a_confident_header_the_declaration_contradicts_is_refused(self) -> None:
+        check = self._decided("DIA", 0.9, "DDA", "DDA", declared="DDA")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("S0: its header says DIA, and the Console will deconvolute it as DDA", check.detail)
+
+    def test_a_contradiction_by_the_header_the_type_came_from_is_refused_at_any_confidence(self) -> None:
+        check = self._decided("DIA", 0.5, "AIF", "AIF", basis="header_no_isolation", windows=22)
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("22 isolation targets", check.detail)
+
+    def test_a_type_taken_from_the_declaration_is_not_called_the_headers(self) -> None:
+        """A Waters DDA read as Unknown at 0.30: the disposition assigns the declared DDA, and ACQ-1 said
+        'All 1 row(s) run as the acquisition type their raw header gives'."""
+        check = self._decided("Unknown", 0.3, "DDA", "DDA")
+
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertIn("S0: its DDA is the repository's declaration, which the campaign disposition kept where its "
+                      "header gives Unknown at confidence 0.30", check.detail)
+        self.assertIn("1 from the repository declaration", check.detail)
+        self.assertEqual({"declaration": 1}, check.evidence["sources"])
+
+    def test_an_ms1_only_file_folded_into_a_dda_run_is_a_warning(self) -> None:
+        check = self._decided("FullScan", 0.9, "DDA", "DDA", basis="folded_ms1_only")
+
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertIn("folded it into the DDA run", check.detail)
+        self.assertEqual({"folded_ms1_only": 1}, check.evidence["sources"])
+
+    def test_a_campaign_row_with_no_console_type_is_refused(self) -> None:
+        """Still unknown: do not run (user decision, 2026-09-30). Outside a campaign it stays a warning."""
+        check = self._decided("DIA", 0.9, None, "SWATH", basis="")
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("still unknown does not run", check.detail)
+
+        check = self._decided("DIA", 0.9, None, "SWATH", basis="", applied=False)
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertIn("its header gives no Console acquisition type", check.detail)
 
     def test_a_split_part_reads_the_header_verdicts_it_carried_from_its_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

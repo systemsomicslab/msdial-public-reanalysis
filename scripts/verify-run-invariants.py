@@ -1886,47 +1886,139 @@ def _header_contradiction(method: str, windows: int | None, value: str) -> str:
     return ""
 
 
+# Interactive's raw_metadata_preflight.HEADER_OVERRIDE_CONFIDENCE. A header verdict this confident replaces a
+# repository declaration it contradicts; below it, a campaign disposition keeps the declaration and records
+# that the two disagree (declared_vs_header, acquisition_header_disagrees_low_confidence).
+HEADER_OVERRIDE_CONFIDENCE = 0.8
+# Header verdicts that give a Console type: the extractor's DIA is SWATH or AIF by its isolation.
+HEADER_CONSOLE_METHODS = ("DDA", "DIA", "AIF", "SWATH")
+ACQ1_SOURCES = {
+    "header": "from headers", "declaration": "from the repository declaration",
+    "folded_ms1_only": "MS1-only folded into DDA", "unresolved": "with no Console type resolved",
+    "unsettled": "DIA with its scheme unsettled", "other": "from another source", "no_record": "with no header record",
+}
+
+
+def _is_gcms(provenance: dict | None) -> bool:
+    """A unit whose project says it was separated by gas chromatography."""
+    project = (provenance or {}).get("project")
+    separation = str(project.get("separation") or "") if isinstance(project, dict) else ""
+    return separation.strip().casefold().startswith("gc")
+
+
+def _binding_dispositions(provenance: dict) -> list[dict]:
+    """The binding campaign dispositions that decided a unit's files: its own, and a split part's parent's."""
+    manifests = [provenance]
+    if isinstance(provenance.get("split_from"), dict):
+        manifests.append(_raw_owner_manifest(provenance)[0])
+    return [item for item in (_binding_disposition(manifest) for manifest in manifests) if item]
+
+
+def _declared_vs_header(dispositions: list[dict]) -> dict[str, dict]:
+    """What a campaign disposition recorded where a header disagreed with the declaration, by file."""
+    entries: dict[str, dict] = {}
+    for disposition in dispositions:
+        items = disposition.get("declared_vs_header")
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and str(item.get("file") or "").strip():
+                entries.setdefault(_path_key(item["file"]), item)
+    return entries
+
+
+def _header_confidence(record: dict | None, entry: dict | None) -> float | None:
+    for value in ((record or {}).get("confidence"), (entry or {}).get("confidence")):
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            return float(value)
+    return None
+
+
 def check_acquisition_type_is_the_headers(
     report: Report, provenance: dict | None, reason: str, csv_rows: list[dict] | None, csv_reason: str,
 ) -> None:
     """ACQ-1. Every CSV row's acquisition_type is a Console type, and the one its file's header gives.
 
-    Read against console_acquisition_type where the per-file record carries it, and always against the
-    extractor's own verdict, written by another program than the one that mapped it: a DDA or AIF
-    header must run as itself, and a DIA header never as DDA, nor as AIF where windows are recorded. A
-    record written before console_acquisition_type existed says DIA without saying which; its
-    extractor record's windows settle SWATH, and without them the row is a WARN. A file whose header
-    gives no Console type (a Waters DDA read as Unknown, an MS1-only file) runs on another source,
-    which is a WARN, as is a row no header record names.
+    The domain first, wherever the CSV exists: the pinned Console turns any value it cannot parse into
+    DDA without a word, so the column takes DDA, SWATH or AIF, and a GC-MS unit's None besides. That
+    needs no header.
 
-    Not required without a preflight: a unit whose acquisition mode was known from the repository
-    never needed a header read (PRE-1).
+    Then each row against console_acquisition_type where the per-file record carries it, and always
+    against the extractor's own verdict, written by another program than the one that mapped it: a DDA
+    or AIF header must run as itself, and a DIA header never as DDA, nor as AIF where windows are
+    recorded. A record written before console_acquisition_type existed says DIA without saying which;
+    its extractor record's windows settle SWATH, and without them the row is a WARN.
+
+    A row whose type is not the header's is a WARN that says what it rests on: the repository's
+    declaration, where the header gave no Console type (a Waters DDA read as Unknown) or where a campaign
+    disposition kept the declaration over a header below HEADER_OVERRIDE_CONFIDENCE that contradicts it;
+    an MS1-only file the disposition folded into a DDA run; or no header record at all. Whether a weak
+    header should outrank the declaration is a scientific decision the disposition recorded, and this
+    names it rather than settling it. A contradiction by a confident header, or by the header the type
+    was taken from, stays a FAIL, as does a row a binding campaign disposition gave no Console type: a
+    unit whose acquisition is still unknown does not run (user decision, 2026-09-30).
+
+    The header comparison is not required without a preflight: a unit whose acquisition mode was known
+    from the repository never needed a header read (PRE-1). Nor is it made for a GC-MS unit, outside
+    this campaign's LC-MS/MS scope, whose EI spectra are deconvoluted as MS1 whatever the column says.
     """
     stage = "before-production"
-    if provenance is None:
-        report.add("ACQ-1", stage, ACQ1_TITLE, NOT_EVALUABLE, reason, required=False)
-        return
-    records = _per_file_records(provenance)
-    if not records:
-        report.add("ACQ-1", stage, ACQ1_TITLE, NOT_EVALUABLE,
-                   "No per-file raw-header record is recorded, so no header verdict stands to compare the CSV "
-                   "with.", required=False)
+    gcms = _is_gcms(provenance)
+    domain = CONSOLE_ACQUISITION_TYPES + (("None",) if gcms else ())
+    domain_text = f"{', '.join(domain[:-1])} or {domain[-1]}"
+    rows = csv_rows or []
+    failures: list[str] = []
+    for row in rows:
+        value = str(row.get("acquisition_type") or "")
+        if value not in domain:
+            name = str(row.get("file_name") or "") or Path(str(row.get("file_path") or "")).name or "a row with no file"
+            failures.append(f"{name}: acquisition_type {value!r} is not {domain_text}, and the Console reads it as "
+                            f"{_console_reads(value)}")
+    unparsed = len(failures)
+    types = dict(Counter(str(row.get("acquisition_type") or "") for row in rows))
+    type_text = ", ".join(f"{key} {count}" for key, count in sorted(types.items()))
+
+    def refuse(**evidence) -> None:
+        parts = ([f"{unparsed} carry an acquisition_type other than {domain_text}"] if unparsed else []) + (
+            [f"{len(failures) - unparsed} would be deconvoluted as an acquisition type their header does not give"]
+            if len(failures) > unparsed else [])
+        report.add("ACQ-1", stage, ACQ1_TITLE, FAIL,
+                   f"Of the {len(rows)} row(s), " + " and ".join(parts) + ", which completes, validates and is wrong: "
+                   + "; ".join(failures[:3]) + ".",
+                   failures=failures[:10], rows=len(rows), types=types, **evidence)
+
+    records = _per_file_records(provenance) if provenance is not None else {}
+    if provenance is None or not records or gcms:
+        if failures:
+            refuse()
+            return
+        parsed = f"every row's acquisition_type is one the Console parses ({type_text})" if rows else ""
+        if provenance is None:
+            why = (parsed[:1].upper() + parsed[1:] + "; " if parsed else "") + reason
+        elif gcms:
+            why = ("This is a GC-MS unit, whose spectra MS-DIAL deconvolutes as MS1 whatever the column says, so no "
+                   "header comparison is made" + (f"; {parsed}." if parsed else "."))
+        elif not parsed:
+            why = "No per-file raw-header record is recorded, so no header verdict stands to compare the CSV with."
+        else:
+            why = (parsed[:1].upper() + parsed[1:] + "; no per-file raw-header record is recorded, so no header "
+                   "verdict stands to compare them with.")
+        report.add("ACQ-1", stage, ACQ1_TITLE, NOT_EVALUABLE, why, required=False,
+                   **({"rows": len(rows), "types": types} if csv_rows is not None else {}))
         return
     if csv_rows is None:
         report.add("ACQ-1", stage, ACQ1_TITLE, NOT_EVALUABLE, csv_reason)
         return
     extracted = _extractor_records(provenance, report.workspace)
     aliases = _input_keys_by_console_path(provenance)
-    failures: list[str] = []
+    dispositions = _binding_dispositions(provenance)
+    decisions = _declared_vs_header(dispositions)
     warnings: list[str] = []
     basis: Counter = Counter()
+    sources: Counter = Counter()
     for row in csv_rows:
         path = str(row.get("file_path") or "")
         name = str(row.get("file_name") or "") or Path(path).name or "a row with no file"
         value = str(row.get("acquisition_type") or "")
         if value not in CONSOLE_ACQUISITION_TYPES:
-            failures.append(f"{name}: acquisition_type {value!r} is not DDA, SWATH or AIF, and the Console "
-                            f"reads it as {_console_reads(value)}")
             continue
         key = _input_key(row, aliases)
         record = records.get(key) if key else None
@@ -1935,6 +2027,7 @@ def check_acquisition_type_is_the_headers(
         windows = _isolation_windows(header)
         if record is None:
             basis["no_record"] += 1
+            sources["no_record"] += 1
             contradiction = _header_contradiction(method, windows, value)
             (failures if contradiction else warnings).append(
                 f"{name}: " + (contradiction or f"no raw-header record names it, so no header verdict stands "
@@ -1943,6 +2036,7 @@ def check_acquisition_type_is_the_headers(
         if "console_acquisition_type" in record:
             basis["console_acquisition_type"] += 1
             console = record.get("console_acquisition_type")
+            decided = str(record.get("console_acquisition_basis") or "")
             if console is not None and console not in CONSOLE_ACQUISITION_TYPES:
                 failures.append(f"{name}: its record's console_acquisition_type {console!r} is no Console type, so "
                                 "its header verdict was never resolved to DDA, SWATH or AIF")
@@ -1951,41 +2045,73 @@ def check_acquisition_type_is_the_headers(
                 failures.append(f"{name}: its header gives {console}, and the Console will deconvolute it as {value}")
                 continue
             contradiction = _header_contradiction(method, windows, value)
+            confidence = _header_confidence(record, decisions.get(key))
             if contradiction:
-                failures.append(f"{name}: {contradiction}")
+                if decided != "declaration" or (confidence is not None and confidence >= HEADER_OVERRIDE_CONFIDENCE):
+                    failures.append(f"{name}: {contradiction}")
+                    continue
+                sources["declaration"] += 1
+                declared = str((decisions.get(key) or {}).get("declared") or "") or value
+                weak = (f"at confidence {confidence:.2f}, below" if confidence is not None else
+                        "at no recorded confidence, short of")
+                warnings.append(f"{name}: {contradiction}, {weak} the {HEADER_OVERRIDE_CONFIDENCE} at which a header "
+                                f"replaces the repository's declaration, so the campaign disposition kept the declared "
+                                f"{declared}")
             elif console is None:
-                warnings.append(f"{name}: its header gives no Console acquisition type, so its {value} rests on "
-                                "something other than the raw headers")
+                sources["unresolved"] += 1
+                if dispositions:
+                    failures.append(f"{name}: the campaign disposition gave it no Console acquisition type, and a unit "
+                                    "whose acquisition is still unknown does not run (user decision, 2026-09-30)")
+                else:
+                    warnings.append(f"{name}: its header gives no Console acquisition type, so its {value} rests on "
+                                    "something other than the raw headers")
+            elif decided == "folded_ms1_only":
+                sources["folded_ms1_only"] += 1
+                warnings.append(f"{name}: its header gives {method or 'no acquisition mode'} with no MS2 to "
+                                "deconvolute, and the campaign disposition folded it into the DDA run")
+            elif decided == "declaration":
+                sources["declaration"] += 1
+                warnings.append(f"{name}: its {value} is the repository's declaration, which the campaign disposition "
+                                f"kept where its header gives {method or 'no acquisition mode'}"
+                                + ("" if confidence is None else f" at confidence {confidence:.2f}"))
+            elif method not in HEADER_CONSOLE_METHODS:
+                sources["other"] += 1
+                warnings.append(f"{name}: its header gives {method or 'no acquisition mode'}, which is no Console "
+                                f"acquisition type, so its {value} rests on something other than the raw headers")
+            else:
+                sources["header"] += 1
             continue
         basis["acquisition_mode"] += 1
         contradiction = _header_contradiction(method, windows, value)
         if contradiction:
             failures.append(f"{name}: {contradiction}")
         elif method == "DIA" and (windows or 0) < 2:
+            sources["unsettled"] += 1
             warnings.append(f"{name}: its header says DIA, its record predates console_acquisition_type, and "
                             + ("the extractor wrote no record of it" if windows is None else
                                f"the extractor recorded {windows} isolation target(s)")
                             + f", so whether {value} is right is not settled")
         elif method not in ("DDA", "AIF", "DIA"):
+            sources["other"] += 1
             warnings.append(f"{name}: its header gives {method or 'no acquisition mode'}, which is no Console "
                             f"acquisition type, so its {value} rests on something other than the raw headers")
-    evidence = {"rows": len(csv_rows), "types": dict(Counter(str(row.get("acquisition_type") or "") for row in csv_rows)),
-                "basis": dict(basis), "extractor_records": len(extracted)}
+        else:
+            sources["header"] += 1
+    evidence = {"basis": dict(basis), "sources": dict(sources), "extractor_records": len(extracted)}
     if failures:
-        report.add("ACQ-1", stage, ACQ1_TITLE, FAIL,
-                   f"{len(failures)} of the {len(csv_rows)} row(s) would be deconvoluted as an acquisition type their "
-                   "header does not give, which completes, validates and is wrong: " + "; ".join(failures[:3]) + ".",
-                   failures=failures[:10], warnings=warnings[:10], **evidence)
+        refuse(warnings=warnings[:10], **evidence)
         return
     if warnings:
         report.add("ACQ-1", stage, ACQ1_TITLE, WARN,
-                   f"No row contradicts its header, but {len(warnings)} of the {len(csv_rows)} rest on no header "
-                   "verdict for their acquisition type: " + "; ".join(warnings[:3]) + ".",
-                   warnings=warnings[:10], **evidence)
+                   f"No row runs against a confident header verdict, but {len(warnings)} of the {len(csv_rows)} rest "
+                   "on something else for their acquisition type ("
+                   + ", ".join(f"{count} {ACQ1_SOURCES[key]}" for key, count in sources.items()) + "): "
+                   + "; ".join(warnings[:3]) + ".",
+                   warnings=warnings[:10], rows=len(csv_rows), types=types, **evidence)
         return
     report.add("ACQ-1", stage, ACQ1_TITLE, PASS,
-               f"All {len(csv_rows)} row(s) run as the acquisition type their raw header gives ("
-               + ", ".join(f"{key} {count}" for key, count in sorted(evidence["types"].items())) + ").", **evidence)
+               f"All {len(csv_rows)} row(s) run as the acquisition type their raw header gives ({type_text}).",
+               rows=len(csv_rows), types=types, **evidence)
 
 
 def _ce_targets(record: dict | None, header: dict | None) -> list[float] | None:
