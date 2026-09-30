@@ -52,10 +52,11 @@ checked for that unit and that boundary with Interactive's validator
 makes that check itself wherever it takes the approval. The Catalog checks only
 a ratification's form, not the approval it names, so the runner validates
 boundary 3 for the unit before the Class save, and the Catalog stores the
-ratification with the decision. The one call that still takes `confirmed=true`
-in a campaign is the discard of a failed, skipped or excluded unit, under the
-conditions stated in Raw-data deletion in a campaign. The runner decides no
-eligibility: it reads the unit's `campaign_disposition`, which only
+ratification with the decision. The discard of a failed, skipped or excluded
+unit is no exception: the runner uses Interactive's approval-taking discard,
+and the one `confirmed=true` call it may make in its place is a fallback that
+waits for the user's approval (Raw-data deletion in a campaign). The runner
+decides no eligibility: it reads the unit's `campaign_disposition`, which only
 Interactive's `classify_preflight` writes, and runs, splits, skips or excludes
 the unit as that record says. It stops a run on a gate verdict only as Gate
 verdicts in a campaign says.
@@ -232,18 +233,27 @@ Each of these deletions crosses boundary 5, which the approval covers: in a
 campaign, boundary 5 is every deletion this rule names, not only the one after
 validated output. The first goes through `msdial_cleanup_repository_raw`,
 which takes the approval itself. The other two go through Interactive's
-discard (`discard_download_lease`), which does not take it yet. Until it does,
-the runner may call the discard with `confirmed=true` only after
+approval-taking discard: `discard_download_lease` given the campaign approval,
+as cleanup is given it, which checks boundary 5 for the unit and records the
+crossing in the unit's manifest before it deletes anything. The runner uses
+that discard and passes it no `confirmed=true`. It is not on Interactive main
+yet, where the discard takes only `confirmed`.
+
+**Fallback, awaiting the user's approval.** Until the approval-taking discard
+lands, the runner may call the discard with `confirmed=true`, and only after
 `campaign_authorization.authorize` has accepted boundary 5 for that unit and
-the crossing is recorded in the unit's manifest.
+the crossing is recorded in the unit's manifest. Without that approval, the
+raw data of a failed, skipped or excluded unit stay until the discard lands,
+with the reason recorded in the unit's failure record and its bytes counted
+against the disk budget. Either way the fallback ends when the discard lands.
 
 For a failed unit whose output holds an mzTab-M, because the mzTab-M did not
 validate or because the run missed another planned export, the deletion rule
 wins: once its retries are spent its raw tree is discarded, and the mzTab-M,
 its validation and whatever else the run left in `output` are kept as the
-failure record's artifacts. Interactive cannot do that yet: its discard refuses
-any unit whose output holds an mzTab-M, and cleanup accepts only a validated
-run. Until the discard accepts such a unit under the approval, its raw data
+failure record's artifacts. The approval-taking discard is to accept such a
+unit; the discard on main refuses any unit whose output holds an mzTab-M, and
+cleanup accepts only a validated run. Until a discard accepts it, its raw data
 stay, the refusal is recorded as the reason in its failure record, and its
 bytes count against the disk budget. The runner never works around the guard,
 by deleting the mzTab-M or the raw tree itself.

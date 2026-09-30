@@ -230,17 +230,19 @@ Server-side state on `msdial_interactive_app` `main`:
   that could not be moved is recorded in `finalisation_holds` and holds the
   deletion. Three parts of the campaign's deletion rule have no approval-taking
   entry point on main yet. `discard_download_lease`, which releases a failed,
-  skipped or excluded unit's raw data, takes no campaign approval: until it
-  does, the runner calls it with `confirmed=true` only after
+  skipped or excluded unit's raw data, takes only `confirmed`. The runner is to
+  use its approval-taking form, which checks boundary 5 and records the
+  crossing itself; until that lands, calling it with `confirmed=true` after
   `campaign_authorization.authorize` has accepted boundary 5 for the unit and
-  the crossing is recorded in the unit's manifest (`CLAUDE.md`, Raw-data
-  deletion in a campaign). It also refuses any unit whose output holds an
-  mzTab-M, and cleanup accepts only a validated run, so neither can delete the
-  raw data of a failed unit whose mzTab-M did not validate, or whose run left
-  one while missing another planned export: those raw data stay, with the
-  refusal recorded as the reason, until the discard accepts such a unit under
-  the approval and keeps its mzTab-M as a failure artifact. A split unit cannot
-  be cleaned up: its parts share the parent's raw tree, which lies outside a
+  the crossing is recorded in the unit's manifest is a fallback that waits for
+  the user's approval (`CLAUDE.md`, Raw-data deletion in a campaign). The
+  discard on main also refuses any unit whose output holds an mzTab-M, and
+  cleanup accepts only a validated run, so neither can delete the raw data of
+  a failed unit whose mzTab-M did not validate, or whose run left one while
+  missing another planned export: those raw data stay, with the refusal
+  recorded as the reason, until the approval-taking discard accepts such a
+  unit and keeps its mzTab-M as a failure artifact. A split unit cannot be
+  cleaned up: its parts share the parent's raw tree, which lies outside a
   part's workspace, and the parent is not a completed run, so the tool refuses
   both, and its raw data stay until split-parent release exists.
 - A unit whose manifest says `execution_allowed` is not true is refused before
@@ -265,11 +267,13 @@ unit and that boundary with Interactive's validator
 makes that check itself wherever it takes the approval. The Catalog checks only
 a ratification's form, never the approval it names or the unit it is for, so
 the runner validates boundary 3 for the unit before every Class save. The
-discard of a failed, skipped or excluded unit is the one call that still takes
-`confirmed=true`, and only after the same validation for boundary 5. The runner
-never records a reading (boundary 6). It decides no eligibility: it reads the
-unit's `campaign_disposition`, which only Interactive's `classify_preflight`
-writes, and runs, splits, skips or excludes the unit as that record says.
+discard of a failed, skipped or excluded unit goes through Interactive's
+approval-taking discard; until that lands, the runner's `confirmed=true` call
+after the same validation for boundary 5 is a fallback that waits for the
+user's approval. The runner never records a reading (boundary 6). It decides no
+eligibility: it reads the unit's `campaign_disposition`, which only
+Interactive's `classify_preflight` writes, and runs, splits, skips or excludes
+the unit as that record says.
 
 Outside a campaign, an unattended run may not widen `maximum_gb` to clear a
 size blocker. In a campaign there is no per-unit size limit (the user's
