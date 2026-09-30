@@ -497,7 +497,8 @@ class _InputLineage:
       one), otherwise through the download or the archive listing that holds it. The record's hashes
       must agree with what the cover knows of those bytes: the sha256 of a download, the declared
       checksum a validator compared where the record carries that algorithm, and, for an archive
-      member, which is not hashed, the listed size. The mzXML's basis is the converted input's.
+      member, which is not hashed, the listed size. The mzXML's basis is the converted input's. Whether
+      the mzML is still the bytes its record gives, and passed its validation, is CONV-1's.
 
     An input with no row, or with two different rows, is covered by nothing.
     """
@@ -1228,6 +1229,366 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
     kind, detail, evidence = _checksum_basis(owner)
     status = {"verified": PASS, "archive_verified": ARCHIVE_VERIFIED_STATUS, "download_sha256": WARN}.get(kind, FAIL)
     report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, **evidence)
+
+
+# --------------------------------------------------------------------------------------------
+# conversion
+# --------------------------------------------------------------------------------------------
+#
+# MS-DIAL opens neither mzXML nor mzData: MsdialCore lists no such format, and RawDataHandler has no
+# reader for either. Interactive's mzxml_conversion.py (0.5.11) writes a sample whose only readable
+# encoding is mzXML as plain mzML under <raw>\converted, re-reads what it wrote with a second reader
+# and compares every spectrum with the mzXML, and keeps one record per file in the raw owner's
+# input_conversions (msdial-mzxml-conversion.v1 records, as a list or as an object's "records"). SUM-1
+# follows a converted input back through its record to the mzXML it read; CONV-1 holds the
+# conversion itself to its record.
+
+CONVERSION_RECORD_SCHEMA = "msdial-mzxml-conversion.v1"
+CONVERSION_VALIDATION_SCHEMA = "msdial-mzxml-conversion-validation.v1"
+# What MS-DIAL cannot open, as Interactive names it: mzXML, which the converter writes as mzML, and
+# mzData, which nothing converts.
+UNREADABLE_ENCODINGS = (".mzxml", ".mzdata", ".mzdata.xml")
+# Where Interactive writes each conversion: beside the raw tree's data, and released with it.
+CONVERTED_DIRECTORY = "converted"
+CONV1_TITLE = "Every converted input is a validated conversion kept in the raw tree"
+_SHA256_TEXT = re.compile(r"[0-9a-f]{64}")
+
+
+def _count(value: object) -> int | None:
+    """A count as a record writes one: a whole number, never a bool."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _unreadable_encoding(path: object) -> bool:
+    return str(path or "").rstrip("\\/").casefold().endswith(UNREADABLE_ENCODINGS)
+
+
+def _under(path: object, root: object) -> bool:
+    return bool(str(root or "").strip()) and _path_key(path).startswith(_path_key(root) + os.sep)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _conversion_records(owner: dict) -> tuple[list | None, str]:
+    """The raw owner's conversion records, None where it keeps none, and what is wrong with the block."""
+    block = owner.get("input_conversions")
+    if block is None:
+        return None, ""
+    records = block.get("records") if isinstance(block, dict) else block
+    if not isinstance(records, list):
+        return [], "the manifest's input_conversions is neither a list of conversion records nor an object holding one"
+    return records, ""
+
+
+def _declared_ion_mode(owner: dict) -> tuple[str, str, str]:
+    """The ion mode the raw owner declared: its polarity as the converter's imputation names it ("" where
+    it names neither), the declared value ("" where none survives), and where it was read, or why none is.
+
+    The converter imputes the unit's declared ion mode, so that is what an imputation is held to, never
+    project.ion_mode as it stands: the raw-header preflight rewrites that from the headers, and a
+    converted input's headers carry the polarity its conversion imputed. The Catalog handoff's
+    technical settings, which nothing rewrites, keep the declaration; project.ion_mode stands for it
+    only where no preflight is recorded. The raw owner converted every part's files, so a split part's
+    own ion mode is no declaration either.
+    """
+    project = owner.get("project") if isinstance(owner.get("project"), dict) else {}
+    metadata = project.get("repository_metadata")
+    handoff = metadata.get("catalog_handoff") if isinstance(metadata, dict) else None
+    settings = handoff.get("technical_settings") if isinstance(handoff, dict) else None
+    preflight = owner.get("raw_metadata_preflight")
+    if isinstance(settings, dict) and str(settings.get("ion_mode") or "").strip():
+        mode, source = str(settings["ion_mode"]).strip(), "the Catalog handoff's technical settings"
+    elif isinstance(preflight, dict) and preflight:
+        return "", "", ("no Catalog handoff gives one, and the raw-header preflight rewrote the project record's "
+                        "from the headers, which carry what was imputed")
+    elif str(project.get("ion_mode") or "").strip():
+        mode, source = (str(project["ion_mode"]).strip(),
+                        "the project record, which no raw-header preflight has rewritten")
+    else:
+        return "", "", "neither a Catalog handoff nor the project record gives one"
+    folded = mode.casefold()
+    return ("positive" if folded.startswith("pos") else "negative" if folded.startswith("neg") else ""), mode, source
+
+
+def _conversion_problems(record: dict, raw_roots: list[str], moved: "tuple[str, Path] | None", raw_present: bool,
+                         declared: tuple[str, str, str], declarer: str, tally: Counter) -> list[str]:
+    """What stands against one completed conversion record, adding what it did to the tally.
+
+    ``raw_roots`` are the raw tree as the raw owner's manifest records it and where it is now; ``moved``
+    maps the first onto the second where the workspace moved since the record was written. ``declared``
+    is the raw owner's ion mode as _declared_ion_mode reads it, and ``declarer`` names that unit.
+    """
+    if record.get("schema") != CONVERSION_RECORD_SCHEMA:
+        return [f"its record is not an {CONVERSION_RECORD_SCHEMA} record, the one the gate reads"]
+    problems = []
+    output = record["output"]
+    path = str(output["path"])
+    if not any(_under(path, root) for root in raw_roots):
+        problems.append("it lies outside the raw tree, so it is not released with the raw data")
+    sha256 = str(output.get("sha256") or "").strip().casefold()
+    if not _SHA256_TEXT.fullmatch(sha256):
+        problems.append("its record keeps no sha256 of the mzML it wrote")
+    else:
+        places = [Path(path)]
+        if moved is not None and _under(path, moved[0]):
+            places.append(moved[1] / os.path.relpath(os.path.normpath(path), os.path.normpath(moved[0])))
+        located = next((item for item in places if item.is_file()), None)
+        if located is None:
+            if raw_present:
+                problems.append("it is absent while the raw tree is present, so the mzML MS-DIAL reads cannot be "
+                                "re-hashed")
+            else:
+                # Released with the raw tree: the sha256 recorded when it was written is what stands.
+                tally["released"] += 1
+        else:
+            try:
+                size = located.stat().st_size
+                recorded = _count(output.get("bytes"))
+                if recorded is not None and size != recorded:
+                    problems.append(f"it holds {size} bytes where its record gives {recorded}")
+                elif _file_sha256(located) != sha256:
+                    problems.append("its bytes are no longer those whose sha256 its record gives")
+                else:
+                    tally["rehashed"] += 1
+            except OSError as exc:
+                problems.append(f"it could not be re-hashed: {exc}")
+    converter = record.get("converter") if isinstance(record.get("converter"), dict) else {}
+    missing = [key for key in ("name", "version") if not str(converter.get(key) or "").strip()]
+    if not _SHA256_TEXT.fullmatch(str(converter.get("module_sha256") or "").strip().casefold()):
+        missing.append("module_sha256")
+    if missing:
+        problems.append(f"its record does not identify the converter that wrote it (no {', '.join(missing)})")
+    counts = record.get("counts") if isinstance(record.get("counts"), dict) else {}
+    spectra = _count(counts.get("spectra"))
+    validation = record.get("validation")
+    compared = _count(validation.get("spectra_compared")) if isinstance(validation, dict) else None
+    if not isinstance(validation, dict):
+        problems.append("its record keeps no validation of the mzML against the mzXML")
+    elif validation.get("schema") != CONVERSION_VALIDATION_SCHEMA:
+        problems.append(f"its validation is not an {CONVERSION_VALIDATION_SCHEMA} record")
+    elif validation.get("status") != "passed" or _count(validation.get("problem_count")) != 0:
+        problems.append(f"its validation against the mzXML did not pass (status {validation.get('status')!r}, "
+                        f"{validation.get('problem_count')!r} problem(s))")
+    elif spectra is None or compared != spectra:
+        problems.append(f"its validation compared {compared if compared is not None else 'an unrecorded number of'} "
+                        f"spectra, and its record counts {spectra if spectra is not None else 'none'} written")
+    else:
+        tally["spectra"] += spectra
+    # RawDataHandler reads polarity only as a spectrum cvParam, and MS-DIAL skips a spectrum whose polarity
+    # is not the method's ion mode: a scan the mzXML left without one is lost unless one was imputed.
+    after, before = counts.get("polarity"), counts.get("polarity_recorded")
+    inferences = record.get("inferences") if isinstance(record.get("inferences"), list) else []
+    imputations = [item for item in inferences if isinstance(item, dict) and item.get("kind") == "polarity_imputation"]
+    imputed = sum(_count(item.get("spectra")) or 0 for item in imputations)
+    if not isinstance(after, dict):
+        problems.append("its record keeps no polarity counts, so nothing says every spectrum carries one")
+    else:
+        unrecorded = _count(after.get("unrecorded")) or 0
+        absent = sum(_count(before.get(key)) or 0 for key in ("absent", "any")) if isinstance(before, dict) else None
+        if unrecorded:
+            problems.append(f"{unrecorded} of its spectra carry no polarity and none was imputed, and MS-DIAL skips a "
+                            "spectrum whose polarity is not the method's ion mode")
+        elif absent is not None and absent != imputed:
+            problems.append(f"{absent} of its mzXML scans record no polarity, and its record imputes one to {imputed}")
+    # The converter imputes only what it is asked to, and its caller asks for the unit's declared ion mode.
+    polarity, mode, source = declared
+    options = record.get("options") if isinstance(record.get("options"), dict) else {}
+    asked = str(options.get("impute_polarity") or "").strip().casefold()
+    for item in imputations:
+        value = str(item.get("value") or "").strip().casefold()
+        if value != asked:
+            problems.append(f"it imputes {value or 'no'} polarity where its record's options asked for "
+                            + (f"{asked} polarity" if asked else "no imputation"))
+        if not polarity:
+            problems.append(f"it imputes {value or 'no'} polarity where {declarer} declares no single ion mode ("
+                            + (f"{mode}, from {source})" if mode else f"{source})"))
+        elif value != polarity:
+            problems.append(f"it imputes {value or 'no'} polarity where {declarer}'s declared ion mode is {polarity} "
+                            f"(from {source})")
+    tally["imputed"] += imputed
+    return problems
+
+
+def check_converted_inputs_are_their_conversions(
+    report: Report, provenance: dict | None, reason: str, csv_rows: list[dict] | None, csv_reason: str,
+) -> None:
+    """CONV-1. Each converted input is its converter's recorded, validated output, and no input is a file
+    MS-DIAL cannot open.
+
+    SUM-1 asks whether the mzXML a converted input was read from is covered. Nothing asked whether the
+    mzML is the conversion its record describes. So, for every completed conversion record (a split
+    part's parent converted every part's files, and a part answers for its own inputs):
+
+    - its output lies under the raw tree, which is released with the raw data and holds none of what
+      is kept;
+    - its sha256 is re-hashed while the file is on disk. One released with the raw tree keeps the sha256
+      recorded when it was written; one absent while the raw tree is present is a FAIL;
+    - it names its converter: name, version and the sha256 of the converter's module;
+    - its validation against the mzXML passed, with no problem, over every spectrum it wrote;
+    - no spectrum is left without a polarity unless one was imputed, and an imputation is what the
+      record's options asked for and the ion mode its raw owner declared: in the Catalog handoff, or in
+      the project record where no raw-header preflight has rewritten it from the headers the imputation
+      wrote. Where no single ion mode is declared, an imputation is a FAIL.
+
+    And for the unit: no input candidate and no analysis-CSV row is an mzXML or mzData file, and every
+    input in the raw tree's converted directory is the output of a record. A record whose conversion
+    did not complete is a FAIL where its output is an input, and a WARN where it is none, since a sample
+    whose only encoding that mzXML was is then analysed by nothing. A candidate a binding campaign
+    disposition excluded stays where it was found and is never opened, so it is not held against the unit.
+
+    PASS where nothing was converted and nothing MS-DIAL cannot open is an input: every unit prepared
+    before the converter existed.
+    """
+    stage = "before-production"
+    if provenance is None:
+        report.add("CONV-1", stage, CONV1_TITLE, NOT_EVALUABLE, reason)
+        return
+    split = isinstance(provenance.get("split_from"), dict)
+    owner, owner_reason = _raw_owner_manifest(provenance)
+    if owner is None:
+        report.add("CONV-1", stage, CONV1_TITLE, NOT_EVALUABLE,
+                   f"This unit was split from another, whose manifest cannot be used: {owner_reason}")
+        return
+    records, shape = _conversion_records(owner)
+    problems = [shape] if shape else []
+    raw_path, _raw_owner, _raw_unknown = _raw_directory(provenance, report.workspace)
+    recorded_raw = str(owner.get("raw_directory") or "").strip()
+    raw_roots = [root for root in dict.fromkeys((recorded_raw, str(raw_path or ""))) if root]
+    moved = ((recorded_raw, raw_path) if recorded_raw and raw_path is not None and not _same_path(recorded_raw, raw_path)
+             else None)
+    raw_present = raw_path is not None and raw_path.exists()
+    raw_candidates = provenance.get("input_candidates")
+    candidates = [str(item) for item in raw_candidates] if isinstance(raw_candidates, list) else None
+    aliases = _input_keys_by_console_path(provenance)
+    # Every input, by key, with the name it is shown by: the candidates, and what each CSV row opens.
+    inputs = {_path_key(item): Path(item.rstrip("\\/")).name for item in candidates or []}
+    for row in csv_rows or []:
+        key = _input_key(row, aliases)
+        if key:
+            inputs.setdefault(key, Path(str(row.get("file_path") or "").rstrip("\\/")).name)
+
+    by_output: dict[str, list[dict]] = {}
+    for number, record in enumerate(records or [], start=1):
+        output = record.get("output") if isinstance(record, dict) else None
+        if not isinstance(output, dict) or not str(output.get("path") or "").strip():
+            problems.append(f"conversion record {number} names no output")
+            continue
+        by_output.setdefault(_path_key(output["path"]), []).append(record)
+    if by_output and not raw_roots:
+        problems.append("the raw owner's manifest names no raw_directory, so where each output lies cannot be told")
+    judged = {key: items for key, items in by_output.items() if not split or key in inputs}
+    # The raw owner converted every part's files, with the ion mode it declared.
+    declared = _declared_ion_mode(owner)
+    declarer = "the parent unit" if split else "the unit"
+    tally: Counter = Counter()
+    inferences: Counter = Counter()
+    deviations: Counter = Counter()
+    failed: list[str] = []
+    for key, items in judged.items():
+        name = Path(str(items[0]["output"]["path"])).name
+        if len(items) > 1:
+            problems.append(f"{name}: {len(items)} conversion records name it as their output")
+            continue
+        record = items[0]
+        if record.get("status") != "converted":
+            error = str(record.get("error") or "no error recorded")
+            if key in inputs:
+                problems.append(f"{name}: it is an input, and its conversion record's status is "
+                                f"{record.get('status')!r}, not 'converted' ({error})")
+            else:
+                failed.append(f"{name}: {error}")
+            continue
+        tally["converted"] += 1
+        tally["inputs"] += int(key in inputs)
+        problems.extend(f"{name}: {item}" for item in
+                        _conversion_problems(record, raw_roots, moved, raw_present, declared, declarer, tally))
+        for field_name, counter in (("inferences", inferences), ("deviations", deviations)):
+            listed = record.get(field_name)
+            if isinstance(listed, list):
+                counter.update(str(item.get("kind") or "unnamed") for item in listed if isinstance(item, dict))
+
+    # A candidate a binding campaign disposition excluded stays where it was found, and MS-DIAL never opens it.
+    held = {_path_key(item) for item in _excluded_candidates(provenance, candidates or [])}
+    unreadable = [Path(item.rstrip("\\/")).name for item in candidates or []
+                  if _unreadable_encoding(item) and _path_key(item) not in held]
+    set_aside = sum(1 for item in candidates or [] if _unreadable_encoding(item) and _path_key(item) in held)
+    if unreadable:
+        problems.append(f"{len(unreadable)} input candidate(s) are mzXML or mzData, which MS-DIAL cannot open "
+                        f"({', '.join(unreadable[:5])})")
+    listed_rows = [str(row.get("file_name") or "") or Path(str(row.get("file_path") or "")).name
+                   for row in csv_rows or []
+                   if _unreadable_encoding(row.get("file_path")) or _unreadable_encoding(_input_key(row, aliases))]
+    if listed_rows:
+        problems.append(f"{len(listed_rows)} analysis-CSV row(s) open an mzXML or mzData file, which MS-DIAL cannot "
+                        f"open ({', '.join(listed_rows[:5])})")
+    converted_roots = [os.path.join(root, CONVERTED_DIRECTORY) for root in raw_roots]
+    unrecorded = [name for key, name in inputs.items()
+                  if key not in by_output and any(_under(key, root) for root in converted_roots)]
+    if unrecorded:
+        problems.append(f"{len(unrecorded)} input(s) in the raw tree's {CONVERTED_DIRECTORY} directory are the output "
+                        f"of no conversion record ({', '.join(unrecorded[:5])})")
+
+    evidence = {
+        "records": len(records or []), "judged": len(judged), "converted": tally["converted"], "failed": len(failed),
+        "rehashed": tally["rehashed"], "released_with_raw_tree": tally["released"],
+        "spectra_validated": tally["spectra"], "imputed_polarity_spectra": tally["imputed"],
+        "declared_ion_mode": declared[1] or None,
+        "inferences": dict(inferences), "deviations": dict(deviations),
+        "converted_inputs": tally["inputs"], "unreadable_candidates_excluded": set_aside,
+        "input_candidates": len(candidates) if candidates is not None else None,
+        "analysis_csv_rows": len(csv_rows) if csv_rows is not None else None,
+    }
+    if problems:
+        report.add("CONV-1", stage, CONV1_TITLE, FAIL,
+                   f"{len(problems)} problem(s) with what was converted or with what MS-DIAL is given to open: "
+                   + "; ".join(problems[:3]) + ". An mzML that is not its recorded, validated conversion, or a "
+                   "file MS-DIAL cannot read, runs to a result that does not describe the published data.",
+                   problems=problems[:10], failures=failed[:10], **evidence)
+        return
+    if candidates is None:
+        report.add("CONV-1", stage, CONV1_TITLE, NOT_EVALUABLE,
+                   "The manifest records no input candidates, so nothing says whether MS-DIAL is given a file it "
+                   "cannot open.", **evidence)
+        return
+    if csv_rows is None:
+        report.add("CONV-1", stage, CONV1_TITLE, NOT_EVALUABLE, csv_reason, **evidence)
+        return
+    unit = "this part's" if split else "the unit's"
+    if tally["converted"]:
+        kept = "; ".join(part for part in (
+            f"{tally['rehashed']} re-hashed to the sha256 recorded" if tally["rehashed"] else "",
+            f"{tally['released']} released with the raw tree, whose recorded sha256 stands" if tally["released"] else "",
+        ) if part)
+        named = [f"{count} {kind}" for kind, count in sorted((inferences + deviations).items())]
+        detail = (f"{tally['inputs']} of {unit} {len(candidates)} input candidate(s) are mzML converted from mzXML"
+                  + (f", beside {tally['converted'] - tally['inputs']} other completed conversion(s)"
+                     if tally["converted"] > tally["inputs"] else "")
+                  + f": each conversion lies in the raw tree ({kept}), names its converter, and passed its validation "
+                  f"against the mzXML over all {tally['spectra']} spectra it wrote, none left without a polarity"
+                  + (f" ({tally['imputed']} by imputing {declared[0]} polarity, {declarer}'s declared ion mode "
+                     f"from {declared[2]})" if tally["imputed"] else "")
+                  + (f", recording {', '.join(named)}" if named else "")
+                  + ". No input MS-DIAL opens and no CSV row is an mzXML or mzData file.")
+    else:
+        detail = (f"No input of {'this part' if split else 'the unit'} was converted, and none of its "
+                  f"{len(candidates) - set_aside} input candidate(s) MS-DIAL opens and {len(csv_rows)} analysis-CSV "
+                  "row(s) is an mzXML or mzData file.")
+    if set_aside:
+        detail += (f" The campaign disposition excluded {set_aside} mzXML or mzData candidate(s), which stay where "
+                   "they were found and are never opened.")
+    if failed:
+        report.add("CONV-1", stage, CONV1_TITLE, WARN,
+                   f"{len(failed)} conversion(s) did not complete, and none of their outputs is an input: "
+                   + "; ".join(failed[:3]) + ". A sample whose only encoding was one of these mzXML is analysed by "
+                   "nothing. " + detail, failures=failed[:10], **evidence)
+        return
+    report.add("CONV-1", stage, CONV1_TITLE, PASS, detail, **evidence)
 
 
 def check_split_part_partitions_its_parent(report: Report, provenance: dict | None, reason: str) -> None:
@@ -4120,7 +4481,9 @@ def check_storage_shape(report: Report, workspace: Path, stage: str,
         return
     downloads = workspace / "raw" / "downloads"
     data = workspace / "raw" / "data"
-    if not downloads.exists() and not data.exists():
+    # The mzML written from mzXML (CONV-1) lies beside the data and is released with it.
+    converted = workspace / "raw" / CONVERTED_DIRECTORY
+    if not downloads.exists() and not data.exists() and not converted.exists():
         # Not required: a released raw tree is the intended end state under the campaign's
         # delete-after-validated-output policy, so its absence is a result, not a gap.
         report.add("DSK-1", stage, "Retained storage is accounted for", NOT_EVALUABLE,
@@ -4129,19 +4492,22 @@ def check_storage_shape(report: Report, workspace: Path, stage: str,
         return
     archive = _tree_bytes(downloads) if downloads.exists() else 0
     extracted = _tree_bytes(data) if data.exists() else 0
-    total = archive + extracted
+    conversions = _tree_bytes(converted) if converted.exists() else 0
+    total = archive + extracted + conversions
     if archive and extracted:
         report.add(
             "DSK-1", stage, "Retained storage is accounted for", WARN,
             "The downloaded archive and its extraction are both retained, so the unit occupies "
-            f"{total / 1e9:.2f} GB for {max(archive, extracted) / 1e9:.2f} GB of unique data. A "
+            f"{total / 1e9:.2f} GB for {max(archive, extracted) / 1e9:.2f} GB of unique data"
+            + (f" and {conversions / 1e9:.2f} GB of mzML converted from mzXML" if conversions else "") + ". A "
             "size approval quoted against the transfer figure understated actual disk use.",
-            archive_bytes=archive, extracted_bytes=extracted, total_bytes=total,
+            archive_bytes=archive, extracted_bytes=extracted, converted_bytes=conversions, total_bytes=total,
         )
         return
     report.add("DSK-1", stage, "Retained storage is accounted for", PASS,
-               f"The unit occupies {total / 1e9:.2f} GB.",
-               archive_bytes=archive, extracted_bytes=extracted, total_bytes=total)
+               f"The unit occupies {total / 1e9:.2f} GB"
+               + (f", {conversions / 1e9:.2f} GB of it mzML converted from mzXML" if conversions else "") + ".",
+               archive_bytes=archive, extracted_bytes=extracted, converted_bytes=conversions, total_bytes=total)
 
 
 # --------------------------------------------------------------------------------------------
@@ -5762,6 +6128,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_preflight_claim(report, provenance, provenance_reason)
         check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_checksum_coverage(report, provenance, provenance_reason)
+        check_converted_inputs_are_their_conversions(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_class_distribution(report, csv_rows, csv_reason, "before-production")
         check_executed_class_matches_approved(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_class_proposal_was_accepted(report, provenance, provenance_reason)
@@ -5827,7 +6194,7 @@ COMPLETION_STAGES = (
     ("B1", "downloaded",
      "the raw owner's manifest lists its downloads, and every input is on disk or the raw tree was released "
      "by the confirmed cleanup (status raw_cleaned)",
-     ("SUM-1",)),
+     ("SUM-1", "CONV-1")),
     ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1")),
     ("B3", "class_settled",
      "a ratified Class proposal, or where the Catalog abstains a ratified abstention (accepted, confirmed or approved)",
