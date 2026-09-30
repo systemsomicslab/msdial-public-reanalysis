@@ -64,14 +64,15 @@ def _extractor(pin: dict | None = CURRENT_PIN, *, sha256: str = SHA, status: str
 
 
 def _crossing(boundary, *, unit: str = "unit", retention: str = "delete_after_validated_output",
-              entry_point: str = "msdial_cleanup_repository_raw") -> dict:
+              entry_point: str = "msdial_cleanup_repository_raw",
+              validated_at: str = "2026-10-01T00:00:00+00:00") -> dict:
     """A boundary crossing as campaign_authorization.validate returns it and the unit manifest keeps it."""
     return {
         "schema": "msdial-campaign-authorization.v1", "approval_id": APPROVAL, "campaign_id": "campaign",
         "manifest_digest": "sha256:" + "a" * 64, "authorization_path": "C:\\synthetic\\authorization.json",
         "authorization_sha256": "b" * 64, "raw_retention_policy": retention, "boundary": boundary,
         "unit_id": unit, "covered_as": "listed", "entry_point": entry_point,
-        "validated_at": "2026-10-01T00:00:00+00:00",
+        "validated_at": validated_at,
     }
 
 
@@ -110,10 +111,12 @@ def _ret1(workspace: Path):
 # ---------------------------------------------------------------------------------------------
 
 class ExtractorIdentityTests(unittest.TestCase):
-    def _gate(self, temporary: str, extractor: dict | None, **manifest):
+    def _gate(self, temporary: str, extractor: dict | None, *, started_at: str = "", **manifest):
         preflight = {"exit_code": 0, "summary": {"per_file": []}}
         if extractor is not None:
             preflight["extractor"] = extractor
+        if started_at:
+            preflight["started_at"] = started_at
         workspace = _unit(Path(temporary), raw_metadata_preflight=preflight, **manifest)
         return _check(verifier.verify(workspace, "before-production"), "PRE-2")
 
@@ -207,6 +210,61 @@ class ExtractorIdentityTests(unittest.TestCase):
     def test_pre2_judges_b2(self) -> None:
         judged = next(checks for code, _name, _meaning, checks in verifier.COMPLETION_STAGES if code == "B2")
         self.assertIn("PRE-2", judged)
+
+    # A unit is judged by whether a campaign acts on its read, as Interactive recorded when it decided the
+    # disposition, and not by the crossings it carries now.
+
+    UNRECORDED_BUILD = staticmethod(lambda: _extractor(CURRENT_PIN, status="absent", pinned=False))
+    READ_AT = "2026-09-20T00:00:00+00:00"
+    LATER = ("2026-10-01T00:00:00+00:00", "2026-10-01T00:05:00+00:00")
+
+    def test_a_unit_adopted_by_a_campaign_after_its_preflight_warns(self) -> None:
+        """MTBLS2207's shape: crossings 3 and 4 made after a read whose disposition was advice only."""
+        later = [_crossing(3, validated_at=self.LATER[0]), _crossing(4, validated_at=self.LATER[1])]
+        with tempfile.TemporaryDirectory() as temporary:
+            check = self._gate(temporary, self.UNRECORDED_BUILD(), started_at=self.READ_AT,
+                               campaign_authorizations=later,
+                               campaign_disposition={"schema": "msdial-campaign-disposition.v1",
+                                                     "disposition": "run", "applied": False})
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertFalse(check.evidence["under_campaign"])
+        self.assertEqual("disposition_advice", check.evidence["campaign_basis"])
+        self.assertEqual(["3", "4"], check.evidence["boundaries_crossed_after_preflight"])
+        self.assertIn("applied false", check.detail)
+        self.assertIn("crossed boundaries 3, 4", check.detail)
+
+    def test_a_disposition_a_campaign_applied_to_an_earlier_read_is_refused(self) -> None:
+        """classify_preflight applies a campaign's disposition to a read made before it: the campaign acts on it."""
+        later = [_crossing(3, validated_at=self.LATER[0])]
+        with tempfile.TemporaryDirectory() as temporary:
+            check = self._gate(temporary, self.UNRECORDED_BUILD(), started_at=self.READ_AT,
+                               campaign_authorizations=later,
+                               campaign_disposition={"disposition": "run", "applied": True,
+                                                     "campaign": {"approval_id": APPROVAL,
+                                                                  "basis": "authorization_recorded"}})
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual("disposition_applied", check.evidence["campaign_basis"])
+        self.assertIn(f"Campaign approval {APPROVAL} applied the disposition", check.detail)
+
+    def test_without_a_disposition_only_the_crossings_before_the_read_count(self) -> None:
+        """A split parent gets no disposition: its crossings are ordered against the preflight, as instants."""
+        cases = (
+            ("before", "2026-09-19T23:59:00+00:00", self.READ_AT, verifier.FAIL, "crossing_before_preflight"),
+            ("at the same instant", "2026-09-20T09:00:00+09:00", self.READ_AT, verifier.FAIL,
+             "crossing_before_preflight"),
+            ("after, with an offset", "2026-09-20T09:01:00+09:00", self.READ_AT, verifier.WARN,
+             "crossing_after_preflight"),
+            ("no start recorded", self.LATER[0], "", verifier.FAIL, "crossing_unordered"),
+        )
+        for name, validated_at, started_at, expected, basis in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                check = self._gate(temporary, self.UNRECORDED_BUILD(), started_at=started_at,
+                                   campaign_authorizations=[_crossing(4, validated_at=validated_at)])
+
+            self.assertEqual(expected, check.status, check.detail)
+            self.assertEqual(basis, check.evidence["campaign_basis"])
 
 
 def _pinned_builds(source: str) -> list[dict]:

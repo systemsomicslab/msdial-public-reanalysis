@@ -362,10 +362,59 @@ def _campaign_crossings(provenance: dict | None) -> list[dict]:
     return [item for item in crossings if isinstance(item, dict)] if isinstance(crossings, list) else []
 
 
-def _under_campaign(provenance: dict | None) -> bool:
+def _boundaries(crossings: list[dict]) -> str:
+    """"boundary 4", or "boundaries 3, 4": the boundaries these crossings were made at."""
+    named = list(dict.fromkeys(str(item.get("boundary")) for item in crossings))
+    return ("boundaries " if len(named) > 1 else "boundary ") + ", ".join(named)
+
+
+def _preflight_campaign(provenance: dict | None) -> dict:
+    """Whether a campaign acts on the raw-header preflight's verdicts, and on what record that rests.
+
+    Interactive states it itself, in campaign_disposition.applied, which it sets as it decides the
+    disposition: true when a campaign was in force (an approval passed, or one already recorded for the
+    unit or its split parent), false otherwise. It is also true for a read made before the campaign whose
+    disposition classify_preflight applied once the unit became a campaign unit: the campaign acts on
+    that read all the same. A unit preflighted outside a campaign and adopted by one later carries
+    applied false, and the crossings it gained afterwards say nothing about the read. Only a unit with
+    no disposition - a split parent, which gets none - is judged from its crossings, and then from those
+    validated at or before the preflight started; one whose order against the preflight is not recorded
+    counts, because nothing shows that the read came first.
+    """
     record = provenance if isinstance(provenance, dict) else {}
+    preflight = record.get("raw_metadata_preflight") if isinstance(record.get("raw_metadata_preflight"), dict) else {}
+    crossings = _campaign_crossings(record)
+    approvals = list(dict.fromkeys(str(item.get("approval_id") or "") for item in crossings))
     disposition = record.get("campaign_disposition")
-    return bool(_campaign_crossings(record)) or (isinstance(disposition, dict) and disposition.get("applied") is True)
+    if isinstance(disposition, dict) and isinstance(disposition.get("applied"), bool):
+        if disposition["applied"]:
+            campaign = disposition.get("campaign") if isinstance(disposition.get("campaign"), dict) else {}
+            approval = str(campaign.get("approval_id") or (approvals[0] if approvals else "")) or "unnamed"
+            return {"under": True, "basis": "disposition_applied", "later": [],
+                    "said": f"Campaign approval {approval} applied the disposition decided from these reads"}
+        return {"under": False, "basis": "disposition_advice", "later": crossings,
+                "said": "Interactive recorded the disposition decided from these reads as advice (applied false), "
+                        "so no campaign was in force when it was decided"}
+    started = _instant(preflight.get("started_at")) if preflight.get("started_at") else None
+    before, unordered, later = [], [], []
+    for item in crossings:
+        validated = _instant(item.get("validated_at")) if item.get("validated_at") else None
+        if started is None or validated is None:
+            unordered.append(item)
+        elif validated <= started:
+            before.append(item)
+        else:
+            later.append(item)
+    if before:
+        return {"under": True, "basis": "crossing_before_preflight", "later": later,
+                "said": f"Campaign approval {before[0].get('approval_id') or 'unnamed'} was recorded for the unit "
+                        f"({_boundaries(before)}) before this preflight started"}
+    if unordered:
+        return {"under": True, "basis": "crossing_unordered", "later": later,
+                "said": f"Campaign approval {unordered[0].get('approval_id') or 'unnamed'} is recorded for the unit "
+                        f"({_boundaries(unordered)}), and nothing records that this preflight came before it"}
+    return {"under": False, "basis": "crossing_after_preflight" if later else "no_campaign", "later": later,
+            "said": "No campaign approval was recorded for the unit when this preflight started"}
 
 
 def _recorded_extractor(provenance: dict | None) -> dict:
@@ -386,10 +435,13 @@ def check_extractor_identity(report: Report, provenance: dict | None, reason: st
 
     No sha256 is a legacy record: WARN. A record Interactive itself called stale or dirty names code that
     did not run: FAIL. A verified build of a pair EXTRACTOR_PINNED_BUILDS lists as built: PASS. Anything
-    else - no build record, or a pair not pinned - is a WARN outside a campaign and a FAIL inside one,
-    because Interactive refuses such an extractor to a campaign, so a campaign unit recording one ran
-    outside the rule. A pair Interactive recorded as pinned and this mirror does not list is a WARN: the
-    mirror may be behind Interactive, which is not a fact about the unit.
+    else - no build record, or a pair not pinned - is a WARN when the read was made outside a campaign and
+    a FAIL when a campaign acts on it, because Interactive refuses such an extractor to a campaign
+    preflight, so a campaign acting on one's verdicts is outside the rule. Whether a campaign acts on the
+    read is what the unit's disposition recorded when it was decided (_preflight_campaign), not whatever
+    crossings the unit carries now: a unit adopted by a campaign after its preflight did not have it read
+    under one. A pair Interactive recorded as pinned and this mirror does not list is a WARN: the mirror
+    may be behind Interactive, which is not a fact about the unit.
     """
     stage = "before-production"
     if provenance is None:
@@ -408,7 +460,7 @@ def check_extractor_identity(report: Report, provenance: dict | None, reason: st
     raw_commit = str(extractor.get("msrawdataworkbench_commit") or "").strip()
     common_commit = str(extractor.get("msdialworkbench_commit") or "").strip()
     pin = _extractor_pin(raw_commit, common_commit)
-    campaign = _under_campaign(provenance)
+    campaign = _preflight_campaign(provenance)
     # Checksums and commits only: the path is this machine's, and the gate's report may travel.
     evidence = {
         "sha256": sha256, "inventory_sha256": str(extractor.get("inventory_sha256") or ""),
@@ -416,7 +468,8 @@ def check_extractor_identity(report: Report, provenance: dict | None, reason: st
         "msdialworkbench_commit": common_commit, "recorded_pinned": extractor.get("pinned"),
         "recorded_pin_state": str(extractor.get("pin_state") or ""),
         "gate_pin_state": pin["state"] if pin else "", "pins_mirrored_from": EXTRACTOR_PINS_MIRRORED_FROM,
-        "under_campaign": campaign,
+        "under_campaign": campaign["under"], "campaign_basis": campaign["basis"],
+        "boundaries_crossed_after_preflight": [str(item.get("boundary")) for item in campaign["later"]],
     }
     if not sha256:
         report.add(
@@ -485,17 +538,22 @@ def check_extractor_identity(report: Report, provenance: dict | None, reason: st
     else:
         why = (f"identified by its checksum alone: its build record was {status or 'not recorded'}, so no source "
                "revision names it")
-    if campaign:
+    if campaign["under"]:
         report.add(
             "PRE-2", stage, PRE2_TITLE, FAIL,
-            f"The headers were read by extractor {sha256[:12]}, {why}. This unit ran under a campaign approval, and "
-            "a campaign runs only a verified build of a pinned pair; Interactive refuses any other, so this "
-            "preflight ran outside the rule." + tail, **evidence)
+            f"The headers were read by extractor {sha256[:12]}, {why}. {campaign['said']}. A campaign acts only on "
+            "the reads of a verified build of a pinned pair, and Interactive refuses any other extractor to a "
+            "campaign preflight, so these verdicts reached the campaign outside the rule." + tail, **evidence)
         return
+    adopted = ""
+    if campaign["later"]:
+        adopted = (f" {campaign['said']}; the unit crossed {_boundaries(campaign['later'])} under campaign "
+                   f"approval {campaign['later'][0].get('approval_id') or 'unnamed'} after it, and a crossing made "
+                   "after the read does not make it a campaign's read.")
     report.add(
         "PRE-2", stage, PRE2_TITLE, WARN,
         f"The headers were read by extractor {sha256[:12]}, {why}. Outside a campaign that is allowed, but its "
-        "verdicts are not tied to reviewed code." + tail, **evidence)
+        "verdicts are not tied to reviewed code." + adopted + tail, **evidence)
 
 
 def _raw_owner_manifest(provenance: dict | None) -> tuple[dict | None, str]:
