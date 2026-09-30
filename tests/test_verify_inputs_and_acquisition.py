@@ -140,6 +140,15 @@ def _extracted(path: str, method: str, *, windows: int = 0, energies: list | Non
     }
 
 
+def _disposition(excluded: list[dict], *, applied: bool = True, kind: str = "run",
+                 declared_vs_header: list[dict] | None = None) -> dict:
+    """campaign_disposition as Interactive's classify_preflight records it: applied only for a campaign unit."""
+    return {"schema": "msdial-campaign-disposition.v1", "disposition": kind, "reasons": [], "warnings": [],
+            "excluded_inputs": excluded, "split_key": None, "decided_at": "2026-09-30T12:00:00+09:00",
+            "extractor": {"sha256": "", "inventory_sha256": "", "provenance_status": "verified", "pinned": True},
+            "declared_vs_header": declared_vs_header or [], "detail": [], "applied": applied}
+
+
 # ---- CLS-2 -----------------------------------------------------------------------------------------
 
 
@@ -258,6 +267,7 @@ class DeclaredInputsTests(unittest.TestCase):
         self.assertTrue(check.required)
 
     def test_inputs_the_disposition_excluded_are_accounted_for(self) -> None:
+        """Excluded inputs that are no candidate; the shared contract's v1 shape, which does not say applied, binds."""
         with tempfile.TemporaryDirectory() as temporary:
             unit = Unit(temporary)
             unit.inputs([f"S{index}.raw" for index in range(10)])
@@ -289,6 +299,107 @@ class DeclaredInputsTests(unittest.TestCase):
 
         self.assertEqual(verifier.FAIL, check.status)
         self.assertIn("1 CSV row(s) name an input the campaign disposition excluded (IM0)", check.detail)
+
+    def test_an_input_excluded_among_the_candidates_is_no_row(self) -> None:
+        """THE SHAPE INTERACTIVE WRITES: classify_preflight excludes an input where it finds it, among the
+        candidates, and leaves it there; the CSV is the candidates less it. INP-1 and CNT-1 both refused it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = Unit(temporary)
+            paths = unit.inputs([f"S{index}.raw" for index in range(11)] + ["IM0.d"])
+            unit.manifest["project"]["analysis_inputs"] = _declared(12)
+            unit.manifest["campaign_disposition"] = _disposition(
+                [{"path": paths[-1], "reason": "ion_mobility_out_of_scope"}])
+            unit.csv(unit.rows()[:11])
+            report = verifier.verify(unit.write(), "before-production")
+
+        check = _check(report, "INP-1")
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(1, check.evidence["counts"]["excluded input_candidates"])
+        self.assertIn("less the 1 the campaign disposition excluded, are the 11 CSV rows", check.detail)
+        count = _check(report, "CNT-1")
+        self.assertEqual(verifier.PASS, count.status, count.detail)
+        self.assertEqual(["IM0.d"], count.evidence["excluded_input_candidates"])
+
+    def test_a_row_still_missing_beside_an_excluded_candidate_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = Unit(temporary)
+            paths = unit.inputs([f"S{index}.raw" for index in range(11)] + ["IM0.d"])
+            unit.manifest["project"]["analysis_inputs"] = _declared(12)
+            unit.manifest["campaign_disposition"] = _disposition(
+                [{"path": paths[-1], "reason": "ion_mobility_out_of_scope"}])
+            unit.csv(unit.rows()[:10])
+            report = verifier.verify(unit.write(), "before-production")
+
+        self.assertEqual(verifier.FAIL, _check(report, "INP-1").status)
+        self.assertIn("10 row(s) for 12 input candidate(s), 1 of them excluded", _check(report, "INP-1").detail)
+        self.assertEqual(verifier.FAIL, _check(report, "CNT-1").status)
+
+    def test_a_disposition_that_was_not_applied_excludes_nothing(self) -> None:
+        """A unit outside a campaign: classify_preflight records its disposition with applied false, and
+        Interactive's execution gate ignores it, so the CSV lists the input, and must."""
+        for rows, expected in ((12, verifier.PASS), (11, verifier.FAIL)):
+            with self.subTest(rows=rows), tempfile.TemporaryDirectory() as temporary:
+                unit = Unit(temporary)
+                paths = unit.inputs([f"S{index}.raw" for index in range(12)])
+                unit.manifest["project"]["analysis_inputs"] = _declared(12)
+                unit.manifest["campaign_disposition"] = _disposition(
+                    [{"path": paths[-1], "reason": "raw_header_unreadable"}], applied=False)
+                unit.csv(unit.rows()[:rows])
+                report = verifier.verify(unit.write(), "before-production")
+
+                self.assertEqual(expected, _check(report, "INP-1").status, _check(report, "INP-1").detail)
+                self.assertEqual(expected, _check(report, "CNT-1").status)
+
+    def _split_excluding(self, temporary: str, *, into_part: bool = False) -> tuple[Path, Path]:
+        """A parent of three folders and one ion-mobility input its applied split disposition excluded.
+
+        Interactive's plan_acquisition_split leaves the excluded input among the parent's candidates and puts
+        it in no part (split_excluded_inputs); into_part puts it in the first part all the same.
+        """
+        parent = Unit(temporary, "unit")
+        paths = parent.inputs(["S0.raw", "S1.raw", "S2.raw", "IM0.d"])
+        parent.manifest["project"]["analysis_inputs"] = _declared(3) + [
+            {"path": "IM0.d", "kind": "vendor_folder", "suffix": ".d", "format": "bruker", "member_count": 9}]
+        excluded = [{"path": paths[3], "reason": "ion_mobility_out_of_scope"}]
+        groups = [paths[:2] + (paths[3:] if into_part else []), paths[2:3]]
+        parent_manifest = parent.root / "provenance" / "run-manifest.json"
+        parent.manifest.update(
+            status="split_by_acquisition", execution_allowed=False, split_excluded_inputs=excluded,
+            campaign_disposition=_disposition(excluded, kind="split"),
+            split_into=[{"analysis_unit_id": f"unit-{mode}", "input_candidates": group}
+                        for mode, group in zip(("dda", "dia"), groups)])
+        parent.write()
+        workspaces = []
+        for mode, group in zip(("dda", "dia"), groups):
+            part = Unit(temporary, f"unit-{mode}")
+            part.manifest["project"] = dict(parent.manifest["project"], analysis_unit_id=f"unit-{mode}")
+            part.manifest.update(input_candidates=group, raw_directory=str(parent.root / "raw"),
+                                 raw_owned_by=str(parent_manifest),
+                                 split_from={"manifest_path": str(parent_manifest), "analysis_unit_id": "unit"})
+            part.csv([row for row in part.rows() if not row["file_path"].endswith("IM0.d")])
+            workspaces.append(part.write())
+        return workspaces[0], workspaces[1]
+
+    def test_an_input_the_parent_excluded_is_in_no_part(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            first, second = self._split_excluding(temporary)
+            reports = [verifier.verify(workspace, "before-production") for workspace in (first, second)]
+
+        for report in reports:
+            partition = _check(report, "SPL-1")
+            self.assertEqual(verifier.PASS, partition.status, partition.detail)
+            self.assertIn("holding the parent's 3 inputs exactly once, the 1 its campaign disposition excluded in none",
+                          partition.detail)
+            self.assertEqual(verifier.PASS, _check(report, "INP-1").status, _check(report, "INP-1").detail)
+            self.assertEqual(verifier.PASS, _check(report, "CNT-1").status, _check(report, "CNT-1").detail)
+
+    def test_a_part_that_holds_an_input_the_parent_excluded_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            first, _ = self._split_excluding(temporary, into_part=True)
+            check = _check(verifier.verify(first, "before-production"), "SPL-1")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("the parts hold 1 input(s) the parent's campaign disposition excluded (IM0.d)", check.detail)
 
     def _split(self, temporary: str, *, declared: int, own: int | None = None) -> Path:
         """A parent of three folders split into parts of two and one.

@@ -1235,7 +1235,8 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
 
     Each part can pass every other check on its own. What none of them can see is a file that went
     into two parts or into none; the parent's split_into and each part's input_candidates are the
-    two records that must agree.
+    two records that must agree. An input the parent's binding campaign disposition excluded stays
+    among the parent's candidates and goes into no part.
     """
     stage = "before-production"
     title = "A split part partitions its parent's inputs"
@@ -1251,7 +1252,10 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     own_id = str((provenance.get("project") or {}).get("analysis_unit_id") or "")
     parts = [item for item in parent.get("split_into") or [] if isinstance(item, dict)]
     own = next((item for item in parts if item.get("analysis_unit_id") == own_id), None)
-    parent_inputs = sorted(_path_key(item) for item in parent.get("input_candidates") or [])
+    excluded = {_path_key(item) for item in _excluded_inputs(parent)}
+    candidates = [_path_key(item) for item in parent.get("input_candidates") or []]
+    parent_inputs = sorted(item for item in candidates if item not in excluded)
+    left_out = len(candidates) - len(parent_inputs)
     claimed = sorted(_path_key(path) for item in parts for path in item.get("input_candidates") or [])
     own_inputs = sorted(_path_key(item) for item in provenance.get("input_candidates") or [])
     problems = []
@@ -1261,9 +1265,15 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
         problems.append(f"the parent's split_into does not name {own_id or 'this part'}")
     elif sorted(_path_key(item) for item in own.get("input_candidates") or []) != own_inputs:
         problems.append("this part's input_candidates differ from the parent's record of it")
+    held = {_path_key(path): Path(str(path).rstrip("\\/")).name for item in parts
+            for path in item.get("input_candidates") or [] if _path_key(path) in excluded}
+    if held:
+        problems.append(f"the parts hold {len(held)} input(s) the parent's campaign disposition excluded "
+                        f"({', '.join(list(held.values())[:5])})")
     if claimed != parent_inputs:
         problems.append(f"the parts hold {len(claimed)} inputs, {len(set(claimed))} distinct, "
-                        f"against the parent's {len(parent_inputs)}")
+                        f"against the parent's {len(parent_inputs)}"
+                        + (f" left when its campaign disposition excluded {left_out}" if left_out else ""))
     # The part reads its raw tree through raw_owned_by and raw_directory, which RET-1 and DSK-1
     # follow. They must name the same parent as split_from, or those checks judge another unit's disk.
     if not _same_path(provenance.get("raw_owned_by") or "", split_from.get("manifest_path") or ""):
@@ -1279,7 +1289,10 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
         return
     report.add("SPL-1", stage, title, PASS,
                f"{own_id} is one of {len(parts)} parts holding the parent's {len(parent_inputs)} "
-               "inputs exactly once.", parent=split_from.get("analysis_unit_id"), parts=len(parts))
+               "inputs exactly once"
+               + (f", the {left_out} its campaign disposition excluded in none" if left_out else "") + ".",
+               parent=split_from.get("analysis_unit_id"), parts=len(parts),
+               **({"excluded_inputs": left_out} if left_out else {}))
 
 
 # --------------------------------------------------------------------------------------------
@@ -1429,9 +1442,12 @@ def check_sample_count_invariant(
     counts: dict[str, int] = {}
     missing: list[str] = []
     run_level: list[str] = []
+    held: list[str] = []
 
     if provenance is not None and isinstance(provenance.get("input_candidates"), list):
-        counts["repository_manifest.input_candidates"] = len(provenance["input_candidates"])
+        # Less the candidates a campaign disposition excluded, which no stage after it runs (INP-1).
+        held = _excluded_candidates(provenance, provenance["input_candidates"])
+        counts["repository_manifest.input_candidates"] = len(provenance["input_candidates"]) - len(held)
     else:
         missing.append(provenance_reason or "the repository manifest has no input_candidates")
 
@@ -1458,25 +1474,29 @@ def check_sample_count_invariant(
             run_level = [Path(item).name for item in exports if item not in per_file]
             counts["run_manifest.expected_analysis_exports"] = len(per_file)
 
+    excluded = {"excluded_input_candidates": [Path(item.rstrip("\\/")).name for item in held[:10]]} if held else {}
+    less = f", the input candidates less the {len(held)} the campaign disposition excluded," if held else ""
     if len(counts) < 2:
         report.add("CNT-1", stage, "The approved sample count survived every stage", NOT_EVALUABLE,
                    "; ".join(missing) or "fewer than two independent counts are available",
-                   counts=counts)
+                   counts=counts, **excluded)
         return None
 
     distinct = set(counts.values())
     if len(distinct) == 1:
         value = distinct.pop()
         report.add("CNT-1", stage, "The approved sample count survived every stage", PASS,
-                   f"All {len(counts)} independent records agree on {value} samples.", counts=counts,
-                   run_level_exports=run_level)
+                   f"All {len(counts)} independent records{less} agree on {value} samples.", counts=counts,
+                   run_level_exports=run_level, **excluded)
         return value
 
     report.add(
         "CNT-1", stage, "The approved sample count survived every stage", FAIL,
         "Independent records of the same study disagree on how many samples it contains. Whichever "
-        "is right, at least one retained artifact describes a study that was not run.",
-        counts=counts, run_level_exports=run_level,
+        "is right, at least one retained artifact describes a study that was not run."
+        + (f" The input candidates are counted less the {len(held)} the campaign disposition excluded."
+           if held else ""),
+        counts=counts, run_level_exports=run_level, **excluded,
     )
     return None
 
@@ -1504,12 +1524,39 @@ def _declared_inputs(project: dict) -> tuple[list | None, str]:
     return inputs, ""
 
 
-def _excluded_inputs(manifest: dict) -> list[str]:
-    """The inputs a unit's campaign disposition excluded, by path."""
-    disposition = manifest.get("campaign_disposition")
-    excluded = disposition.get("excluded_inputs") if isinstance(disposition, dict) else None
-    return [str(item["path"]) for item in excluded if isinstance(item, dict) and str(item.get("path") or "").strip()
-            ] if isinstance(excluded, list) else []
+def _binding_disposition(manifest: dict | None) -> dict:
+    """A unit's campaign disposition where it binds the run, else {}.
+
+    Interactive's classify_preflight records a disposition for every preflighted unit and applies it
+    only to a campaign unit, saying which (applied); its execution gate ignores one that was not
+    applied, and so does this. A disposition that does not say, as the shared contract's v1 shape
+    does not, binds.
+    """
+    disposition = (manifest or {}).get("campaign_disposition")
+    return disposition if isinstance(disposition, dict) and disposition.get("applied") is not False else {}
+
+
+def _excluded_inputs(manifest: dict | None) -> list[str]:
+    """The inputs a unit's binding campaign disposition excluded, by path, each once."""
+    excluded = _binding_disposition(manifest).get("excluded_inputs")
+    paths = {_path_key(item["path"]): str(item["path"]) for item in excluded
+             if isinstance(item, dict) and str(item.get("path") or "").strip()} if isinstance(excluded, list) else {}
+    return list(paths.values())
+
+
+def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
+    """The input candidates a campaign disposition excluded: the unit's own, and a split part's parent's.
+
+    Interactive leaves an excluded input among the input candidates, where the disposition found it,
+    and keeps it out of the analysis CSV and out of every split part. So the CSV holds the candidates
+    less these; an excluded input that is no candidate takes nothing from them.
+    """
+    manifests = [provenance]
+    if isinstance(provenance.get("split_from"), dict):
+        parent, _ = _raw_owner_manifest(provenance)
+        manifests.append(parent)
+    keys = {_path_key(item) for manifest in manifests for item in _excluded_inputs(manifest)}
+    return [str(item) for item in candidates if _path_key(item) in keys]
 
 
 def check_analysis_inputs_are_the_inputs(
@@ -1528,11 +1575,17 @@ def check_analysis_inputs_are_the_inputs(
     accession archive, or that publishes only converted files, finds its inputs after the download,
     and a manifest written before the Catalog declared them has nothing to compare.
 
-    An input the campaign disposition excluded (excluded_inputs, with its reason) was declared, may be
-    no candidate, and is never a CSV row. A split part's project is its parent's with, where the split
-    carries them, only the part's own samples' inputs: the parent's declaration is compared with the
-    parent's candidates, a declaration of the part's own with the part's candidates, and the part's
-    candidates with its rows. SPL-1 holds that the parts partition the parent.
+    An input a binding campaign disposition excluded (excluded_inputs, with its reason) was declared
+    and is never a CSV row. Interactive leaves it among the input candidates, where the disposition
+    found it, so the declaration is the candidates and the rows are the candidates less the excluded;
+    an excluded input that is no candidate is counted beside the candidates instead. A disposition
+    Interactive recorded without applying it (applied: false, a unit outside a campaign) excludes
+    nothing, as its execution gate reads it.
+
+    A split part's project is its parent's with, where the split carries them, only the part's own
+    samples' inputs: the parent's declaration is compared with the parent's candidates, a declaration
+    of the part's own with the part's candidates, and the part's candidates with its rows. SPL-1 holds
+    that the parts partition the parent.
     """
     stage = "before-production"
     if provenance is None:
@@ -1565,62 +1618,73 @@ def check_analysis_inputs_are_the_inputs(
         report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE, csv_reason)
         return
 
-    def excluded_beside(manifest: dict, candidates: list) -> tuple[list[str], set[str]]:
-        """The inputs a disposition excluded that are not among the candidates, and every excluded key."""
-        excluded = _excluded_inputs(manifest)
+    def beside(excluded: list[str], candidates: list) -> list[str]:
+        """The excluded inputs that are not among the candidates."""
         keys = {_path_key(item) for item in candidates}
-        return [item for item in excluded if _path_key(item) not in keys], {_path_key(item) for item in excluded}
+        return [item for item in excluded if _path_key(item) not in keys]
 
-    excluded, excluded_keys = excluded_beside(owner, owner_candidates)
+    owner_excluded = _excluded_inputs(owner)
+    own_excluded = _excluded_inputs(provenance) if split else owner_excluded
+    excluded_keys = {_path_key(item) for item in owner_excluded + own_excluded}
+    outside = beside(owner_excluded, owner_candidates)
     # A part that carries a declaration of its own samples' inputs: a list other than its parent's.
     own_list = split and own_declared is not None and own_declared != declared
-    own_excluded, own_excluded_keys = excluded_beside(provenance, own_candidates) if own_list else ([], set())
+    own_outside = beside(own_excluded, own_candidates) if own_list else []
+    # The candidates the CSV leaves out: the disposition found them there and excluded them.
+    held = _excluded_candidates(provenance, own_candidates)
     counts = {"analysis_inputs": len(declared or []), "input_candidates": len(own_candidates),
               "analysis_files.csv rows": len(csv_rows)}
     if split:
         counts["parent input_candidates"] = len(owner_candidates)
     if own_list:
         counts["part analysis_inputs"] = len(own_declared)
-    if excluded or own_excluded:
-        counts["excluded_inputs"] = len(excluded) + len(own_excluded)
+    if excluded_keys:
+        counts["excluded_inputs"] = len(excluded_keys)
+    if held:
+        counts["excluded input_candidates"] = len(held)
     # A part's own list is its parent's cut to its samples, so a count it carries is the parent's.
     problems = [contradiction] if contradiction else []
-    if declared is not None and len(declared) != len(owner_candidates) + len(excluded):
+    if declared is not None and len(declared) != len(owner_candidates) + len(outside):
         problems.append(
             f"the Catalog declared {len(declared)} analysis input(s) and the lease found {len(owner_candidates)} "
             "input candidate(s)" + (" in the parent" if split else "")
-            + (f", with {len(excluded)} more excluded" if excluded else ""))
-    if own_list and len(own_declared) != len(own_candidates) + len(own_excluded):
+            + (f", with {len(outside)} more excluded" if outside else ""))
+    if own_list and len(own_declared) != len(own_candidates) + len(own_outside):
         problems.append(
             f"the part declares {len(own_declared)} analysis input(s) of its own samples and holds "
             f"{len(own_candidates)} input candidate(s)"
-            + (f", with {len(own_excluded)} more excluded" if own_excluded else ""))
-    if len(own_candidates) != len(csv_rows):
-        problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)")
+            + (f", with {len(own_outside)} more excluded" if own_outside else ""))
+    if len(own_candidates) - len(held) != len(csv_rows):
+        problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
+                        + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))
     aliases = _input_keys_by_console_path(provenance)
     listed_excluded = [str(row.get("file_name") or "") or Path(str(row.get("file_path") or "")).name
-                       for row in csv_rows if _input_key(row, aliases) in excluded_keys | own_excluded_keys]
+                       for row in csv_rows if _input_key(row, aliases) in excluded_keys]
     if listed_excluded:
         problems.append(f"{len(listed_excluded)} CSV row(s) name an input the campaign disposition excluded "
                         f"({', '.join(listed_excluded[:5])})")
+    excluded_names = [Path(item.rstrip("\\/")).name for item in dict.fromkeys(owner_excluded + own_excluded)][:10]
     if problems:
         report.add("INP-1", stage, INP1_TITLE, FAIL,
                    "What MS-DIAL will open is not what the Catalog declared it opens: " + "; ".join(problems)
                    + ". A vendor folder read as its member files, or a sample dropped on the way, looks like this.",
-                   counts=counts, excluded=[Path(item).name for item in (excluded + own_excluded)[:10]])
+                   counts=counts, excluded=excluded_names)
         return
+    less = f", less the {len(held)} the campaign disposition excluded," if held else ""
     if split:
         detail = ((f"The parent declared {len(declared)} analysis input(s), which are its {len(owner_candidates)} "
-                   "input candidates; " if declared is not None else "")
+                   "input candidates" + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
+                   + "; " if declared is not None else "")
                   + (f"this part declares {len(own_declared)} of its own samples'; " if own_list else "")
-                  + f"this part's {len(own_candidates)} input candidates are its {len(csv_rows)} CSV rows.")
+                  + f"this part's {len(own_candidates)} input candidates{less} are its {len(csv_rows)} CSV rows.")
+    elif held or outside:
+        detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates"
+                  + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
+                  + f"; the candidates{less} are the {len(csv_rows)} CSV rows.")
     else:
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates "
                   f"and the {len(csv_rows)} CSV rows.")
-    report.add("INP-1", stage, INP1_TITLE, PASS,
-               detail + (f" {len(excluded) + len(own_excluded)} declared input(s) were excluded by the campaign "
-                         "disposition." if excluded or own_excluded else ""),
-               counts=counts)
+    report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names)
 
 
 def check_expected_exports_present(
