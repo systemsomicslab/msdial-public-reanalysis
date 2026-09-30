@@ -1286,18 +1286,43 @@ def _conversion_records(owner: dict) -> tuple[list | None, str]:
     return records, ""
 
 
-def _declared_polarity(project: object) -> str:
-    """The unit's declared ion mode as the converter's imputation names it, or "" where it names neither."""
-    mode = str(project.get("ion_mode") or "").strip().casefold() if isinstance(project, dict) else ""
-    return "positive" if mode.startswith("pos") else "negative" if mode.startswith("neg") else ""
+def _declared_ion_mode(owner: dict) -> tuple[str, str, str]:
+    """The ion mode the raw owner declared: its polarity as the converter's imputation names it ("" where
+    it names neither), the declared value ("" where none survives), and where it was read, or why none is.
+
+    The converter imputes the unit's declared ion mode, so that is what an imputation is held to, never
+    project.ion_mode as it stands: the raw-header preflight rewrites that from the headers, and a
+    converted input's headers carry the polarity its conversion imputed. The Catalog handoff's
+    technical settings, which nothing rewrites, keep the declaration; project.ion_mode stands for it
+    only where no preflight is recorded. The raw owner converted every part's files, so a split part's
+    own ion mode is no declaration either.
+    """
+    project = owner.get("project") if isinstance(owner.get("project"), dict) else {}
+    metadata = project.get("repository_metadata")
+    handoff = metadata.get("catalog_handoff") if isinstance(metadata, dict) else None
+    settings = handoff.get("technical_settings") if isinstance(handoff, dict) else None
+    preflight = owner.get("raw_metadata_preflight")
+    if isinstance(settings, dict) and str(settings.get("ion_mode") or "").strip():
+        mode, source = str(settings["ion_mode"]).strip(), "the Catalog handoff's technical settings"
+    elif isinstance(preflight, dict) and preflight:
+        return "", "", ("no Catalog handoff gives one, and the raw-header preflight rewrote the project record's "
+                        "from the headers, which carry what was imputed")
+    elif str(project.get("ion_mode") or "").strip():
+        mode, source = (str(project["ion_mode"]).strip(),
+                        "the project record, which no raw-header preflight has rewritten")
+    else:
+        return "", "", "neither a Catalog handoff nor the project record gives one"
+    folded = mode.casefold()
+    return ("positive" if folded.startswith("pos") else "negative" if folded.startswith("neg") else ""), mode, source
 
 
 def _conversion_problems(record: dict, raw_roots: list[str], moved: "tuple[str, Path] | None", raw_present: bool,
-                         polarity: str, tally: Counter) -> list[str]:
+                         declared: tuple[str, str, str], declarer: str, tally: Counter) -> list[str]:
     """What stands against one completed conversion record, adding what it did to the tally.
 
     ``raw_roots`` are the raw tree as the raw owner's manifest records it and where it is now; ``moved``
-    maps the first onto the second where the workspace moved since the record was written.
+    maps the first onto the second where the workspace moved since the record was written. ``declared``
+    is the raw owner's ion mode as _declared_ion_mode reads it, and ``declarer`` names that unit.
     """
     if record.get("schema") != CONVERSION_RECORD_SCHEMA:
         return [f"its record is not an {CONVERSION_RECORD_SCHEMA} record, the one the gate reads"]
@@ -1371,10 +1396,21 @@ def _conversion_problems(record: dict, raw_roots: list[str], moved: "tuple[str, 
                             "spectrum whose polarity is not the method's ion mode")
         elif absent is not None and absent != imputed:
             problems.append(f"{absent} of its mzXML scans record no polarity, and its record imputes one to {imputed}")
+    # The converter imputes only what it is asked to, and its caller asks for the unit's declared ion mode.
+    polarity, mode, source = declared
+    options = record.get("options") if isinstance(record.get("options"), dict) else {}
+    asked = str(options.get("impute_polarity") or "").strip().casefold()
     for item in imputations:
         value = str(item.get("value") or "").strip().casefold()
-        if polarity and value != polarity:
-            problems.append(f"it imputes {value or 'no'} polarity where the unit's declared ion mode is {polarity}")
+        if value != asked:
+            problems.append(f"it imputes {value or 'no'} polarity where its record's options asked for "
+                            + (f"{asked} polarity" if asked else "no imputation"))
+        if not polarity:
+            problems.append(f"it imputes {value or 'no'} polarity where {declarer} declares no single ion mode ("
+                            + (f"{mode}, from {source})" if mode else f"{source})"))
+        elif value != polarity:
+            problems.append(f"it imputes {value or 'no'} polarity where {declarer}'s declared ion mode is {polarity} "
+                            f"(from {source})")
     tally["imputed"] += imputed
     return problems
 
@@ -1395,8 +1431,10 @@ def check_converted_inputs_are_their_conversions(
       recorded when it was written; one absent while the raw tree is present is a FAIL;
     - it names its converter: name, version and the sha256 of the converter's module;
     - its validation against the mzXML passed, with no problem, over every spectrum it wrote;
-    - no spectrum is left without a polarity unless one was imputed, and an imputation is the unit's
-      declared ion mode.
+    - no spectrum is left without a polarity unless one was imputed, and an imputation is what the
+      record's options asked for and the ion mode its raw owner declared: in the Catalog handoff, or in
+      the project record where no raw-header preflight has rewritten it from the headers the imputation
+      wrote. Where no single ion mode is declared, an imputation is a FAIL.
 
     And for the unit: no input candidate and no analysis-CSV row is an mzXML or mzData file, and every
     input in the raw tree's converted directory is the output of a record. A record whose conversion
@@ -1445,7 +1483,9 @@ def check_converted_inputs_are_their_conversions(
     if by_output and not raw_roots:
         problems.append("the raw owner's manifest names no raw_directory, so where each output lies cannot be told")
     judged = {key: items for key, items in by_output.items() if not split or key in inputs}
-    polarity = _declared_polarity(provenance.get("project"))
+    # The raw owner converted every part's files, with the ion mode it declared.
+    declared = _declared_ion_mode(owner)
+    declarer = "the parent unit" if split else "the unit"
     tally: Counter = Counter()
     inferences: Counter = Counter()
     deviations: Counter = Counter()
@@ -1467,7 +1507,7 @@ def check_converted_inputs_are_their_conversions(
         tally["converted"] += 1
         tally["inputs"] += int(key in inputs)
         problems.extend(f"{name}: {item}" for item in
-                        _conversion_problems(record, raw_roots, moved, raw_present, polarity, tally))
+                        _conversion_problems(record, raw_roots, moved, raw_present, declared, declarer, tally))
         for field_name, counter in (("inferences", inferences), ("deviations", deviations)):
             listed = record.get(field_name)
             if isinstance(listed, list):
@@ -1498,6 +1538,7 @@ def check_converted_inputs_are_their_conversions(
         "records": len(records or []), "judged": len(judged), "converted": tally["converted"], "failed": len(failed),
         "rehashed": tally["rehashed"], "released_with_raw_tree": tally["released"],
         "spectra_validated": tally["spectra"], "imputed_polarity_spectra": tally["imputed"],
+        "declared_ion_mode": declared[1] or None,
         "inferences": dict(inferences), "deviations": dict(deviations),
         "converted_inputs": tally["inputs"], "unreadable_candidates_excluded": set_aside,
         "input_candidates": len(candidates) if candidates is not None else None,
@@ -1530,7 +1571,8 @@ def check_converted_inputs_are_their_conversions(
                      if tally["converted"] > tally["inputs"] else "")
                   + f": each conversion lies in the raw tree ({kept}), names its converter, and passed its validation "
                   f"against the mzXML over all {tally['spectra']} spectra it wrote, none left without a polarity"
-                  + (f" ({tally['imputed']} by imputing the declared ion mode)" if tally["imputed"] else "")
+                  + (f" ({tally['imputed']} by imputing {declared[0]} polarity, {declarer}'s declared ion mode "
+                     f"from {declared[2]})" if tally["imputed"] else "")
                   + (f", recording {', '.join(named)}" if named else "")
                   + ". No input MS-DIAL opens and no CSV row is an mzXML or mzData file.")
     else:

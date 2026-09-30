@@ -298,6 +298,46 @@ def _scan_without_polarity(record: dict, *, imputed: bool = False, value: str = 
     })
 
 
+def _declare(manifest: dict, *, handoff: str | None = None, project: str | None = None,
+             preflight: bool = False) -> None:
+    """The ion mode as Interactive records it: the Catalog handoff's technical settings, which nothing
+    rewrites, the project's ion_mode, and the block a raw-header preflight writes once it has rewritten
+    that ion_mode from the headers (a converted input's headers carry what its conversion imputed)."""
+    if handoff is not None:
+        manifest["project"]["repository_metadata"] = {"catalog_handoff": {
+            "schema": "msdial-repository-reanalysis-handoff.v1",
+            "technical_settings": {"separation": "LC-MS", "ion_mode": handoff, "acquisition_mode": "DDA"}}}
+    if project is not None:
+        manifest["project"]["ion_mode"] = project
+    if preflight:
+        manifest["raw_metadata_preflight"] = {
+            "exit_code": 0, "summary": {"files_inspected": 1, "acquisition_mode": "DDA",
+                                        "ion_mode": manifest["project"].get("ion_mode", "Unknown"), "per_file": []}}
+
+
+def _part(temporary: str, parent_manifest: Path, own: dict, ion_mode: str | None = None) -> Path:
+    """A part split from the unit at ``parent_manifest``, holding the one input ``own``, with its CSV."""
+    part = Path(temporary) / "part"
+    (part / "provenance").mkdir(parents=True)
+    (part / "output").mkdir()
+    project = {"analysis_unit_id": "part", "repository": "metabolomics_workbench"}
+    if ion_mode is not None:
+        project["ion_mode"] = ion_mode
+    (part / "provenance" / "run-manifest.json").write_text(json.dumps({
+        "schema": "msdial-public-reanalysis-run.v1",
+        "project": project,
+        "split_from": {"manifest_path": str(parent_manifest), "analysis_unit_id": "unit"},
+        "raw_owned_by": str(parent_manifest), "raw_directory": str(parent_manifest.parent.parent / "raw"),
+        "input_candidates": [own["path"]],
+        "input_lineage": {"schema": lineage.LINEAGE_SCHEMA, "rows": [own]},
+    }), encoding="utf-8")
+    with (part / "output" / "analysis_files.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(CSV_COLUMNS)
+        writer.writerow((own["path"], "S1", "Sample", "A", "DDA", 1, 1, 1))
+    return part
+
+
 class PolarityTests(unittest.TestCase):
     def test_a_spectrum_left_without_a_polarity_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -318,7 +358,9 @@ class PolarityTests(unittest.TestCase):
         self.assertEqual(verifier.PASS, check.status, check.detail)
         self.assertEqual(1, check.evidence["imputed_polarity_spectra"])
         self.assertEqual({"polarity_imputation": 1}, check.evidence["inferences"])
-        self.assertIn("none left without a polarity (1 by imputing the declared ion mode)", check.detail)
+        self.assertEqual("Negative", check.evidence["declared_ion_mode"])
+        self.assertIn("none left without a polarity (1 by imputing negative polarity, the unit's declared ion mode "
+                      "from the project record, which no raw-header preflight has rewritten)", check.detail)
 
     def test_an_imputation_that_leaves_a_scan_unaccounted_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -339,6 +381,94 @@ class PolarityTests(unittest.TestCase):
 
         self.assertEqual(verifier.FAIL, check.status)
         self.assertIn("imputes positive polarity where the unit's declared ion mode is negative", check.detail)
+
+    def test_an_imputation_is_held_to_the_handoff_not_to_the_project_the_preflight_rewrote(self) -> None:
+        """The preflight read the imputed cvParam back from the mzML and rewrote project.ion_mode with it."""
+        for rewritten, value, expected in (("Positive", "positive", verifier.FAIL),
+                                           ("Both", "positive", verifier.FAIL), ("Both", "negative", verifier.PASS)):
+            with self.subTest(rewritten=rewritten, value=value), tempfile.TemporaryDirectory() as temporary:
+                unit, _row, record = _downloaded_conversion(temporary)
+                _declare(unit.manifest, handoff="Negative", project=rewritten, preflight=True)
+                _scan_without_polarity(record, imputed=True, value=value)
+                check = _conv1(unit)
+
+                self.assertEqual(expected, check.status, check.detail)
+                self.assertEqual("Negative", check.evidence["declared_ion_mode"])
+                if expected == verifier.FAIL:
+                    self.assertIn("S1.mzML: it imputes positive polarity where the unit's declared ion mode is "
+                                  "negative (from the Catalog handoff's technical settings)", check.detail)
+                else:
+                    self.assertIn("(1 by imputing negative polarity, the unit's declared ion mode from the Catalog "
+                                  "handoff's technical settings)", check.detail)
+
+    def test_an_imputation_where_no_single_ion_mode_is_declared_is_refused(self) -> None:
+        """The converter's caller imputes the declared ion mode; with none, or Both, there is nothing to impute."""
+        cases = (
+            ({}, "the unit declares no single ion mode (neither a Catalog handoff nor the project record gives one)"),
+            ({"project": "Both"}, "the unit declares no single ion mode (Both, from the project record, which no "
+                                  "raw-header preflight has rewritten)"),
+            ({"handoff": "Both", "project": "Negative", "preflight": True},
+             "the unit declares no single ion mode (Both, from the Catalog handoff's technical settings)"),
+            ({"handoff": "Unknown"}, "the unit declares no single ion mode (Unknown, from the Catalog handoff's "
+                                     "technical settings)"),
+            # Without a handoff, a preflight leaves no declaration: the ion mode it wrote is the headers'.
+            ({"project": "Negative", "preflight": True},
+             "the unit declares no single ion mode (no Catalog handoff gives one, and the raw-header preflight "
+             "rewrote the project record's from the headers, which carry what was imputed)"),
+        )
+        for declared, expected in cases:
+            with self.subTest(**declared), tempfile.TemporaryDirectory() as temporary:
+                unit, _row, record = _downloaded_conversion(temporary)
+                _declare(unit.manifest, **declared)
+                _scan_without_polarity(record, imputed=True)
+                check = _conv1(unit)
+
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(f"S1.mzML: it imputes negative polarity where {expected}", check.detail)
+
+    def test_an_imputation_other_than_its_options_asked_for_is_refused(self) -> None:
+        for asked, expected in ((None, "asked for no imputation"), ("positive", "asked for positive polarity")):
+            with self.subTest(asked=asked), tempfile.TemporaryDirectory() as temporary:
+                unit, _row, record = _downloaded_conversion(temporary)
+                _declare(unit.manifest, handoff="Negative")
+                _scan_without_polarity(record, imputed=True)
+                record["options"]["impute_polarity"] = asked
+                check = _conv1(unit)
+
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(f"it imputes negative polarity where its record's options {expected}", check.detail)
+                self.assertNotIn("declared ion mode is", check.detail)
+
+    def test_a_split_part_is_held_to_its_parents_declaration(self) -> None:
+        """The parent converted the part's file with the ion mode it declared; the part's own ion mode, set
+        from the headers after that, is no declaration."""
+        cases = (
+            # parent handoff, parent project, part project, imputed, status, text
+            ("Both", "Both", "Positive", "positive", verifier.FAIL,
+             "it imputes positive polarity where the parent unit declares no single ion mode (Both, from the "
+             "Catalog handoff's technical settings)"),
+            ("Negative", "Both", "Positive", "positive", verifier.FAIL,
+             "it imputes positive polarity where the parent unit's declared ion mode is negative (from the Catalog "
+             "handoff's technical settings)"),
+            ("Negative", "Both", "Positive", "negative", verifier.PASS,
+             "(1 by imputing negative polarity, the parent unit's declared ion mode from the Catalog handoff's "
+             "technical settings)"),
+            (None, "Both", "Positive", "positive", verifier.FAIL,
+             "it imputes positive polarity where the parent unit declares no single ion mode (no Catalog handoff "
+             "gives one"),
+        )
+        for handoff, parent_mode, part_mode, value, status, text in cases:
+            with self.subTest(handoff=handoff, value=value), tempfile.TemporaryDirectory() as temporary:
+                parent = lineage.LineageUnit(temporary)
+                _declare(parent.manifest, handoff=handoff, project=parent_mode, preflight=True)
+                download = parent.download("S1.mzXML", b"<mzXML>S1</mzXML>")
+                own, record = parent.converted_input(Path(download["path"]))
+                _scan_without_polarity(record, imputed=True, value=value)
+                part = _part(temporary, parent.write() / "provenance" / "run-manifest.json", own, part_mode)
+                check = lineage._check(verifier.verify(part, "before-production"), "CONV-1")
+
+                self.assertEqual(status, check.status, check.detail)
+                self.assertIn(text, check.detail)
 
     def test_a_record_without_polarity_counts_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -421,23 +551,7 @@ class RecordAccountingTests(unittest.TestCase):
                     download = parent.download(f"{name}.mzXML", f"<mzXML>{name}</mzXML>".encode())
                     rows[name] = parent.converted_input(Path(download["path"]))
                 rows[broken][1]["validation"]["status"] = "failed"
-                parent_manifest = parent.write() / "provenance" / "run-manifest.json"
-                part = Path(temporary) / "part"
-                (part / "provenance").mkdir(parents=True)
-                (part / "output").mkdir()
-                own = rows["S1"][0]
-                (part / "provenance" / "run-manifest.json").write_text(json.dumps({
-                    "schema": "msdial-public-reanalysis-run.v1",
-                    "project": {"analysis_unit_id": "part", "repository": "metabolomics_workbench"},
-                    "split_from": {"manifest_path": str(parent_manifest), "analysis_unit_id": "unit"},
-                    "raw_owned_by": str(parent_manifest), "raw_directory": str(parent.root / "raw"),
-                    "input_candidates": [own["path"]],
-                    "input_lineage": {"schema": lineage.LINEAGE_SCHEMA, "rows": [own]},
-                }), encoding="utf-8")
-                with (part / "output" / "analysis_files.csv").open("w", encoding="utf-8", newline="") as handle:
-                    writer = csv.writer(handle)
-                    writer.writerow(CSV_COLUMNS)
-                    writer.writerow((own["path"], "S1", "Sample", "A", "DDA", 1, 1, 1))
+                part = _part(temporary, parent.write() / "provenance" / "run-manifest.json", rows["S1"][0])
                 check = lineage._check(verifier.verify(part, "before-production"), "CONV-1")
 
                 self.assertEqual(expected, check.status, check.detail)
