@@ -1,4 +1,4 @@
-"""CONV-1: an input converted from mzXML is the recorded, validated conversion.
+"""CONV-1: an input converted from mzXML is the recorded, validated conversion, and DSK-1 counts it.
 
 MS-DIAL opens neither mzXML nor mzData. Interactive's mzxml_conversion.py (0.5.11) writes a sample
 whose only readable encoding is mzXML as mzML under raw/converted, re-reads what it wrote and compares
@@ -463,6 +463,41 @@ class UnevaluableTests(unittest.TestCase):
 
         self.assertEqual(verifier.NOT_EVALUABLE, check.status)
         self.assertIn("analysis_files.csv is absent", check.detail)
+
+
+# ---------------------------------------------------------------------------------------------
+# DSK-1
+# ---------------------------------------------------------------------------------------------
+
+class ConvertedStorageTests(unittest.TestCase):
+    def test_the_converted_directory_is_counted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _row, record = _downloaded_conversion(temporary)
+            check = lineage._check(unit.gate("before-publish"), "DSK-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(record["output"]["bytes"], check.evidence["converted_bytes"])
+        self.assertEqual(check.evidence["extracted_bytes"] + record["output"]["bytes"], check.evidence["total_bytes"])
+        self.assertIn("of it mzML converted from mzXML", check.detail)
+
+    def test_a_raw_tree_holding_only_conversions_is_not_released(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _row, record = _downloaded_conversion(temporary)
+            shutil.rmtree(unit.data)
+            check = lineage._check(unit.gate("before-publish"), "DSK-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(record["output"]["bytes"], check.evidence["total_bytes"])
+
+    def test_an_archive_beside_its_extraction_still_warns_and_names_the_conversions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = lineage.LineageUnit(temporary)
+            unit.archive("ST000003.zip", {"ST000003/S1.mzXML": b"<mzXML/>"})
+            unit.converted_input(unit.data / "ST000003" / "S1.mzXML")
+            check = lineage._check(unit.gate("before-publish"), "DSK-1")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("GB of mzML converted from mzXML", check.detail)
 
 
 if __name__ == "__main__":

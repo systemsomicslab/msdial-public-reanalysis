@@ -4439,7 +4439,9 @@ def check_storage_shape(report: Report, workspace: Path, stage: str,
         return
     downloads = workspace / "raw" / "downloads"
     data = workspace / "raw" / "data"
-    if not downloads.exists() and not data.exists():
+    # The mzML written from mzXML (CONV-1) lies beside the data and is released with it.
+    converted = workspace / "raw" / CONVERTED_DIRECTORY
+    if not downloads.exists() and not data.exists() and not converted.exists():
         # Not required: a released raw tree is the intended end state under the campaign's
         # delete-after-validated-output policy, so its absence is a result, not a gap.
         report.add("DSK-1", stage, "Retained storage is accounted for", NOT_EVALUABLE,
@@ -4448,19 +4450,22 @@ def check_storage_shape(report: Report, workspace: Path, stage: str,
         return
     archive = _tree_bytes(downloads) if downloads.exists() else 0
     extracted = _tree_bytes(data) if data.exists() else 0
-    total = archive + extracted
+    conversions = _tree_bytes(converted) if converted.exists() else 0
+    total = archive + extracted + conversions
     if archive and extracted:
         report.add(
             "DSK-1", stage, "Retained storage is accounted for", WARN,
             "The downloaded archive and its extraction are both retained, so the unit occupies "
-            f"{total / 1e9:.2f} GB for {max(archive, extracted) / 1e9:.2f} GB of unique data. A "
+            f"{total / 1e9:.2f} GB for {max(archive, extracted) / 1e9:.2f} GB of unique data"
+            + (f" and {conversions / 1e9:.2f} GB of mzML converted from mzXML" if conversions else "") + ". A "
             "size approval quoted against the transfer figure understated actual disk use.",
-            archive_bytes=archive, extracted_bytes=extracted, total_bytes=total,
+            archive_bytes=archive, extracted_bytes=extracted, converted_bytes=conversions, total_bytes=total,
         )
         return
     report.add("DSK-1", stage, "Retained storage is accounted for", PASS,
-               f"The unit occupies {total / 1e9:.2f} GB.",
-               archive_bytes=archive, extracted_bytes=extracted, total_bytes=total)
+               f"The unit occupies {total / 1e9:.2f} GB"
+               + (f", {conversions / 1e9:.2f} GB of it mzML converted from mzXML" if conversions else "") + ".",
+               archive_bytes=archive, extracted_bytes=extracted, converted_bytes=conversions, total_bytes=total)
 
 
 # --------------------------------------------------------------------------------------------
