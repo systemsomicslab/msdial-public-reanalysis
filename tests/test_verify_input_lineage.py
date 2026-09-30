@@ -168,21 +168,40 @@ class LineageUnit:
 
     def converted_input(self, source: Path, *, source_sha256: str | None = None, status: str = "converted",
                         source_row: dict | None = None) -> tuple[dict, dict]:
-        """source converted to raw/converted/<stem>.mzML, recorded as convert_mzxml_to_mzml records it."""
+        """source converted to raw/converted/<stem>.mzML, recorded as convert_mzxml_to_mzml records it.
+
+        Two spectra, an MS1 and an MS2, each recording negative polarity. A conversion that did not
+        complete leaves none of its output behind.
+        """
         output = self.root / "raw" / "converted" / (source.stem + ".mzML")
         output.parent.mkdir(parents=True, exist_ok=True)
         written = b"<mzML/>" + source.name.encode()
-        output.write_bytes(written)
+        if status == "converted":
+            output.write_bytes(written)
         read = source.read_bytes()
         record = {
             "schema": "msdial-mzxml-conversion.v1",
             "status": status,
             "error": None if status == "converted" else "ConversionError: truncated",
-            "converter": {"name": "MS-DIAL Interactive mzXML to mzML converter", "version": "0.5.14"},
+            "converter": {"name": "MS-DIAL Interactive mzXML to mzML converter", "version": "0.5.16",
+                          "module_sha256": "5f" * 32, "python": "3.14.2", "zlib": "1.3.1.zlib-ng",
+                          "zlib_level": 6, "expat": "expat_2.7.3"},
+            "options": {"impute_polarity": None, "infer_dia_windows": False, "synthesize_all_ion_windows": False,
+                        "spectrum_level_collision_energy": False, "fail_on_sha1_mismatch": True},
             "source": {"path": str(source), "relative_path": source.name, "name": source.name,
                        "bytes": len(read), "sha256": _sha256(read), "sha1": hashlib.sha1(read).hexdigest()},
-            "output": {"path": str(output), "bytes": len(written), "sha256": _sha256(written)},
-            "validation": {"status": "passed"},
+            "output": {"path": str(output), "bytes": len(written), "sha256": _sha256(written),
+                       **({} if status == "converted" else {"removed_after_failure": True})},
+            "reused_previous_record": False,
+            "warnings": [],
+            "inferences": [],
+            "deviations": [],
+            "counts": {"spectra": 2, "ms_levels": {"1": 1, "2": 1}, "polarity": {"negative": 2},
+                       "polarity_recorded": {"negative": 2}},
+            "validation": {"schema": "msdial-mzxml-conversion-validation.v1", "status": "passed",
+                           "reader": "expat mzML reader independent of the writer", "spectra_compared": 2,
+                           "spectrum_list_count": 2, "arrays_sha256": "fc" * 32, "problems": [],
+                           "problem_count": 0},
         }
         conversions = self.manifest.setdefault("input_conversions",
                                                {"schema": "msdial-input-conversion.v1", "records": []})
