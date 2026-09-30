@@ -356,6 +356,8 @@ REPOSITORIES_WITHOUT_CHECKSUMS = frozenset({"metabolights"})
 ARCHIVE_SUFFIXES = tuple(sorted(
     (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tbz", ".tar.xz", ".txz", ".zip", ".tar", ".7z", ".rar", ".gz",
      ".bz2", ".xz", ".lzma"), key=len, reverse=True))
+# How a basis names the algorithm of a published checksum, as Interactive's statements do.
+ALGORITHM_NAMES = {"md5": "MD5", "sha1": "SHA-1", "sha256": "SHA-256"}
 
 
 def _declared_name(value: object) -> str:
@@ -413,6 +415,13 @@ ARCHIVE_VERIFIED_STATUS = WARN
 ARCHIVE_WORDING_TEXT = "extracted from an archive whose published MD5 matched"
 
 
+def _archive_wording(algorithms: list[str]) -> str:
+    """The permitted wording, naming the algorithm compared as Interactive's statement does (SHA-256)."""
+    if algorithms in ([], ["MD5"]):
+        return ARCHIVE_WORDING_TEXT
+    return f"extracted from an archive whose published {' or '.join(algorithms)} matched"
+
+
 @dataclass
 class _Cover:
     """What vouches for one input's bytes: a basis from CHECKSUM_BASES, or the reason nothing does."""
@@ -427,6 +436,8 @@ class _Cover:
     declared: str = ""
     algorithm: str = ""
     archive: str = ""
+    # The algorithm of the published checksum that archive was compared with.
+    archive_algorithm: str = ""
     crc_verified: object = None
     converted: bool = False
 
@@ -470,9 +481,11 @@ class _InputLineage:
       ("download_sha256").
     - extracted_member and archived_container: out of an archive. Its own declared checksum where one
       was compared ("verified"). Otherwise the archive's: the download record must hold the archive's
-      sha256, its published MD5 must have matched ("archive_verified"; for a repository publishing
-      none, "download_sha256"), an archive_extractions record for exactly those bytes must list the
-      input in its member listing, whose sha256 is recorded, and must have rejected no member.
+      sha256, its published checksum must have matched ("archive_verified"; for a repository
+      publishing none, "download_sha256"), an archive_extractions record for exactly those bytes must
+      list the input in its member listing, whose sha256 is recorded, and must have rejected no member.
+      Where the download itself vouches for nothing, an archive expanded inside it that holds the input
+      and was compared with its own published checksum before it expanded does (_verified_inner).
     - vendor_folder: a .d or .raw directory assembled from objects downloaded one by one, each of
       which must be covered as a file is.
     - converted: written by the mzXML conversion. Covered iff a completed conversion record in
@@ -757,9 +770,16 @@ class _InputLineage:
             return _uncovered("sha256_disagrees", f"its lineage row and the download record of {name} give "
                               "different sha256")
         cover = self._declaration(download, archive=True)
+        record = self.extractions.get(sha256)
+        if not cover.basis and record is not None:
+            cover = self._verified_inner(path, record, member) or cover
         if not cover.basis:
             return cover
-        record = self.extractions.get(sha256)
+        if not cover.archive:
+            cover.archive = sha256
+            cover.archive_algorithm = (str(download.get("declared_checksum_algorithm") or "").strip().casefold()
+                                       or ("md5" if cover.basis == "archive_verified" else ""))
+            cover.crc_verified = record.get("crc_verified") if record is not None else None
         if record is None:
             if (cover.basis == "download_sha256" and self.extraction_records is None
                     and (_path_key(path) in self.extracted or (self.input_directory and _path_key(path).startswith(
@@ -781,7 +801,47 @@ class _InputLineage:
         if not found:
             return _uncovered("missing_from_listing", f"it is not in the recorded member listing of {name}")
         size = None if directory else listing.files[found[0]]
-        return _Cover(cover.basis, size=size, archive=sha256, crc_verified=record.get("crc_verified"))
+        return _Cover(cover.basis, size=size, archive=cover.archive, archive_algorithm=cover.archive_algorithm,
+                      crc_verified=cover.crc_verified)
+
+    def _verified_inner(self, path: str, record: dict, member: str) -> _Cover | None:
+        """The innermost archive expanded inside a download that holds the input and matched its own checksum.
+
+        MB-POST ships one project tar of per-sample zips and publishes an MD5 for each zip, none for the
+        tar. The lease compares each zip with its MD5 before it expands, and records that on the zip's
+        nested extraction record; the tar's download carries the first zip's value, never compared with
+        the tar, so the tar vouches for nothing and the zip that holds the input does. Held against the
+        records that did it: the digest the extraction computed for the zip's bytes is the published
+        value, the unit declares that value for a file of the zip's name, and the allow-list validator's
+        count accounts for every checksum the unit declares. The member listing is still the download's,
+        which lists the whole lineage, nested archives included.
+        """
+        names = self._member_names(path, record, member)
+        found: tuple[int, dict, str] | None = None
+        pending = [(item, 1) for item in record.get("nested") or [] if isinstance(item, dict)]
+        while pending:
+            item, depth = pending.pop()
+            if depth < 8:
+                pending.extend((child, depth + 1) for child in item.get("nested") or [] if isinstance(child, dict))
+            root = str(item.get("destination_relative") or "").replace("\\", "/").strip("/").casefold()
+            if not root or not any(name == root or name.startswith(root + "/") for name in names):
+                continue
+            algorithm = str(item.get("declared_checksum_algorithm") or "").strip().casefold()
+            declared = str(item.get("declared_checksum") or "").strip().casefold()
+            computed = (str(item.get(f"archive_{algorithm}") or "").strip().casefold()
+                        if algorithm in ALGORITHM_NAMES else "")
+            if (item.get("declared_checksum_verified") is not True or not declared or computed != declared
+                    or not self.validator_accounts
+                    or (_declared_name(item.get("declared_name")), declared) not in self.declared_files):
+                continue
+            if found is None or depth > found[0]:
+                found = (depth, item, algorithm)
+        if found is None:
+            return None
+        _depth, item, algorithm = found
+        return _Cover("archive_verified", archive=str(item.get("archive_sha256") or "").strip().casefold()
+                      or f"{record.get('archive_sha256')}:{item.get('archive_path')}",
+                      archive_algorithm=algorithm, crc_verified=item.get("crc_verified"))
 
     def _listing(self, record: dict) -> _ArchiveListing:
         members = record.get("members_tsv")
@@ -869,8 +929,8 @@ class _InputLineage:
         if cover.size is not None and isinstance(read_bytes, int) and cover.size != read_bytes:
             return _uncovered("source_size_mismatch", f"the conversion read {read_bytes} bytes and the record that "
                               f"covers {source_name} gives {cover.size}")
-        return _Cover(cover.basis, sha256=output_sha256, archive=cover.archive, crc_verified=cover.crc_verified,
-                      converted=True)
+        return _Cover(cover.basis, sha256=output_sha256, archive=cover.archive,
+                      archive_algorithm=cover.archive_algorithm, crc_verified=cover.crc_verified, converted=True)
 
     def _derived_row(self, path: str) -> dict | None:
         """A lineage row for a conversion's source, from the download or the archive listing that holds it."""
@@ -976,15 +1036,19 @@ def _lineage_checksum_basis(owner: dict, evidence: dict) -> tuple[str, str, dict
     if basis == "archive_verified":
         without_crc = evidence["archives_without_member_crc"]
         own = counts.get("verified", 0)
+        # Named as Interactive's statement names it: "published SHA-256" where that is what was compared.
+        algorithms = sorted({ALGORITHM_NAMES.get(cover.archive_algorithm, "") for cover in archives.values()} - {""})
+        wording = _archive_wording(algorithms)
+        evidence["archive_algorithms"] = algorithms
         return (
             "archive_verified",
-            f"{counts.get('archive_verified', 0)} of the {len(candidates)} inputs were {ARCHIVE_WORDING_TEXT} at "
-            f"download, and each is named in that archive's recorded member listing"
+            f"{counts.get('archive_verified', 0)} of the {len(candidates)} inputs were {wording}, and each is "
+            f"named in the recorded member listing of the download it came out of"
             + (f" ({without_crc} of the {len(archives)} archive(s) carry no member CRC the extractor could check)"
                if without_crc else "")
             + (f"; the other {own} had their own declared checksum verified" if own else "")
             + f".{converted} The archived inputs' own checksums were not compared, so no artifact may call them "
-            f"checksum-verified; the permitted wording is '{ARCHIVE_WORDING_TEXT}'. Whether this basis passes is "
+            f"checksum-verified; the permitted wording is '{wording}'. Whether this basis passes is "
             "the user's decision, not yet taken.",
             evidence,
         )
@@ -4162,10 +4226,11 @@ INPUT_SUBJECT = re.compile(
 # A sentence ends at . ; ! ? or a newline, but not at the point of a decimal such as 5.5.
 SENTENCE = re.compile(r"(?:[^.;!?\n]|(?<=\d)\.(?=\d))+")
 # The one way an artifact may describe inputs whose basis is archive_verified (ARCHIVE_WORDING_TEXT),
-# with the checksum noun and a plural allowed. It says what was compared, the archive, and not that the
+# with the checksum noun, a plural and the algorithm Interactive names (MD5, SHA-256 or SHA-1) allowed. It says what was compared, the archive, and not that the
 # inputs themselves were. Where no archive's published MD5 was compared it is itself an unearned claim.
 ARCHIVE_WORDING = re.compile(
-    r"extracted\s+from\s+(?:(?:an|the)\s+)?archives?\s+whose\s+published\s+md5s?(?:\s+checksums?)?\s+matched",
+    r"extracted\s+from\s+(?:(?:an|the)\s+)?archives?\s+whose\s+published\s+(?:md5|sha-?256|sha-?1)s?"
+    r"(?:\s+checksums?)?\s+matched",
     re.IGNORECASE,
 )
 
@@ -4202,7 +4267,7 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     if owner is None:
         report.add("SUM-2", stage, title, NOT_EVALUABLE, owner_reason or "The manifest is absent.")
         return
-    kind, _detail, _evidence = _checksum_basis(owner)
+    kind, _detail, basis_evidence = _checksum_basis(owner)
     if kind not in ("download_sha256", "archive_verified"):
         report.add("SUM-2", stage, title, NOT_EVALUABLE,
                    "The inputs were checksum-verified, or SUM-1 refused them; there is no unearned "
@@ -4213,6 +4278,9 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
         report.add("SUM-2", stage, title, NOT_EVALUABLE, "No publication artifact is present.")
         return
     archive = kind == "archive_verified"
+    algorithms = basis_evidence.get("archive_algorithms") or []
+    allowed = _archive_wording(algorithms)
+    compared = " or ".join(algorithms) or "MD5"
     claims = []
     skipped = []
     permitted: list[str] = []
@@ -4246,8 +4314,8 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     if claims:
         report.add("SUM-2", stage, title, FAIL,
                    "A published artifact calls these inputs checksum-verified, but only the archive they were "
-                   "extracted from was compared with its published MD5, and their own checksums were not. The "
-                   f"permitted wording is '{ARCHIVE_WORDING_TEXT}'." if archive else
+                   f"extracted from was compared with its published {compared}, and their own checksums were not. "
+                   f"The permitted wording is '{allowed}'." if archive else
                    "A published artifact calls these inputs checksum-verified, but the repository "
                    "published no checksum and none was compared.",
                    claims=claims[:10], claim_count=len(claims),
@@ -4272,7 +4340,7 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     report.add("SUM-2", stage, title, PASS,
                f"No known checksum-verification phrasing matched in {len(present)} publication "
                "artifact(s). This is not a statement that no such claim is made."
-               + (f" {len(permitted)} sentence(s) use the permitted wording '{ARCHIVE_WORDING_TEXT}'."
+               + (f" {len(permitted)} sentence(s) use the permitted wording '{allowed}'."
                   if permitted else ""),
                artifacts=len(present), **read_evidence)
 
