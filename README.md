@@ -96,8 +96,9 @@ following actions require a separate explicit human confirmation:
 
 A recorded campaign approval of one manifest digest stands in for the first,
 third, fourth and fifth of these, and for the automatic split, for the units
-that manifest lists; it never stands in for the second or the last. `CLAUDE.md`
-states its rules, the raw-data deletion rule among them.
+the approval record lists, which must be that manifest's units; it never stands
+in for the second or the last. `CLAUDE.md` states its rules, the raw-data
+deletion rule among them.
 
 The default retention policy is `keep`. Never combine different analysis units
 in one MS-DIAL run. Never redistribute the laboratory's private MSP libraries.

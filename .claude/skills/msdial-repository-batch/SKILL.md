@@ -215,10 +215,13 @@ Server-side state on `msdial_interactive_app` `main`:
   recorded in `finalisation_holds` and holds the deletion. Two parts of the
   campaign's deletion rule have no approval-taking entry point on main yet.
   `discard_download_lease`, which releases a failed, skipped or excluded unit's
-  raw data, takes no campaign approval, and cleanup accepts only a validated
-  run. A split unit cannot be cleaned up: its parts share the parent's raw
-  tree, which lies outside a part's workspace, and the parent is not a
-  completed run, so the tool refuses both, and its raw data stay until
+  raw data, takes no campaign approval: until it does, the runner calls it with
+  `confirmed=true` only after `campaign_authorization.authorize` has accepted
+  boundary 5 for the unit and the crossing is recorded in the unit's manifest
+  (`CLAUDE.md`, Raw-data deletion in a campaign), and cleanup accepts only a
+  validated run. A split unit cannot be cleaned up: its parts share the
+  parent's raw tree, which lies outside a part's workspace, and the parent is
+  not a completed run, so the tool refuses both, and its raw data stay until
   split-parent release exists.
 - A unit whose manifest says `execution_allowed` is not true is refused before
   MS-DIAL starts, and so is a workflow whose polarity, output directory or input
@@ -236,11 +239,17 @@ path is the campaign runner, `scripts/campaign-runner.py`. It calls the
 Interactive and Catalog functions the MCP tools expose, in its own process, and
 where a tool would ask for `confirmed=true` it passes the approval instead:
 `campaign_authorization_path` to Interactive, `ratification` to the Catalog. No
-step the approval covers acts before Interactive or the Catalog has checked it
-and recorded the crossing, and the runner never records a reading (boundary 6).
-It decides no eligibility: it reads the unit's `campaign_disposition`, which
-only Interactive's `classify_preflight` writes, and runs, splits, skips or
-excludes the unit as that record says.
+step the approval covers acts before the approval has been checked for that
+unit and that boundary with Interactive's validator
+(`campaign_authorization.authorize`) and the crossing recorded. Interactive
+makes that check itself wherever it takes the approval. The Catalog checks only
+a ratification's form, never the approval it names or the unit it is for, so
+the runner validates boundary 3 for the unit before every Class save. The
+discard of a failed, skipped or excluded unit is the one call that still takes
+`confirmed=true`, and only after the same validation for boundary 5. The runner
+never records a reading (boundary 6). It decides no eligibility: it reads the
+unit's `campaign_disposition`, which only Interactive's `classify_preflight`
+writes, and runs, splits, skips or excludes the unit as that record says.
 
 An unattended run may not widen `maximum_gb` beyond what its approval states,
 may not set `allow_partial_mapping=true`, and may not change

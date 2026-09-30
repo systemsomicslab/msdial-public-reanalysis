@@ -46,11 +46,18 @@ them. It calls the same Interactive and Catalog functions the MCP tools expose,
 in its own process, so a campaign unit passes every check an interactive one
 does. Where a tool would ask for `confirmed=true` it passes the campaign
 approval instead (`campaign_authorization_path` to Interactive, `ratification`
-to the Catalog), and no step the approval covers acts before Interactive or the
-Catalog has checked it and recorded the crossing. It decides no eligibility: it
-reads the unit's `campaign_disposition`, which only Interactive's
-`classify_preflight` writes, and runs, splits, skips or excludes the unit as
-that record says.
+to the Catalog). No step the approval covers acts before the approval has been
+checked for that unit and that boundary with Interactive's validator
+(`campaign_authorization.authorize`) and the crossing recorded. Interactive
+makes that check itself wherever it takes the approval. The Catalog checks only
+a ratification's form, not the approval it names, so the runner validates
+boundary 3 for the unit before the Class save, and the Catalog stores the
+ratification with the decision. The one call that still takes `confirmed=true`
+in a campaign is the discard of a failed, skipped or excluded unit, under the
+conditions stated in Raw-data deletion in a campaign. The runner decides no
+eligibility: it reads the unit's `campaign_disposition`, which only
+Interactive's `classify_preflight` writes, and runs, splits, skips or excludes
+the unit as that record says.
 
 ## Local storage
 
@@ -154,20 +161,28 @@ current conversation:
 A campaign approval is the one exception. The user approves one campaign
 manifest, identified by its sha256 digest, in the conversation, and the
 approval is recorded with their words verbatim as an
-`msdial-campaign-authorization.v1` record. For the units that manifest lists,
-and the parts an automatic split derives from them, that record is the
-confirmation for boundaries 1, 3, 4 and 5 and for the split, under the rules
-the manifest states (among them its Class rule, its method rules and the
-deletion rule below) and with the pins it fixes. It never covers boundary 2 or
-6, a unit the manifest does not list, or anything the manifest does not state.
+`msdial-campaign-authorization.v1` record. For the units the approval record
+lists, which must be the approved manifest's units, and the parts an automatic
+split derives from them, that record is the confirmation for boundaries 1, 3,
+4 and 5 and for the split, under the rules the manifest states (among them its
+Class rule, its method rules and the deletion rule below) and with the pins it
+fixes. It never covers boundary 2 or 6, a unit the record does not list, or
+anything the manifest does not state. Interactive holds a step to the record's
+own unit list, and compares the manifest with the digest only when the record
+names the manifest's path, so the runner writes the manifest's units into the
+record and names the manifest's path in it (`campaign_manifest_path`).
 
 Interactive checks the record at each boundary it guards and writes the
-crossing into the unit's manifest, and the Catalog stores it with the Class
-decision it ratifies, so every boundary a campaign unit crossed is an
-artifact, not a conversation fact. The pins are the Console and raw-metadata
-extractor binaries (by sha256), each library (by file name and sha256), and the
-Interactive, Catalog and gate commits. A change to any pin pauses the campaign
-until a new approval is recorded.
+crossing into the unit's manifest. The Catalog does not read the record: it
+checks only that a ratification names an approval id and a well-formed
+manifest digest, and it cannot be told which unit a ratification is for. So
+the runner checks boundary 3 for the unit with Interactive's validator before
+the Class save and records the crossing in its ledger, and the Catalog stores
+the ratification with the Class decision. Every boundary a campaign unit
+crossed is therefore an artifact, not a conversation fact. The pins are the
+Console and raw-metadata extractor binaries (by sha256), each library (by file
+name and sha256), and the Interactive, Catalog and gate commits. A change to
+any pin pauses the campaign until a new approval is recorded.
 
 Outside a campaign, an accepted raw-retention policy records intent but is not
 deletion approval. Preview `msdial_cleanup_repository_raw` and obtain a
@@ -187,6 +202,15 @@ unit's raw data are deleted with no further question:
   validates, whatever the gate's verdict;
 - once a failed unit has been retried twice without success;
 - when a unit that holds raw data is skipped or excluded.
+
+Each of these deletions crosses boundary 5, which the approval covers: in a
+campaign, boundary 5 is every deletion this rule names, not only the one after
+validated output. The first goes through `msdial_cleanup_repository_raw`,
+which takes the approval itself. The other two go through Interactive's
+discard (`discard_download_lease`), which does not take it yet. Until it does,
+the runner may call the discard with `confirmed=true` only after
+`campaign_authorization.authorize` has accepted boundary 5 for that unit and
+the crossing is recorded in the unit's manifest.
 
 Every guard Interactive puts on a deletion still applies, the retained-artifact
 inventory a finished run's cleanup requires included. Before a finished run's
