@@ -1,0 +1,518 @@
+"""Run an approved full-repository MS-DIAL reanalysis campaign, unattended, one unit at a time.
+
+A campaign is one approved manifest of analysis units (scripts/campaign/plan.py), one ledger that records
+every unit's state and how it got there (scripts/campaign/ledger.py), and one runner process that moves
+the units along (scripts/campaign/machine.py) through Interactive and the Catalog (scripts/campaign/
+ports.py) under the rules the user decided on 2026-09-30 (scripts/campaign/policy.py).
+
+THE ORDER OF USE
+    python scripts/campaign-runner.py plan --campaign ID --pool declared --purpose "..." \\
+        --retention delete_after_validated_output --console <MSDIALCUI.exe> --extractor <RawMetadataConsoleApp.exe> \\
+        --profile <profile.json> [--resources <campaign-resources.local.json>] [--catalog <db>]
+        read-only on the Catalog and the analysis root; writes campaign-manifest.json and prints its digest
+    python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
+        --by NAME --statement "the person's words" --covers 1,3,4,5,split
+        only after the person approved that digest in the conversation; the approval id is theirs
+    python scripts/campaign-runner.py run --campaign ID [--until-idle] [--max-units N] [--prefetch N]
+    python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|revoke --campaign ID ...
+
+THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
+of the approved manifest, naming each library as "library:<file name>" and never by location:
+    {"schema": "msdial-campaign-profile.v1",
+     "answers": {"library_strategy": "existing", "use_retention_time_for_annotation": false},
+     "by_ion_mode": {
+       "Positive": {"libraries": {"msp_paths": ["library:<positive MSP file>"], "lbm_path": "library:<LBM2 file>"}},
+       "Negative": {"libraries": {"msp_paths": ["library:<negative MSP file>"], "lbm_path": "library:<LBM2 file>"}}}}
+THE RESOURCE MAP (--resources, default campaign-resources.local.json beside this repository's README; any
+*.local.json is git-ignored) is the only place a library's location is written:
+    {"schema": "msdial-campaign-resources.v1", "libraries": {"<file name>": "<where it is on this machine>"}}
+
+WHAT IT NEVER DOES
+- Decide whether a unit may run: Interactive's campaign_disposition says so after the raw-header preflight.
+- Record a person's reading of the sentences a gate check left for them (boundary 6), or cover boundary 2.
+- Name a private library's location anywhere but the call to Interactive: the git-ignored resource map
+  (*.local.json) says where each library is on this machine; the manifest, the authorization record, the
+  ledger, the logs and every unit's campaign-record.json name libraries by file name and sha256.
+- Register itself with Task Scheduler or keep the machine awake. That is persistent system configuration
+  and the user's to set up; `schedule-command` prints the commands and runs nothing.
+
+Exit codes: 0 ok, 2 refused (digest mismatch, missing or revoked approval, a manifest that cannot be
+approved), 3 unusable environment (a checkout, the Console, the extractor, a library or the backend), 5 the
+campaign lock is held by another runner.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+SCRIPTS = Path(__file__).resolve().parent
+GATE_ROOT = SCRIPTS.parent
+sys.path.insert(0, str(SCRIPTS))
+
+DEFAULT_WORKSPACE_ROOT = Path(r"D:\13_MSDIAL_Public_Reanalysis\analysis")
+DEFAULT_INTERACTIVE_ROOT = Path(os.environ.get("MSDIAL_INTERACTIVE_ROOT") or r"D:\0_SourceCode\msdial_interactive_app")
+DEFAULT_CATALOG_ROOT = Path(os.environ.get("MSDIAL_CATALOG_ROOT") or r"D:\0_SourceCode\msdial_repository_catalog")
+DEFAULT_RESOURCES = GATE_ROOT / "campaign-resources.local.json"
+DEFAULT_PORT = 8766
+EXIT_OK, EXIT_REFUSED, EXIT_ENVIRONMENT, EXIT_LOCKED = 0, 2, 3, 5
+
+
+def _import_roots(interactive_root: Path, catalog_root: Path) -> None:
+    for root in (catalog_root / "src", interactive_root):
+        text = str(root)
+        if text not in sys.path:
+            sys.path.insert(0, text)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _campaign_directory(workspace_root: Path, campaign_id: str) -> Path:
+    return Path(workspace_root) / "_campaigns" / campaign_id
+
+
+def _print(value: Any) -> None:
+    print(json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True, default=str))
+
+
+# ---- plan -----------------------------------------------------------------------------------------------
+
+def command_plan(args: argparse.Namespace) -> int:
+    from campaign import plan, policy, ports
+
+    catalog_path = Path(args.catalog) if args.catalog else _default_catalog()
+    directory = Path(args.out) if args.out else _campaign_directory(args.workspace_root, args.campaign)
+    manifest_path = directory / "campaign-manifest.json"
+    if (directory / "ledger.sqlite").exists():
+        print(f"Campaign {args.campaign} is already approved; its manifest is not replaced.", file=sys.stderr)
+        return EXIT_REFUSED
+    libraries: dict[str, str] = {}
+    if args.resources:
+        libraries = ports.load_resources(args.resources)["libraries"]
+    profile = json.loads(Path(args.profile).read_text(encoding="utf-8-sig")) if args.profile else None
+    campaign_policy = policy.CampaignPolicy.from_dict(
+        json.loads(Path(args.policy).read_text(encoding="utf-8-sig")) if args.policy else None
+    )
+    reader = ports.PinReader(
+        console_path=args.console or "", extractor_path=args.extractor or "", libraries=libraries,
+        interactive_root=args.interactive_root, catalog_root=args.catalog_root,
+    )
+    pins = {
+        "console": reader.console() if args.console else {"exists": False},
+        "extractor": reader.extractor() if args.extractor else {"exists": False},
+        "libraries": reader.library_identities(),
+        **reader.code(),
+    }
+    catalog = ports.read_only_catalog(catalog_path)
+    try:
+        manifest = plan.build_manifest(
+            catalog, pool=args.pool, campaign_id=args.campaign, analysis_purpose=args.purpose,
+            workspace_root=Path(args.workspace_root), raw_retention_policy=args.retention, pins=pins,
+            profile=profile, campaign_policy=campaign_policy,
+            class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, args.purpose),
+            catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
+        )
+    except plan.PlanError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_REFUSED
+    finally:
+        catalog.close()
+    digest = plan.write_manifest(manifest_path, manifest)
+    ports.write_json_atomic(directory / "campaign-manifest.summary.json", {
+        "manifest_path": str(manifest_path), "manifest_digest": digest, "totals": manifest["totals"],
+        "approval_problems": plan.approval_problems(manifest, ["1", "3", "4", "5", "split"]),
+    })
+    print(plan.summary_text(manifest, digest))
+    problems = plan.approval_problems(manifest, ["1", "3", "4", "5", "split"])
+    if problems:
+        print("Not approvable as it stands: " + "; ".join(problems), file=sys.stderr)
+    return EXIT_OK
+
+
+def _default_catalog() -> Path:
+    from msdial_repository_catalog.mcp_server import DEFAULT_DATABASE
+
+    return Path(DEFAULT_DATABASE)
+
+
+# ---- approve --------------------------------------------------------------------------------------------
+
+def command_approve(args: argparse.Namespace) -> int:
+    from campaign import ledger, plan, ports
+    from msdial_app.campaign_authorization import CampaignAuthorization, CampaignAuthorizationError
+
+    directory = _campaign_directory(args.workspace_root, args.campaign)
+    manifest_path = directory / "campaign-manifest.json"
+    if (directory / "ledger.sqlite").exists():
+        print(f"Campaign {args.campaign} already has a ledger and an approval.", file=sys.stderr)
+        return EXIT_REFUSED
+    manifest, digest = plan.read_manifest(manifest_path)
+    if digest != args.digest:
+        print(f"The manifest hashes to {digest}, not the approved {args.digest}; nothing was recorded.", file=sys.stderr)
+        return EXIT_REFUSED
+    covers = [item.strip() for item in args.covers.split(",") if item.strip()]
+    problems = plan.approval_problems(manifest, covers)
+    if problems:
+        print("The manifest cannot be approved: " + "; ".join(problems), file=sys.stderr)
+        return EXIT_REFUSED
+    approved_at = _now()
+    record = plan.authorization_record(
+        manifest, manifest_path, digest, approval_id=args.approval_id, approved_by=args.by,
+        approved_at=approved_at, statement=args.statement, covers=covers,
+    )
+    authorization_path = directory / "campaign-authorization.json"
+    ports.write_json_atomic(authorization_path, record)
+    try:
+        authorization = CampaignAuthorization.load(authorization_path)
+    except CampaignAuthorizationError as error:
+        authorization_path.unlink(missing_ok=True)
+        print(f"Interactive refuses the authorization record: {error}", file=sys.stderr)
+        return EXIT_REFUSED
+    units, groups = plan.ledger_rows(manifest)
+    campaign = {
+        "campaign_id": manifest["campaign_id"], "pool": manifest["pool"], "manifest_path": str(manifest_path),
+        "manifest_digest": digest, "analysis_purpose": manifest["analysis_purpose"],
+        "workspace_root": manifest["workspace_root"], "raw_retention_policy": manifest["raw_retention_policy"],
+        "catalog_database": manifest["catalog"]["database"], "authorization_path": str(authorization_path),
+        "authorization_sha256": authorization.sha256, "policy": manifest["policy"], "profile": manifest["profile"],
+        "pins": manifest["pins"],
+    }
+    approval = {
+        "approval_id": args.approval_id, "manifest_digest": digest, "approved_by": args.by,
+        "approved_at": approved_at, "statement": args.statement, "covers": covers,
+    }
+    with ledger.Ledger(directory / "ledger.sqlite") as book:
+        book.create(campaign, approval, units, groups, approved_at)
+    print(f"Approval {args.approval_id} of {digest} recorded for {len(units)} units; ledger {directory / 'ledger.sqlite'}.")
+    return EXIT_OK
+
+
+# ---- the environment -----------------------------------------------------------------------------------
+
+class Environment:
+    """What `run` and `verify-env` build from an approved campaign."""
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        from campaign import ledger, policy, ports
+
+        self.directory = _campaign_directory(args.workspace_root, args.campaign)
+        self.ledger = ledger.Ledger(self.directory / "ledger.sqlite")
+        self.campaign = self.ledger.campaign()
+        self.policy = policy.CampaignPolicy.from_dict(self.campaign["policy"])
+        pins = self.campaign["pins"]
+        self.resources = ports.load_resources(args.resources or DEFAULT_RESOURCES)
+        missing = sorted({item["name"] for item in pins.get("libraries") or []} - set(self.resources["libraries"]))
+        if missing:
+            raise ValueError(f"The resource map does not locate the pinned libraries {', '.join(missing)}.")
+        self.pin_reader = ports.PinReader(
+            console_path=(pins.get("console") or {}).get("path") or "",
+            extractor_path=(pins.get("extractor") or {}).get("path") or "",
+            libraries={name: self.resources["libraries"][name] for name in (item["name"] for item in pins.get("libraries") or [])},
+            interactive_root=args.interactive_root, catalog_root=args.catalog_root,
+        )
+        self.port = int(args.port)
+        self.interactive = ports.InteractivePort(port=self.port)
+        self.catalog = ports.CatalogPort(self.campaign["catalog_database"])
+        self.gate = ports.GatePort(timeout=self.policy.gate_timeout_seconds, gate_commit=(pins.get("gate") or {}).get("commit", ""))
+        self.backend = None if args.no_backend else ports.BackendSupervisor(
+            python=sys.executable, interactive_root=Path(args.interactive_root), host="127.0.0.1", port=self.port,
+            jobs_file=self.directory / "backend" / "agent-jobs.json",
+            workspace_root=self.campaign["workspace_root"],
+            log_directory=self.directory / "logs" if getattr(args, "backend_log", False) else None,
+        )
+
+    def ports(self):
+        from campaign import machine, ports
+
+        return machine.Ports(
+            interactive=self.interactive, catalog=self.catalog, gate=self.gate, disk=ports.LocalDisk(),
+            clock=ports.SystemClock(), pins=self.pin_reader, backend=self.backend,
+        )
+
+
+def command_verify_env(args: argparse.Namespace) -> int:
+    from campaign import machine, policy
+
+    try:
+        environment = Environment(args)
+    except (OSError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_ENVIRONMENT
+    report: dict[str, Any] = {"campaign_id": environment.campaign["campaign_id"]}
+    report["pin_differences"] = policy.pin_differences(environment.campaign["pins"], environment.pin_reader.current())
+    report["interactive"] = environment.interactive.capabilities()
+    if environment.backend is not None:
+        config = environment.backend.config()
+        report["backend"] = {"running": config is not None,
+                             "problems": environment.backend.check(config) if config else ["not running"]}
+    from campaign.ports import LocalDisk
+
+    free, total = LocalDisk().usage(environment.campaign["workspace_root"])
+    report["disk"] = {"free_bytes": free, "total_bytes": total,
+                      "reserve_bytes": policy.disk_reserve(total, environment.policy.disk)}
+    report["catalog_lock"] = environment.catalog.lock_module.campaign_lock_status(environment.catalog.database)
+    report["summary"] = machine.summary(environment.ledger)
+    _print(report)
+    blocking = report["pin_differences"] or not report["interactive"].get("classify_preflight")
+    return EXIT_ENVIRONMENT if blocking else EXIT_OK
+
+
+# ---- run ------------------------------------------------------------------------------------------------
+
+def command_run(args: argparse.Namespace) -> int:
+    from campaign import ledger, machine, policy, ports
+
+    try:
+        environment = Environment(args)
+    except (OSError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_ENVIRONMENT
+    book = environment.ledger
+    campaign = environment.campaign
+    code = environment.pin_reader.code()
+    dirty = [name for name in ("interactive", "catalog", "gate") if code[name].get("dirty")]
+    if dirty and not args.allow_dirty:
+        print(f"Refused: the {', '.join(dirty)} checkout has uncommitted changes (--allow-dirty to run anyway).", file=sys.stderr)
+        return EXIT_ENVIRONMENT
+    pid, created, host = ports.runner_process_identity()
+    stale = environment.policy.runner_lock_stale_seconds
+    taken, holder = book.take_lock(
+        pid, created, host, _now(),
+        holder_alive=lambda record: ports.runner_alive(record, datetime.now(timezone.utc), stale),
+    )
+    if not taken:
+        print(f"Campaign {campaign['campaign_id']} is held by runner pid {holder.get('pid')} on {holder.get('host')}.", file=sys.stderr)
+        return EXIT_LOCKED
+    stopping = {"now": False}
+
+    def stop(_signal: int, _frame: Any) -> None:
+        stopping["now"] = True
+
+    signal.signal(signal.SIGINT, stop)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, stop)
+    heartbeat = ledger.Heartbeat(book.path, pid, environment.policy.heartbeat_seconds, _now).start()
+    try:
+        approval = book.approval()
+        try:
+            environment.catalog.lock(approval["approval_id"], campaign["campaign_id"])
+        except Exception as error:  # noqa: BLE001 - the Catalog's own refusal says who holds it
+            print(f"The Catalog could not be held for the campaign: {error}", file=sys.stderr)
+            return EXIT_ENVIRONMENT
+        if environment.backend is not None:
+            started = environment.backend.ensure()
+            if not started.get("ok"):
+                print(f"The campaign backend is not usable: {started.get('detail')}", file=sys.stderr)
+                return EXIT_ENVIRONMENT
+        if args.prefetch is not None and args.prefetch != environment.policy.prefetch:
+            book.event("prefetch_changed", _now(), {"from": environment.policy.prefetch, "to": args.prefetch})
+        runner = machine.Runner(book, environment.ports(), resources=environment.resources, stop=lambda: stopping["now"])
+        if args.prefetch is not None:
+            runner.policy = policy.CampaignPolicy.from_dict({**runner.policy.as_dict(), "prefetch": args.prefetch})
+        result = runner.run(until_idle=args.until_idle, max_units=args.max_units)
+        if runner.idle():
+            environment.catalog.unlock(approval["approval_id"])
+        _print(result)
+        return EXIT_OK
+    finally:
+        heartbeat.stop()
+        book.release_lock(pid, _now())
+        book.close()
+
+
+# ---- the ledger's other commands ------------------------------------------------------------------------
+
+def _open(args: argparse.Namespace):
+    from campaign import ledger
+
+    path = _campaign_directory(args.workspace_root, args.campaign) / "ledger.sqlite"
+    if not path.is_file():
+        raise FileNotFoundError(f"Campaign {args.campaign} has no ledger at {path}; approve it first.")
+    return ledger.Ledger(path)
+
+
+def command_status(args: argparse.Namespace) -> int:
+    from campaign import machine
+
+    with _open(args) as book:
+        if args.unit:
+            _print({"unit": machine.unit_status(book.unit(args.unit)), "transitions": book.transitions(args.unit),
+                    "attempts": book.attempts(args.unit), "gate": book.gate_verdicts(args.unit)})
+        else:
+            _print(machine.summary(book))
+    return EXIT_OK
+
+
+def command_export(args: argparse.Namespace) -> int:
+    from campaign import machine, ports
+
+    with _open(args) as book:
+        document, tsv = machine.export_status(book)
+    target = Path(args.out)
+    ports.write_json_atomic(target, document)
+    target.with_suffix(".tsv").write_text(tsv, encoding="utf-8")
+    print(f"Wrote {target} and {target.with_suffix('.tsv')}: {document['summary']['units']} units.")
+    return EXIT_OK
+
+
+def command_pause(args: argparse.Namespace) -> int:
+    with _open(args) as book:
+        book.pause("operator", args.reason or "paused by the operator", _now())
+    print("Paused; the runner finishes the step in hand and then only watches jobs already running.")
+    return EXIT_OK
+
+
+def command_resume(args: argparse.Namespace) -> int:
+    with _open(args) as book:
+        resumed = book.resume(_now(), kinds=["operator", "disk", "fault"], detail={"by": "operator", "reason": args.reason})
+    print("Resumed." if resumed else "Nothing to resume (a pin pause lifts only when the pins match again).")
+    return EXIT_OK
+
+
+def command_request(args: argparse.Namespace) -> int:
+    with _open(args) as book:
+        request_id = book.add_request(args.command, args.unit, args.reason, args.by or "", _now())
+    print(f"Request {request_id} ({args.command} {args.unit}) recorded; the runner acts on it at its next step.")
+    return EXIT_OK
+
+
+def command_revoke(args: argparse.Namespace) -> int:
+    from campaign import ports
+
+    with _open(args) as book:
+        approval = book.approval()
+        book.revoke(approval["approval_id"], args.by, args.reason, _now())
+        # Interactive checks the record it is given, so every copy says the approval is revoked.
+        paths = {book.campaign()["authorization_path"], *(unit["authorization_copy"] for unit in book.units() if unit["authorization_copy"])}
+    for path in sorted(paths):
+        try:
+            record = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        record["revoked_at"] = _now()
+        ports.write_json_atomic(path, record)
+    print(f"Approval {approval['approval_id']} revoked; no boundary is crossed under it from now on.")
+    return EXIT_OK
+
+
+def command_schedule(args: argparse.Namespace) -> int:
+    """Print, and never run, the commands that keep a campaign going across reboots."""
+    python = Path(sys.executable)
+    script = Path(__file__).resolve()
+    task = f"MSDIAL-campaign-{args.campaign}"
+    run = f'"{python}" "{script}" run --campaign {args.campaign} --until-idle'
+    print("# Persistent system configuration: the user decides and runs these. The runner runs none of them.")
+    print(f'schtasks /Create /TN "{task}" /SC ONSTART /RU "%USERNAME%" /RL LIMITED /TR "{run}" /F')
+    print(f'# In Task Scheduler, set the task to restart on failure and "Do not start a new instance" if one runs.')
+    print("# Keep the machine awake while the campaign runs (AC power), for example:")
+    print("powercfg /change standby-timeout-ac 0")
+    print("powercfg /change hibernate-timeout-ac 0")
+    return EXIT_OK
+
+
+# ---- the command line -------------------------------------------------------------------------------------
+
+def parser() -> argparse.ArgumentParser:
+    top = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    top.add_argument("--workspace-root", type=Path, default=DEFAULT_WORKSPACE_ROOT)
+    top.add_argument("--interactive-root", type=Path, default=DEFAULT_INTERACTIVE_ROOT)
+    top.add_argument("--catalog-root", type=Path, default=DEFAULT_CATALOG_ROOT)
+    commands = top.add_subparsers(dest="command", required=True)
+
+    plan = commands.add_parser("plan", help="build the campaign manifest, read-only on the Catalog")
+    plan.add_argument("--campaign", required=True)
+    plan.add_argument("--pool", required=True, choices=("declared", "acquisition_unknown"))
+    plan.add_argument("--purpose", required=True, help="the analysis_purpose, in the person's words")
+    plan.add_argument("--retention", required=True, choices=("keep", "delete_after_validated_output"))
+    plan.add_argument("--catalog", help="the Catalog database (default: the Catalog's own)")
+    plan.add_argument("--console", help="the MS-DIAL Console to pin")
+    plan.add_argument("--extractor", help="the raw-metadata extractor to pin")
+    plan.add_argument("--resources", help="the git-ignored map of library file names to locations")
+    plan.add_argument("--profile", help=f"the shared answers ({'msdial-campaign-profile.v1'})")
+    plan.add_argument("--policy", help="campaign policy overrides (JSON)")
+    plan.add_argument("--out", help="write the manifest here instead of the campaign directory (a dry run)")
+    plan.set_defaults(handler=command_plan)
+
+    approve = commands.add_parser("approve", help="record the person's approval of one manifest digest")
+    approve.add_argument("--campaign", required=True)
+    approve.add_argument("--digest", required=True)
+    approve.add_argument("--approval-id", required=True, help="the approval id the person gave")
+    approve.add_argument("--by", required=True)
+    approve.add_argument("--statement", required=True, help="the person's words, verbatim")
+    approve.add_argument("--covers", required=True, help="e.g. 1,3,4,5,split; never 2 or 6")
+    approve.set_defaults(handler=command_approve)
+
+    for name, handler, text in (
+        ("run", command_run, "run the campaign"),
+        ("verify-env", command_verify_env, "check the pins, the backend, the disk and the Catalog lock"),
+    ):
+        command = commands.add_parser(name, help=text)
+        command.add_argument("--campaign", required=True)
+        command.add_argument("--resources", default=str(DEFAULT_RESOURCES))
+        command.add_argument("--port", type=int, default=DEFAULT_PORT)
+        command.add_argument("--no-backend", action="store_true", help="use a backend already listening on --port")
+        if name == "run":
+            command.add_argument("--until-idle", action="store_true")
+            command.add_argument("--max-units", type=int)
+            command.add_argument("--prefetch", type=int)
+            command.add_argument("--allow-dirty", action="store_true")
+            command.add_argument("--backend-log", action="store_true",
+                                 help="keep the backend's own output in the campaign's logs folder (Interactive's stream, not redacted)")
+        command.set_defaults(handler=handler)
+
+    status = commands.add_parser("status", help="counts by state, or one unit's history")
+    status.add_argument("--campaign", required=True)
+    status.add_argument("--unit")
+    status.set_defaults(handler=command_status)
+
+    export = commands.add_parser("export", help="per-unit status as JSON and TSV")
+    export.add_argument("--campaign", required=True)
+    export.add_argument("--out", required=True)
+    export.set_defaults(handler=command_export)
+
+    for name, handler in (("pause", command_pause), ("resume", command_resume)):
+        command = commands.add_parser(name)
+        command.add_argument("--campaign", required=True)
+        command.add_argument("--reason", default="")
+        command.set_defaults(handler=handler)
+
+    for name in ("skip", "retry"):
+        command = commands.add_parser(name, help=f"ask the runner to {name} one unit")
+        command.add_argument("--campaign", required=True)
+        command.add_argument("--unit", required=True)
+        command.add_argument("--reason", required=True)
+        command.add_argument("--by", default="")
+        command.set_defaults(handler=command_request)
+
+    revoke = commands.add_parser("revoke", help="revoke the campaign's approval")
+    revoke.add_argument("--campaign", required=True)
+    revoke.add_argument("--by", required=True)
+    revoke.add_argument("--reason", required=True)
+    revoke.set_defaults(handler=command_revoke)
+
+    schedule = commands.add_parser("schedule-command", help="print the Task Scheduler and power commands; runs nothing")
+    schedule.add_argument("--campaign", required=True)
+    schedule.set_defaults(handler=command_schedule)
+    return top
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    _import_roots(args.interactive_root, args.catalog_root)
+    try:
+        return int(args.handler(args))
+    except FileNotFoundError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_ENVIRONMENT
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

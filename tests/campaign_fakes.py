@@ -1,0 +1,579 @@
+"""Fake ports for the campaign runner's tests: a backend, a Catalog, a gate, a disk, a clock and pins.
+
+Nothing here downloads a byte or starts a Console. The fake backend keeps what the real one keeps, where
+the real one keeps it: jobs in a registry that outlives the runner process, and the unit manifest on
+disk, with the lease owner, the run attempts and the boundary-4 crossing Interactive writes before a
+job exists. That is what lets tests/test_campaign_resume.py stop the runner at any commit and check that
+it resumes without a second download or a second Console.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+TESTS = Path(__file__).resolve().parent
+SCRIPTS = TESTS.parent / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from campaign import ledger as ledger_module  # noqa: E402
+from campaign import machine, policy, ports  # noqa: E402
+
+SHA = {name: hashlib.sha256(name.encode()).hexdigest() for name in ("console", "extractor", "positive", "negative", "lbm", "auth")}
+POSITIVE_MSP = "SyntheticPositive.msp"
+NEGATIVE_MSP = "SyntheticNegative.msp"
+LBM = "Synthetic.lbm2"
+
+
+class Crash(BaseException):
+    """A runner process stopping dead at a commit. BaseException, so no step's handler catches it."""
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.moment = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        self.slept = 0.0
+
+    def now(self) -> datetime:
+        return self.moment
+
+    def sleep(self, seconds: float) -> None:
+        self.slept += seconds
+        self.moment += timedelta(seconds=max(1.0, float(seconds)))
+
+
+class FakeDisk:
+    def __init__(self, free: int = 10 * 1000**4, total: int = 20 * 1000**4) -> None:
+        self.free = free
+        self.total = total
+
+    def usage(self, _path: str) -> tuple[int, int]:
+        return self.free, self.total
+
+    def tree_bytes(self, path: str) -> int:
+        root = Path(path)
+        if not root.exists():
+            return 0
+        return sum(item.stat().st_size for item in root.rglob("*") if item.is_file())
+
+
+@dataclass
+class UnitScript:
+    """What the fake backend does for one unit, attempt by attempt."""
+
+    downloads: list[str] = field(default_factory=lambda: ["ok"])  # ok, fail, stall, blocked, interrupt
+    disposition: str = "run"  # run, split, skip, exclude, none, malformed
+    split_modes: tuple[str, ...] = ("DDA", "SWATH")
+    diagnostics: list[str] = field(default_factory=lambda: ["ok"])  # ok, timeout, fail, lose_reply
+    runs: list[str] = field(default_factory=lambda: ["ok"])  # ok, timeout, fail, invalid, lose_reply, busy_reply
+    cleanup: str = "ok"  # ok, blocked
+    # How long each job runs, in 30-second polls of fake time. A job ends when its time is up, whether or
+    # not anyone is polling it, as a real job does while the runner is down.
+    ticks: int = 2
+
+
+def _write(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=1, sort_keys=True), encoding="utf-8")
+
+
+def _read(path: str | Path) -> dict[str, Any] | None:
+    location = Path(str(path or ""))
+    if not str(path or "").strip() or not location.is_file():
+        return None
+    return json.loads(location.read_text(encoding="utf-8"))
+
+
+class ManifestStore:
+    """The backend's unit manifests. Held in memory, because opening files is most of a test's time on
+    Windows; each manifest file is created on disk once, so the runner's own existence checks see it."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def key(path: str | Path) -> str:
+        return str(Path(str(path))).casefold()
+
+    def write(self, path: str | Path, value: dict[str, Any]) -> None:
+        location = Path(str(path))
+        if self.key(path) not in self.values and not location.is_file():
+            _write(location, {"note": "the fake backend holds this manifest in memory"})
+        self.values[self.key(path)] = json.loads(json.dumps(value))
+
+    def read(self, path: str | Path) -> dict[str, Any] | None:
+        if not str(path or "").strip():
+            return None
+        value = self.values.get(self.key(path))
+        return json.loads(json.dumps(value)) if value is not None else None
+
+
+class FakeInteractive:
+    def __init__(self, world: "World") -> None:
+        self.world = world
+        self.jobs: dict[str, dict[str, Any]] = {}
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.download_starts: list[str] = []
+        self.console_starts: list[tuple[str, str]] = []
+        self.cancels: list[tuple[str, str]] = []
+        self.split_release_supported = False
+        self.store = ManifestStore()
+        self._counter = 0
+        self._tries: dict[tuple[str, str], int] = {}
+
+    # ---- helpers ----
+    def _job_id(self, prefix: str) -> str:
+        self._counter += 1
+        return f"{prefix}{self._counter:04d}"
+
+    def _next(self, unit: str, kind: str, outcomes: list[str]) -> str:
+        index = self._tries.get((unit, kind), 0)
+        self._tries[(unit, kind)] = index + 1
+        return outcomes[min(index, len(outcomes) - 1)]
+
+    def _workspace(self, repository: str, accession: str, unit: str) -> Path:
+        return self.world.workspace_root / repository / accession / unit
+
+    def _unit_of_manifest(self, manifest_path: str) -> str:
+        return str(((self.store.read(manifest_path) or {}).get("project") or {}).get("analysis_unit_id") or "")
+
+    def _update(self, manifest_path: str | Path, change) -> dict[str, Any]:
+        manifest = self.store.read(manifest_path) or {}
+        change(manifest)
+        self.store.write(manifest_path, manifest)
+        return manifest
+
+    def _stamp(self) -> str:
+        return policy.iso(self.world.clock.now())
+
+    # ---- ports interface ----
+    def read_manifest(self, manifest_path: str) -> dict[str, Any] | None:
+        return self.store.read(manifest_path)
+
+    def download(self, **arguments: Any) -> dict[str, Any]:
+        self.calls.append(("download", arguments))
+        unit = Path(arguments["handoff_path"]).parent.name
+        script = self.world.scripts.setdefault(unit, UnitScript())
+        outcome = self._next(unit, "download", script.downloads)
+        if outcome == "blocked":
+            return {"ok": False, "reason": "blocked", "blocking_reasons": ["analysis_input:container_shared_by_samples"]}
+        job = self._job_id("dl")
+        workspace = self._workspace(arguments["repository"], arguments["accession"], unit)
+        manifest_path = workspace / "provenance" / "run-manifest.json"
+        self.store.write(manifest_path, {
+            "status": "downloading", "project": {"analysis_unit_id": unit}, "workspace": str(workspace),
+            "raw_directory": str(workspace / "raw"), "output_directory": str(workspace / "output"),
+            "download_started_at": self._stamp(), "lease_owner": {"job_id": job},
+            "raw_retention_policy": arguments["raw_retention_policy"],
+            "campaign_authorizations": [{"boundary": 1, "job_id": job, "validated_at": self._stamp(),
+                                         "entry_point": "msdial_download_repository_raw"}],
+        })
+        self.jobs[job] = {"id": job, "kind": "download", "status": "running", "done_at": self._due(script.ticks), "received": 0,
+                          "outcome": outcome, "unit": unit, "manifest_path": str(manifest_path)}
+        self.download_starts.append(unit)
+        return {"ok": True, "job_id": job}
+
+    def _due(self, ticks: int) -> Any:
+        return self.world.clock.now() + timedelta(seconds=30 * ticks)
+
+    def settle(self) -> None:
+        """End every job whose time is up: the backend works whether or not the runner is watching."""
+        for job in list(self.jobs.values()):
+            if job["status"] in ("queued", "running") and job["outcome"] != "stall" and self.world.clock.now() >= job["done_at"]:
+                self._finish(job, "cancelled" if job.get("cancel") else job["outcome"])
+
+    def restart(self) -> None:
+        """The backend process stops and starts again: what was running is marked interrupted, as
+        server.py does on load, and its Consoles died with it."""
+        for job in self.jobs.values():
+            if job["status"] in ("queued", "running"):
+                job["status"] = "interrupted"
+
+    def forget(self) -> None:
+        """The registry no longer holds any job (it keeps only its newest hundred)."""
+        self.restart()
+        self.jobs.clear()
+
+    def job(self, job_id: str) -> dict[str, Any]:
+        self.settle()
+        job = self.jobs.get(job_id)
+        if job is None:
+            return {"ok": False, "reason": "job_not_found", "http_status": 404}
+        if job["status"] in ("queued", "running"):
+            self._advance(job)
+        return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome")}}
+
+    def _advance(self, job: dict[str, Any]) -> None:
+        if job.get("cancel"):
+            self._finish(job, "cancelled")
+            return
+        if job["outcome"] == "stall":
+            return
+        if job["kind"] == "download":
+            job["received"] += 1000
+            if (self.store.read(job["manifest_path"]) or {}).get("status") == "downloading":
+                self._update(job["manifest_path"], lambda manifest: manifest.update(download_progress_at=self._stamp()))
+        if self.world.clock.now() >= job["done_at"]:
+            self._finish(job, job["outcome"])
+
+    def _finish(self, job: dict[str, Any], outcome: str) -> None:
+        manifest_path = job["manifest_path"]
+        if job["kind"] == "download":
+            if outcome == "ok":
+                workspace = Path(manifest_path).parent.parent
+                (workspace / "raw" / "data").mkdir(parents=True, exist_ok=True)
+                (workspace / "raw" / "data" / "S1.mzML").write_bytes(b"x" * 1000)
+                self._update(manifest_path, lambda manifest: manifest.update(status="raw_metadata_required", input_candidates=[]))
+                job.update(status="completed", result={"manifest_path": manifest_path})
+            elif outcome == "cancelled":
+                self._update(manifest_path, lambda manifest: manifest.update(status="download_failed"))
+                job.update(status="failed", stop_reason="cancelled", error="cancelled")
+            elif outcome == "interrupt":
+                job.update(status="interrupted")
+            else:
+                self._update(manifest_path, lambda manifest: manifest.update(status="download_failed"))
+                job.update(status="failed", error="HTTP 503")
+            return
+        exit_code = {"ok": 0, "invalid": 0, "timeout": -3, "cancelled": -4}.get(outcome, 1)
+        kind = "tuning" if job["kind"] == "diagnostic" else "run"
+
+        def close(manifest: dict[str, Any]) -> None:
+            for item in manifest.get("run_attempts") or []:
+                if item.get("job_id") == job["id"]:
+                    item.update(ended_at=self._stamp(), exit_code=exit_code)
+            if kind == "run" and outcome == "ok":
+                output = Path(manifest["output_directory"])
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "result.mztab").write_text("MTD\tmzTab-version\t2.0.0-M\n", encoding="utf-8")
+                manifest.update(status="mztab_validated", cleanup_allowed=True,
+                                finalized_run={"job_id": job["id"]},
+                                mztab_validation={"files": [{"file": str(output / "result.mztab")}]})
+            elif kind == "run" and outcome == "invalid":
+                manifest.update(status="validation_failed", cleanup_allowed=False)
+
+        self._update(manifest_path, close)
+        job.update(status="completed" if exit_code == 0 else "failed", exit_code=exit_code,
+                   stop_reason="cancelled" if outcome == "cancelled" else None)
+
+    def cancel(self, job_id: str, reason: str) -> dict[str, Any]:
+        self.cancels.append((job_id, reason))
+        if job_id in self.jobs:
+            self.jobs[job_id]["cancel"] = True
+        return {"ok": True, "cancel_requested": True}
+
+    def preflight(self, *, manifest_path: str, extractor_path: str, authorization_path: str) -> dict[str, Any]:
+        self.calls.append(("preflight", {"manifest_path": manifest_path, "extractor_path": extractor_path}))
+        unit = self._unit_of_manifest(manifest_path)
+        script = self.world.scripts.setdefault(unit, UnitScript())
+        disposition = script.disposition
+        if disposition != "none":
+            record = {
+                "schema": policy.DISPOSITION_SCHEMA, "disposition": disposition,
+                "reasons": [] if disposition in ("run", "split") else [f"test_{disposition}"],
+                "warnings": [], "excluded_inputs": [], "split_key": {"acquisition": True} if disposition == "split" else None,
+                "decided_at": self._stamp(),
+                "extractor": {"sha256": self.world.extractor_sha, "inventory_sha256": SHA["extractor"],
+                              "provenance_status": "verified", "pinned": True},
+            }
+            if disposition == "malformed":
+                record = {"schema": "other", "disposition": "maybe"}
+            self._update(manifest_path, lambda manifest: manifest.update(campaign_disposition=record, status="preflight_passed"))
+        return {"completed": True, "extractor_found": True, "status": "preflight_passed"}
+
+    def split(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+        self.calls.append(("split", {"manifest_path": manifest_path}))
+        parent = self.store.read(manifest_path) or {}
+        unit = parent["project"]["analysis_unit_id"]
+        script = self.world.scripts[unit]
+        workspace = Path(parent["workspace"])
+        parts = []
+        already = parent.get("status") == "split_by_acquisition"
+        for mode in script.split_modes:
+            part = f"{unit}-{mode}"
+            part_workspace = workspace.parent / part
+            part_manifest = part_workspace / "provenance" / "run-manifest.json"
+            if not part_manifest.is_file():
+                self.store.write(part_manifest, {
+                    "status": "split_from_parent", "project": {"analysis_unit_id": part}, "workspace": str(part_workspace),
+                    "raw_directory": parent["raw_directory"], "output_directory": str(part_workspace / "output"),
+                    "split_from": {"analysis_unit_id": unit, "manifest_path": manifest_path},
+                })
+            self.world.scripts.setdefault(part, UnitScript())
+            parts.append({"analysis_unit_id": part, "workspace": str(part_workspace), "manifest_path": str(part_manifest),
+                          "acquisition_mode": mode})
+        self._update(manifest_path, lambda manifest: manifest.update(status="split_by_acquisition"))
+        return {"written": not already, "already_split": already, "parts": parts}
+
+    def prepare_metadata(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+        self.calls.append(("prepare_metadata", {"manifest_path": manifest_path}))
+        manifest = self.store.read(manifest_path) or {}
+        output = Path(manifest["output_directory"])
+        output.mkdir(parents=True, exist_ok=True)
+        csv = output / "analysis_files.csv"
+        csv.write_text("file_path,acquisition_type\nS1.mzML,DDA\n", encoding="ascii")
+        seed = {"parameter_strategy": "auto_peak_range", "project_type": "lcms", "ion_mode": "Positive",
+                "output_root": str(output), "workflow_overrides": {"repository_run_manifest": manifest_path}}
+        return {"prepared": True, "input_path": str(csv), "preview": {"answer_seed": seed}}
+
+    def _console(self, kind: str, *, input_path: str, answers: dict[str, Any], authorization_path: str,
+                 timeout_seconds: float, idle_timeout_seconds: float) -> dict[str, Any]:
+        manifest_path = answers["workflow_overrides"]["repository_run_manifest"]
+        unit = self._unit_of_manifest(manifest_path)
+        self.calls.append((kind, {"answers": answers, "timeout_seconds": timeout_seconds,
+                                  "idle_timeout_seconds": idle_timeout_seconds, "unit": unit}))
+        self.settle()
+        for job in self.jobs.values():
+            if job.get("unit") == unit and job["kind"] != "download" and job["status"] in ("queued", "running"):
+                return {"ok": False, "reason": "unit_busy", "live_job_id": job["id"]}
+        script = self.world.scripts.setdefault(unit, UnitScript())
+        outcome = self._next(unit, kind, script.diagnostics if kind == "diagnostic" else script.runs)
+        job_id = self._job_id("dg" if kind == "diagnostic" else "rn")
+        entry = "peak_count_diagnostic" if kind == "diagnostic" else "agent_run"
+        attempt_kind = "tuning" if kind == "diagnostic" else "run"
+
+        def record(manifest: dict[str, Any]) -> None:
+            manifest.setdefault("campaign_authorizations", []).append(
+                {"boundary": 4, "entry_point": entry, "job_id": job_id, "validated_at": self._stamp()}
+            )
+            manifest.setdefault("run_attempts", []).append(
+                {"kind": attempt_kind, "job_id": job_id, "started_at": self._stamp(), "ended_at": None,
+                 "backend": {"pid": 1}}
+            )
+
+        self._update(manifest_path, record)
+        final = {"lose_reply": "ok", "busy_reply": "ok"}.get(outcome, outcome)
+        self.jobs[job_id] = {"id": job_id, "kind": kind, "status": "running", "done_at": self._due(self.world.scripts[unit].ticks),
+                             "outcome": final, "unit": unit, "manifest_path": manifest_path}
+        self.console_starts.append((unit, kind))
+        if outcome == "lose_reply":
+            return {"ok": False, "reason": "os_error", "detail": "timed out"}
+        if outcome == "busy_reply":
+            return {"ok": False, "reason": "unit_busy", "live_job_id": job_id}
+        return {"started": True, "job_id": job_id}
+
+    def start_diagnostic(self, **arguments: Any) -> dict[str, Any]:
+        return self._console("diagnostic", **arguments)
+
+    def start_run(self, **arguments: Any) -> dict[str, Any]:
+        return self._console("run", **arguments)
+
+    def estimate(self, *, job_id: str, manifest_path: str, minimum: int, maximum: int, step: int) -> dict[str, Any]:
+        self.calls.append(("estimate", {"job_id": job_id, "step": step}))
+        job = self.jobs.get(job_id)
+        if job is None or job["status"] != "completed":
+            return {"ready": False}
+        chosen = step or 100
+        return {"ready": True, "representative": {"instrument_family": self.world.instrument_family,
+                                                  "file_name": "QC_05.mzML", "selection_reason": "QC-nearest-run-midpoint"},
+                "estimate": {"minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen}}
+
+    def prepare_guided(self, *, input_path: str, answers: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("prepare_guided", {"answers": answers}))
+        return {"prepared": True}
+
+    def qa(self, *, manifest_path: str) -> dict[str, Any]:
+        return {"ok": True}
+
+    def publication(self, *, manifest_path: str, run_qa: bool) -> dict[str, Any]:
+        self.calls.append(("publication", {"run_qa": run_qa}))
+        return {"ok": True}
+
+    def data_handoff(self, *, job_id: str) -> dict[str, Any]:
+        return {"ok": True}
+
+    def cleanup(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+        self.calls.append(("cleanup", {"manifest_path": manifest_path}))
+        unit = self._unit_of_manifest(manifest_path)
+        if self.world.scripts.get(unit, UnitScript()).cleanup == "blocked":
+            return {"ok": True, "deleted": False, "blockers": ["finalisation_held"]}
+        manifest = self.store.read(manifest_path) or {}
+        shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
+        self._update(manifest_path, lambda current: current.update(status="raw_cleaned"))
+        return {"ok": True, "deleted": True}
+
+    def discard(self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "") -> dict[str, Any]:
+        self.calls.append(("discard", {"manifest_path": manifest_path, "unit_id": unit_id}))
+        manifest = self.store.read(manifest_path) or {}
+        shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
+        self._update(manifest_path, lambda current: current.update(status="discarded"))
+        return {"ok": True, "deleted": True}
+
+    def release_split_parent(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+        self.calls.append(("release_split_parent", {"manifest_path": manifest_path}))
+        if not self.split_release_supported:
+            return {"ok": False, "reason": "unsupported", "detail": "no split-parent release"}
+        manifest = self.store.read(manifest_path) or {}
+        shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
+        return {"ok": True, "deleted": True}
+
+    def live_attempt(self, manifest_path: str) -> dict[str, Any] | None:
+        self.settle()
+        for item in reversed((self.store.read(manifest_path) or {}).get("run_attempts") or []):
+            job = self.jobs.get(item.get("job_id"))
+            if not item.get("ended_at") and job is not None and job["status"] in ("queued", "running"):
+                return item
+        return None
+
+    def lease_state(self, manifest: dict[str, Any]) -> str:
+        job = self.jobs.get((manifest.get("lease_owner") or {}).get("job_id"))
+        return "alive" if job is not None and job["status"] in ("queued", "running") else "gone"
+
+    def backend_alive(self, attempt: dict[str, Any]) -> bool:
+        return True
+
+    def kill_orphan(self, attempt: dict[str, Any]) -> bool:
+        return False
+
+
+class FakeCatalog:
+    def __init__(self, world: "World") -> None:
+        self.world = world
+        self.saved: list[dict[str, Any]] = []
+        self.runs: dict[str, dict[str, Any]] = {}
+        self.drift: set[str] = set()
+
+    def class_decision(self, unit_id: str, purpose: str) -> dict[str, Any]:
+        digest = self.world.class_digest(unit_id) + ("-drifted" if unit_id in self.drift else "")
+        return {"kind": "abstention", "proposal_id": digest, "selected_fields": [], "assignment_count": 3}
+
+    def save_class(self, *, unit_id: str, purpose: str, kind: str, ratification: dict[str, Any]) -> dict[str, Any]:
+        self.saved.append({"unit_id": unit_id, "kind": kind, "ratification": ratification})
+        return {"ok": True, "proposal_id": ratification["proposal_id"]}
+
+    def handoff(self, *, unit_id: str, class_proposal_id: str) -> dict[str, Any]:
+        path = self.world.root / "catalog-data" / "handoffs" / f"{unit_id}.json"
+        _write(path, {"analysis_unit_id": unit_id, "class_proposal_id": class_proposal_id})
+        return {"ok": True, "handoff_path": str(path), "blocking_reasons": []}
+
+    def copy_handoff(self, response: dict[str, Any], destination: Path) -> dict[str, Any]:
+        return ports.copy_handoff(response, destination)
+
+    def record_run(self, **values: Any) -> dict[str, Any]:
+        self.runs[values["run_id"]] = values
+        return {"ok": True, "recorded": True}
+
+
+class FakeGate:
+    def __init__(self) -> None:
+        self.exits = {"before_production": 0, "pre_cleanup": 4, "final": 4}
+        self.runs: list[tuple[str, str]] = []
+
+    def run(self, workspace: str, point: str, report_path: Path) -> dict[str, Any]:
+        self.runs.append((Path(workspace).name, point))
+        exit_code = self.exits[point]
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps({"point": point, "exit": exit_code}).encode()
+        report_path.write_bytes(data)
+        return {"stage": ports.GATE_STAGES[point], "strict": True, "gate_commit": "fake", "outcome": "ran",
+                "exit_code": exit_code, "fail_ids": ["SUM-1"] if exit_code == 2 else [],
+                "strict_hold_ids": ["READ-1"] if exit_code == 4 else [], "stage_reached": "B10",
+                "report_path": str(report_path), "report_sha256": hashlib.sha256(data).hexdigest()}
+
+
+class FakePins:
+    def __init__(self, recorded: dict[str, Any]) -> None:
+        self.values = json.loads(json.dumps(recorded))
+
+    def current(self) -> dict[str, Any]:
+        return json.loads(json.dumps(self.values))
+
+
+class World:
+    """One campaign on a temporary directory, with its fakes and its ledger."""
+
+    def __init__(self, root: Path, unit_ids: list[str], *, policy_values: dict[str, Any] | None = None,
+                 retention: str = "delete_after_validated_output", covers: tuple[str, ...] = ("1", "3", "4", "5", "split"),
+                 known_bytes: int = 10 * 1000**3, size_known: bool = True) -> None:
+        self.root = root
+        self.workspace_root = root / "analysis"
+        self.directory = self.workspace_root / "_campaigns" / "test-campaign"
+        self.directory.mkdir(parents=True)
+        self.clock = FakeClock()
+        self.disk = FakeDisk()
+        self.scripts: dict[str, UnitScript] = {}
+        self.extractor_sha = SHA["extractor"]
+        self.instrument_family = "QTOF"
+        self.private_directory = root / "private libraries" / "vault"
+        self.private_directory.mkdir(parents=True)
+        self.libraries = {}
+        for name in (POSITIVE_MSP, NEGATIVE_MSP, LBM):
+            path = self.private_directory / name
+            path.write_text("NAME: synthetic\n", encoding="utf-8")
+            self.libraries[name] = str(path)
+        manifest_path = self.directory / "campaign-manifest.json"
+        manifest_path.write_bytes(b"{}")
+        self.digest = "sha256:" + hashlib.sha256(b"{}").hexdigest()
+        authorization = self.directory / "campaign-authorization.json"
+        authorization.write_text(json.dumps({"schema": "msdial-campaign-authorization.v1", "approval_id": "approval-1"}), encoding="utf-8")
+        values = {"poll_seconds": 30.0, **(policy_values or {})}
+        self.pins = {
+            "console": {"path": "C:/fake/MSDIALCUI.exe", "exists": True, "binary_sha256": SHA["console"],
+                        "assembly_sha256": SHA["console"], "inventory_sha256": SHA["console"]},
+            "extractor": {"path": "C:/fake/RawMetadataConsoleApp.exe", "exists": True, "binary_sha256": SHA["extractor"],
+                          "inventory_sha256": SHA["extractor"]},
+            "libraries": [{"name": POSITIVE_MSP, "sha256": SHA["positive"], "bytes": 16},
+                          {"name": NEGATIVE_MSP, "sha256": SHA["negative"], "bytes": 16},
+                          {"name": LBM, "sha256": SHA["lbm"], "bytes": 16}],
+            "interactive": {"version": "0.5.16", "commit": "a" * 40, "dirty": False},
+            "catalog": {"version": "0.6.1", "commit": "b" * 40, "dirty": False},
+            "gate": {"commit": "c" * 40, "dirty": False},
+        }
+        self.campaign = {
+            "campaign_id": "test-campaign", "pool": "declared", "manifest_path": str(manifest_path),
+            "manifest_digest": self.digest, "analysis_purpose": "annotation of every experimental spectrum",
+            "workspace_root": str(self.workspace_root), "raw_retention_policy": retention,
+            "catalog_database": str(root / "catalog.sqlite"), "authorization_path": str(authorization),
+            "authorization_sha256": SHA["auth"], "policy": policy.CampaignPolicy.from_dict(values).as_dict(),
+            "profile": {
+                "schema": "msdial-campaign-profile.v1",
+                "answers": {"library_strategy": "existing", "use_retention_time_for_annotation": False},
+                "by_ion_mode": {
+                    "Positive": {"libraries": {"msp_paths": [f"library:{POSITIVE_MSP}"], "lbm_path": f"library:{LBM}"}},
+                    "Negative": {"libraries": {"msp_paths": [f"library:{NEGATIVE_MSP}"], "lbm_path": f"library:{LBM}"}},
+                },
+            },
+            "pins": self.pins,
+        }
+        self.approval = {"approval_id": "approval-1", "manifest_digest": self.digest, "approved_by": "Test Person",
+                         "approved_at": "2026-10-01T00:00:00+00:00", "statement": "Approved for the test.", "covers": list(covers)}
+        self.units = [
+            {"unit_key": unit, "catalog_unit_id": unit, "repository": "metabolights", "accession": f"MTBLS{index + 9000}",
+             "order_index": index, "download_group_id": f"group-{index}", "approved_class_digest": self.class_digest(unit),
+             "class_kind": "abstention", "known_bytes": known_bytes, "size_known": int(size_known), "has_archive": 0,
+             "instrument": "Agilent 6545 Q-TOF", "ion_mode": "Positive"}
+            for index, unit in enumerate(unit_ids)
+        ]
+        self.groups = [{"group_id": f"group-{index}", "unit_count": 1, "known_bytes": known_bytes, "size_known": size_known}
+                       for index in range(len(unit_ids))]
+        self.ledger_path = self.directory / "ledger.sqlite"
+        with ledger_module.Ledger(self.ledger_path, durable=False) as book:
+            book.create(self.campaign, self.approval, self.units, self.groups, "2026-10-01T00:00:00+00:00")
+        self.interactive = FakeInteractive(self)
+        self.catalog = FakeCatalog(self)
+        self.gate = FakeGate()
+        self.pin_source = FakePins(self.pins)
+
+    @staticmethod
+    def class_digest(unit_id: str) -> str:
+        return hashlib.sha256(("class:" + unit_id).encode()).hexdigest()[:20]
+
+    def ports(self) -> machine.Ports:
+        return machine.Ports(interactive=self.interactive, catalog=self.catalog, gate=self.gate, disk=self.disk,
+                             clock=self.clock, pins=self.pin_source)
+
+    def open(self, commit_hook=None) -> ledger_module.Ledger:
+        return ledger_module.Ledger(self.ledger_path, commit_hook=commit_hook, durable=False)
+
+    def runner(self, book: ledger_module.Ledger) -> machine.Runner:
+        return machine.Runner(book, self.ports(), resources={"libraries": self.libraries})
+
+    def run(self, *, max_iterations: int = 2000, commit_hook=None) -> dict[str, Any]:
+        with self.open(commit_hook) as book:
+            return self.runner(book).run(until_idle=True, max_iterations=max_iterations)
