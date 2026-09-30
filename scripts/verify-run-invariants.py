@@ -44,19 +44,22 @@ correctly gave the same answer. Every unattended run must pass --strict.
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import hashlib
+import html
 import io
 import json
 import math
 import os
 import re
 import sys
+import urllib.parse
 import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 PASS = "pass"
 FAIL = "fail"
@@ -67,10 +70,30 @@ STAGES = ("before-production", "after-run", "before-publish")
 
 # A user-profile path inside an artifact built to be shared. Deliberately narrow: it
 # matches what this machine actually leaks (a Windows profile path) rather than trying to
-# recognise private data in general, which no pattern can do.
+# recognise private data in general, which no pattern can do. SEC-1 refuses it wherever it is found.
 PRIVATE_PATH_PATTERN = re.compile(
     r"[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}[^\\/\s\"\',;]+"
     r"|file:/{2,3}[A-Za-z]:/+Users/+[^\s\"\',;]+",
+    re.IGNORECASE,
+)
+# Every other absolute path from this machine, in the forms the writers produce: raw, JSON-escaped,
+# forward-slashed and percent-encoded. The production library is kept outside any user profile, so
+# the pattern above never saw its location. These recognise locations, not private data. A SMILES
+# string never starts with a bond and never puts a bond after "X:", so its "\" and "/" read as
+# neither; the mzTab-M's structure columns are not read at all.
+ABSOLUTE_PATH_PATTERN = re.compile(
+    r"(?:(?<![A-Za-z0-9])|(?<=%2F)|(?<=%5C)|(?<=%20))"
+    r"[A-Za-z](?::|%3A)(?:\\\\|\\|/|%5C|%2F)(?=[^\s\"'<>|]*[A-Za-z0-9_])[^\s\"'<>|]*",
+    re.IGNORECASE,
+)
+UNC_PATH_PATTERN = re.compile(
+    r"(?:^|(?<=[\s\"'<>|;,=]))(?:\\\\\\\\|\\\\|//|%5C%5C)"
+    r"[A-Za-z0-9][A-Za-z0-9._$-]{0,62}(?:\\\\|\\|/|%5C)[^\\/\s\"'<>|]+[^\s\"'<>|]*"
+    r"|smb://[^\s\"'<>|]+",
+    re.IGNORECASE | re.MULTILINE,
+)
+FILE_URI_PATTERN = re.compile(
+    r"file(?::|%3A)(?:/|%2F){2,}(?=[^\s\"'<>|]*[A-Za-z0-9])[^\s\"'<>|]*",
     re.IGNORECASE,
 )
 
@@ -3552,54 +3575,580 @@ def check_binary_identity_is_recorded(
     )
 
 
+# ---- SEC-1 --------------------------------------------------------------------------------------
+# Three classes of artifact, from the privacy contract. SHARED ones are built to leave the machine:
+# the publication report, bundle, tables and texts, the workflow bundle, and anything under the
+# unit's share\. The Console's mzTab-M is what the campaign redistributes, and the Console writes this
+# machine's raw and library locations into it as file URIs; nothing in it can declare a sharing
+# policy, so its paths are graded as a legacy artifact's are. datamining-handoff.json is a LOCAL
+# handoff to the next agent: it carries this machine's paths on purpose, and is read for a private
+# library only.
+#
+# Refused wherever it is read: a user-profile path; a private library's location or directory, in
+# any encoding, or its file name after a separator (a bare file name is the identifier the contract
+# asks for; after a separator it is a path); a member whose bytes are a recorded library's; a library
+# file, or MS-DIAL's copy of one (*_Loaded.msp2.dbs), inside any bundle; and a local-only file inside
+# a shared bundle. Any other drive-letter, UNC or file-URI path is refused in an artifact that declares
+# Interactive's shared-path policy (msdial-interactive.shared-paths.v1, or any value: a declaration
+# binds) and warned about in one that does not, which is every artifact written before the policy
+# existed, MTBLS2207's among them.
+SHARED_PATHS_MEMBER = "SHARED-PATHS.json"
+SEC1_TITLE = "No private path in a shared artifact"
+SEC1_REPORT = "MS_DIAL_publication_report.json"
+SEC1_PUBLICATION_BUNDLE = "MS_DIAL_publication_reporting_bundle.zip"
+SEC1_PUBLICATION_FILES = (
+    SEC1_PUBLICATION_BUNDLE, SEC1_REPORT, "Supplementary_Table_MS_DIAL.tsv",
+    "Supplementary_Table_MS_DIAL.xlsx", "MS_DIAL_Materials_and_Methods.txt", "MS_DIAL_QA_Results.txt",
+)
+SEC1_WORKFLOW_BUNDLE = "msdial-workflow-bundle.zip"
+SEC1_HANDOFF = "datamining-handoff.json"
+LIBRARY_MEMBER = re.compile(r"\.(?:msp|msp2|dbs|lbm|lbm2)$", re.IGNORECASE)
+LOCAL_ONLY_MEMBER = re.compile(
+    r"\.(?:mdproject|mddata|dcl|pai2)$|^(?:datamining-handoff|guided-answers)\.json$", re.IGNORECASE)
+PRIVATE_LICENCE = re.compile(r"private|institutional|proprietary|in-house", re.IGNORECASE)
+ZIP_MAGIC = b"PK\x03\x04"
+SEC1_DEPTH = 2                          # a bundle, and the workbook inside it
+SEC1_NESTED_LIMIT = 256 * 1024 * 1024   # a nested container is read into memory to be opened
+SEC1_LINE_LIMIT = 1024 * 1024           # a longer line is read in pieces
+SEC1_CHUNK = 4 * 1024 * 1024            # text is matched this much at a time
+SEC1_STRUCTURE_COLUMNS = frozenset({"smiles", "inchi"})
+SEC1_SEPARATORS = re.compile(r"[\\/]+")
+SEC1_JSON_ESCAPE = re.compile(r"\\u([0-9A-Fa-f]{4})")
+
+
+@dataclass(frozen=True)
+class _Sec1Scope:
+    """How one artifact is read.
+
+    paths: the path patterns apply. declared: the artifact declares the shared-path policy, so any
+    absolute path in it is refused. content: its text is read at all, rather than only its member
+    names. members: a local-only member is refused, which holds only inside a shared container.
+    """
+    role: str
+    paths: bool = True
+    declared: bool = False
+    content: bool = True
+    members: bool = True
+
+
+class _Sec1Findings:
+    def __init__(self) -> None:
+        self.fails: dict[tuple[str, str], list] = {}
+        self.warns: dict[tuple[str, str], list] = {}
+        self.unread: list[str] = []
+
+    @staticmethod
+    def _add(table: dict, where: str, kind: str, example: str) -> None:
+        entry = table.setdefault((where, kind), [0, example])
+        entry[0] += 1
+        entry[1] = entry[1] or example
+
+    def fail(self, where: str, kind: str, example: str = "") -> None:
+        self._add(self.fails, where, kind, example)
+
+    def warn(self, where: str, kind: str, example: str = "") -> None:
+        self._add(self.warns, where, kind, example)
+
+    @staticmethod
+    def listed(table: dict) -> list[str]:
+        return [f"{where}: {kind}" + (f" x{count}" if count > 1 else "") + (f" (e.g. {example})" if example else "")
+                for (where, kind), (count, example) in table.items()]
+
+    @staticmethod
+    def total(table: dict) -> int:
+        return sum(count for count, _example in table.values())
+
+    @staticmethod
+    def by_artifact(table: dict) -> list[str]:
+        """How many findings each artifact holds, its members counted with it."""
+        counts: Counter = Counter()
+        for (where, _kind), (count, _example) in table.items():
+            counts[where.split(":", 1)[0]] += count
+        return [f"{artifact} {count}" for artifact, count in counts.items()]
+
+
+def _sec1_unescape(match: "re.Match") -> str:
+    code = int(match.group(1), 16)
+    # json.dumps escapes what lies beyond ASCII. An escaped ASCII character is not something it writes,
+    # and decoding one could turn a backslash and the name after it into something else.
+    return chr(code) if code >= 0x80 else match.group(0)
+
+
+def _sec1_fold(text: str) -> str:
+    """Text as SEC-1 compares it with a library location: percent-, JSON- and XML-escapes decoded, one
+    case, and every run of separators a single '/'. The location is folded the same way, so whichever
+    encoding a writer chose (backslashes, doubled backslashes, forward slashes, file://, %20) meets it.
+    """
+    if "%" in text:
+        text = urllib.parse.unquote(text, errors="replace")
+    if "\\u" in text:
+        text = SEC1_JSON_ESCAPE.sub(_sec1_unescape, text)
+    if "&" in text:
+        text = html.unescape(text)
+    return SEC1_SEPARATORS.sub("/", text.casefold())
+
+
+def _sec1_libraries(output: Path) -> "tuple[list[dict], list[str]]":
+    """Every library this unit's local records name, and why a record could not be read.
+
+    A library is public only when a DOI or an https source is recorded for it and no record gives it
+    a private, institutional or proprietary licence or a private distribution. Anything else is
+    private, and so is a library the settings load that no provenance record names: the default
+    licence for a user's own library is 'institutional/private', and a record that says nothing is
+    no evidence that the library may be shared.
+    """
+    merged: dict[str, dict] = {}
+    problems: list[str] = []
+    readable = 0
+
+    def add(path: object, entry: "dict | None" = None) -> None:
+        text = str(path or "").strip()
+        if not text:
+            return
+        key = _sec1_fold(text).rstrip("/")
+        library = merged.setdefault(key, {
+            "key": key, "path": text, "name": PureWindowsPath(text).name, "identified": False,
+            "restricted": False, "sha256": set(), "sizes": set(), "size_unknown": False,
+        })
+        if not entry:
+            return
+        source = str(entry.get("source") or entry.get("record_url") or "").strip()
+        if str(entry.get("doi") or "").strip() or source.casefold().startswith("https://"):
+            library["identified"] = True
+        licence = str(entry.get("license") or entry.get("licence") or "")
+        if PRIVATE_LICENCE.search(licence) or str(entry.get("distribution") or "").strip().casefold() == "private":
+            library["restricted"] = True
+        digest = str(entry.get("sha256") or "").strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{64}", digest):
+            library["sha256"].add(digest)
+            size = entry.get("size", entry.get("size_bytes"))
+            if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+                library["sizes"].add(size)
+            else:
+                library["size_unknown"] = True
+
+    for name, key in (("workflow-settings.json", "library_provenance"), ("run-manifest.json", "libraries")):
+        path = output / name
+        if not path.exists():
+            continue
+        record, reason = _read_json(path)
+        if record is None:
+            problems.append(reason)
+            continue
+        readable += 1
+        entries = record.get(key)
+        if entries is not None and not isinstance(entries, list):
+            problems.append(f"{name} records {key} as something other than a list")
+            entries = None
+        for entry in entries or []:
+            if isinstance(entry, dict):
+                add(entry.get("path") or entry.get("local_path") or entry.get("filename"), entry)
+        if name == "workflow-settings.json":
+            # The libraries the Console was told to load, whether or not a provenance record names them.
+            for setting in ("msp_path", "text_db_path", "lbm_path"):
+                add(record.get(setting))
+            for rows, column in (("msp_annotators", "msp_file_path"), ("text_annotators", "text_db_file_path")):
+                for row in record.get(rows) if isinstance(record.get(rows), list) else []:
+                    if isinstance(row, dict):
+                        add(row.get(column))
+            if isinstance(record.get("lbm_annotator"), dict):
+                add(record["lbm_annotator"].get("lbm_file_path"))
+    if not readable and not problems:
+        problems.append("neither workflow-settings.json nor run-manifest.json is in the output directory")
+    libraries = list(merged.values())
+    for library in libraries:
+        library["private"] = library["restricted"] or not library["identified"]
+    return libraries, problems
+
+
+class _Sec1Needles:
+    """What a private library looks like in an artifact, built from the unit's own records."""
+
+    def __init__(self, libraries: list[dict], workspace: Path) -> None:
+        self.locations: list[tuple[str, str]] = []
+        self.directories: list[tuple["re.Pattern", str]] = []
+        self.names: list[tuple[str, str]] = []
+        self.sha256: dict[str, str] = {}
+        self.sizes: set[int] = set()
+        self.hash_every_size = False
+        self.directories_not_used = 0
+        home = _sec1_fold(os.path.abspath(workspace)).rstrip("/")
+        public = [library["key"] for library in libraries if not library["private"]]
+        for library in libraries:
+            for digest in library["sha256"]:
+                self.sha256[digest] = library["name"]
+            self.sizes |= library["sizes"]
+            self.hash_every_size |= library["size_unknown"]
+            if not library["private"]:
+                continue
+            if library["name"]:
+                self.names.append(("/" + _sec1_fold(library["name"]), library["name"]))
+            where = PureWindowsPath(library["path"])
+            if not where.anchor:
+                continue  # a relative record: the file-name rule is what applies
+            self.locations.append((library["key"], library["name"]))
+            parent = where.parent
+            directory = _sec1_fold(str(parent)).rstrip("/")
+            # A drive or share root names no directory. A directory that holds the workspace, lies inside
+            # it or holds a public library would refuse every path to those, which say nothing about where
+            # the private library is kept; the library's own location and name still apply.
+            if (len(parent.parts) < 2 or directory == home or home.startswith(directory + "/")
+                    or directory.startswith(home + "/") or any(key.startswith(directory + "/") for key in public)):
+                self.directories_not_used += 1
+                continue
+            # The directory itself, or a path under it; not a sibling that merely begins with its name.
+            self.directories.append((re.compile(
+                re.escape(directory) + r"(?=/|[\s\"'<>|,;)\]]|\.(?:\s|$)|$)", re.MULTILINE), library["name"]))
+
+    @property
+    def active(self) -> bool:
+        return bool(self.locations or self.directories or self.names)
+
+    def hashes(self, size: int) -> bool:
+        return bool(self.sha256) and (self.hash_every_size or size in self.sizes)
+
+
+def _sec1_paths(text: str) -> "list[tuple[str, str]]":
+    """(kind, match) for each path in the text, each location counted once: a file URI holds a
+    drive-letter path, and a user-profile path is one."""
+    starts: list[int] = []
+    ends: list[int] = []
+    found: list[tuple[str, str]] = []
+    # Each pattern but the file URI's tries a lookbehind at every position, which on a large mzTab-M
+    # costs seconds per hundred MB. A text holding none of the separators a match must contain is skipped.
+    for kind, pattern, marks in (
+        ("user-profile path", PRIVATE_PATH_PATTERN, (":\\", ":/")),
+        ("file URI", FILE_URI_PATTERN, ()),
+        ("UNC path", UNC_PATH_PATTERN, ("\\\\", "//", "%5C", "%5c")),
+        ("drive-letter path", ABSOLUTE_PATH_PATTERN, (":\\", ":/", "%3A", "%3a")),
+    ):
+        if marks and not any(mark in text for mark in marks):
+            continue
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            index = bisect.bisect_right(starts, start)
+            if (index and ends[index - 1] > start) or (index < len(starts) and starts[index] < end):
+                continue
+            starts.insert(index, start)
+            ends.insert(index, end)
+            found.append((kind, match.group(0)))
+    return found
+
+
+def _sec1_shape(kind: str, match: str) -> str:
+    """Enough to find a path again without saying where it leads: the kind of anchor, and the file name
+    when the path ends in one. A bare file name is an identifier the contract allows; a directory is
+    not, and nor is a drive letter, since the report itself may be kept and shared. A user-profile
+    path is not shown at all, since it names the account."""
+    if kind == "user-profile path":
+        return ""
+    # A path in a CSV row runs on into the next field; the Console's parser allows no comma in one.
+    path = re.split(r"[,;]", match, maxsplit=1)[0].rstrip("\\/.:)]}")
+    parts = [part for part in re.split(r"(?:\\|/|%5C|%2F)+", path, flags=re.IGNORECASE) if part]
+    last = parts[-1] if len(parts) > 1 else ""
+    if len(last) > 80 or not re.fullmatch(r"[^.]+(?:\.[A-Za-z0-9]{1,8})+", last):
+        return ""
+    head, separator = {"file URI": ("file://", "/"), "UNC path": ("\\\\", "\\")}.get(kind, ("", "\\"))
+    return head + "..." + separator + last
+
+
+def _sec1_structures_blanked(line: str, columns: "dict[str, list[int]]") -> str:
+    """An mzTab-M line with its SMILES and InChI fields emptied, so no stereo bond is read as a path."""
+    body = line.rstrip("\r\n")
+    fields = body.split("\t")
+    section = {"SMH": "SML", "SEH": "SME"}.get(fields[0])
+    if section:
+        columns[section] = [index for index, name in enumerate(fields)
+                            if name.strip().casefold() in SEC1_STRUCTURE_COLUMNS]
+        return line
+    blank = columns.get(fields[0])
+    if not blank:
+        return line
+    for index in blank:
+        if index < len(fields):
+            fields[index] = ""
+    return "\t".join(fields) + line[len(body):]
+
+
+def _sec1_match(text: str, where: str, scope: _Sec1Scope, needles: _Sec1Needles,
+                findings: _Sec1Findings) -> None:
+    if scope.paths:
+        for kind, match in _sec1_paths(text):
+            if kind == "user-profile path" or scope.declared:
+                findings.fail(where, kind, _sec1_shape(kind, match))
+            else:
+                findings.warn(where, kind, _sec1_shape(kind, match))
+    if not needles.active:
+        return
+    folded = _sec1_fold(text)
+    named: set[str] = set()
+    for location, name in needles.locations:
+        if location in folded:
+            findings.fail(where, f"the location of private library {name}")
+            named.add(name)
+    for pattern, name in needles.directories:
+        if name not in named and pattern.search(folded):
+            findings.fail(where, f"the directory of private library {name}")
+            named.add(name)
+    for fragment, name in needles.names:
+        if name not in named and fragment in folded:
+            findings.fail(where, f"private library {name} named inside a path")
+
+
+class _Sec1Reader(io.RawIOBase):
+    """A member's bytes, hashed as they are read, so each member is read once for every rule."""
+
+    def __init__(self, raw, digest) -> None:
+        super().__init__()
+        self._raw = raw
+        self._digest = digest
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        data = self._raw.read(len(buffer))
+        if self._digest is not None:
+            self._digest.update(data)
+        buffer[:len(data)] = data
+        return len(data)
+
+
+def _sec1_leaf(handle, where: str, size: int, scope: _Sec1Scope, needles: _Sec1Needles,
+               findings: _Sec1Findings) -> None:
+    digest = hashlib.sha256() if needles.hashes(size) else None
+    if scope.content and not LIBRARY_MEMBER.search(where):
+        stream = io.TextIOWrapper(io.BufferedReader(_Sec1Reader(handle, digest)), encoding="utf-8-sig",
+                                  errors="replace", newline="")
+        structures = where.casefold().endswith(".mztab")
+        columns: dict[str, list[int]] = {}
+        lines: list[str] = []
+        length = 0
+        while True:
+            line = stream.readline(SEC1_LINE_LIMIT)
+            if not line:
+                break
+            if structures:
+                line = _sec1_structures_blanked(line, columns)
+            lines.append(line)
+            length += len(line)
+            if length >= SEC1_CHUNK:
+                _sec1_match("".join(lines), where, scope, needles, findings)
+                lines, length = [], 0
+        if lines:
+            _sec1_match("".join(lines), where, scope, needles, findings)
+    elif digest is not None:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    if digest is not None and digest.hexdigest() in needles.sha256:
+        findings.fail(where, f"the content of library {needles.sha256[digest.hexdigest()]}")
+
+
+def _sec1_container(archive: zipfile.ZipFile, where: str, depth: int, scope: _Sec1Scope,
+                    needles: _Sec1Needles, findings: _Sec1Findings) -> None:
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        member = f"{where}:{info.filename}"
+        base = info.filename.replace("\\", "/").rsplit("/", 1)[-1]
+        if LIBRARY_MEMBER.search(base):
+            findings.fail(member, "a library file, or MS-DIAL's copy of one, as a member")
+        elif scope.members and LOCAL_ONLY_MEMBER.search(base):
+            findings.fail(member, "a local-only file as a member")
+        if not scope.content and not needles.hashes(info.file_size):
+            continue
+        try:
+            nested = False
+            if scope.content:
+                with archive.open(info) as handle:
+                    nested = handle.read(4) == ZIP_MAGIC
+            if not nested:
+                with archive.open(info) as handle:
+                    _sec1_leaf(handle, member, info.file_size, scope, needles, findings)
+                continue
+            if depth >= SEC1_DEPTH or info.file_size > SEC1_NESTED_LIMIT:
+                findings.unread.append(f"{member} (a container nested too deep, or too large, to open)")
+                continue
+            with zipfile.ZipFile(io.BytesIO(archive.read(info))) as inner:
+                _sec1_container(inner, member, depth + 1, scope, needles, findings)
+        except Exception as exc:  # an encrypted member, an unknown compression, a corrupt stream
+            findings.unread.append(f"{member} ({type(exc).__name__})")
+
+
+def _sec1_artifact(path: Path, where: str, scope: _Sec1Scope, needles: _Sec1Needles,
+                   findings: _Sec1Findings) -> None:
+    try:
+        with path.open("rb") as handle:
+            container = handle.read(4) == ZIP_MAGIC
+        if container:
+            with zipfile.ZipFile(path) as archive:
+                _sec1_container(archive, where, 1, scope, needles, findings)
+            return
+        size = path.stat().st_size
+        if not scope.content and not needles.hashes(size):
+            return
+        with path.open("rb") as handle:
+            _sec1_leaf(handle, where, size, scope, needles, findings)
+    except Exception as exc:  # a zip header on something that is not one, or an unreadable file
+        findings.unread.append(f"{where} ({type(exc).__name__})")
+
+
+def _sec1_policy(value: object) -> str:
+    """The policy an artifact declares. Any value at all is a declaration, and binds the artifact."""
+    if value is None or value is False:
+        return ""
+    return str(value).strip()
+
+
+def _sec1_member_record(path: Path, member_name: str) -> "tuple[bool, dict | None]":
+    """Whether a bundle holds a member of this name, and the JSON object in it when it can be read."""
+    found = False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                if info.filename.replace("\\", "/").rsplit("/", 1)[-1].casefold() != member_name.casefold():
+                    continue
+                found = True
+                if info.file_size > QA_TABLE_LIMIT:
+                    return found, None
+                parsed = json.loads(archive.read(info).decode("utf-8-sig"))
+                return found, parsed if isinstance(parsed, dict) else None
+    except Exception:  # an unreadable bundle, or member, is reported as unread by the scan itself
+        pass
+    return found, None
+
+
 def check_no_private_path_in_a_shared_artifact(report: Report, output: Path, stage: str) -> None:
-    """SEC-1. Nothing meant for sharing carries a path from this machine.
+    """SEC-1. Nothing meant for sharing carries a path from this machine, or a private library.
 
     The contract forbids private library files and their paths from reaching bundles, logs,
     repositories or shared reports, and requires a library to be identified by name and checksum
     instead. The publication bundle is the artifact built to leave the machine, and a check that
     reads only its member NAMES passes it while its members carry the path.
 
+    The first widening of this check followed the production library out of the user profile. It
+    matched only a profile path in four publication files, and passed both MTBLS2207 parts while
+    their report, table and workflow bundle carried tens of absolute paths, the library locations
+    among them, and their mzTab-M named each library as a file URI: a library kept on a data drive
+    or a share was invisible to it. So it now reads the workbook inside the bundle, the workflow
+    bundle, the mzTab-M and the data-mining handoff as well, knows each private library by the unit's
+    own records, and refuses a library's bytes or MS-DIAL's copy of it in any bundle.
+
+    Nothing this check reports quotes a location: a finding names the artifact, what was found, the
+    library by its file name, and at most the file name a path ends in. The report is itself a record
+    that may be kept and shared.
+
     A PASS here means no known pattern matched. It is not a statement that the bundle contains no
     private data, and it must never be read as one.
     """
     if stage != "before-publish":
         return
-    candidates = [
-        output / "MS_DIAL_publication_reporting_bundle.zip",
-        output / "MS_DIAL_publication_report.json",
-        output / "Supplementary_Table_MS_DIAL.tsv",
-        output / "MS_DIAL_Materials_and_Methods.txt",
-    ]
-    present = [path for path in candidates if path.is_file()]
-    if not present:
-        report.add("SEC-1", stage, "No private path in a shared artifact", NOT_EVALUABLE,
-                   "No publication artifact has been generated.", required=False)
-        return
-    hits: list[str] = []
-    unread: list[str] = []
-    for path in present:
-        for member, payload in _readable_members(path, unread):
-            for match in PRIVATE_PATH_PATTERN.findall(payload):
-                hits.append(f"{path.name}:{member}: {match}")
-    if hits:
+    workspace = output.parent
+    libraries, library_problems = _sec1_libraries(output)
+    needles = _Sec1Needles(libraries, workspace)
+    findings = _Sec1Findings()
+    notes: list[str] = []
+    report_policy = ""
+    if (output / SEC1_REPORT).exists():
+        record, reason = _read_json(output / SEC1_REPORT)
+        if record is None:
+            notes.append(f"{reason}, so whether the publication artifacts declare a shared-path policy is unknown")
+        else:
+            report_policy = _sec1_policy(record.get("shared_path_policy"))
+
+    # The tables and texts follow the report written with them; a bundle also follows its own copy.
+    artifacts: list[tuple[Path, str, _Sec1Scope]] = []
+    declared: dict[str, str] = {}
+    for name in SEC1_PUBLICATION_FILES:
+        path = output / name
+        if not path.is_file():
+            continue
+        policy = report_policy
+        if name == SEC1_PUBLICATION_BUNDLE and not policy:
+            _found, inner = _sec1_member_record(path, SEC1_REPORT)
+            policy = _sec1_policy((inner or {}).get("shared_path_policy"))
+        artifacts.append((path, name, _Sec1Scope("shared", declared=bool(policy))))
+        if policy:
+            declared[name] = policy
+    workflow = output / SEC1_WORKFLOW_BUNDLE
+    if workflow.is_file():
+        # The workflow bundle is written before the run, so it declares for itself, by carrying the member.
+        found, record = _sec1_member_record(workflow, SHARED_PATHS_MEMBER)
+        policy = (_sec1_policy((record or {}).get("policy")) or SHARED_PATHS_MEMBER) if found else ""
+        artifacts.append((workflow, workflow.name, _Sec1Scope("shared", declared=bool(policy))))
+        if policy:
+            declared[workflow.name] = policy
+    for path in sorted(output.glob("*.mzTab")):
+        artifacts.append((path, path.name, _Sec1Scope("console")))
+    if (output / SEC1_HANDOFF).is_file():
+        artifacts.append((output / SEC1_HANDOFF, SEC1_HANDOFF, _Sec1Scope("handoff", paths=False, members=False)))
+    share = workspace / "share"
+    if share.is_dir():
+        # Placed there to be shared, so the directory is the declaration.
+        for path in sorted(item for item in share.rglob("*") if item.is_file()):
+            where = "share/" + path.relative_to(share).as_posix()
+            artifacts.append((path, where, _Sec1Scope("shared", declared=True)))
+            declared[where] = "share"
+            if LIBRARY_MEMBER.search(path.name):
+                findings.fail(where, "a library file, or MS-DIAL's copy of one, placed to be shared")
+            elif LOCAL_ONLY_MEMBER.search(path.name):
+                findings.fail(where, "a local-only file placed to be shared")
+    read = len(artifacts)
+    # Every other bundle is local, and is read for one thing: a library file inside it.
+    for path in sorted(output.glob("*.zip")):
+        if path.name.casefold() not in (SEC1_PUBLICATION_BUNDLE.casefold(), SEC1_WORKFLOW_BUNDLE.casefold()):
+            artifacts.append((path, path.name, _Sec1Scope("local bundle", paths=False, content=False, members=False)))
+    for path, where, scope in artifacts:
+        _sec1_artifact(path, where, scope, needles, findings)
+
+    if library_problems:
+        notes.append("the private-library rules were not applied, because " + "; ".join(library_problems))
+    fails = _Sec1Findings.listed(findings.fails)
+    warns = _Sec1Findings.listed(findings.warns)
+    evidence = dict(
+        scanned=[f"{where} ({scope.role})" for _path, where, scope in artifacts][:40],
+        declared=declared,
+        libraries=[{"name": library["name"], "distribution": "private" if library["private"] else "public"}
+                   for library in libraries],
+        private_library_rules="not applied" if library_problems else "applied",
+        directory_rules_not_used=needles.directories_not_used,
+        unread=findings.unread[:20],
+    )
+    if fails:
         report.add(
-            "SEC-1", stage, "No private path in a shared artifact", FAIL,
-            f"{len(hits)} occurrence(s) of a user-profile path inside an artifact built to be "
-            "shared. Identify the library by name and checksum instead.",
-            occurrences=sorted(set(hits))[:10], scanned=[path.name for path in present],
+            "SEC-1", stage, SEC1_TITLE, FAIL,
+            f"{_Sec1Findings.total(findings.fails)} finding(s) that no artifact built to be shared may carry: "
+            + "; ".join(fails[:3]) + ". Identify a library by name and checksum, never by location; keep "
+            "library files and MS-DIAL's copies of them out of every bundle; and an artifact that declares "
+            "the shared-path policy carries no absolute path at all.",
+            fails=fails[:30], fail_count=len(fails), warns=warns[:30], **evidence,
         )
         return
-    if unread:
-        report.add("SEC-1", stage, "No private path in a shared artifact", WARN,
-                   f"No user-profile path matched, but {len(unread)} artifact member(s) could not be read, so "
-                   "what they hold is unknown: " + "; ".join(unread[:5]),
-                   scanned=[path.name for path in present], unread=unread[:20])
+    if not read:
+        report.add("SEC-1", stage, SEC1_TITLE, NOT_EVALUABLE, "No artifact built to be shared is present.",
+                   required=False, **evidence)
         return
-    report.add("SEC-1", stage, "No private path in a shared artifact", PASS,
-               f"No user-profile path matched in {len(present)} shared artifact(s). This says no "
-               "known pattern matched, not that no private data is present.",
-               scanned=[path.name for path in present])
+    reasons: list[str] = []
+    if warns:
+        reasons.append(
+            f"{_Sec1Findings.total(findings.warns)} absolute path(s) (drive-letter, UNC or file URI) are in "
+            "artifacts that declare no shared-path policy, so were written before Interactive declared one, "
+            "or by the Console (" + ", ".join(_Sec1Findings.by_artifact(findings.warns)) + "). Regenerate or "
+            "redact them before they are shared")
+    if findings.unread:
+        reasons.append(f"{len(findings.unread)} artifact member(s) could not be read, so what they hold is "
+                       "unknown: " + "; ".join(findings.unread[:5]))
+    reasons.extend(notes)
+    if reasons:
+        report.add("SEC-1", stage, SEC1_TITLE, WARN,
+                   "No user-profile path, private-library location or library content matched, but "
+                   + "; and ".join(reasons) + ".",
+                   warns=warns[:30], warn_count=len(warns), **evidence)
+        return
+    report.add("SEC-1", stage, SEC1_TITLE, PASS,
+               f"No known path pattern, private-library location or library content matched in {read} "
+               "artifact(s). This says no known pattern matched, not that no private data is present.",
+               **evidence)
 
 
 def _readable_members(path: Path, unread: list[str] | None = None) -> list[tuple[str, str]]:

@@ -1113,6 +1113,10 @@ class PrivatePathTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             builder = WorkspaceBuilder(Path(temporary)).provenance()
+            # The run's own record of its library, which every run writes and SEC-1 reads to know what a
+            # private library would look like. Without one it cannot pass; see SharedArtifactTests.
+            (builder.output / "workflow-settings.json").write_text(json.dumps({"library_provenance": [
+                {"path": "Q:\\libraries\\private-VS20.msp", "license": "institutional/private"}]}), encoding="utf-8")
             bundle = builder.output / "MS_DIAL_publication_reporting_bundle.zip"
             with zipfile.ZipFile(bundle, "w") as archive:
                 archive.writestr(
@@ -1124,6 +1128,496 @@ class PrivatePathTests(unittest.TestCase):
         check = [item for item in report.checks if item.check_id == "SEC-1"][0]
         self.assertEqual(verifier.PASS, check.status)
         self.assertIn("not that no private data is present", check.detail)
+
+
+# A private library as the production one is kept: outside any user profile, on a drive of its own,
+# under a directory with a space in its name. Synthetic, like the library's name and bytes: no real
+# location or file name of a private library belongs in a test.
+PRIVATE_MSP = "Q:\\SyntheticLab Libraries\\msp\\Synthetic-Private-pos.msp"
+PRIVATE_BYTES = b"NAME: synthetic compound\nPRECURSORMZ: 100.0\nNum Peaks: 0\n\n"
+PUBLIC_LBM = "Q:\\public-libraries\\1234\\Synthetic-Public.lbm2"
+POLICY = "msdial-interactive.shared-paths.v1"
+
+
+def _sha256(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def _zip(path: Path, members: dict[str, "str | bytes"]) -> Path:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return path
+
+
+def _workbook(**sheets: str) -> bytes:
+    """The shape of an xlsx that matters here: a zip whose sheet XML holds the cell text."""
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/'
+                         'package/2006/content-types"/>')
+        for name, text in sheets.items():
+            archive.writestr(f"xl/worksheets/{name}.xml",
+                             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                             'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                             f'<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{text}</t></is></c></row>'
+                             "</sheetData></worksheet>")
+    return buffer.getvalue()
+
+
+class SharedArtifactTests(unittest.TestCase):
+    """SEC-1, widened. A private library kept off the user profile, and every artifact that leaves.
+
+    The check used to match only a user-profile path in four publication files, so a library kept on a
+    data drive or a share passed it wherever its location was written: the Console's mzTab-M, the
+    workflow bundle, the workbook inside the publication bundle. It now knows each private library by
+    the unit's own records, reads every artifact built to be shared, and grades any other absolute path
+    by whether the artifact declares Interactive's shared-path policy.
+    """
+
+    def _unit(self, temporary: str, *, private: "dict | None" = None, settings_extra: "dict | None" = None,
+              policy: bool = False, report_extra: "dict | None" = None) -> WorkspaceBuilder:
+        builder = WorkspaceBuilder(Path(temporary)).provenance()
+        private_record = private if private is not None else {
+            "path": PRIVATE_MSP, "version": "", "source": "", "doi": "", "license": "institutional/private"}
+        public_record = {"path": PUBLIC_LBM, "version": "1234", "source": "https://zenodo.org/records/1234",
+                         "doi": "10.5281/zenodo.1234", "license": "CC BY 4.0"}
+        settings = {"library_provenance": [private_record, public_record], "lbm_path": PUBLIC_LBM,
+                    "msp_annotators": [{"msp_file_path": private_record.get("path", PRIVATE_MSP)}]}
+        settings.update(settings_extra or {})
+        (builder.output / "workflow-settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        (builder.output / "run-manifest.json").write_text(json.dumps({"libraries": [
+            dict(private_record, sha256=_sha256(PRIVATE_BYTES), size=len(PRIVATE_BYTES)),
+            dict(public_record, sha256="ab" * 32, size=785186493),
+        ]}), encoding="utf-8")
+        record = {"shared_path_policy": POLICY} if policy else {}
+        record.update(report_extra or {})
+        (builder.output / "MS_DIAL_publication_report.json").write_text(json.dumps(record), encoding="utf-8")
+        return builder
+
+    def _sec1(self, builder: WorkspaceBuilder):
+        report = verifier.verify(builder.root, "before-publish")
+        matching = [check for check in report.checks if check.check_id == "SEC-1"]
+        self.assertEqual(1, len(matching))
+        return matching[0]
+
+    @staticmethod
+    def _mztab(builder: WorkspaceBuilder, *, database_uri: str, location: str = "null",
+               smiles: str = "CCOC1=C(O)C=C(\\C=C\\C)C=C1", extra: str = "null") -> None:
+        (builder.output / "AlignResult-1.mzTab").write_text("\n".join([
+            "MTD\tmzTab-version\t2.0.0-M",
+            f"MTD\tms_run[1]-location\t{location}",
+            "MTD\tdatabase[1]\t[,, User-defined MSP library file, ]",
+            "MTD\tdatabase[1]-prefix\tMspDB_1_Synthetic-Private-pos",
+            "MTD\tdatabase[1]-version\tSynthetic-Private-pos.msp",
+            f"MTD\tdatabase[1]-uri\t{database_uri}",
+            f"MTD\tcustom[1]\t[,, library file sha256, Synthetic-Private-pos.msp sha256:{_sha256(PRIVATE_BYTES)}]",
+            "SMH\tSML_ID\tdatabase_identifier\tchemical_formula\tsmiles\tinchi\tchemical_name\topt_global_note",
+            f"SML\t1\tnull\tC11H14O2\t{smiles}\tInChI=1S/C11H14O2/c1-3-5-9-6-7-10(12)11(8-9)13-4-2/h3,5-8,12H,4H2,1-2H3"
+            f"\ttrans-2-Ethoxy-5-(1-propenyl)phenol\t{extra}",
+        ]) + "\n", encoding="utf-8")
+
+    def _assert_quotes_no_location(self, check) -> None:
+        """The gate's report is itself a record that may be kept and shared."""
+        written = json.dumps(check.as_dict()).casefold()
+        for fragment in ("syntheticlab", "synthetic%20lab", "q:\\\\", "q:/"):
+            self.assertNotIn(fragment, written)
+
+    # -- patterns -------------------------------------------------------------------------------------
+
+    def test_every_encoding_of_an_absolute_path_is_recognised(self) -> None:
+        cases = {
+            "drive, raw": ("drive-letter path", "D:\\x\\y.msp"),
+            "drive, JSON-escaped": ("drive-letter path", '"D:\\\\x\\\\y"'),
+            "drive, forward slashes": ("drive-letter path", "D:/x/y"),
+            "drive, percent-encoded": ("drive-letter path", "D%3A%5Cx"),
+            "file URI, the Console's form": ("file URI", "file://D:/x/y.msp"),
+            "file URI to a share": ("file URI", "file:////nas/share/x"),
+            "UNC, raw": ("UNC path", "\\\\nas\\share\\x.msp"),
+            "UNC, JSON-escaped": ("UNC path", '"\\\\\\\\nas\\\\share\\\\x.msp"'),
+            "UNC, after a tab": ("UNC path", "path\t\\\\nas\\share\\x.msp"),
+            "smb": ("UNC path", "smb://nas/x"),
+        }
+        for name, (kind, text) in cases.items():
+            with self.subTest(name):
+                self.assertEqual([kind], [found for found, _match in verifier._sec1_paths(text)])
+
+    def test_structures_identifiers_and_a_named_library_are_not_paths(self) -> None:
+        smiles = "C/C=C\\C(\\C\\CC"
+        for text in (smiles, json.dumps({"smiles": smiles}), f"SML\t1\t{smiles}\tnull",
+                     "InChI=1S/C11H14O2/c1-3-5-9-6-7-10(12)11(8-9)13-4-2/h3,5-8,12H,4H2,1-2H3/b5-3+",
+                     "https://doi.org/10.5281/zenodo.21904103", "[MS, MS:1003082, MS-DIAL, 5.5.260926]",
+                     "MSMS-Public_all-neg-VS20.msp  sha256:0123456789abcdef  41230 records",
+                     '<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'):
+            with self.subTest(text):
+                self.assertEqual([], verifier._sec1_paths(text))
+
+    # -- a private library --------------------------------------------------------------------------
+
+    def test_a_private_library_location_in_the_mztab_database_uri_is_refused(self) -> None:
+        """What the pinned Console writes for every library it loaded, in every run."""
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, policy=True)
+            self._mztab(builder, database_uri="file://Q:/SyntheticLab Libraries/msp/Synthetic-Private-pos.msp")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("AlignResult-1.mzTab: the location of private library Synthetic-Private-pos.msp",
+                      " ".join(check.evidence["fails"]))
+        self._assert_quotes_no_location(check)
+
+    def test_the_same_unit_with_the_location_redacted_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, policy=True, report_extra={"libraries": [
+                {"filename": "Synthetic-Private-pos.msp", "sha256": _sha256(PRIVATE_BYTES), "distribution": "private"}]})
+            self._mztab(builder, database_uri="null",
+                        location="https://ftp.ebi.ac.uk/pub/databases/metabolights/studies/public/MTBLS1/a.mzML")
+            (builder.output / "MS_DIAL_Materials_and_Methods.txt").write_text(
+                "Spectra were searched against Synthetic-Private-pos.msp, a private laboratory library that is not "
+                f"distributed (SHA-256 {_sha256(PRIVATE_BYTES)}).\n", encoding="utf-8")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_the_location_is_refused_in_every_encoding_a_writer_uses(self) -> None:
+        import urllib.parse
+
+        forward = PRIVATE_MSP.replace("\\", "/")
+        forms = {
+            "backslashes": PRIVATE_MSP,
+            "doubled backslashes": json.dumps({"msp_file_path": PRIVATE_MSP}),
+            "forward slashes": forward,
+            "file URI": "file:///" + forward.replace(" ", "%20"),
+            "%20": PRIVATE_MSP.replace(" ", "%20"),
+            "percent-encoded": urllib.parse.quote(PRIVATE_MSP, safe=""),
+            "upper case": PRIVATE_MSP.upper(),
+        }
+        for name, text in forms.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary)
+                (builder.output / "Supplementary_Table_MS_DIAL.tsv").write_text(
+                    f"Library provenance\tLibrary 1\tpath\t{text}\n", encoding="utf-8")
+                check = self._sec1(builder)
+
+                # Refused although the table predates the policy: a private location is never graded.
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn("the location of private library Synthetic-Private-pos.msp", check.detail)
+                self._assert_quotes_no_location(check)
+
+    def test_the_location_is_found_in_the_workflow_bundle_and_the_nested_workbook(self) -> None:
+        places = {
+            "workflow bundle": ("msdial-workflow-bundle.zip",
+                                {"msp_annotator_settings.tsv": f"msp_file_path\n{PRIVATE_MSP}\n"}),
+            "workbook in the bundle": ("MS_DIAL_publication_reporting_bundle.zip",
+                                       {"Supplementary_Table_MS_DIAL.xlsx": _workbook(sheet3=PRIVATE_MSP)}),
+        }
+        for name, (bundle, members) in places.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary)
+                _zip(builder.output / bundle, members)
+                check = self._sec1(builder)
+
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn("the location of private library", check.detail)
+
+    def test_the_private_file_name_inside_a_path_is_refused_and_the_bare_name_is_not(self) -> None:
+        cases = {
+            "a relative path": ("libs\\Synthetic-Private-pos.msp", verifier.FAIL),
+            "beside the method": ("./Synthetic-Private-pos.msp", verifier.FAIL),
+            "a bare name and checksum": (f"Synthetic-Private-pos.msp\tsha256:{_sha256(PRIVATE_BYTES)}", verifier.PASS),
+        }
+        for name, (text, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary, policy=True)
+                (builder.output / "Supplementary_Table_MS_DIAL.tsv").write_text(
+                    f"Library provenance\tLibrary 1\tname\t{text}\n", encoding="utf-8")
+                check = self._sec1(builder)
+
+                self.assertEqual(expected, check.status, check.detail)
+
+    def test_the_directory_of_a_private_library_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary)
+            (builder.output / "MS_DIAL_Materials_and_Methods.txt").write_text(
+                "Libraries were read from Q:\\SyntheticLab Libraries\\msp.\n", encoding="utf-8")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("the directory of private library Synthetic-Private-pos.msp", check.detail)
+
+    def test_a_directory_shared_with_a_public_library_says_nothing_about_the_private_one(self) -> None:
+        """Otherwise every path to the public library would be refused as the private one's."""
+        public = "Q:\\SyntheticLab Libraries\\msp\\zenodo\\Synthetic-Public.msp"
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, settings_extra={"library_provenance": [
+                {"path": PRIVATE_MSP, "license": "institutional/private"},
+                {"path": public, "doi": "10.5281/zenodo.1", "license": "CC BY 4.0"}]})
+            (builder.output / "Supplementary_Table_MS_DIAL.tsv").write_text(
+                f"Library provenance\tLibrary 2\tpath\t{public}\n", encoding="utf-8")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual(1, check.evidence["directory_rules_not_used"])
+
+    def test_a_library_that_records_no_doi_or_source_is_private(self) -> None:
+        """Interactive's default licence for a user's own library is 'institutional/private', and a record
+        that says nothing is no evidence that the library may be shared."""
+        records = {
+            "no licence, no identifier": {"path": PRIVATE_MSP},
+            "a public-sounding licence but no identifier": {"path": PRIVATE_MSP, "license": "CC BY 4.0"},
+            "an identifier and a private distribution": {"path": PRIVATE_MSP, "doi": "10.1/x",
+                                                         "distribution": "private"},
+        }
+        for name, record in records.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary, private=record)
+                (builder.output / "Supplementary_Table_MS_DIAL.tsv").write_text(PRIVATE_MSP + "\n", encoding="utf-8")
+                check = self._sec1(builder)
+
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+    def test_a_library_loaded_with_no_provenance_record_is_private(self) -> None:
+        """library_provenance can lag the libraries the Console was told to load."""
+        loaded = "Q:\\SyntheticLab Libraries\\msp\\Synthetic-Private-neg.msp"
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, settings_extra={"msp_annotators": [{"msp_file_path": loaded}]})
+            (builder.output / "Supplementary_Table_MS_DIAL.tsv").write_text(loaded + "\n", encoding="utf-8")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("private library Synthetic-Private-neg.msp", check.detail)
+
+    # -- library content in a bundle ---------------------------------------------------------------
+
+    def test_a_library_file_or_the_consoles_copy_of_one_in_any_bundle_is_refused(self) -> None:
+        cases = {
+            "the Console's copy": ("MS_DIAL_publication_reporting_bundle.zip", "Project-1_Loaded.msp2.dbs"),
+            "an MSP": ("MS_DIAL_publication_reporting_bundle.zip", "libs/Synthetic-Private-pos.msp"),
+            "an LBM": ("msdial-workflow-bundle.zip", "Synthetic-Public.lbm2"),
+            "a local bundle": ("msdial-project-artifacts.zip", "Project-1_Loaded.msp2.dbs"),
+        }
+        for name, (bundle, member) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary, policy=True)
+                _zip(builder.output / bundle, {member: b"\x00binary"})
+                check = self._sec1(builder)
+
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn("a library file, or MS-DIAL's copy of one, as a member", check.detail)
+
+    def test_a_local_only_file_is_refused_in_a_shared_bundle_but_not_in_a_local_one(self) -> None:
+        for bundle, expected in (("MS_DIAL_publication_reporting_bundle.zip", verifier.FAIL),
+                                 ("msdial-workflow-bundle.zip", verifier.FAIL),
+                                 ("msdial-project-artifacts.zip", verifier.PASS)):
+            with self.subTest(bundle), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary, policy=True)
+                _zip(builder.output / bundle, {"Project-1.mdproject": b"\x00", "datamining-handoff.json": "{}"})
+                check = self._sec1(builder)
+
+                self.assertEqual(expected, check.status, check.detail)
+
+    def test_a_member_holding_a_librarys_bytes_is_refused_under_any_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, policy=True)
+            _zip(builder.output / "MS_DIAL_publication_reporting_bundle.zip", {"supplement/data.bin": PRIVATE_BYTES})
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("the content of library Synthetic-Private-pos.msp", check.detail)
+
+    # -- the policy, and artifacts written before it ---------------------------------------------------
+
+    def test_a_path_in_the_nested_workbook_warns_in_a_legacy_bundle_and_fails_under_the_policy(self) -> None:
+        for policy, expected in ((False, verifier.WARN), (True, verifier.FAIL)):
+            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary, policy=policy)
+                _zip(builder.output / "MS_DIAL_publication_reporting_bundle.zip",
+                     {"Supplementary_Table_MS_DIAL.xlsx": _workbook(sheet3="D:\\data\\sample.mzML")})
+                check = self._sec1(builder)
+
+                self.assertEqual(expected, check.status, check.detail)
+                self.assertIn("Supplementary_Table_MS_DIAL.xlsx:xl/worksheets/sheet3.xml: drive-letter path",
+                              " ".join(check.evidence.get("fails", []) + check.evidence.get("warns", [])))
+
+    def test_the_top_level_workbook_and_qa_text_follow_the_report(self) -> None:
+        artifacts = {"Supplementary_Table_MS_DIAL.xlsx": _workbook(sheet1="D:\\data\\sample.mzML"),
+                     "MS_DIAL_QA_Results.txt": "The QA matrix is D:\\ws\\output\\AlignResult-1.qa.tsv.\n"}
+        for name, content in artifacts.items():
+            for policy, expected in ((False, verifier.WARN), (True, verifier.FAIL)):
+                with self.subTest(name, policy=policy), tempfile.TemporaryDirectory() as temporary:
+                    builder = self._unit(temporary, policy=policy)
+                    if isinstance(content, bytes):
+                        (builder.output / name).write_bytes(content)
+                    else:
+                        (builder.output / name).write_text(content, encoding="utf-8")
+                    check = self._sec1(builder)
+
+                    self.assertEqual(expected, check.status, check.detail)
+
+    def test_the_workflow_bundle_declares_the_policy_for_itself(self) -> None:
+        """It is written before the run, long before the report that declares for the publication files."""
+        for declared, expected in ((False, verifier.WARN), (True, verifier.FAIL)):
+            with self.subTest(declared=declared), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary)
+                members = {"analysis_files.csv": "file_path,file_name\nD:\\ws\\raw\\data\\a.mzML,a\n"}
+                if declared:
+                    members["SHARED-PATHS.json"] = json.dumps({"policy": POLICY, "libraries": []})
+                _zip(builder.output / "msdial-workflow-bundle.zip", members)
+                check = self._sec1(builder)
+
+                self.assertEqual(expected, check.status, check.detail)
+
+    def test_unc_paths_warn_in_a_legacy_artifact_and_fail_under_the_policy(self) -> None:
+        texts = {"JSON": json.dumps({"note": "\\\\synthetic-host\\share\\msp\\x.msp"}),
+                 "TSV": "path\t\\\\synthetic-host\\share\\msp\\x.msp\n",
+                 "file URI": "file:////synthetic-host/share/msp/x.msp\n"}
+        for name, text in texts.items():
+            for policy, expected in ((False, verifier.WARN), (True, verifier.FAIL)):
+                with self.subTest(name, policy=policy), tempfile.TemporaryDirectory() as temporary:
+                    builder = self._unit(temporary, policy=policy)
+                    (builder.output / "Supplementary_Table_MS_DIAL.tsv").write_text(text, encoding="utf-8")
+                    check = self._sec1(builder)
+
+                    self.assertEqual(expected, check.status, check.detail)
+
+    def test_anything_placed_in_share_is_held_to_the_policy(self) -> None:
+        cases = {"a residual path": ("results.mzTab", "MTD\tms_run[1]-location\tfile://D:/ws/raw/a.mzML\n"),
+                 "a library": ("Synthetic-Public.lbm2", "\x00")}
+        for name, (file_name, text) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary)
+                (builder.root / "share").mkdir()
+                (builder.root / "share" / file_name).write_text(text, encoding="utf-8")
+                check = self._sec1(builder)
+
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+    def test_a_user_profile_path_is_refused_in_a_legacy_mztab_without_naming_the_account(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary)
+            self._mztab(builder, database_uri="file:///C:/Users/Someone/AppData/Local/libraries/public.msp")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("AlignResult-1.mzTab: user-profile path", check.detail)
+        self.assertNotIn("someone", json.dumps(check.as_dict()).casefold())
+
+    # -- the mzTab-M and the handoff -------------------------------------------------------------------
+
+    def test_the_mztab_structure_columns_are_not_read(self) -> None:
+        """Belt and braces: the patterns already pass a SMILES; a value the Console never writes as a
+        structure is used here to show the column is not read at all, and the row's other columns are."""
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, policy=True)
+            self._mztab(builder, database_uri="null", smiles="\\\\looks\\like-a-share")
+            clean = self._sec1(builder)
+            self._mztab(builder, database_uri="null", extra="\\\\synthetic-host\\share\\x.msp")
+            other = self._sec1(builder)
+
+        self.assertEqual(verifier.PASS, clean.status, clean.detail)
+        self.assertEqual(verifier.WARN, other.status, other.detail)
+
+    def test_the_consoles_file_uris_warn_because_nothing_in_the_mztab_can_declare_a_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, policy=True)
+            self._mztab(builder, database_uri="null", location="file://D:/ws/raw/data/a.mzML")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("AlignResult-1.mzTab: file URI (e.g. file://.../a.mzML)", check.evidence["warns"])
+
+    def test_the_handoff_is_read_for_a_private_library_only(self) -> None:
+        """It hands the next agent this machine's paths on purpose; a private library is not one of them."""
+        for with_library, expected in ((False, verifier.PASS), (True, verifier.FAIL)):
+            with self.subTest(with_library=with_library), tempfile.TemporaryDirectory() as temporary:
+                builder = self._unit(temporary)
+                handoff = {"job": {"run_directory": "D:\\ws\\output", "log_tail": ["Loaded D:\\ws\\output\\a.mdpeak"]}}
+                if with_library:
+                    handoff["job"]["log_tail"].append(f"Loaded {PRIVATE_MSP}")
+                (builder.output / "datamining-handoff.json").write_text(json.dumps(handoff), encoding="utf-8")
+                (builder.output / "MS_DIAL_publication_report.json").unlink()
+                check = self._sec1(builder)
+
+                self.assertEqual(expected, check.status, check.detail)
+
+    # -- what could not be applied ---------------------------------------------------------------------
+
+    def test_unreadable_library_records_warn_that_the_private_library_rules_were_not_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = self._unit(temporary, policy=True)
+            (builder.output / "workflow-settings.json").write_text("{not json", encoding="utf-8")
+            (builder.output / "run-manifest.json").unlink()
+            (builder.output / "Supplementary_Table_MS_DIAL.tsv").write_text("clean\n", encoding="utf-8")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("the private-library rules were not applied", check.detail)
+
+    def test_no_library_record_at_all_is_not_a_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = WorkspaceBuilder(Path(temporary)).provenance()
+            (builder.output / "Supplementary_Table_MS_DIAL.tsv").write_text("clean\n", encoding="utf-8")
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("neither workflow-settings.json nor run-manifest.json", check.detail)
+
+    # -- regression ------------------------------------------------------------------------------------
+
+    def test_an_mtbls2207_shaped_legacy_unit_warns_and_does_not_fail(self) -> None:
+        """MTBLS2207's two parts: public libraries with DOIs, and pre-policy artifacts full of drive paths.
+
+        The real parts must still exit 0 under --stage all --strict; this is their shape, kept here so the
+        suite holds it without the data.
+        """
+        raw = "D:\\analysis\\metabolights\\MTBLS2207\\unit\\raw\\data\\NIST1950_neg_ID_01.mzML"
+        msp = "D:\\analysis-libraries\\21904103\\MSMS-Public_all-neg-VS20.msp"
+        lbm = "D:\\analysis-libraries\\21904324\\Synthetic-LC25.lbm2"
+        records = [{"path": msp, "version": "21904103", "source": "https://zenodo.org/records/21904103",
+                    "doi": "10.5281/zenodo.21904103", "license": "CC BY 4.0"},
+                   {"path": lbm, "version": "21904324", "source": "https://zenodo.org/records/21904324",
+                    "doi": "10.5281/zenodo.21904324", "license": "CC BY 4.0"}]
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = WorkspaceBuilder(Path(temporary)).provenance()
+            output = builder.output
+            settings = {"library_provenance": records, "lbm_path": lbm, "msp_annotators": [{"msp_file_path": msp}],
+                        "console_path": "D:\\0_SourceCode\\console\\MSDIALCUI.exe", "files": [{"file_path": raw}]}
+            (output / "workflow-settings.json").write_text(json.dumps(settings), encoding="utf-8")
+            (output / "run-manifest.json").write_text(json.dumps({"libraries": [
+                dict(records[0], sha256="55" * 32, size=50818071), dict(records[1], sha256="7c" * 32, size=785186493)]}),
+                encoding="utf-8")
+            report = json.dumps({"workflow": settings, "library_provenance_warnings": []})
+            table = f"Data\tfile_path\t{raw}\tLocal absolute path; review before publication\nLibrary\tpath\t{msp}\n"
+            (output / "MS_DIAL_publication_report.json").write_text(report, encoding="utf-8")
+            (output / "Supplementary_Table_MS_DIAL.tsv").write_text(table, encoding="utf-8")
+            (output / "Supplementary_Table_MS_DIAL.xlsx").write_bytes(_workbook(sheet1=raw, sheet3=msp))
+            (output / "MS_DIAL_Materials_and_Methods.txt").write_text(
+                "Spectra were annotated against MSMS-Public_all-neg-VS20.msp "
+                "(https://doi.org/10.5281/zenodo.21904103).\n", encoding="utf-8")
+            _zip(output / "MS_DIAL_publication_reporting_bundle.zip", {
+                "MS_DIAL_publication_report.json": report, "Supplementary_Table_MS_DIAL.tsv": table,
+                "Supplementary_Table_MS_DIAL.xlsx": _workbook(sheet1=raw, sheet3=msp)})
+            _zip(output / "msdial-workflow-bundle.zip", {
+                "analysis_files.csv": f"file_path,file_name\n{raw},NIST1950_neg_ID_01\n",
+                "workflow-settings.json": json.dumps(settings), "REPRODUCE.txt": "C:\\path\\to\\MSDIALCUI.exe\n"})
+            _zip(output / "msdial-project-artifacts.zip", {"Project-1.mdproject": b"\x00"})
+            (output / "datamining-handoff.json").write_text(json.dumps({"run_directory": str(output)}), encoding="utf-8")
+            self._mztab(builder, location="file://" + raw.replace("\\", "/"),
+                        database_uri="file://" + msp.replace("\\", "/"))
+            check = self._sec1(builder)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual([], check.evidence.get("fails", []))
+        kinds = {entry.split(": ", 1)[1].split(" x")[0].split(" (e.g.")[0] for entry in check.evidence["warns"]}
+        self.assertEqual({"drive-letter path", "file URI"}, kinds)
+        self.assertEqual({"public"}, {library["distribution"] for library in check.evidence["libraries"]})
 
 
 class TerminalStateAndRetentionTests(unittest.TestCase):
