@@ -115,8 +115,15 @@ location.
   input. An mzXML runs only as the mzML its recorded conversion made: until
   the unit's manifest records that conversion it stays `requires_conversion`,
   and a file whose conversion fails is excluded with its reason recorded while
-  the rest of the unit runs. mzData has no converter: where it is the
-  encoding a sample has, it is `requires_conversion` and excludes the unit.
+  the rest of the unit runs. Imputing a polarity is one of the inferences left
+  off, so a scan whose mzXML records none (the attribute is optional, and may
+  be `any`) becomes a spectrum with none, which MS-DIAL skips as it skips any
+  spectrum whose polarity is not the method's ion mode. CONV-1 FAILs such a
+  conversion. It is in neither of the campaign's gate lists (Gate verdicts in a
+  campaign), so the FAIL is recorded, the unit runs without those spectra, and
+  its raw data then go as any finished run's do. mzData has no converter:
+  where it is the encoding a sample has, it is `requires_conversion` and
+  excludes the unit.
 - One project type, ion mode, acquisition mode, chromatography regime, and ion
   mobility regime per MS-DIAL run.
 - GC-MS, SRM/MRM, SIM, DI-MS, imaging MS, product-ion-only
