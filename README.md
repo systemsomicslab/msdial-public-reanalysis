@@ -97,11 +97,13 @@ following actions require a separate explicit human confirmation:
 A recorded campaign approval of one manifest digest stands in for the first,
 third, fourth and fifth of these, and for the automatic split, for the units
 the approval record lists, which must be that manifest's units; it never stands
-in for the second or the last. `CLAUDE.md` states its rules, the raw-data
-deletion rule among them.
+in for the second or the last. `CLAUDE.md` states its rules, among them the
+raw-data deletion rule and which `before-production` gate FAILs stop a
+campaign unit's run.
 
-The default retention policy is `keep`. Never combine different analysis units
-in one MS-DIAL run. Never redistribute the laboratory's private MSP libraries.
+The default retention policy is `keep`; a campaign approval states its own.
+Never combine different analysis units in one MS-DIAL run. Never redistribute
+the laboratory's private MSP libraries.
 
 ## Run gates
 

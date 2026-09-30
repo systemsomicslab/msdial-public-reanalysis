@@ -34,19 +34,30 @@ For a repository range:
    If acquisition is unknown, require raw-header preflight; never guess DDA.
    The preflight reads the headers with the raw-metadata extractor, which a
    campaign pins, and a unit whose mode is still unknown after it is not run.
-   Each input's record carries `console_acquisition_type` (DDA, SWATH or AIF),
-   and the analysis CSV's `acquisition_type` takes that value and no other: the
-   Console silently turns any value it cannot parse into DDA. An AIF file whose
+   In a campaign, a unit the repository does not declare runs without the
+   files whose header left the mode unknown: its `campaign_disposition` lists
+   each in `excluded_inputs` with the reason (`acquisition_unresolved`, or
+   `raw_header_unreadable` for a header no reader opened), and INP-1 and CNT-1
+   count it as excluded, not as a lost sample. Where the preflight read an
+   input, its CSV row's `acquisition_type` takes that input's
+   `console_acquisition_type` (DDA, SWATH or AIF) and no other, and a mode the
+   repository declared is written as DDA, SWATH or AIF, never DIA: the Console
+   silently turns any value it cannot parse into DDA. An AIF file whose
    collision-energy target list is empty gets a recorded warning and still
    runs. Ion-mobility data are excluded, with the reason recorded (LC-MS only).
    mzML is an input, and so is a vendor folder (Waters `.raw`, Agilent or Bruker
    `.d`): one folder is one input and one CSV row, and its files are only
-   downloaded. mzXML that is a sample's only encoding is converted to mzML by
-   Interactive's converter, and the conversion is recorded as that input's
-   provenance; until the unit's manifest records it, the mzXML stays
-   `requires_conversion` and the unit does not run. mzData stays
-   `requires_conversion` and excludes the unit: there is no reader and no
-   converter for it.
+   downloaded. An mzXML that is the encoding a sample is analysed by (a vendor
+   container and mzML outrank it; it outranks a twin nothing reads, such as a
+   `.dat`) is converted to mzML by Interactive's converter with every inference
+   off, and the conversion is recorded as that input's provenance; until the
+   unit's manifest records it, the mzXML stays `requires_conversion`, and a
+   file whose conversion fails is excluded with its reason while the rest of
+   the unit runs. mzData stays `requires_conversion` and excludes the unit:
+   there is no reader and no converter for it. Interactive main (0.5.19) takes
+   neither a folder nor a converted mzXML yet: it refuses a folder input with
+   the production Console, and it still excludes an mzXML unit at eligibility,
+   before download, because the lease does not run the converter.
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
@@ -102,10 +113,13 @@ For a repository range:
 12. Write the production bundle with `msdial_prepare_guided_analysis`, with the
    accepted `minimum_peak_height` in the answers, then run the
    `before-production` gate (see below) against it and stop the unit on a
-   refusal. In a campaign too: the unit is then a failed unit, retried and its
-   raw data deleted as the campaign's rule for one says (see Unattended
-   operation). The gate reads `output\method.txt`, so it cannot run before
-   this.
+   refusal. In a campaign, stop it only for a FAIL in a `blocks_run` check
+   (ELIG-1, ACQ-1, SUM-1, CNT-1 and INP-1, and until the user places them
+   ID-1, SPL-1, PRE-1 and CONV-1): the unit is then a failed unit, retried and
+   its raw data deleted as the campaign's rule for one says. A FAIL in a
+   `record_only` check (CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1) is recorded and
+   the unit runs (`CLAUDE.md`, Gate verdicts in a campaign). The gate reads
+   `output\method.txt`, so it cannot run before this.
    The diagnostic in step 11 does not touch the production files: it writes its
    own single-file `analysis_files.csv`, `method.txt` and `run-manifest.json`
    under `<workspace>\diagnostics\<diagnostic-job-id>`, and
@@ -210,25 +224,25 @@ Server-side state on `msdial_interactive_app` `main`:
   when the approval covers boundary 5 for the unit and states
   `delete_after_validated_output`, the unit's manifest recorded that same
   policy at download, and the preview is ready; it writes the crossing into the
-  manifest first. For a campaign unit, the run's MS-DIAL containers are moved
-  into `output\msdial-intermediates` and its `<project>_Loaded.msp2.dbs` is
-  deleted when the run is finalised; a container that could not be moved is
-  recorded in `finalisation_holds` and holds the deletion. Three parts of the
-  campaign's deletion rule have no approval-taking entry point on main yet.
-  `discard_download_lease`, which releases a failed, skipped or excluded unit's
-  raw data, takes no campaign approval: until it does, the runner calls it with
-  `confirmed=true` only after `campaign_authorization.authorize` has accepted
-  boundary 5 for the unit and the crossing is recorded in the unit's manifest
-  (`CLAUDE.md`, Raw-data deletion in a campaign). It also refuses any unit
-  whose output holds an mzTab-M, and cleanup accepts only a validated run, so
-  neither can delete the raw data of a failed unit whose mzTab-M did not
-  validate, or whose run left one while missing another planned export: those
-  raw data stay, with the refusal recorded as the reason, until the discard
-  accepts such a unit under the approval and keeps its mzTab-M as a failure
-  artifact. A split unit cannot be cleaned up: its parts share the parent's raw
-  tree, which lies outside a part's workspace, and the parent is not a
-  completed run, so the tool refuses both, and its raw data stay until
-  split-parent release exists.
+  manifest first. For a campaign unit, the finalised run's MS-DIAL containers
+  are moved into `output\msdial-intermediates` and its
+  `<project>_Loaded.msp2.dbs` is deleted when the run is finalised; a container
+  that could not be moved is recorded in `finalisation_holds` and holds the
+  deletion. Three parts of the campaign's deletion rule have no approval-taking
+  entry point on main yet. `discard_download_lease`, which releases a failed,
+  skipped or excluded unit's raw data, takes no campaign approval: until it
+  does, the runner calls it with `confirmed=true` only after
+  `campaign_authorization.authorize` has accepted boundary 5 for the unit and
+  the crossing is recorded in the unit's manifest (`CLAUDE.md`, Raw-data
+  deletion in a campaign). It also refuses any unit whose output holds an
+  mzTab-M, and cleanup accepts only a validated run, so neither can delete the
+  raw data of a failed unit whose mzTab-M did not validate, or whose run left
+  one while missing another planned export: those raw data stay, with the
+  refusal recorded as the reason, until the discard accepts such a unit under
+  the approval and keeps its mzTab-M as a failure artifact. A split unit cannot
+  be cleaned up: its parts share the parent's raw tree, which lies outside a
+  part's workspace, and the parent is not a completed run, so the tool refuses
+  both, and its raw data stay until split-parent release exists.
 - A unit whose manifest says `execution_allowed` is not true is refused before
   MS-DIAL starts, and so is a workflow whose polarity, output directory or input
   set disagrees with the manifest.
@@ -274,12 +288,15 @@ policy states (twice, in this campaign), never blindly, and one unit's failure
 never stops the campaign.
 
 In a campaign the runner runs the gate at each of its points and keeps every
-report for the verification that follows the campaign. A verdict does not hold
-the raw-data deletion: the user decided that on 2026-09-30, about the deletion
-only. It still holds the run: a `before-production` refusal stops the unit's
-MS-DIAL run, as it does outside a campaign, and the unit is then a failed
-unit, retried and its raw data deleted as the rule for one says. Report a unit
-whose outputs are all present and whose mzTab-M validates as
+report for the verification that follows the campaign. A verdict never holds
+the raw-data deletion (the user's decision of 2026-09-30), and at
+`before-production` it holds the run only for a FAIL in a `blocks_run` check
+(the user's decision of 2026-10-01; step 12 and `CLAUDE.md`, Gate verdicts in
+a campaign). Read which checks failed from the `--json` report: the exit code
+is 2 for a FAIL in either list. On gate `main` (50fd28d) the report does not
+yet say which list a check is in; the gate is to report it as `run_policy`,
+and until it does the runner holds the lists as `CLAUDE.md` states them.
+Report a unit whose outputs are all present and whose mzTab-M validates as
 `outputs produced`, not `completed`: a run is completed only when it reaches
 B10 and its gate, run with `--stage all --strict`, exits 0, which a run whose
 QA-1 or SUM-2 left sentences does only once a person's reading is recorded.

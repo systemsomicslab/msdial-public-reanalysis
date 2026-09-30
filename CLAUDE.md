@@ -57,7 +57,8 @@ in a campaign is the discard of a failed, skipped or excluded unit, under the
 conditions stated in Raw-data deletion in a campaign. The runner decides no
 eligibility: it reads the unit's `campaign_disposition`, which only
 Interactive's `classify_preflight` writes, and runs, splits, skips or excludes
-the unit as that record says.
+the unit as that record says. It stops a run on a gate verdict only as Gate
+verdicts in a campaign says.
 
 ## Local storage
 
@@ -71,8 +72,10 @@ Pass it explicitly as `workspace_root` to every
 `msdial_repository_reanalysis_plan` and `msdial_download_repository_raw` call.
 Do not place raw downloads or MS-DIAL outputs on C:, in the Claude project
 directory, in the user profile, or in a temporary directory. Interactive creates
-`<workspace_root>\<repository>\<accession>\raw`, `provenance`, and `output`.
-Require explicit confirmation before using any different absolute path.
+`<workspace_root>\<repository>\<accession>\<analysis_unit_id>\raw`,
+`provenance`, and `output` (workspaces made before units had their own level
+hold them at the accession level). Require explicit confirmation before using
+any different absolute path.
 
 Two kinds of directory under the workspace root are not analysis units and are
 never run as one. `<workspace_root>\<repository>\<accession>\_dl` is the
@@ -88,17 +91,31 @@ location.
 - This public-repository campaign accepts LC-MS/MS only.
 - Acquisition must be untargeted DDA or DIA/AIF/SWATH with an MS1 survey and
   product-ion spectra.
+- In a campaign, where the repository record does not declare a unit's
+  acquisition, it is read from each file's raw header with the raw-metadata
+  extractor the campaign pins, and a unit whose acquisition is still unknown
+  after that does not run. In such a unit, a file whose header leaves its
+  acquisition unknown is excluded with its reason recorded, and the rest of
+  the unit runs; a unit with no file left does not run. Interactive's
+  `classify_preflight` applies this as the unit's `campaign_disposition`,
+  which lists each excluded input with its reason.
 - mzML is supported, and so is a vendor folder: a Waters `.raw`, or an Agilent
   or Bruker `.d` directory, or an archive holding one. A folder is one data
   file, one input and one row of the analysis CSV, which is generated from the
   unit's inputs; the files inside it are only downloaded.
-- mzXML is not an MS-DIAL input. Where it is a sample's only encoding,
-  Interactive's validated converter turns it into mzML and records the
-  conversion as that input's own provenance (source and output sha256,
-  converter identity, validation), and the mzML is the input. Until the unit's
-  manifest records that conversion, the mzXML stays `requires_conversion` and
-  the unit does not run. mzData has no converter: it is `requires_conversion`
-  and excludes the unit.
+- mzXML is not an MS-DIAL input. Of several encodings of one sample one is
+  analysed: a vendor container or folder first, then mzML, then mzXML, so a
+  convertible mzXML outranks a twin that nothing reads or converts, such as a
+  `.dat`. Where an mzXML is the one analysed, Interactive's validated converter
+  turns it into mzML with every inference the converter offers switched off,
+  and records the conversion as that input's own provenance (source and output
+  sha256, converter identity, validation). The mzML, written into the unit's
+  own raw tree under `raw\converted` and never into the download store, is the
+  input. An mzXML runs only as the mzML its recorded conversion made: until
+  the unit's manifest records that conversion it stays `requires_conversion`,
+  and a file whose conversion fails is excluded with its reason recorded while
+  the rest of the unit runs. mzData has no converter: where it is the
+  encoding a sample has, it is `requires_conversion` and excludes the unit.
 - One project type, ion mode, acquisition mode, chromatography regime, and ion
   mobility regime per MS-DIAL run.
 - GC-MS, SRM/MRM, SIM, DI-MS, imaging MS, product-ion-only
@@ -165,12 +182,12 @@ approval is recorded with their words verbatim as an
 lists, which must be the approved manifest's units, and the parts an automatic
 split derives from them, that record is the confirmation for boundaries 1, 3,
 4 and 5 and for the split, under the rules the manifest states (among them its
-Class rule, its method rules and the deletion rule below) and with the pins it
-fixes. It never covers boundary 2 or 6, a unit the record does not list, or
-anything the manifest does not state. Interactive holds a step to the record's
-own unit list, and compares the manifest with the digest only when the record
-names the manifest's path, so the runner writes the manifest's units into the
-record and names the manifest's path in it (`campaign_manifest_path`).
+Class rule, its method rules, and the deletion and gate rules below) and with
+the pins it fixes. It never covers boundary 2 or 6, a unit the record does not
+list, or anything the manifest does not state. Interactive holds a step to the
+record's own unit list, and compares the manifest with the digest only when the
+record names the manifest's path, so the runner writes the manifest's units
+into the record and names the manifest's path in it (`campaign_manifest_path`).
 
 Interactive checks the record at each boundary it guards and writes the
 crossing into the unit's manifest. The Catalog does not read the record: it
@@ -182,7 +199,10 @@ the ratification with the Class decision. Every boundary a campaign unit
 crossed is therefore an artifact, not a conversation fact. The pins are the
 Console and raw-metadata extractor binaries (by sha256), each library (by file
 name and sha256), and the Interactive, Catalog and gate commits. A change to
-any pin pauses the campaign until a new approval is recorded.
+any pin pauses the campaign until a new approval is recorded. The gate is
+pinned by this repository's commit and a clean tree, so any commit here pauses
+a running campaign too, one that changes only this contract or records a
+decision in the trial manifest included.
 
 Outside a campaign, an accepted raw-retention policy records intent but is not
 deletion approval. Preview `msdial_cleanup_repository_raw` and obtain a
@@ -230,17 +250,44 @@ by deleting the mzTab-M or the raw tree itself.
 
 Every guard Interactive puts on a deletion still applies, the retained-artifact
 inventory a finished run's cleanup requires included. Before a finished run's
-raw data go, Interactive moves its MS-DIAL containers (the per-file `.dcl`,
-`.pai2` and `_tags.xml`, and the alignment files) from beside the inputs into
-`output\msdial-intermediates`, where the retained-artifact inventory lists them,
-and deletes the loaded-library copy `<project>_Loaded.msp2.dbs`; a container it
-cannot move holds the deletion. A split parent's raw tree, which its parts
-share, goes once every part has reached one of these ends, and an object in the
-download store once no unit still claims it. The gate's verdict does not hold
-the deletion; it is kept for the verification that follows the campaign.
-The user decided that about the deletion only, so a verdict still holds the
-run: a `before-production` refusal stops the unit's MS-DIAL run, in a campaign
-as outside one, and the unit is then a failed unit under this rule.
+raw data go, Interactive moves that run's per-file and alignment containers
+from beside the inputs into `output\msdial-intermediates`, where the
+retained-artifact inventory lists them, and deletes the loaded-library copy
+`<project>_Loaded.msp2.dbs`; a container it cannot move holds the deletion.
+Earlier attempts' containers stay in the raw tree and go with it. A split
+parent's raw tree, which its parts share, goes once every part has reached one
+of these ends, and an object in the download store once no unit still claims
+it. The gate's verdict does not hold the deletion; it is kept for the
+verification that follows the campaign.
+
+## Gate verdicts in a campaign
+
+The runner runs the gate at each of its points and keeps every report for the
+verification that follows the campaign. No verdict holds the raw-data
+deletion. Which `before-production` FAILs stop a unit's MS-DIAL run is the
+user's decision of 2026-10-01:
+
+- `blocks_run`: ELIG-1, ACQ-1, SUM-1, CNT-1 and INP-1. A FAIL in one of them
+  breaks the results, so it stops the run, and the unit is a failed unit under
+  the deletion rule: it is retried twice, and its raw data are then deleted.
+- `record_only`: CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1. A FAIL in one of them is
+  recorded with the unit, and the unit runs. Its raw data then go once its
+  outputs are present and its mzTab-M validates, so a Class, grouping, order or
+  threshold error it carries is corrected only from a new download.
+
+**Awaiting the user's decision.** Four `before-production` checks are in
+neither list: ID-1 (the workspace is the unit its manifest names), SPL-1 (a
+split part partitions its parent's inputs), PRE-1 (a header-confirmed
+acquisition claim is permitted) and CONV-1 (every converted input is a
+validated conversion). Each holds what the inputs are, which is what
+`blocks_run` guards, so until the user places them they stop the run as
+`blocks_run` does, and so does any `before-production` check this section does
+not name. A `blocks_run` check that is required and cannot be evaluated (exit 4
+under `--strict`) stops the run as its FAIL would.
+
+The runner reads which checks failed from the gate's `--json` report, never
+from the exit code alone, which is 2 for a FAIL in either list. Outside a
+campaign every `before-production` refusal still stops the unit.
 
 ## Batch behavior
 
