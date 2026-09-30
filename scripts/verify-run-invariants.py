@@ -1914,6 +1914,53 @@ ATTEMPTED_STATUSES = frozenset({
 VALIDATED_STATUSES = frozenset({"mztab_validated", "completed", "cleanup_pending_confirmation", "raw_cleaned"})
 
 
+def _unvalidated(record: dict, output: Path) -> str:
+    """Why the unit's records and output do not show a validated mzTab-M, or "" when they do.
+
+    B7's fact, in order: a validated terminal status, a finalisation, a validation record with no
+    failure, and an mzTab-M in output.
+    """
+    status = str(record.get("status") or "")
+    validation = record.get("mztab_validation")
+    summary = validation.get("summary") if isinstance(validation, dict) else None
+    if status not in VALIDATED_STATUSES:
+        return f"its status {status or 'unrecorded'!r} is not a validated one"
+    if not record.get("finalized_at"):
+        return "its run was never finalised"
+    if not isinstance(validation, dict):
+        return "no mzTab-M validation is recorded"
+    if isinstance(summary, dict) and summary.get("failed"):
+        return f"its mzTab-M validation failed {summary.get('failed')} file(s)"
+    if not any(output.glob("*.mzTab")):
+        return "no mzTab-M is in its output"
+    return ""
+
+
+def _validated_nothing(validation: object) -> str:
+    """Why a validation record that counts no failure still validated no mzTab-M, or "" when it did one.
+
+    Interactive (mztab_validation.validate_mztab_files) counts the files it checked in summary.file_count,
+    and finalisation calls a run validated when there was at least one and none failed; with no file the
+    summary says warning, and a status of failed is a failure whatever the counts say. A record without
+    file_count - none Interactive wrote - is taken at its passed count or its status.
+    """
+    record = validation if isinstance(validation, dict) else {}
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    if "failed" in (str(record.get("status") or ""), str(summary.get("status") or "")):
+        return "its mzTab-M validation's status is failed"
+    checked = summary.get("file_count")
+    if isinstance(checked, int) and not isinstance(checked, bool):
+        return "" if checked > 0 else "its mzTab-M validation checked no file (file_count 0)"
+    if isinstance(record.get("files"), list):
+        return "" if record["files"] else "its mzTab-M validation lists no file it checked"
+    passed = summary.get("passed")
+    if isinstance(passed, int) and not isinstance(passed, bool) and passed > 0:
+        return ""
+    if "passed" in (str(record.get("status") or ""), str(summary.get("status") or "")):
+        return ""
+    return "its mzTab-M validation records no file it checked"
+
+
 def _production_started(output: Path, provenance: dict | None = None) -> bool:
     """Whether a production run was attempted in this workspace.
 
@@ -5782,17 +5829,17 @@ def _release_parts(release: object) -> "list[str] | None":
 def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, str]":
     """What the campaign's deletion rule lets this unit's raw data go for: (kind, detail), or ("", "").
 
-    Validated outputs, a recorded failure (after its retries: how many is the runner's decision, and a
-    failure record is what is required of it), or a skip or exclusion the campaign disposition decided.
+    Validated outputs (B7's fact, from a validation that checked at least one file), a recorded failure
+    (after its retries: how many is the runner's decision, and a failure record is what is required of
+    it), or a skip or exclusion the campaign disposition decided.
     The gate's own verdicts do not enter: the user decided that deletion follows the outputs, whatever
     the gate says of them.
     """
     status = str(provenance.get("status") or "")
-    validation = provenance.get("mztab_validation")
-    summary = validation.get("summary") if isinstance(validation, dict) else None
-    if (status in VALIDATED_STATUSES and provenance.get("finalized_at") and isinstance(validation, dict)
-            and not (isinstance(summary, dict) and summary.get("failed"))):
-        return "validated", "its run was finalised and its mzTab-M validated"
+    # B7's fact, and a validation that checked something: a record of no failure among no files is not
+    # an mzTab-M that validates.
+    if not (_unvalidated(provenance, workspace / "output") or _validated_nothing(provenance.get("mztab_validation"))):
+        return "validated", "its run was finalised, its mzTab-M validated, and the mzTab-M is in its output"
     failures = _run_failures(provenance)
     if failures:
         last = failures[-1]
@@ -5830,8 +5877,11 @@ def check_retention_policy_was_acted_on(
     unit's records show raw data in, with neither a recorded deletion nor a campaign approval covering
     boundary 5 to account for it. A deletion under a campaign approval is correct once the outputs are
     validated, or for a unit that failed, was skipped or was excluded, and refused for any other unit:
-    those are the only cases the user's rule deletes. A split part whose parent's release does not list
-    it is a WARN: its tree went without its own state being part of the decision.
+    those are the only cases the user's rule deletes. Validated is the fact B7 reaches on, an mzTab-M in
+    output as well as the manifest's record, and from a validation that checked at least one file, so
+    RET-1 never calls a deletion justified by outputs the progress walk says are not there. A split part
+    whose parent's release does not list it is a WARN: its tree went without its own state being part of
+    the decision.
     """
     stage = "before-publish"
     if provenance is None:
@@ -5955,8 +6005,12 @@ def check_retention_policy_was_acted_on(
         kind, why = _deletion_justification(provenance, workspace)
     evidence.update(authority=authority, justification=kind)
     if deletion == "raw_cleaned" and kind != "validated":
-        verdict(FAIL, f"The raw tree was deleted as a cleanup after validated output ({deleted_where}), and this "
-                      "unit records no validated mzTab-M: a cleanup was made of a run that did not validate.")
+        missing = (_unvalidated(provenance, workspace / "output")
+                   or _validated_nothing(provenance.get("mztab_validation")))
+        evidence["unvalidated_because"] = missing
+        verdict(FAIL, f"The raw tree was deleted as a cleanup after validated output ({deleted_where}), and "
+                      f"{missing}: the cleanup rests on a validated mzTab-M that neither the unit's records nor its "
+                      "output show.")
         return
     if not kind:
         if crossings:
@@ -6766,12 +6820,6 @@ def completion_progress(workspace: Path, provenance: dict | None, output: Path) 
     candidates = [Path(str(item)) for item in record.get("input_candidates") or []]
     diagnostics = [item for item in record.get("peak_height_diagnostics") or [] if isinstance(item, dict)]
     diagnostic_directory = str((diagnostics[-1] if diagnostics else {}).get("diagnostic_run_directory") or "")
-    validation = record.get("mztab_validation")
-    validation_failed = (
-        isinstance(validation, dict)
-        and isinstance(validation.get("summary"), dict)
-        and bool(validation["summary"].get("failed"))
-    )
     raw_path, raw_owner, _unknown = _raw_directory(record, workspace)
     status = str(record.get("status") or "")
     # Released only by the confirmed cleanup, the one deletion path, which records raw_cleaned.
@@ -6791,9 +6839,7 @@ def completion_progress(workspace: Path, provenance: dict | None, output: Path) 
         # The .mdpeak files are the run's own output; whether the Console also wrote its key record
         # is MTH-1's to judge.
         "B6": _mdpeak_count(output) > 0,
-        "B7": str(record.get("status") or "") in VALIDATED_STATUSES
-        and bool(record.get("finalized_at")) and isinstance(validation, dict) and not validation_failed
-        and any(output.glob("*.mzTab")),
+        "B7": not _unvalidated(record, output),
         "B8": any(output.glob("*.qa.tsv")),
         "B9": all((output / name).is_file() for name in (
             "MS_DIAL_publication_report.json", "MS_DIAL_Materials_and_Methods.txt",

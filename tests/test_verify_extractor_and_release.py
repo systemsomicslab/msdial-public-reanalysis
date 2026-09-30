@@ -76,10 +76,20 @@ def _crossing(boundary, *, unit: str = "unit", retention: str = "delete_after_va
     }
 
 
-def _unit(root: Path, name: str = "unit", *, raw: bool = True, **manifest) -> Path:
+def _mztab(output: Path) -> Path:
+    """The run's mzTab-M, where finalisation leaves it."""
+    output.mkdir(parents=True, exist_ok=True)
+    path = output / "AlignResult-1.mzTab"
+    path.write_text("MTD\tmzTab-version\t2.0.0-M\n", encoding="ascii")
+    return path
+
+
+def _unit(root: Path, name: str = "unit", *, raw: bool = True, mztab: bool = False, **manifest) -> Path:
     """One unit workspace under an accession directory, with a raw tree holding one input."""
     workspace = root / name
     (workspace / "output").mkdir(parents=True)
+    if mztab:
+        _mztab(workspace / "output")
     candidate = workspace / "raw" / "data" / "s0.mzML"
     if raw:
         candidate.parent.mkdir(parents=True)
@@ -98,8 +108,10 @@ def _unit(root: Path, name: str = "unit", *, raw: bool = True, **manifest) -> Pa
     return workspace
 
 
-VALIDATED = {"finalized_at": "2026-10-01T01:00:00+00:00", "mztab_validation": {"summary": {"failed": 0}},
-             "cleanup_allowed": True}
+# What run finalisation records for one mzTab-M that passed (mztab_validation.validate_mztab_files).
+VALIDATED = {"finalized_at": "2026-10-01T01:00:00+00:00", "cleanup_allowed": True,
+             "mztab_validation": {"status": "passed", "summary": {"status": "passed", "passed": 1, "warnings": 0,
+                                                                  "failed": 0, "file_count": 1}}}
 
 
 def _ret1(workspace: Path):
@@ -351,7 +363,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
     def test_a_validated_unit_deleted_under_the_campaign_passes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = _unit(Path(temporary), status="raw_cleaned", raw_cleaned_at="2026-10-01T02:00:00+00:00",
-                              campaign_authorizations=[_crossing(4), _crossing(5)], **VALIDATED)
+                              campaign_authorizations=[_crossing(4), _crossing(5)], mztab=True, **VALIDATED)
             shutil.rmtree(workspace / "raw")
             check = _ret1(workspace)
 
@@ -363,7 +375,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
         """Deletion follows the outputs, whatever the gate says of them: here ELIG-1 fails."""
         with tempfile.TemporaryDirectory() as temporary:
             workspace = _unit(Path(temporary), status="raw_cleaned", execution_allowed=False,
-                              downloads=[], campaign_authorizations=[_crossing(5)], **VALIDATED)
+                              downloads=[], campaign_authorizations=[_crossing(5)], mztab=True, **VALIDATED)
             shutil.rmtree(workspace / "raw")
             report = verifier.verify(workspace, "all")
 
@@ -466,7 +478,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
     def test_a_confirmed_cleanup_without_a_campaign_still_passes(self) -> None:
         """Outside a campaign raw_cleaned is written only on a person's confirmed=true, as before."""
         with tempfile.TemporaryDirectory() as temporary:
-            workspace = _unit(Path(temporary), status="raw_cleaned", **VALIDATED)
+            workspace = _unit(Path(temporary), status="raw_cleaned", mztab=True, **VALIDATED)
             shutil.rmtree(workspace / "raw")
             check = _ret1(workspace)
 
@@ -476,13 +488,60 @@ class RetentionUnderACampaignTests(unittest.TestCase):
     def test_a_live_store_claim_after_the_release_warns(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            workspace = _unit(root, status="raw_cleaned", campaign_authorizations=[_crossing(5)], **VALIDATED)
+            workspace = _unit(root, status="raw_cleaned", campaign_authorizations=[_crossing(5)], mztab=True,
+                              **VALIDATED)
             shutil.rmtree(workspace / "raw")
             StoreBuilder(root).object("a" * 64, "s0.mzML", url="https://x/s0.mzML", claims={"unit": "materialized"})
             check = _ret1(workspace)
 
         self.assertEqual(verifier.WARN, check.status, check.detail)
         self.assertEqual({"materialized": 1}, check.evidence["store_claims"])
+
+    def test_a_validated_record_without_its_mztab_on_disk_justifies_no_deletion(self) -> None:
+        """Validated is B7's fact, which needs the mzTab-M in output as well as the manifest's word for it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", raw_cleaned_at="2026-10-01T02:00:00+00:00",
+                              campaign_authorizations=[_crossing(4), _crossing(5)], **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            report = verifier.verify(workspace, "all")
+
+        check = _check(report, "RET-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("no mzTab-M is in its output", check.detail)
+        self.assertFalse(report.progress["stages"]["B7"])
+
+    def test_a_validation_that_checked_no_file_justifies_no_deletion(self) -> None:
+        cases = (
+            ("no file", {"status": "warning", "summary": {"status": "warning", "passed": 0, "warnings": 1,
+                                                          "failed": 0, "file_count": 0}}, "file_count 0"),
+            ("status failed", {"status": "failed", "summary": {"status": "failed", "passed": 0, "failed": 0,
+                                                               "file_count": 0}}, "status is failed"),
+            ("nothing counted", {"summary": {"failed": 0}}, "records no file it checked"),
+        )
+        for name, validation, said in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                workspace = _unit(Path(temporary), status="raw_cleaned", finalized_at="2026-10-01T01:00:00+00:00",
+                                  mztab_validation=validation, campaign_authorizations=[_crossing(5)], mztab=True)
+                shutil.rmtree(workspace / "raw")
+                check = _ret1(workspace)
+
+            self.assertEqual(verifier.FAIL, check.status, check.detail)
+            self.assertIn(said, check.detail)
+
+    def test_a_validation_with_warnings_only_is_a_validated_run(self) -> None:
+        """Finalisation calls a run validated when it checked a file or more and none failed."""
+        warned = {"status": "warning", "summary": {"status": "warning", "passed": 0, "warnings": 1, "failed": 0,
+                                                   "file_count": 1}}
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", finalized_at="2026-10-01T01:00:00+00:00",
+                              mztab_validation=warned, campaign_authorizations=[_crossing(5)], mztab=True)
+            shutil.rmtree(workspace / "raw")
+            report = verifier.verify(workspace, "all")
+
+        check = _check(report, "RET-1")
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual("validated", check.evidence["justification"])
+        self.assertTrue(report.progress["stages"]["B7"])
 
 
 class ReleasedSplitParentTests(unittest.TestCase):
@@ -495,6 +554,7 @@ class ReleasedSplitParentTests(unittest.TestCase):
             _edit(fixture.part_manifest(part), status="raw_cleaned", raw_released_by=str(fixture.parent_manifest),
                   raw_cleaned_at="2026-10-01T05:00:00+00:00", raw_retention_policy="delete_after_validated_output",
                   **VALIDATED)
+            _mztab(fixture.part_roots[part] / "output")
         _edit(fixture.parent_manifest, raw_retention_policy="delete_after_validated_output",
               campaign_authorizations=[_crossing(5, entry_point="cleanup_split_parent")],
               raw_release={"schema": "msdial-split-parent-raw-release.v1", "state": state, "kind": "released",
