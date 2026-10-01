@@ -294,7 +294,7 @@ class RunPolicyTests(unittest.TestCase):
         self.assertEqual(policy.run_blocking_failures(report), (["ELIG-1"], "gate"))
 
     def test_a_rule_or_a_shape_this_reader_does_not_know_blocks_and_is_said(self) -> None:
-        for value in ("BLOCKS_RUN", "blocks-run", {"campaign": "blocks_run"}, True, "block", None):
+        for value in ("BLOCKS_RUN", "blocks-run", {"campaign": "blocks_run"}, True, "block"):
             with self.subTest(value=value):
                 report = self.report({"check_id": "ELIG-1", "status": "fail", "run_policy": value},
                                      {"check_id": "CLS-1", "status": "fail", "run_policy": value})
@@ -310,6 +310,34 @@ class RunPolicyTests(unittest.TestCase):
                                      run_policy=top)
                 self.assertEqual(policy.run_blocking_failures(report), (["ELIG-1"], "gate"))
                 self.assertTrue(policy.run_policy_mismatches(report), "said, so the contract can be mended")
+
+    def test_a_check_of_a_later_stage_has_no_run_to_stop(self) -> None:
+        """The gate's report as feat/alias-aware-checks-and-run-policy writes it: each before-production check
+        states blocks_run or record_only, a check of a later stage states null, and run_blocked_by lists the
+        FAILs it reads as blocks_run. A --stage all report (pre_cleanup, final) holds both kinds, and CNT-1
+        once for each stage."""
+        report = self.report(
+            {"check_id": "ELIG-1", "stage": "before-production", "status": "pass", "run_policy": "blocks_run"},
+            {"check_id": "CLS-1", "stage": "before-production", "status": "fail", "run_policy": "record_only"},
+            {"check_id": "CNT-1", "stage": "before-production", "status": "pass", "run_policy": "blocks_run"},
+            {"check_id": "CNT-1", "stage": "after-run", "status": "fail", "run_policy": None},
+            {"check_id": "TAB-1", "stage": "after-run", "status": "fail", "run_policy": None},
+            {"check_id": "SEC-1", "stage": "before-publish", "status": "fail", "run_policy": None},
+            run_blocked_by=[],
+        )
+        self.assertEqual(policy.run_blocking_failures(report), ([], "gate"), "a FAIL after production stops no run")
+        self.assertEqual(policy.run_policy_mismatches(report), [], "null is the gate's word for a later stage")
+        # A before-production check the gate's table leaves out is decided by the user's list, and said.
+        gap = self.report({"check_id": "NEW-1", "stage": "before-production", "status": "fail", "run_policy": None},
+                          {"check_id": "INP-1", "stage": "before-production", "status": "fail", "run_policy": None})
+        self.assertEqual(policy.run_blocking_failures(gap), (["INP-1"], "gate"))
+        self.assertEqual(len(policy.run_policy_mismatches(gap)), 2)
+        # The gate's run_blocked_by adds to the list; a shape that is not a list of ids is said.
+        named = self.report({"check_id": "PRE-2", "stage": "before-production", "status": "fail", "run_policy": "record_only"},
+                            run_blocked_by=["PRE-2"])
+        self.assertEqual(policy.run_blocking_failures(named), (["PRE-2"], "gate"))
+        self.assertEqual(policy.run_blocking_failures(self.report(run_blocked_by="CLS-1")), (["CLS-1"], "gate"), "one id")
+        self.assertTrue(policy.run_policy_mismatches(self.report(run_blocked_by={"ELIG-1": True})))
 
 
 class OutputsTests(unittest.TestCase):

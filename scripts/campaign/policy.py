@@ -605,13 +605,28 @@ def gate_verdict_token(exit_code: int | None) -> str:
 
 # A gate check id, such as ELIG-1 or CONV-1.
 _CHECK_ID = re.compile(r"[A-Z][A-Z0-9]*-\d+[A-Za-z]?")
+# The gate's stage whose FAILs can stop a run (verify-run-invariants.py STAGES).
+BEFORE_PRODUCTION_STAGE = "before-production"
+
+
+def _later_stage(item: Mapping[str, Any]) -> bool:
+    """Whether a check of a gate report is of a stage after production, with no run left to stop. The gate
+    gives such a check run_policy null, and a --stage all report (pre_cleanup, final) holds many. A check
+    that names no stage is read as a before-production one."""
+    stage = item.get("stage")
+    return isinstance(stage, str) and bool(stage) and stage != BEFORE_PRODUCTION_STAGE
 
 
 def _run_policy_statements(report: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """What a gate report states each check's run_policy to be, and what of it could not be read.
 
     A check's own run_policy, or a top-level run_policy that maps a check id to its rule or a rule to the
-    check ids it covers (one id or a list of them). A check's own statement wins over the top level's."""
+    check ids it covers (one id or a list of them). A check's own statement wins over the top level's.
+
+    A check of a later stage states nothing. The gate gives it null, and read as a rule this reader did
+    not know, null made every later-stage FAIL of a --stage all report one that stops the run, and every
+    later-stage check a mismatch. A before-production check given null is one the gate's table left out:
+    the user's list decides it, and the gap is said. The gate's run_blocked_by must be a list of ids."""
     stated: dict[str, Any] = {}
     problems: list[str] = []
     declared = report.get("run_policy")
@@ -630,9 +645,28 @@ def _run_policy_statements(report: Mapping[str, Any]) -> tuple[dict[str, Any], l
     elif declared is not None:
         problems.append(f"run_policy is {type(declared).__name__}, not an object")
     for item in report.get("checks") or []:
-        if isinstance(item, Mapping) and "run_policy" in item:
-            stated[str(item.get("check_id") or "")] = item["run_policy"]
+        if not isinstance(item, Mapping) or "run_policy" not in item or _later_stage(item):
+            continue
+        check = str(item.get("check_id") or "")
+        if item["run_policy"] is None:
+            problems.append(f"{check}: the gate states no run_policy for this before-production check; the user's list decides")
+            continue
+        stated[check] = item["run_policy"]
+    if _blocked_by(report) is None:
+        problems.append(f"run_blocked_by is {report.get('run_blocked_by')!r}, not a list of check ids")
     return stated, problems
+
+
+def _blocked_by(report: Mapping[str, Any]) -> list[str] | None:
+    """The gate's own run_blocked_by (one check id or a list of them), [] when it states none, None when it
+    is of another shape."""
+    named = report.get("run_blocked_by")
+    if named is None:
+        return []
+    names = [named] if isinstance(named, str) else named if isinstance(named, list) else None
+    if names is None or not all(isinstance(name, str) for name in names):
+        return None
+    return [name for name in names if name]
 
 
 def run_blocking_failures(report: Mapping[str, Any]) -> tuple[list[str], str]:
@@ -643,21 +677,24 @@ def run_blocking_failures(report: Mapping[str, Any]) -> tuple[list[str], str]:
     this reader does not know, blocks too - and never take from it: a record_only it states for one of the
     user's checks is a mismatch (run_policy_mismatches), and the check blocks. Reading it the other way
     round failed open: once any check stated a policy, the fixed list was dropped for every check, and a
-    misspelt rule blocked nothing. The source is "gate" when the report stated a run_policy, read with the
-    fixed list, and "runner_default" when it stated none. Statuses are the gate's own lowercase words
-    ("fail"), compared without case. Only a FAIL blocks: a check left not evaluable or a WARN is recorded,
-    and the unit runs.
+    misspelt rule blocked nothing. The gate's own run_blocked_by, the FAILs it reads as blocks_run, adds to
+    it as well. The source is "gate" when the report stated a run_policy, read with the fixed list, and
+    "runner_default" when it stated none. Statuses are the gate's own lowercase words ("fail"), compared
+    without case. Only a FAIL of a before-production check blocks: a check left not evaluable or a WARN is
+    recorded, and the unit runs, and a check of a later stage has no run left to stop.
     """
     stated, problems = _run_policy_statements(report)
     blocking: set[str] = set()
     for item in report.get("checks") or []:
-        if not isinstance(item, Mapping) or str(item.get("status") or "").casefold() != "fail":
+        if not isinstance(item, Mapping) or str(item.get("status") or "").casefold() != "fail" or _later_stage(item):
             continue
         check = str(item.get("check_id") or "")
         rule = stated.get(check)
         if check in BLOCKS_RUN_CHECKS or (check in stated and rule != RECORD_ONLY):
             blocking.add(check)
-    return sorted(blocking), ("gate" if stated or problems else "runner_default")
+    blocking.update(_blocked_by(report) or [])
+    stating = stated or problems or report.get("run_blocked_by") is not None
+    return sorted(blocking), ("gate" if stating else "runner_default")
 
 
 def run_policy_mismatches(report: Mapping[str, Any]) -> list[str]:
