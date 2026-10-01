@@ -37,14 +37,15 @@ For a repository range:
    In a campaign, a unit the repository does not declare runs without the
    files whose header left the mode unknown: its `campaign_disposition` lists
    each in `excluded_inputs` with the reason (`acquisition_unresolved`, or
-   `raw_header_unreadable` for a header no reader opened), and INP-1 and CNT-1
-   count it as excluded, not as a lost sample. Where the preflight read an
-   input, its CSV row's `acquisition_type` takes that input's
-   `console_acquisition_type` (DDA, SWATH or AIF) and no other, and a mode the
-   repository declared is written as DDA, SWATH or AIF, never DIA: the Console
-   silently turns any value it cannot parse into DDA. An AIF file whose
-   collision-energy target list is empty gets a recorded warning and still
-   runs. Ion-mobility data are excluded, with the reason recorded (LC-MS only).
+   `raw_header_unreadable` or `raw_header_unsupported_format` for a header no
+   reader opened), and INP-1, CNT-1 and SPL-1 count it as excluded, not as a
+   lost sample. Where the preflight read an input, its CSV row's
+   `acquisition_type` takes that input's `console_acquisition_type` (DDA,
+   SWATH or AIF) and no other, and a mode the repository declared is written
+   as DDA, SWATH or AIF, never DIA: the Console silently turns any value it
+   cannot parse into DDA. An AIF file whose collision-energy target list is
+   empty gets a recorded warning and still runs. Ion-mobility data are
+   excluded, with the reason recorded (LC-MS only).
    mzML is an input, and so is a vendor folder (Waters `.raw`, Agilent or Bruker
    `.d`): one folder is one input and one CSV row, and its files are only
    downloaded. Outside a campaign, mzXML and mzData are `requires_conversion`:
