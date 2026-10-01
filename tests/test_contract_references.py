@@ -25,7 +25,8 @@ The user's rule says what a FAIL in the two lists does and leaves cases open: a 
 neither list, a check left not_evaluable, a gate that produced no report. The contract says what
 applies to each until the user decides, and a reader must be able to tell that reading from the
 user's own rule. So every passage that says what an open case does to a unit's run is marked as
-awaiting the user's decision.
+awaiting the user's decision, and every passage that describes the confirmed=true discard fallback
+names the policy field that carries the user's approval of it.
 """
 
 from __future__ import annotations
@@ -85,13 +86,14 @@ _GATE_LISTS = ("blocks_run", "record_only")
 # list.
 _NEITHER_LIST = "**In neither list, awaiting the user's decision.**"
 # What marks a passage as the contract's reading of a case the user has not settled. The discard
-# fallback is marked "awaiting the user's approval" instead.
+# fallback is marked "awaiting the user's approval" instead, and named by its policy field.
 _AWAITING = "awaiting the user's decision"
 # A passage that says what a case does to a unit's run.
 _RUN_OUTCOME = re.compile(r"\bthe unit runs?\b|\bstops? the run\b|\bholds? the run\b", re.IGNORECASE)
 # Cases that are not a FAIL, so the user's gate rule of 2026-10-01 does not reach them: a check left
 # not_evaluable, and a gate that produced no report. Each stays open until a trial decision names it.
 _OPEN_VERDICTS = ("not_evaluable", "no report")
+_DISCARD_FALLBACK_FIELD = "confirmed_discard_fallback"
 _LIST_ITEM = re.compile(r"^[ \t]*(?:[-*]|\d+\.)[ \t]")
 
 
@@ -282,6 +284,12 @@ def _unmarked_open_cases(text: str, unplaced: set[str], open_verdicts: tuple[str
         if (unplaced_fail or open_verdict) and _AWAITING not in block.casefold():
             found.append(block[:160])
     return found
+
+
+def _fallback_without_its_field(text: str) -> list[str]:
+    """Passages that describe the confirmed=true discard fallback without the policy field that allows it."""
+    return [block[:160] for block in _blocks(text)
+            if "fallback" in block and "confirmed=true" in block and _DISCARD_FALLBACK_FIELD not in block]
 
 
 class ContractReferencesTests(unittest.TestCase):
@@ -520,6 +528,17 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertEqual([], _unmarked_open_cases(text, unplaced, open_verdicts))
         decided = [{"decision": "A check left not_evaluable stops the run (blocks_run)."}]
         self.assertEqual(("no report",), _open_verdicts(decided))
+
+    def test_every_description_of_the_discard_fallback_names_its_policy_field(self) -> None:
+        found = {}
+        for document in DOCUMENTS:
+            text = (_ROOT / document).read_text(encoding="utf-8")
+            if _fallback_without_its_field(text):
+                found[document] = _fallback_without_its_field(text)
+        self.assertEqual({}, found)
+        # At 79a251c the fallback named no switch, so nothing told the runner whether the user allowed it.
+        bare = self.contract.replace(f"`{_DISCARD_FALLBACK_FIELD}: true`", "an approval")
+        self.assertEqual(2, len(_fallback_without_its_field(bare)))
 
     def test_the_lists_are_read_from_their_bullets_only(self) -> None:
         section = (

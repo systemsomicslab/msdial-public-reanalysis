@@ -55,11 +55,12 @@ boundary 3 for the unit before the Class save, and the Catalog stores the
 ratification with the decision. The discard of a failed, skipped or excluded
 unit is no exception: the runner uses Interactive's approval-taking discard,
 and the one `confirmed=true` call it may make in its place is a fallback that
-waits for the user's approval (Raw-data deletion in a campaign). The runner
-decides no eligibility: it reads the unit's `campaign_disposition`, which only
-Interactive's `classify_preflight` writes, and runs, splits, skips or excludes
-the unit as that record says. It stops a run on a gate verdict only as Gate
-verdicts in a campaign says.
+waits for the user's approval, made only where the approved manifest's policy
+states `confirmed_discard_fallback: true` (Raw-data deletion in a campaign).
+The runner decides no eligibility: it reads the unit's `campaign_disposition`,
+which only Interactive's `classify_preflight` writes, and runs, splits, skips
+or excludes the unit as that record says. It stops a run on a gate verdict
+only as Gate verdicts in a campaign says.
 
 ## Local storage
 
@@ -255,12 +256,18 @@ that discard and passes it no `confirmed=true`. It is not on Interactive main
 yet, where the discard takes only `confirmed`.
 
 **Fallback, awaiting the user's approval.** Until the approval-taking discard
-lands, the runner may call the discard with `confirmed=true`, and only after
-`campaign_authorization.authorize` has accepted boundary 5 for that unit and
-the crossing is recorded in the unit's manifest. Without that approval, the
-raw data of a failed, skipped or excluded unit stay until the discard lands,
-with the reason recorded in the unit's failure record and its bytes counted
-against the disk budget. Either way the fallback ends when the discard lands.
+lands, the runner may call the discard with `confirmed=true`, but only in a
+campaign whose approved manifest states `confirmed_discard_fallback: true` in
+its policy, and only after `campaign_authorization.authorize` has accepted
+boundary 5 for that unit and the crossing is recorded in the unit's manifest.
+That field carries the user's approval of the fallback: the approval's digest
+covers the manifest's policy, so approving a manifest that states it approves
+the fallback for that campaign, and a session that asks for the approval names
+the field and its value. The field is absent, or false, unless the user asks
+for it, and then the runner never makes that call: the raw data of a failed,
+skipped or excluded unit stay until the discard lands, with the reason
+recorded in the unit's failure record and its bytes counted against the disk
+budget. Either way the fallback ends when the discard lands.
 
 For a failed unit whose output holds an mzTab-M, because the mzTab-M did not
 validate or because the run missed another planned export, the deletion rule
