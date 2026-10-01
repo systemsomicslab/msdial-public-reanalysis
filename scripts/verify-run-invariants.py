@@ -5337,15 +5337,122 @@ def _files_of_samples(provenance: dict | None, samples: set[str], csv_names: set
     return result
 
 
+# The kinds of declared analysis input MS-DIAL opens, as Interactive's declared_analysis_inputs keeps them.
+# A declared directory is a sample but never an input, and an input that must be converted first (mzXML)
+# is attributed through its conversion's record, not through the declaration.
+DECLARED_INPUT_KINDS = frozenset({"file", "vendor_folder", "archived_container"})
+
+
+def _declared_input_key(value: object) -> str:
+    """A declared path as Interactive keys it (_safe_relative_name): "/"-separated and casefolded, less a
+    leading "/" and FILES/ and any empty or "." component; "" for none, or for one that climbs out."""
+    parts = [part for part in _declared_name(value).split("/") if part not in ("", ".")]
+    return "" if not parts or ".." in parts else "/".join(parts)
+
+
+def _allowlist_forms(relative: str) -> list[str]:
+    """Interactive's _allowlist_forms, most specific first: the path relative to the data root, less a
+    leading FILES/, and less its first component (the folder an archive unpacks into), again less a
+    FILES/ under it. Nothing deeper."""
+    forms = {relative}
+    if relative.startswith("files/"):
+        forms.add(relative[6:])
+    parts = relative.split("/")
+    if len(parts) > 1:
+        rest = "/".join(parts[1:])
+        forms.add(rest)
+        if rest.startswith("files/"):
+            forms.add(rest[6:])
+    return sorted(forms, key=len, reverse=True)
+
+
+def _declared_samples(manifest: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """The sample the Catalog declared each analysis input for (project.analysis_inputs), keyed as
+    Interactive keys it (_declared_input_key); and an archived container's, keyed by its archive."""
+    project = manifest.get("project") if isinstance(manifest.get("project"), dict) else {}
+    inputs = project.get("analysis_inputs")
+    by_path: dict[str, str] = {}
+    by_archive: dict[str, str] = {}
+    for entry in inputs if isinstance(inputs, list) else []:
+        if (not isinstance(entry, dict) or entry.get("requires_conversion")
+                or str(entry.get("kind") or "") not in DECLARED_INPUT_KINDS):
+            continue
+        path = _declared_input_key(entry.get("path"))
+        sample = str(entry.get("sample_id") or "").strip()
+        if path:
+            by_path.setdefault(path, sample)
+        archive = _declared_input_key(entry.get("archive")) if entry.get("kind") == "archived_container" else ""
+        if archive and sample:
+            by_archive.setdefault(archive, sample)
+    return by_path, by_archive
+
+
+def _declared_sample_of(manifest: dict, row: dict, declared: tuple[dict[str, str], dict[str, str]]) -> str:
+    """The sample the Catalog declared a lineage row's input for, read as Interactive's CSV builder reads it.
+
+    Interactive's build_input_lineage fills a row's sample_id only where exactly one of the unit's samples
+    names the input by its base name, so neg/x.mzML and pos/x.mzML, which share x.mzml, both carry "". Its
+    analysis-CSV builder takes the sample from the Catalog's declared analysis input first
+    (project.analysis_inputs[].sample_id, _declared_samples), matched by the input's path relative to the
+    data root, the most specific form first (match_declared_inputs, _allowlist_forms), and so writes each
+    row with its own sample's Class. So is the sample read here: by that path, else through the one
+    declared input, or the archive of the one archived container, that the row's declared_names name. The
+    declaration is the Catalog's, the writer of the assignments, never the CSV writer's. Where the lineage
+    row does name a sample, that is still the one, as this check always read it (_input_samples). A
+    container its archive unpacked under another name than the one declared is matched by neither, and is
+    left to the name.
+    """
+    by_path, by_archive = declared
+    if not by_path:
+        return ""
+    root_text = str(manifest.get("input_directory") or "").strip()
+    root = _path_key(root_text).rstrip("\\/") if root_text else ""
+    path = _path_key(row["path"])
+    if root and path.startswith(root + os.sep):
+        relative = path[len(root) + 1:].replace(os.sep, "/").casefold()
+        form = next((form for form in _allowlist_forms(relative) if form in by_path), None)
+        if form is not None:
+            return by_path[form]
+    names = row.get("declared_names") if isinstance(row.get("declared_names"), list) else []
+    named = {by_path.get(name) or by_archive.get(name, "") for name in map(_declared_input_key, names) if name}
+    named.discard("")
+    return next(iter(named)) if len(named) == 1 else ""
+
+
+def _input_samples(provenance: dict, parts: tuple[str, ...] = ("rows",)) -> dict[str, str]:
+    """The sample each input of the unit's lineage is, by key: the one its lineage row names (sample_id),
+    else the one the Catalog declared the input for (_declared_sample_of); "" where neither names one.
+
+    The lineage rows are the unit's own and, for a split part, its raw owner's (_lineage_manifests), each
+    read against its own manifest's declaration and data root; an input's first row to name a sample
+    gives it. ``parts`` are the lineage's inputs ("rows") and what the lease excluded ("excluded").
+    """
+    samples: dict[str, str] = {}
+    for manifest in _lineage_manifests(provenance):
+        declared: "tuple[dict[str, str], dict[str, str]] | None" = None
+        for part in parts:
+            for row in _lineage_rows(manifest, part):
+                key = _path_key(row["path"])
+                if samples.get(key):
+                    continue
+                sample = str(row.get("sample_id") or "").strip()
+                if not sample:
+                    declared = declared if declared is not None else _declared_samples(manifest)
+                    sample = _declared_sample_of(manifest, row, declared)
+                samples[key] = sample
+    return samples
+
+
 def _samples_by_csv_name(provenance: dict | None, csv_rows: list[dict]) -> dict[str, str]:
     """The sample each analysis-CSV row is, by the row's file_name, where the input lineage says so.
 
     A row is the input it opens: its own path, or the input its Console alias stands for
     (_input_keys_by_console_path reads console_path and console_alias). That input's lineage row names
-    the sample the lease attributed it to (sample_id) and, once Interactive built the CSV from the
-    lineage, the name the CSV gives it (file_name): the input's stem, its alias, or the stem made unique
-    by a digest. A lineage row recording another file_name than the row's describes another CSV, and
-    says nothing of this one. Rows the lineage says nothing of are left out.
+    the sample the lease attributed it to (sample_id), and where it names none the input is the sample
+    the Catalog declared it for (_input_samples); and once Interactive built the CSV from the lineage,
+    the row records the name the CSV gives it (file_name): the input's stem, its alias, or the stem made
+    unique by a digest. A lineage row recording another file_name than the row's describes another CSV,
+    and says nothing of this one. Rows the lineage says nothing of are left out.
     """
     if not isinstance(provenance, dict):
         return {}
@@ -5356,11 +5463,13 @@ def _samples_by_csv_name(provenance: dict | None, csv_rows: list[dict]) -> dict[
     if not by_path:
         return {}
     aliases = _input_keys_by_console_path(provenance)
+    samples = _input_samples(provenance)
     result: dict[str, str] = {}
     for row in csv_rows:
         name = str(row.get("file_name", ""))
-        lineage = by_path.get(_input_key(row, aliases)) or {}
-        sample = str(lineage.get("sample_id") or "").strip()
+        key = _input_key(row, aliases)
+        lineage = by_path.get(key) or {}
+        sample = samples.get(key, "") if lineage else ""
         recorded = str(lineage.get("file_name") or "")
         if sample and (not recorded or recorded == name):
             result[name] = sample
@@ -5382,13 +5491,14 @@ def _excluded_samples(provenance: dict | None, samples: set[str]) -> dict[str, l
     Excluded by a binding campaign disposition (the unit's, and a split part's parent's), or by the lease
     itself (excluded_input_candidates: an mzML RawDataHandler cannot decode). Either is another writer
     than the CSV's. The sample an excluded input is the input of is what the lease's lineage row names
-    for it; where that names none, the CSV record (analysis_csv.excluded_inputs), in which Interactive
-    names each such input with its sample; and else a sample whose id, or recorded raw_file, is the input
-    by name. The CSV record is the CSV writer's own, so it never outranks the lease's: a CSV that dropped
-    one sample's row and named that sample beside another's excluded input would otherwise excuse both.
-    An entry of the CSV record that neither exclusion bears out excludes nothing, and nor does any
-    exclusion excuse a sample the lineage gives an input that runs (a candidate nobody excluded): that
-    sample's row is missing, whatever else of it was excluded.
+    for it, or where that names none the sample the Catalog declared the input for (_input_samples);
+    where neither does, the CSV record (analysis_csv.excluded_inputs), in which Interactive names each
+    such input with its sample; and else a sample whose id, or recorded raw_file, is the input by name.
+    The CSV record is the CSV writer's own, so it never outranks the lease's or the Catalog's: a CSV that
+    dropped one sample's row and named that sample beside another's excluded input would otherwise
+    excuse both. An entry of the CSV record that neither exclusion bears out excludes nothing, and nor
+    does any exclusion excuse a sample the lineage or the declaration gives an input that runs (a
+    candidate nobody excluded): that sample's row is missing, whatever else of it was excluded.
     """
     if not isinstance(provenance, dict) or not samples:
         return {}
@@ -5402,15 +5512,13 @@ def _excluded_samples(provenance: dict | None, samples: set[str]) -> dict[str, l
         return {}
     candidates = provenance.get("input_candidates") if isinstance(provenance.get("input_candidates"), list) else []
     runnable = {_path_key(item) for item in candidates if str(item).strip()} - set(excluded)
-    running = {str(row.get("sample_id") or "").strip() for manifest in manifests for row in _lineage_rows(manifest)
-               if _path_key(row["path"]) in runnable}
-    named: dict[str, str] = {}
+    attributed = _input_samples(provenance, ("rows", "excluded"))
+    running = {sample for key, sample in attributed.items() if key in runnable}
+    named: dict[str, str] = {key: sample for key, sample in attributed.items() if key in excluded and sample}
     record = provenance.get("analysis_csv")
     listed = record.get("excluded_inputs") if isinstance(record, dict) else None
-    sources = [_lineage_rows(manifest, part) for manifest in manifests for part in ("rows", "excluded")]
-    sources.append([item for item in listed if isinstance(item, dict)] if isinstance(listed, list) else [])
-    for source in sources:
-        for item in source:
+    for item in listed if isinstance(listed, list) else []:
+        if isinstance(item, dict):
             key = _path_key(item.get("path") or "")
             sample = str(item.get("sample_id") or "").strip()
             if key in excluded and sample:
@@ -5510,7 +5618,8 @@ def check_executed_class_matches_approved(
     perfectly clean grouping of the wrong thing.
 
     A ROW IS JOINED TO ITS SAMPLE through the input lineage first (_samples_by_csv_name): the input the
-    row opens, through its Console alias, and the sample its lineage row names. Since Interactive builds
+    row opens, through its Console alias, and the sample its lineage row names, or where it names none
+    (two inputs sharing a base name) the sample the Catalog declared the input for. Since Interactive builds
     the CSV from the lineage, a row's file_name may be an ASCII alias or a stem made unique by a digest
     (file_name_not_unique), which no sample's name or raw file is. A row the lineage says nothing of is
     joined by name, as before (_files_of_samples). An approved sample with no row is absent unless its

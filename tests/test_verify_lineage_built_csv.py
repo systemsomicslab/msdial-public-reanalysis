@@ -122,8 +122,11 @@ class FolderBranchUnit:
     """One campaign unit as Interactive's folder branch leaves it before production.
 
     Each input is downloaded with its MD5 verified (a file) or assembled from member objects that each
-    were (a vendor folder), declared by the Catalog with its sample, and given a lineage row naming that
-    sample. prepare() then writes the CSV and its records as the branch does.
+    were (a vendor folder), declared by the Catalog with its sample, and given a lineage row. The row
+    names a sample as build_input_lineage names one (_attribute_lineage): only where exactly one sample
+    row names the input by its base name, so two inputs sharing one (neg/x.mzML, pos/x.mzML) both carry
+    "". prepare() then writes the CSV and its records as the branch does, each row the sample of its
+    declared analysis input first and of its lineage row else, as build_repository_analysis_rows takes it.
     """
 
     def __init__(self, temporary: str, unit_id: str = "unit") -> None:
@@ -185,8 +188,8 @@ class FolderBranchUnit:
         self._declare(relative, "file", sample, label)
         checksums = {"sha256": download["sha256"], "md5": download["md5"], "declared": download["declared_checksum"],
                      "declared_algorithm": "md5" if verified else "", "declared_verified": True if verified else None}
-        return self._input(download["path"], "file", sample,
-                           {"url": download["source_url"], "download_path": download["path"]}, checksums)
+        return self._input(download["path"], "file", {"url": download["source_url"], "download_path": download["path"]},
+                           checksums, declared_names=[relative])
 
     def folder(self, relative: str, sample: str, label: str = "A") -> str:
         """A Waters .raw folder assembled from two member objects."""
@@ -195,15 +198,44 @@ class FolderBranchUnit:
             self._download(self.data / relative / member, f"{relative}/{member}".encode("utf-8"), verified=True)
         self._declare(relative, "vendor_folder", sample, label, suffix=".raw", format="waters_raw",
                       member_count=len(members))
-        return self._input(str(self.data / relative), "vendor_folder", sample, {"objects": len(members)},
+        return self._input(str(self.data / relative), "vendor_folder", {"objects": len(members)},
                            {"member_objects": len(members)})
 
-    def _input(self, path: str, kind: str, sample: str, source: dict, checksums: dict) -> str:
+    def _input(self, path: str, kind: str, source: dict, checksums: dict, *,
+               declared_names: "list[str] | None" = None) -> str:
+        """The input's candidate and lineage row. declared_names are the listed names it is: a file's own,
+        and none for a folder, whose listing names the files inside it."""
         self.manifest["input_candidates"].append(path)
         self.manifest["input_lineage"]["rows"].append(
-            {"path": path, "kind": kind, "declared_names": [], "sample_id": sample, "file_name": "",
-             "source": source, "checksums": checksums})
+            {"path": path, "kind": kind, "declared_names": list(declared_names or []), "sample_id": "",
+             "file_name": "", "source": source, "checksums": checksums})
+        self._attribute_lineage()
         return path
+
+    def _attribute_lineage(self) -> None:
+        """build_input_lineage's sample_id for every lineage row, the lease's excluded ones included: the one
+        sample whose raw_file has the input's base name, or failing that its stem, a container archive
+        (X.raw.zip) naming its container (X.raw); "" where none does or two do."""
+        names: dict[str, set[str]] = {}
+        for sample in self.manifest["project"]["sample_metadata"]:
+            raw = str(sample.get("raw_file") or "").replace("\\", "/").rsplit("/", 1)[-1].casefold()
+            sample_id = str(sample.get("sample_id") or "").strip()
+            if raw and sample_id:
+                names.setdefault(raw, set()).add(sample_id)
+                unpacked = verifier._strip_suffix(raw, verifier.ARCHIVE_SUFFIXES)
+                if unpacked != raw and verifier._strip_suffix(unpacked, verifier.CONTAINER_SUFFIXES) != unpacked:
+                    names.setdefault(unpacked, set()).add(sample_id)
+        lineage = self.manifest["input_lineage"]
+        for row in [*lineage["rows"], *lineage["excluded"]]:
+            base = Path(row["path"]).name.casefold()
+            matched = names.get(base) or names.get(Path(base).stem) or set()
+            row["sample_id"] = next(iter(matched)) if len(matched) == 1 else ""
+
+    def _declared_sample(self, path: str) -> str:
+        """The sample the Catalog declared this input for, matched by its path under the data root."""
+        relative = Path(path).relative_to(self.data).as_posix().casefold()
+        return next((str(entry.get("sample_id") or "") for entry in self.manifest["project"]["analysis_inputs"]
+                     if str(entry["path"]).casefold() == relative), "")
 
     def exclude(self, path: str, reason: str = "ion_mobility_out_of_scope", *, applied: bool = True) -> None:
         """classify_preflight's disposition: run the unit, less this input, which stays a candidate."""
@@ -220,14 +252,19 @@ class FolderBranchUnit:
         self.manifest.setdefault("excluded_input_candidates", []).append(
             {"path": download["path"], "reason": "unsupported_mzml_encoding"})
         self.manifest["input_lineage"]["excluded"].append(
-            {"path": download["path"], "kind": "file", "sample_id": sample,
+            {"path": download["path"], "kind": "file", "declared_names": [relative], "sample_id": "",
              "exclusion": {"reason": "unsupported_mzml_encoding"}})
+        self._attribute_lineage()
         return download["path"]
 
     # -- what msdial_prepare_repository_reanalysis does with it ---------------------------------------
 
     def prepare(self) -> list[dict]:
-        """build_repository_analysis_rows, create_console_aliases, write_analysis_csv and record_analysis_csv."""
+        """build_repository_analysis_rows, create_console_aliases, write_analysis_csv and record_analysis_csv.
+
+        The lineage is attributed first from the unit's final sample rows, as the lease attributes it once
+        it holds them all."""
+        self._attribute_lineage()
         disposition = self.manifest.get("campaign_disposition") or {}
         excluded = {item["path"]: item["reason"] for item in disposition.get("excluded_inputs") or []} \
             if disposition.get("applied") is True else {}
@@ -238,9 +275,9 @@ class FolderBranchUnit:
         rows = []
         for position, candidate in enumerate([item for item in candidates if item not in excluded], start=1):
             path = Path(candidate)
-            sample = lineage[candidate]["sample_id"]
+            sample = self._declared_sample(candidate) or lineage[candidate]["sample_id"]
             row = {"file_path": candidate, "file_name": path.stem, "file_type": "Sample",
-                   "class_id": _class_token(self.labels[sample]) or "Sample", "acquisition_type": "DDA",
+                   "class_id": _class_token(self.labels.get(sample, "")) or "Sample", "acquisition_type": "DDA",
                    "batch_order": 1, "analytical_order": position, "factor": 1, "input_path": candidate,
                    "console_alias": None}
             reasons = [reason for reason, safe in (("path_not_console_safe", _console_safe(candidate)),
@@ -285,7 +322,8 @@ class FolderBranchUnit:
             "class_id_aliases": {label: alias for label, alias in labels.items() if label != alias},
             "samples_without_input": [],
             "excluded_inputs": [{"path": path, "reason": reason,
-                                 "sample_id": (lineage.get(path) or self._lease_row(path)).get("sample_id", "")}
+                                 "sample_id": self._declared_sample(path)
+                                 or (lineage.get(path) or self._lease_row(path)).get("sample_id", "")}
                                 for path, reason in sorted(excluded.items())],
         }
         return rows
@@ -356,8 +394,14 @@ class AliasedRowsInClassTests(unittest.TestCase):
         self.assertEqual(verifier.PASS, check.status, check.detail)
         self.assertEqual(verifier.PASS, _check(report, "SUM-1").status, _check(report, "SUM-1").detail)
 
-    def test_inputs_sharing_a_stem_are_told_apart_by_their_lineage(self) -> None:
-        """file_name_not_unique: neg/x.mzML and pos/x.mzML are x-<digest> and x-<digest> in the CSV."""
+    def test_inputs_sharing_a_stem_are_told_apart_by_their_declared_inputs(self) -> None:
+        """file_name_not_unique: neg/x.mzML and pos/x.mzML are x-<digest> and x-<digest> in the CSV.
+
+        THE DEFECT (wave-4 review, B2 finding 1): build_input_lineage names a sample only where exactly one
+        sample row names the input by its base name, and both are x.mzml, so both lineage rows carry "".
+        The CSV builder took each row's sample from the Catalog's declared analysis input and wrote it
+        correctly, and CLS-2, finding no sample in the lineage, joined the rows by name: 'x-<digest>' is
+        no sample's raw file, and every such unit FAILed with 2 samples absent and 2 rows unapproved."""
         with tempfile.TemporaryDirectory() as temporary:
             unit = FolderBranchUnit(temporary)
             unit.file("neg/x.mzML", "x negative", "A")
@@ -366,7 +410,104 @@ class AliasedRowsInClassTests(unittest.TestCase):
             check = _check(unit.gate(), "CLS-2")
 
         self.assertEqual({"file_name_not_unique"}, {row.get("file_name_reason") for row in rows})
+        self.assertEqual(["A", "B"], [row["class_id"] for row in rows])
+        self.assertEqual({""}, {row["sample_id"] for row in unit.manifest["input_lineage"]["rows"]})
         self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(2, check.evidence["joined_through_lineage"])
+
+    def test_inputs_sharing_a_stem_with_their_classes_swapped_are_refused(self) -> None:
+        """The declaration says which input is whose: it does not excuse the Class a row carries."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("neg/x.mzML", "x negative", "A")
+            unit.file("pos/x.mzML", "x positive", "B")
+            rows = unit.prepare()
+            rows[0]["class_id"], rows[1]["class_id"] = "B", "A"
+            unit.write_csv(rows)
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual(2, len(check.evidence["differing"]), check.evidence["differing"])
+        self.assertEqual([], check.evidence["missing"])
+
+    def test_without_the_data_root_the_declared_names_name_the_declared_input(self) -> None:
+        """A lineage row naming no sample is matched by its path under input_directory, else through the
+        listed names it is (declared_names); with neither, it is left to the name, which no digest is."""
+        for keep_names in (True, False):
+            with self.subTest(keep_names=keep_names), tempfile.TemporaryDirectory() as temporary:
+                unit = FolderBranchUnit(temporary)
+                unit.file("neg/x.mzML", "x negative", "A")
+                unit.file("pos/x.mzML", "x positive", "B")
+                unit.prepare()
+                del unit.manifest["input_directory"]
+                if not keep_names:
+                    for row in unit.manifest["input_lineage"]["rows"]:
+                        row["declared_names"] = []
+                check = _check(unit.gate(), "CLS-2")
+
+                self.assertEqual(verifier.PASS if keep_names else verifier.FAIL, check.status, check.detail)
+
+    def test_an_input_two_declared_inputs_name_is_no_ones(self) -> None:
+        """declared_names naming two declared inputs of two samples attribute the row to neither."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("neg/x.mzML", "x negative", "A")
+            unit.file("pos/x.mzML", "x positive", "B")
+            unit.prepare()
+            del unit.manifest["input_directory"]
+            for row in unit.manifest["input_lineage"]["rows"]:
+                row["declared_names"] = ["neg/x.mzML", "pos/x.mzML"]
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual(["x negative", "x positive"], check.evidence["missing"])
+
+    def test_a_shared_stem_one_of_whose_inputs_was_excluded_is_told_apart(self) -> None:
+        """pos/x.mzML is excluded, so neg/x.mzML's row is 'x', which both samples' raw files are by name:
+        joined by name, 'x positive' was given the row of 'x negative' and called a different Class."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("neg/x.mzML", "x negative", "A")
+            unit.exclude(unit.file("pos/x.mzML", "x positive", "B"))
+            rows = unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(["x"], [row["file_name"] for row in rows])
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual({"x positive": ["x.mzML"]}, check.evidence["excluded_samples"])
+
+    def test_without_the_csv_record_an_excluded_input_is_its_declared_sample(self) -> None:
+        """Both x.mzML were excluded: by name each is either sample's, and the declaration says whose."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("S1.mzML", "S1", "A")
+            unit.exclude(unit.file("neg/x.mzML", "x negative", "A"))
+            unit.exclude(unit.file("pos/x.mzML", "x positive", "B"))
+            unit.prepare()
+            del unit.manifest["analysis_csv"]["excluded_inputs"]
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual({"x negative": ["x.mzML"], "x positive": ["x.mzML"]}, check.evidence["excluded_samples"])
+
+    def test_an_exclusion_does_not_excuse_a_sample_the_declaration_gives_an_input_that_runs(self) -> None:
+        """'x negative' is neg/x.mzML, which runs and whose row is gone, and IM.d, which was excluded. Its
+        lineage row names no sample (pos/x.mzML shares its base name), and the declaration does."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("neg/x.mzML", "x negative", "A")
+            unit.file("pos/x.mzML", "x positive", "B")
+            unit.exclude(unit.file("IM.d", "x negative", "A"))
+            # One sample of two inputs: its row and assignment are the sample table's once.
+            unit.manifest["project"]["sample_metadata"].pop()
+            unit.manifest["project"]["class_proposal"]["assignments"].pop()
+            rows = unit.prepare()
+            unit.write_csv([row for row in rows if "neg" not in Path(row["input_path"]).parent.name])
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual(["x negative"], check.evidence["missing"])
+        self.assertNotIn("excluded_samples", check.evidence)
 
     def test_a_label_the_console_reads_otherwise_is_compared_as_it_was_written(self) -> None:
         """A label is projected ('Wild type' as 'Wild-type') and, outside ASCII, folded (class_id_aliases)."""
@@ -427,17 +568,21 @@ class AliasedRowsInClassTests(unittest.TestCase):
         self.assertEqual({"S3": ["S3.mzML"]}, check.evidence["excluded_samples"])
 
     def test_without_the_csv_record_an_excluded_input_is_found_by_its_lineage_or_its_name(self) -> None:
-        for keep_lineage in (True, False):
-            with self.subTest(keep_lineage=keep_lineage), tempfile.TemporaryDirectory() as temporary:
+        """By its lineage row's sample, else its declared input's, else a sample's raw file by name."""
+        for found_by in ("lineage", "declaration", "name"):
+            with self.subTest(found_by=found_by), tempfile.TemporaryDirectory() as temporary:
                 unit = FolderBranchUnit(temporary)
                 unit.file("S1.mzML", "S1", "A")
                 unit.exclude(unit.file("IM1.d", "IM1", "B"))
                 unit.prepare()
                 del unit.manifest["analysis_csv"]
-                if not keep_lineage:
+                if found_by != "lineage":
                     for row in unit.manifest["input_lineage"]["rows"]:
                         row["sample_id"] = ""
                     unit.manifest["project"]["sample_metadata"][1]["raw_file"] = "FILES/IM1.d.zip"
+                if found_by == "name":
+                    for entry in unit.manifest["project"]["analysis_inputs"]:
+                        entry["sample_id"] = ""
                 check = _check(unit.gate(), "CLS-2")
 
                 self.assertEqual(verifier.PASS, check.status, check.detail)
