@@ -882,6 +882,114 @@ class ExcludedInputsInChecksumTests(unittest.TestCase):
         self.assertEqual(verifier.NOT_EVALUABLE, check.status)
         self.assertEqual("verified", check.evidence["basis"])
 
+    def _opened_in_place_of_s2(self, temporary: str, spell, *, verified: bool = False):
+        """The excluded input opened by a row under another spelling, in place of S2's row: every count agrees."""
+        unit = FolderBranchUnit(temporary)
+        unit.file("S1.mzML", "S1", "A")
+        unit.file("S2.mzML", "S2", "B")
+        excluded = unit.file("IM1.mzML", "IM1", "B", verified=verified)
+        unit.exclude(excluded, "raw_header_unreadable")
+        rows = unit.prepare()
+        kept = [row for row in rows if row["file_name"] != "S2"]
+        unit.write_csv(kept + [dict(kept[0], file_path=spell(unit, excluded), file_name="IM1", class_id="B",
+                                    analytical_order=2)])
+        return unit.gate()
+
+    @staticmethod
+    def _unrecorded_link(unit: FolderBranchUnit, excluded: str) -> str:
+        link = unit.raw / ALIAS_DIRECTORY / "IM1-0000.mzML"
+        _link(Path(excluded), link)
+        return str(link)
+
+    def test_an_excluded_input_opened_under_another_spelling_is_held(self) -> None:
+        """THE DEFECT (wave-4 review, finding 2): through a hard link the lineage does not record, or a \\\\?\\
+        prefix, the row was no candidate by its spelling, SUM-1 called IM1 never analysed and PASSed, and no
+        check that stops the run FAILed."""
+        spellings = {"unrecorded hard link": self._unrecorded_link,
+                     "extended-length prefix": lambda unit, excluded: "\\\\?\\" + excluded}
+        for name, spell in spellings.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                report = self._opened_in_place_of_s2(temporary, spell)
+
+                checksum = _check(report, "SUM-1")
+                self.assertEqual(verifier.FAIL, checksum.status, checksum.detail)
+                self.assertNotIn("inputs_excluded", checksum.evidence)
+                self.assertEqual({"declared_checksum_unverified": 1}, checksum.evidence["uncovered_reasons"])
+                inputs = _check(report, "INP-1")
+                self.assertEqual(verifier.FAIL, inputs.status)
+                self.assertIn("1 CSV row(s) name an input the campaign disposition excluded (IM1)", inputs.detail)
+                self.assertEqual(["SUM-1", "INP-1"], report.run_blocked_by)
+
+    def test_a_row_tied_to_no_candidate_leaves_no_excluded_input_unheld(self) -> None:
+        """Once a row's file cannot be compared, it may be the excluded input under any name."""
+        with tempfile.TemporaryDirectory() as temporary:
+            report = self._opened_in_place_of_s2(temporary, lambda unit, excluded: str(unit.raw / "gone" / "IM1.mzML"))
+
+        self.assertEqual(verifier.FAIL, _check(report, "SUM-1").status)
+        self.assertNotIn("inputs_excluded", _check(report, "SUM-1").evidence)
+        self.assertIn("1 CSV row(s) open no input candidate of this unit", _check(report, "INP-1").detail)
+
+    def test_a_verified_excluded_input_opened_through_a_link_still_stops_the_run(self) -> None:
+        """Its checksum vouches for its bytes; it was excluded all the same, and INP-1 holds each row to an input."""
+        with tempfile.TemporaryDirectory() as temporary:
+            report = self._opened_in_place_of_s2(temporary, self._unrecorded_link, verified=True)
+
+        self.assertEqual(verifier.PASS, _check(report, "SUM-1").status, _check(report, "SUM-1").detail)
+        self.assertEqual(verifier.FAIL, _check(report, "INP-1").status)
+        self.assertEqual(["INP-1"], report.run_blocked_by)
+
+
+class RowsAreInputsTests(unittest.TestCase):
+    """INP-1 holds each CSV row to the candidate it opens, not only the rows' count to the candidates'."""
+
+    def _unit(self, temporary: str) -> tuple[FolderBranchUnit, list[dict]]:
+        unit = FolderBranchUnit(temporary)
+        unit.file("S1.mzML", "S1", "A")
+        unit.file("S2.mzML", "S2", "B")
+        return unit, unit.prepare()
+
+    def test_a_candidate_opened_twice_in_place_of_another_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, rows = self._unit(temporary)
+            unit.write_csv([rows[0], dict(rows[0], file_name="S2", class_id="B", analytical_order=2)])
+            check = _check(unit.gate(), "INP-1")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("1 input candidate(s) are opened by more than one CSV row (S1 and S2)", check.detail)
+
+    def test_a_row_opening_an_mzml_the_lease_excluded_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("S1.mzML", "S1", "A")
+            unit.file("S2.mzML", "S2", "B")
+            excluded = unit.lease_excluded("S3.mzML", "S3", "B")
+            rows = unit.prepare()
+            unit.write_csv([rows[0], dict(rows[1], file_path=excluded, file_name="S3")])
+            check = _check(unit.gate(), "INP-1")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("1 CSV row(s) open an input the lease excluded (S3)", check.detail)
+
+    def test_a_row_that_is_a_candidates_file_under_another_name_opens_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, rows = self._unit(temporary)
+            link = unit.raw / "elsewhere" / "S2.mzML"
+            _link(Path(rows[1]["input_path"]), link)
+            unit.write_csv([rows[0], dict(rows[1], file_path=str(link))])
+            check = _check(unit.gate(), "INP-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_rows_that_name_their_inputs_need_no_file_on_disk(self) -> None:
+        """--stage all reads before-production checks after the raw data are deleted."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, rows = self._unit(temporary)
+            for row in rows:
+                Path(row["input_path"]).unlink()
+            check = _check(unit.gate(), "INP-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
 
 def _aliased(rows: list[dict]) -> dict:
     """The one row read through a Console alias."""

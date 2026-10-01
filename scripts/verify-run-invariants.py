@@ -1542,7 +1542,8 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
     input candidates, where the disposition found it, and gives it no CSV row. Its checksum is not
     required, and it is reported as excluded with the disposition's reason (_not_analysed). Where a CSV
     row opens it all the same, through its Console alias or not, it is analysed, and covered or refused
-    like any other input; INP-1 refuses the row.
+    like any other input; INP-1 refuses the row. So is every excluded input where a row opens something
+    the gate cannot tie to a candidate, which may be any of them under another name.
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). Bytes nothing vouches for give results
     that may not describe the published data.
@@ -2356,15 +2357,61 @@ def _not_analysed(provenance: dict, owner: dict, csv_rows: list[dict] | None) ->
     split part, the part's own, as _excluded_candidates reads them. Interactive leaves such an input
     among the candidates and gives it no row; a row that opens it all the same, through its Console
     alias or not, makes it analysed, and it is then held to everything any input is.
+
+    Which input a row opens is read by _inputs_opened, and that no row opens an excluded input is said
+    only where each row is known to open one of the unit's candidates. A row compared by its spelling
+    alone said nothing of the rest: one that opened the excluded input through a link the lineage does
+    not record, or through a \\\\?\\ prefix, left it unheld, and SUM-1 passed an input nothing vouches
+    for. A row the gate cannot tie to a candidate may open any of them, so then no excluded input is
+    taken as unopened, and each is held to its checksum.
     """
     reasons = _exclusion_reasons(owner, provenance)
     if not reasons:
         return {}
-    aliases = _input_keys_by_console_path(provenance)
-    opened = {_input_key(row, aliases) for row in csv_rows or []}
     candidates = owner.get("input_candidates") if isinstance(owner.get("input_candidates"), list) else []
+    own = provenance.get("input_candidates") if isinstance(provenance.get("input_candidates"), list) else []
+    opened = set(_inputs_opened(csv_rows or [], _input_keys_by_console_path(provenance), [*candidates, *own]))
+    if "" in opened:
+        return {}
     return {_path_key(item): reasons[_path_key(item)] for item in candidates
             if _path_key(item) in reasons and _path_key(item) not in opened}
+
+
+def _inputs_opened(csv_rows: list[dict], aliases: dict[str, str], inputs: list) -> list[str]:
+    """The key of the input each CSV row opens, of these inputs, row by row; "" for a row that opens none.
+
+    A row opens the input its path names, or the one its Console alias stands for (_input_key). Compared
+    as spelt, a row opening an input under a name the lineage does not record, a hard link or a \\\\?\\
+    prefix, opens nothing known, so while both are on disk a row that is an input's file record
+    (_record_of) opens that input whatever it is called. A row that is none of them, or one the gate can
+    no longer compare once the files are gone, is "".
+    """
+    keys = {_path_key(item) for item in inputs}
+    records: "dict[tuple[int, int], str] | None" = None
+    opened = []
+    for row in csv_rows:
+        key = _input_key(row, aliases)
+        if key in keys:
+            opened.append(key)
+            continue
+        if records is None:
+            # Only for a row its spelling does not tie to an input, so a unit whose rows all do stats nothing.
+            records = {}
+            for item in inputs:
+                record = _record_of(item)
+                if record is not None:
+                    records.setdefault(record, _path_key(item))
+        record = _record_of(row.get("file_path")) if key else None
+        opened.append(records.get(record, "") if record is not None else "")
+    return opened
+
+
+def _record_of(path: object) -> "tuple[int, int] | None":
+    """The file record a path names (_file_record), or None for one that is not on disk or cannot be read."""
+    try:
+        return _file_record(os.stat(str(path)))
+    except (OSError, ValueError):
+        return None
 
 
 def _excluded_sentence(not_analysed: dict[str, tuple[str, str]]) -> str:
@@ -2418,6 +2465,13 @@ def check_analysis_inputs_are_the_inputs(
     as well. Without it a correct unit with one undecodable mzML FAILed here, and INP-1 stops the run: the
     unit counted as failed and lost its raw data, where the rule is that the file is excluded and the rest
     of the unit runs.
+
+    EACH ROW IS AN INPUT, not only a count of them. A row that opens an input the disposition or the lease
+    excluded, under any name, in place of another sample's row leaves every count equal, so each row
+    must open a candidate that runs (_inputs_opened: by its path, by a Console alias the lineage
+    records, or while both are on disk by file record), and no candidate may be opened twice. Rows
+    compared by count alone let an excluded input that nothing vouches for run through a hard link
+    while SUM-1 was told it was never opened.
 
     A split part's project is its parent's with, where the split carries them, only the part's own
     samples' inputs: the parent's declaration is compared with the parent's candidates, a declaration
@@ -2506,12 +2560,34 @@ def check_analysis_inputs_are_the_inputs(
     if len(own_candidates) - len(held) != len(csv_rows):
         problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
                         + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))
-    aliases = _input_keys_by_console_path(provenance)
-    listed_excluded = [str(row.get("file_name") or "") or Path(str(row.get("file_path") or "")).name
-                       for row in csv_rows if _input_key(row, aliases) in excluded_keys]
+    # Which input each row opens, not only how many rows there are: a row that opens an excluded input,
+    # or another candidate's twice, in place of one candidate's leaves every count above as it was.
+    own_lease = _lease_excluded(provenance) if split else owner_lease
+    lease_keys = set(owner_lease) | set(own_lease)
+    known = [*own_candidates, *owner_excluded, *own_excluded,
+             *(path for path, _reason in [*owner_lease.values(), *own_lease.values()])]
+    opened = _inputs_opened(csv_rows, _input_keys_by_console_path(provenance), known)
+    names = [str(row.get("file_name") or "") or Path(str(row.get("file_path") or "")).name for row in csv_rows]
+    own_keys = {_path_key(item) for item in own_candidates}
+    listed_excluded = [name for name, key in zip(names, opened) if key in excluded_keys]
+    listed_lease = [name for name, key in zip(names, opened) if key in lease_keys and key not in excluded_keys]
+    unknown = [name for name, key in zip(names, opened) if not key]
+    rows_of: dict[str, list[str]] = {}
+    for name, key in zip(names, opened):
+        if key in own_keys and key not in excluded_keys | lease_keys:
+            rows_of.setdefault(key, []).append(name)
+    twice = [" and ".join(group) for group in rows_of.values() if len(group) > 1]
     if listed_excluded:
         problems.append(f"{len(listed_excluded)} CSV row(s) name an input the campaign disposition excluded "
                         f"({', '.join(listed_excluded[:5])})")
+    if listed_lease:
+        problems.append(f"{len(listed_lease)} CSV row(s) open an input the lease excluded "
+                        f"({', '.join(listed_lease[:5])})")
+    if unknown:
+        problems.append(f"{len(unknown)} CSV row(s) open no input candidate of this unit, by their path, by a "
+                        f"Console alias the lineage records or by file record ({', '.join(unknown[:5])})")
+    if twice:
+        problems.append(f"{len(twice)} input candidate(s) are opened by more than one CSV row ({'; '.join(twice[:5])})")
     excluded_names = [Path(item.rstrip("\\/")).name for item in dict.fromkeys(owner_excluded + own_excluded)][:10]
     lease = {"lease_excluded": [{"input": Path(item.rstrip("\\/")).name, "reason": owner_lease[_path_key(item)][1]}
                                 for item in lease_out[:10]]} if lease_out else {}
