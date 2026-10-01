@@ -1543,7 +1543,8 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
     required, and it is reported as excluded with the disposition's reason (_not_analysed). Where a CSV
     row opens it all the same, through its Console alias or not, it is analysed, and covered or refused
     like any other input; INP-1 refuses the row. So is every excluded input where a row opens something
-    the gate cannot tie to a candidate, which may be any of them under another name.
+    the gate cannot tie to a candidate, which may be any of them under another name, and where the
+    analysis CSV is absent or cannot be read, which leaves no row to tie at all.
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). Bytes nothing vouches for give results
     that may not describe the published data.
@@ -2364,13 +2365,21 @@ def _not_analysed(provenance: dict, owner: dict, csv_rows: list[dict] | None) ->
     not record, or through a \\\\?\\ prefix, left it unheld, and SUM-1 passed an input nothing vouches
     for. A row the gate cannot tie to a candidate may open any of them, so then no excluded input is
     taken as unopened, and each is held to its checksum.
+
+    Nor is it said without the CSV. An analysis CSV that is absent, or that the gate cannot read (csv_rows
+    None), has no row to tie to anything, and the Console may still read a file this reader refused, so
+    every excluded input is held as if a row opened it. Reading the missing rows as none excused them all:
+    SUM-1 passed an excluded input nothing vouches for while INP-1 and CNT-1, which read the same CSV,
+    were not evaluable, and no check that stops the run said a word.
     """
+    if csv_rows is None:
+        return {}
     reasons = _exclusion_reasons(owner, provenance)
     if not reasons:
         return {}
     candidates = owner.get("input_candidates") if isinstance(owner.get("input_candidates"), list) else []
     own = provenance.get("input_candidates") if isinstance(provenance.get("input_candidates"), list) else []
-    opened = set(_inputs_opened(csv_rows or [], _input_keys_by_console_path(provenance), [*candidates, *own]))
+    opened = set(_inputs_opened(csv_rows, _input_keys_by_console_path(provenance), [*candidates, *own]))
     if "" in opened:
         return {}
     return {_path_key(item): reasons[_path_key(item)] for item in candidates

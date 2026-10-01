@@ -993,13 +993,52 @@ class ExcludedInputsInChecksumTests(unittest.TestCase):
         self.assertEqual({"declared_checksum_unverified": 1}, check.evidence["uncovered_reasons"])
 
     def test_a_unit_whose_every_input_was_excluded_has_nothing_vouched_for(self) -> None:
+        """The CSV is read and has no row, so the excluded input is known to be opened by none."""
         with tempfile.TemporaryDirectory() as temporary:
             unit = FolderBranchUnit(temporary)
             unit.exclude(unit.file("IM1.d", "IM1", "B"))
+            self.assertEqual([], unit.prepare())
             check = _check(unit.gate(), "SUM-1")
 
         self.assertEqual(verifier.FAIL, check.status)
         self.assertIn("All 1 input candidate(s) were excluded by the campaign disposition", check.detail)
+
+    def test_a_csv_the_gate_cannot_read_excuses_no_excluded_input(self) -> None:
+        """THE DEFECT (wave-4 review, B2 finding 2): with analysis_files.csv absent or undecodable, the rows
+        were read as none, no row opened the unverified IM1.d, and SUM-1 PASSed it as never analysed, while
+        INP-1 and CNT-1, reading the same CSV, were not evaluable: no check that stops the run FAILed. The
+        Console may still read a CSV the gate's UTF-8 reader refuses, so the input is held to its checksum."""
+        damages = {"absent": lambda path: path.unlink(),
+                   "undecodable": lambda path: path.write_bytes(b"file_path,file_name\n\xff\xfe\xfa,IM1\n")}
+        for name, damage in damages.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                unit, _excluded = self._unit(temporary)
+                unit.prepare()
+                damage(unit.output / "analysis_files.csv")
+                report = unit.gate()
+
+                checksum = _check(report, "SUM-1")
+                self.assertEqual(verifier.FAIL, checksum.status, checksum.detail)
+                self.assertNotIn("inputs_excluded", checksum.evidence)
+                self.assertEqual(3, checksum.evidence["inputs"])
+                self.assertEqual({"declared_checksum_unverified": 1}, checksum.evidence["uncovered_reasons"])
+                for check_id in ("INP-1", "CNT-1"):
+                    self.assertEqual(verifier.NOT_EVALUABLE, _check(report, check_id).status, check_id)
+                self.assertEqual(["SUM-1"], report.run_blocked_by)
+
+    def test_without_a_csv_a_verified_excluded_input_is_held_and_passes(self) -> None:
+        """Held, not excused: its own verified checksum vouches for it, as for any input."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("S1.mzML", "S1", "A")
+            unit.exclude(unit.file("IM1.d", "IM1", "B"))
+            unit.prepare()
+            (unit.output / "analysis_files.csv").unlink()
+            check = _check(unit.gate(), "SUM-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertNotIn("inputs_excluded", check.evidence)
+        self.assertEqual({"verified": 2}, check.evidence["inputs_by_basis"])
 
     def test_a_manifest_without_input_lineage_is_read_as_it_always_was(self) -> None:
         """Its validation counts every declared file and names none, so the skipped one cannot be told to be
