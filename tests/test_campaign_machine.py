@@ -241,6 +241,94 @@ class InterruptionTests(Base):
         self.assertEqual((unit["state"], unit["failures"], unit["interruptions"]), ("done", 1, 1))
 
 
+class OrphanConsoleTests(Base):
+    """A backend restart on Windows leaves its Console running (no job object). The restarted backend calls
+    the job interrupted, and its single-flight refuses another Console on the unit, naming the orphan."""
+
+    def running(self, world: fakes.World):
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "running")
+        world.interactive.restart(orphan_consoles=True)
+        return book, runner
+
+    def test_an_orphan_whose_backend_is_gone_is_stopped_before_the_unit_is_retried(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(runs=["hold", "ok"])  # the first Console never ends by itself
+        book, runner = self.running(world)
+        orphan = book.unit("u1")["run_job_id"]
+        runner.run(until_idle=True, max_iterations=3000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["interruptions"], unit["raw_disposition"]),
+                         ("done", 0, 1, "released"))
+        self.assertEqual(world.interactive.kills, [orphan])
+        self.assertNotEqual(unit["run_job_id"], orphan, "the orphan's job is not adopted")
+        calls = world.interactive.calls
+        kill = [index for index, (name, _) in enumerate(calls) if name == "kill_orphan"][0]
+        second = [index for index, (name, arguments) in enumerate(calls) if name == "run" and arguments["unit"] == "u1"][1]
+        self.assertLess(kill, second, "stopped before the retry")
+        self.assertEqual(world.interactive.overlapping_starts, [], "no Console started beside the orphan")
+        self.assertEqual([json.loads(event["detail_json"])["killed"] for event in book.events("orphan_killed")], [True])
+        self.assertEqual(book.unit("u2")["state"], "done")
+
+    def test_an_orphan_whose_backend_still_runs_is_waited_for(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(ticks=40)
+        world.interactive.orphan_backend_alive = True
+        book, runner = self.running(world)
+        runner.run(until_idle=True, max_iterations=3000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["interruptions"]), ("done", 0, 1))
+        self.assertEqual(world.interactive.kills, [])
+        self.assertEqual(world.interactive.overlapping_starts, [], "the second Console started once the orphan ended")
+        self.assertEqual(world.interactive.console_starts.count(("u1", "run")), 2)
+
+    def test_nothing_is_retried_failed_or_deleted_under_an_orphan_that_will_not_stop(self) -> None:
+        world = self.world(("u1", "u2"), policy_values={"prefetch": 1})
+        world.scripts["u1"] = fakes.UnitScript(runs=["hold", "ok"])
+        world.interactive.orphan_unkillable = True
+        book, runner = self.running(world)
+        started = list(world.interactive.console_starts)
+        since = world.clock.now()
+        runner.run(max_iterations=600)
+        kills = [name for name, _ in world.interactive.calls].count("kill_orphan")
+        self.assertLessEqual(kills, (world.clock.now() - since).total_seconds() / runner.policy.busy_retry_seconds + 1,
+                             "a kill that may wait for the process is not tried at every poll")
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["interruptions"]), ("running", 0, 0))
+        self.assertTrue((Path(unit["workspace"]) / "raw" / "data" / "S1.mzML").is_file())
+        self.assertNotIn("discard", [name for name, _ in world.interactive.calls])
+        self.assertEqual(world.interactive.console_starts, started, "u2 waits for the Console slot too")
+        self.assertIn(book.unit("u2")["state"], ("metadata_prepared", "prepared"))
+        self.assertEqual(world.interactive.overlapping_starts, [])
+        self.assertEqual(len(book.events("orphan_killed")), 1, "recorded once, not at every poll")
+        world.interactive.orphans.clear()  # the orphan ends at last
+        runner.run(until_idle=True, max_iterations=3000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+        self.assertEqual(world.interactive.overlapping_starts, [])
+
+    def test_a_unit_busy_reply_naming_an_ended_job_is_not_adopted(self) -> None:
+        world = self.world()
+        original = world.interactive.start_run
+        refused = []
+
+        def start_run(**arguments):
+            if not refused:
+                refused.append(True)
+                world.interactive.jobs["rn-old"] = {"id": "rn-old", "kind": "run", "status": "interrupted", "unit": "u1",
+                                                    "manifest_path": "", "done_at": world.clock.now(), "outcome": "ok"}
+                return {"ok": False, "reason": "unit_busy", "live_job_id": "rn-old"}
+            return original(**arguments)
+
+        world.interactive.start_run = start_run
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"]), ("done", 0))
+        self.assertNotIn("rn-old", [row["job_id"] for row in book.console_runs("u1")])
+        self.assertIn(("run_start", "busy", 0), [(row["step"], row["outcome"], row["counted"]) for row in book.attempts("u1")])
+
+
 class StepErrorTests(Base):
     def test_a_poll_that_raises_keeps_the_console_slot_until_it_gives_the_job_up(self) -> None:
         world = self.world(("u1", "u2"))

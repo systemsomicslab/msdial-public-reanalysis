@@ -14,6 +14,7 @@ D:\\0_SourceCode\\msdial_repository_catalog, or MSDIAL_INTERACTIVE_ROOT and MSDI
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import inspect
@@ -305,6 +306,42 @@ class InteractiveContractTests(unittest.TestCase):
             self.assertTrue(result["deleted"], result)
             self.assertEqual(len(crossings()), 1)
             self.assertFalse((workspace / "raw").exists())
+
+    def test_no_discard_runs_under_a_console_that_may_still_read_the_raw_tree(self) -> None:
+        """A Console a backend restart left running is found by Interactive's live_run_attempt (this test's
+        own process stands in for it). Neither the fallback nor an approval-taking discard deletes under it,
+        and no crossing is recorded; once its run attempt is closed, the discard proceeds."""
+        from msdial_app.process_liveness import process_created_at
+
+        port = ports.InteractivePort(port=8766)
+        for authorized in (False, True):
+            with self.subTest(authorized=authorized), tempfile.TemporaryDirectory() as directory:
+                unit = campaign_unit(Path(directory))
+                manifest = json.loads(unit["manifest_path"].read_text(encoding="utf-8"))
+                manifest["run_attempts"] = [{"attempt_id": "a1", "kind": "run", "job_id": "rn1", "ended_at": None,
+                                             "console_pid": os.getpid(), "console_process_created_at": process_created_at(),
+                                             "backend": {"pid": 0}}]
+                unit["manifest_path"].write_text(json.dumps(manifest), encoding="utf-8")
+                calls = []
+
+                def discard_download_lease(manifest_path, confirmed=False, campaign_authorization_path=""):
+                    calls.append(str(manifest_path))
+                    return {"deleted": True, "raw_directory": "raw"}
+
+                patch = (mock.patch.object(self.rr, "discard_download_lease", discard_download_lease) if authorized
+                         else contextlib.nullcontext())
+                with patch:
+                    result = port.discard(manifest_path=str(unit["manifest_path"]), authorization_path=str(unit["authorization"]),
+                                          unit_id="u1")
+                    self.assertEqual((result["ok"], result["deleted"], result["blockers"]), (True, False, ["console_live"]))
+                    self.assertFalse(policy.discard_blocked_for_good(result["blockers"]), "the Console ends")
+                    self.assertEqual((calls, boundary_5_crossings(unit["manifest_path"])), ([], []))
+                    self.assertTrue(unit["raw"].is_file())
+                    manifest["run_attempts"][0].update(ended_at="2026-10-01T01:00:00+00:00", console_pid=0)
+                    unit["manifest_path"].write_text(json.dumps(manifest), encoding="utf-8")
+                    result = port.discard(manifest_path=str(unit["manifest_path"]), authorization_path=str(unit["authorization"]),
+                                          unit_id="u1")
+                self.assertTrue(result["deleted"], result)
 
     def test_the_default_extractor_is_the_newest_built_pin(self) -> None:
         import msdial_app

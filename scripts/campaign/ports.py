@@ -486,12 +486,14 @@ class InteractivePort:
 
         Interactive's discard has no preview that checks anything (confirmed=false returns before its
         checks), so the fallback reads them here first: a boundary-5 crossing records a deletion that is
-        going to happen, not one Interactive then refuses. The codes are policy.DISCARD_BLOCKERS.
+        going to happen, not one Interactive then refuses. The codes are policy.DISCARD_BLOCKERS. The first,
+        console_live, is the port's own: discard_download_lease does not look for a Console still reading
+        the raw tree, such as one a backend restart left running.
         """
         from msdial_app.mztab_validation import find_mztab_files
         from msdial_app.run_finalisation import raw_deletion_holds
 
-        blockers = []
+        blockers = self._console_blockers(manifest_path)
         status = str(manifest.get("status") or "")
         if status in {"mztab_validated", "completed", "raw_cleaned"}:
             blockers.append({"code": "validated_status", "detail": f"the unit's run is {status}; the normal cleanup applies"})
@@ -510,6 +512,14 @@ class InteractivePort:
         if holds:
             blockers.append({"code": "finalisation_held", "detail": f"{len(holds)} finalisation hold(s) on the raw directory"})
         return blockers
+
+    def _console_blockers(self, manifest_path: Path) -> list[dict[str, str]]:
+        attempt = self.live_attempt(str(manifest_path))
+        if attempt is None:
+            return []
+        return [{"code": "console_live",
+                 "detail": f"run attempt {attempt.get('attempt_id') or '?'} of job {attempt.get('job_id') or 'unrecorded'} "
+                           "may still have its MS-DIAL Console running"}]
 
     # discard_download_lease's refusals, by the words it raises them with, as DISCARD_BLOCKERS codes: what an
     # approval-taking discard (plan item 14) says when it will not delete, so the machine can tell a refusal
@@ -556,6 +566,11 @@ class InteractivePort:
         path = Path(manifest_path)
         authorized = self._authorized_discard()
         try:
+            live = self._console_blockers(path)
+            if live:
+                # Not under a Console that may still read the raw tree, whichever discard would delete it.
+                return {"ok": True, "deleted": False, "blockers": [item["code"] for item in live],
+                        "detail": "; ".join(item["detail"] for item in live)}
             if authorized is not None:
                 result = authorized(path, authorization_path)
             else:

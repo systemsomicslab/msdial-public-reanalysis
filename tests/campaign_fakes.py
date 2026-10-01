@@ -141,6 +141,15 @@ class FakeInteractive:
         self.store = ManifestStore()
         self._counter = 0
         self._tries: dict[tuple[str, str], int] = {}
+        # Consoles a backend restart left running (restart(orphan_consoles=True)), by job id: the unit and when
+        # the Console ends by itself (None: never). Whether the backend that started one still runs, whether
+        # kill_orphan can stop one, the orphans it stopped, and every Console start made while another Console
+        # (a job's or an orphan's) was still running.
+        self.orphans: dict[str, dict[str, Any]] = {}
+        self.orphan_backend_alive = False
+        self.orphan_unkillable = False
+        self.kills: list[str] = []
+        self.overlapping_starts: list[tuple[str, list[str]]] = []
 
     # ---- helpers ----
     def _job_id(self, prefix: str) -> str:
@@ -207,13 +216,21 @@ class FakeInteractive:
         for job in list(self.jobs.values()):
             if job["status"] in ("queued", "running") and job["outcome"] not in ("stall", "hold") and self.world.clock.now() >= job["done_at"]:
                 self._finish(job, "cancelled" if job.get("cancel") else job["outcome"])
+        for job_id, orphan in list(self.orphans.items()):
+            if orphan["until"] is not None and self.world.clock.now() >= orphan["until"]:
+                del self.orphans[job_id]
 
-    def restart(self) -> None:
+    def restart(self, *, orphan_consoles: bool = False) -> None:
         """The backend process stops and starts again: what was running is marked interrupted, as
-        server.py does on load, and its Consoles died with it."""
+        server.py does on load, and its Consoles died with it - unless orphan_consoles. On Windows a Console
+        is not stopped with the backend that started it (no job object), so it runs on, known only from the
+        run attempt in the unit manifest (live_run_attempt), until it ends by itself or is stopped."""
         for job in self.jobs.values():
             if job["status"] in ("queued", "running"):
                 job["status"] = "interrupted"
+                if orphan_consoles and job["kind"] != "download":
+                    self.orphans[job["id"]] = {"unit": job["unit"],
+                                               "until": None if job["outcome"] == "hold" else job["done_at"]}
 
     def forget(self) -> None:
         """The registry no longer holds any job (it keeps only its newest hundred)."""
@@ -392,6 +409,13 @@ class FakeInteractive:
         for job in self.jobs.values():
             if job.get("unit") == unit and job["kind"] != "download" and job["status"] in ("queued", "running"):
                 return {"ok": False, "reason": "unit_busy", "live_job_id": job["id"]}
+        for job_id, orphan in self.orphans.items():
+            # Interactive's single-flight reads the manifest's run attempts too, and names the orphan's job.
+            if orphan["unit"] == unit:
+                return {"ok": False, "reason": "unit_busy", "live_job_id": job_id}
+        running = [job["id"] for job in self.jobs.values() if job["kind"] != "download" and job["status"] in ("queued", "running")]
+        if running or self.orphans:
+            self.overlapping_starts.append((unit, running + list(self.orphans)))
         script = self.world.scripts.setdefault(unit, UnitScript())
         outcome = self._next(unit, kind, script.diagnostics if kind == "diagnostic" else script.runs)
         job_id = self._job_id("dg" if kind == "diagnostic" else "rn")
@@ -475,7 +499,14 @@ class FakeInteractive:
             codes.append("mztab_output_exists")
         if any("raw_deletion" in (hold.get("blocks") or []) for hold in manifest.get("finalisation_holds") or []):
             codes.append("finalisation_held")
+        if any(self._console_alive(item) for item in manifest.get("run_attempts") or []):
+            codes.append("console_live")
         return codes
+
+    def _console_alive(self, attempt: dict[str, Any]) -> bool:
+        job = self.jobs.get(attempt.get("job_id"))
+        return attempt.get("job_id") in self.orphans or (
+            not attempt.get("ended_at") and job is not None and job["status"] in ("queued", "running"))
 
     def discard(self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "") -> dict[str, Any]:
         self.calls.append(("discard", {"manifest_path": manifest_path, "unit_id": unit_id}))
@@ -498,8 +529,7 @@ class FakeInteractive:
     def live_attempt(self, manifest_path: str) -> dict[str, Any] | None:
         self.settle()
         for item in reversed((self.store.read(manifest_path) or {}).get("run_attempts") or []):
-            job = self.jobs.get(item.get("job_id"))
-            if not item.get("ended_at") and job is not None and job["status"] in ("queued", "running"):
+            if self._console_alive(item):
                 return item
         return None
 
@@ -508,9 +538,15 @@ class FakeInteractive:
         return "alive" if job is not None and job["status"] in ("queued", "running") else "gone"
 
     def backend_alive(self, attempt: dict[str, Any]) -> bool:
-        return True
+        """An orphan's backend is the one that restarted, unless the test says it still runs."""
+        return self.orphan_backend_alive if attempt.get("job_id") in self.orphans else True
 
     def kill_orphan(self, attempt: dict[str, Any]) -> bool:
+        self.calls.append(("kill_orphan", {"job_id": attempt.get("job_id")}))
+        if attempt.get("job_id") in self.orphans and not self.orphan_unkillable:
+            del self.orphans[attempt["job_id"]]
+            self.kills.append(attempt["job_id"])
+            return True
         return False
 
 

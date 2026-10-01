@@ -202,6 +202,10 @@ class Runner:
         # Jobs this process has sent a cancel for. A cancel the ledger records and this process has not sent
         # (a crash between the two) is sent at the job's next poll.
         self._cancels_sent: set[str] = set()
+        # Orphaned Consoles this process has tried to stop, and when: one that would not stop is tried again
+        # only after busy_retry_seconds (a kill can wait ten seconds for the process), and recorded once.
+        self._orphan_kills: dict[str, datetime] = {}
+        self._orphans_recorded: set[tuple[str, bool]] = set()
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -1308,6 +1312,10 @@ class Runner:
         run_id = run["console_run_id"] if run else self.ledger.open_console_run(
             unit["unit_key"], console_kind, console_sha, timeout, idle, self.stamp()
         )
+        if self._orphan_console(unit) is not None:
+            # A Console of this unit still runs that no job of the backend owns. The unit waits for it in the
+            # hand, holding the Console slot, so no other Console starts beside it either.
+            return False
         attempt = self.ledger.open_attempt(
             unit["unit_key"], step, self.stamp(), tool="msdial_start_peak_count_diagnostic" if diagnostic else "msdial_start_guided_analysis",
             arguments=self.redact({"input_path": unit["input_path"], "answers": answers}),
@@ -1320,7 +1328,13 @@ class Runner:
         )
         job = str(result.get("job_id") or "") if result.get("ok") is not False and result.get("started", True) else ""
         if not job and result.get("reason") == "unit_busy":
-            job = str(result.get("live_job_id") or "")
+            busy = str(result.get("live_job_id") or "")
+            # Adopted only while the backend runs it. A job it reports ended or interrupted is an orphan's,
+            # named from the manifest's run attempt: adopted, it read as interrupted again and again until
+            # the unit failed and its raw data were discarded under that Console. The busy unit waits
+            # instead, and its next start looks for the orphan first.
+            if busy and self._job_live(busy):
+                job = busy
         if not job:
             job = started_console_job(self._manifest(unit), kind, since, self._known_jobs(unit["unit_key"]))
         if job:
@@ -1344,7 +1358,13 @@ class Runner:
     def _console_ended(
         self, unit: dict[str, Any], job: Mapping[str, Any], *, step: str, retry_state: str
     ) -> bool:
-        """A Console job that ended other than completed: a timeout, a cancel, a crash, a failure."""
+        """A Console job that ended other than completed: a timeout, a cancel, a crash, a failure.
+
+        An interrupted job is the backend's restart, not its Console's end: the Console may run on, and
+        nothing is retried, skipped or discarded until it has been waited for or stopped.
+        """
+        if job.get("status") == "interrupted" and self._orphan_console(unit) is not None:
+            return False
         run = self._open_console_end(unit, "failed")
         exit_code = job.get("exit_code")
         detail = {"job_id": job.get("id") or job.get("job_id"), "status": job.get("status"), "exit_code": exit_code,
@@ -1370,18 +1390,50 @@ class Runner:
         return True
 
     def _console_lost(self, unit: dict[str, Any], *, step: str, retry_state: str) -> bool:
-        """The backend no longer knows the job: an orphaned Console is waited for or stopped."""
-        attempt = self.ports.interactive.live_attempt(unit["manifest_path"])
+        """The backend no longer knows the job: an orphaned Console is waited for or stopped first."""
+        if self._orphan_console(unit) is not None:
+            return False
         job_id = unit[JOB_COLUMN[unit["state"]]]
-        if attempt is not None:
-            if self.ports.interactive.backend_alive(attempt) is not False:
-                return False
-            killed = self.ports.interactive.kill_orphan(attempt)
-            self._event("orphan_killed", {"job_id": attempt.get("job_id"), "killed": killed}, unit["unit_key"])
         run = self._open_console_end(unit, "interrupted")
         self._production_ended(unit, "interrupted")
         self._interrupted(unit, step=step, retry_state=retry_state, detail={"job_id": job_id, "job": "lost"}, console_run=run)
         return True
+
+    def _job_live(self, job_id: str) -> bool:
+        """Whether the backend runs this job now."""
+        job = self.ports.interactive.job(job_id)
+        return job.get("ok") is not False and str(job.get("status") or "") in ("queued", "running")
+
+    def _orphan_console(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The run attempt of a Console of this unit that may still be running although no job of the
+        backend runs it, or None.
+
+        On Windows a Console Interactive started is not stopped with its backend (no job object), so a
+        backend restart leaves it reading the unit's raw data: the restarted backend reports its job
+        interrupted, or no longer knows it, and its single-flight refuses another Console on the unit. One
+        whose backend is gone is stopped here (kill_orphan); one whose backend still runs, or cannot be
+        read, is waited for, and so is one that would not stop. A job of this backend that is still running
+        is no orphan: a start adopts it from Interactive's unit_busy reply.
+        """
+        interactive = self.ports.interactive
+        attempt = interactive.live_attempt(unit.get("manifest_path") or "")
+        if attempt is None:
+            return None
+        job_id = str(attempt.get("job_id") or "")
+        if job_id and self._job_live(job_id):
+            return None
+        if interactive.backend_alive(attempt) is not False:
+            return attempt
+        tried = self._orphan_kills.get(job_id)
+        if tried is not None and (self.now() - tried).total_seconds() < self.policy.busy_retry_seconds:
+            return attempt
+        self._orphan_kills[job_id] = self.now()
+        killed = bool(interactive.kill_orphan(attempt))
+        if (job_id, killed) not in self._orphans_recorded:
+            self._orphans_recorded.add((job_id, killed))
+            self._event("orphan_killed", {"job_id": job_id, "console_pid": attempt.get("console_pid"), "killed": killed},
+                        unit["unit_key"])
+        return interactive.live_attempt(unit.get("manifest_path") or "")
 
     def _state_diagnosing(self, unit: dict[str, Any]) -> bool:
         job_id = unit["diagnostic_job_id"]

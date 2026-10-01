@@ -498,7 +498,10 @@ def download_bound_gb(total: int, policy: DiskPolicy) -> float:
 # Why discard_download_lease would refuse, as InteractivePort.discard reads it before it records a crossing.
 # The permanent ones do not change by waiting: a validated run takes the normal cleanup instead, and a run
 # that left an mzTab-M it could not validate keeps its raw data until Interactive has a discard for it.
+# console_live is the port's own: a Console that may still read the raw tree (one a backend restart left
+# running) ends, or the runner stops it, so waiting mends it.
 DISCARD_BLOCKERS = {
+    "console_live": False,
     "validated_status": True,
     "lease_live": False,
     "mztab_output_exists": True,
