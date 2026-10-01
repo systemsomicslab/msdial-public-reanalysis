@@ -372,14 +372,21 @@ _NETWORK_TYPES = frozenset({
 _NETWORK_TEXT = re.compile(
     r"\bHTTP(?: Error)? (?:5\d\d|429)\b|urlopen error|timed out|Connection (?:reset|aborted|refused)|"
     r"forcibly closed|Remote end closed|IncompleteRead|getaddrinfo failed|Name or service not known|"
-    r"Temporary failure in name resolution|EOF occurred in violation of protocol",
+    r"Temporary failure in name resolution|EOF occurred in violation of protocol|"
+    # Interactive 0.5.18's own words for DownloadStalled, DownloadConnectionLost and DownloadIncomplete: the
+    # job's error is str(error), and only the manifest's download_failure carries the type.
+    r"No bytes arrived from the server for|The connection was lost during the transfer|"
+    r"Download ended at \d+ of \d+ declared bytes",
     re.IGNORECASE,
 )
 
 
 def network_failure(detail: Mapping[str, Any], outcome: str = "failed") -> bool:
     """Whether a download failed on the network rather than on the unit's own objects: a server error or
-    a rate limit, a timeout, a reset, a name that did not resolve, or bytes that stopped arriving."""
+    a rate limit, a timeout, a reset, a name that did not resolve, or bytes that stopped arriving.
+
+    `detail` is the job's record with the unit manifest's download_failure under "failure" where the lease
+    wrote one, as the machine passes it: the type and retryable live only there."""
     if outcome == "stalled":
         return True
     failure = detail.get("failure")

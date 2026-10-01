@@ -1051,7 +1051,23 @@ class Runner:
             return self._downloaded(unit, manifest_path)
         reason = self._cancel_reason(job_id)
         detail = {"job_id": job_id, "status": status, "error": job.get("error"), "stop_reason": job.get("stop_reason")}
+        failure = self._lease_failure(unit, job_id)
+        if failure:
+            detail["failure"] = failure
         return self._download_ended(unit, status, reason, detail)
+
+    def _lease_failure(self, unit: Mapping[str, Any], job_id: str) -> dict[str, Any]:
+        """The download_failure this job's lease wrote into the unit manifest, or {}.
+
+        The job's own record carries only str(error): what the failure was (error_type, retryable, the
+        attempts, an archive's reason code) is written to the manifest alone, and the job's text alone
+        reads a stalled or cut-short transfer, or a volume that ran short while an archive expanded, as the
+        unit's own failure. A record of another job's lease is not this one's."""
+        manifest = self._manifest(unit) or {}
+        if manifest.get("status") != "download_failed" or (manifest.get("lease_owner") or {}).get("job_id") != job_id:
+            return {}
+        failure = manifest.get("download_failure")
+        return dict(failure) if isinstance(failure, Mapping) else {}
 
     def _downloaded(self, unit: dict[str, Any], manifest_path: str) -> bool:
         manifest = self.ports.interactive.read_manifest(manifest_path) or {}

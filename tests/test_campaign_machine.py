@@ -894,6 +894,23 @@ class OutageTests(Base):
         book = self.finish(world, max_iterations=20000)
         self.assertEqual({book.unit(key)["state"] for key in units}, {"done"})
 
+    def test_what_the_lease_wrote_into_the_manifest_tells_an_outage(self) -> None:
+        """Interactive 0.5.18 retries a stalled or lost transfer and then fails the job with str(error) as its
+        error; the type and retryable are in the manifest's download_failure only. Read from there, a
+        repository whose transfers all hang is an outage, not eight failed units."""
+        units = [f"u{index:02d}" for index in range(8)]
+        world = self.world(units)
+        world.outage = True
+        world.network_error = {"job": "The transfer was interrupted after three attempts.",
+                               "failure": {"reason": "The transfer was interrupted after three attempts.",
+                                           "error_type": "DownloadInterrupted", "retryable": True}}
+        with world.open() as book:
+            world.runner(book).run(max_iterations=2000)
+            self.assertEqual([key for key in units if book.unit(key)["state"] == "failed"], [])
+            self.assertEqual(book.runner()["pause_kind"], "fault")
+            fault = next(row for row in book.attempts() if row["outcome"] == "fault")
+            self.assertEqual(json.loads(fault["detail_json"])["failure"]["error_type"], "DownloadInterrupted")
+
 
 class BeforeProductionGateTests(Base):
     """A before-production FAIL stops the unit's run only for a check that breaks results (2026-10-01)."""

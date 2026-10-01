@@ -205,6 +205,16 @@ class DownloadFailureTests(unittest.TestCase):
             with self.subTest(detail):
                 self.assertTrue(policy.network_failure(detail))
         self.assertTrue(policy.network_failure({"error": "cancelled"}, "stalled"), "bytes that stop are the network's")
+        # The job's error alone, as Interactive 0.5.18 leaves it: str(error) of the error that ended the lease.
+        for text in (
+            "No bytes arrived from the server for 120 s. The partial file is kept and a later attempt resumes it.",
+            "The connection was lost during the transfer (OSError: [WinError 10054] An existing connection was "
+            "dropped). The partial file is kept and a later attempt resumes it.",
+            "Download ended at 5000 of 9000 declared bytes. The partial file is kept at S1.mzML.part and the next "
+            "attempt will resume.",
+        ):
+            with self.subTest(text):
+                self.assertTrue(policy.network_failure({"job_id": "dl1", "status": "failed", "error": text, "stop_reason": None}))
         for detail in (
             {"error": "HTTP Error 404: Not Found"}, {"error": "Checksum mismatch for S1.mzML"},
             {"failure": {"reason": "archive_member_escapes", "error_type": "ArchiveError"}},

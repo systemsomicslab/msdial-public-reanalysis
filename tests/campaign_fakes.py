@@ -292,10 +292,9 @@ class FakeInteractive:
                     status="download_failed", download_failure={"reason": error, "error_type": "ValueError"}))
                 job.update(status="failed", error=error)
             else:
-                self._update(manifest_path, lambda manifest: manifest.update(
-                    status="download_failed", download_failure={"reason": "HTTP Error 503: Service Unavailable",
-                                                                 "error_type": "HTTPError"}))
-                job.update(status="failed", error="HTTP 503")
+                failure = dict(self.world.network_error["failure"])
+                self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
+                job.update(status="failed", error=self.world.network_error["job"])
             return
         exit_code = {"ok": 0, "invalid": 0, "timeout": -3, "cancelled": -4}.get(outcome, 1)
         kind = "tuning" if job["kind"] == "diagnostic" else "run"
@@ -638,6 +637,11 @@ class World:
         # repositories named in outage_repositories are down while the others are up.
         self.outage = False
         self.outage_repositories: set[str] = set()
+        # How a download that fails on the network ends: the job's error (server.py: str(error)) and the
+        # download_failure the lease writes into the unit manifest, the only place its type is kept.
+        self.network_error: dict[str, Any] = {
+            "job": "HTTP 503", "failure": {"reason": "HTTP Error 503: Service Unavailable", "error_type": "HTTPError"},
+        }
         # While set, Interactive refuses every campaign preflight: the extractor is not a verified, pinned build.
         self.extractor_refused = False
         self.extractor_sha = SHA["extractor"]
