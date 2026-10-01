@@ -47,17 +47,23 @@ For a repository range:
    runs. Ion-mobility data are excluded, with the reason recorded (LC-MS only).
    mzML is an input, and so is a vendor folder (Waters `.raw`, Agilent or Bruker
    `.d`): one folder is one input and one CSV row, and its files are only
-   downloaded. An mzXML that is the encoding a sample is analysed by (a vendor
-   container and mzML outrank it; it outranks a twin nothing reads, such as a
-   `.dat`) is converted to mzML by Interactive's converter with every inference
-   off, and the conversion is recorded as that input's provenance; until the
-   unit's manifest records it, the mzXML stays `requires_conversion`, and a
-   file whose conversion fails is excluded with its reason while the rest of
-   the unit runs. mzData stays `requires_conversion` and excludes the unit:
-   there is no reader and no converter for it. Interactive main (0.5.19) takes
-   neither a folder nor a converted mzXML yet: it refuses a folder input with
-   the production Console, and it still excludes an mzXML unit at eligibility,
-   before download, because the lease does not run the converter.
+   downloaded. Outside a campaign, mzXML and mzData are `requires_conversion`:
+   MS-DIAL has no reader for them, so the unit is excluded before download
+   until a reviewed ProteoWizard conversion has produced an mzML manifest with
+   its own provenance. The exclusion is unit-wide: one listed file or one
+   sample naming an `.mzXML` excludes the unit, even when its other inputs are
+   readable. In a campaign, an mzXML that is the encoding a sample is analysed
+   by (a vendor container and mzML outrank it; it outranks a twin nothing
+   reads, such as a `.dat`) is converted to mzML by Interactive's converter
+   with every inference off, and the conversion is recorded as that input's
+   provenance; until the unit's manifest records it, the mzXML stays
+   `requires_conversion`, and a file whose conversion fails is excluded with
+   its reason while the rest of the unit runs. mzData stays
+   `requires_conversion` and excludes the unit: there is no reader and no
+   converter for it. Interactive main (0.5.19) takes neither a folder nor a
+   converted mzXML yet: it refuses a folder input with the production Console,
+   and it still excludes an mzXML unit at eligibility, before download,
+   because the lease does not run the converter.
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
