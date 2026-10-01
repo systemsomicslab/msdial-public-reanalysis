@@ -2995,6 +2995,38 @@ def _parse_header_time(value) -> "datetime | None":
         return None
 
 
+def _opened_name(row: dict, aliases: dict[str, str]) -> str:
+    """The file name of the input a CSV row opens, without case: its own path's, or, where the row names
+    a Console alias, that of the input the alias stands for (_input_keys_by_console_path)."""
+    path = str(row.get("file_path", ""))
+    target = aliases.get(_path_key(path)) if path.strip() else None
+    return Path((target or path).replace("\\", "/")).name.casefold()
+
+
+def _order_stems(provenance: dict | None, csv_rows: list[dict]) -> dict[str, str]:
+    """The CSV file_name an analytical-order record may name a row by other than the row's own.
+
+    Interactive's record names each file as the CSV does, by its file_name, since it builds the CSV from
+    the input lineage (repository_analysis_rows.order_rows): an input read through a Console alias is
+    named in the CSV by neither its own stem nor its path. A record naming an aliased row's input by
+    the input's own name is read as that row, where no row carries the name as its file_name and only
+    one row opens an input of that stem; two inputs sharing a stem are told apart by nothing but the
+    CSV's names. Empty for a unit with no alias, as every unit prepared before the lineage-built CSV.
+    """
+    if not isinstance(provenance, dict) or not csv_rows:
+        return {}
+    aliases = _input_keys_by_console_path(provenance)
+    if not aliases:
+        return {}
+    names = {str(row.get("file_name", "")).strip().casefold() for row in csv_rows}
+    stems: dict[str, list[str]] = {}
+    for row in csv_rows:
+        stem = Path(_opened_name(row, aliases)).stem
+        if stem:
+            stems.setdefault(stem, []).append(str(row.get("file_name", "")).strip().casefold())
+    return {stem: rows[0] for stem, rows in stems.items() if len(rows) == 1 and stem not in names}
+
+
 def _recorded_order_source(provenance: dict | None, csv_rows: list[dict] | None) -> "str | None":
     """What the unit manifest records the CSV's analytical order as taken from, or None.
 
@@ -3003,6 +3035,9 @@ def _recorded_order_source(provenance: dict | None, csv_rows: list[dict] | None)
     or the ranks renumbered included. A reordered CSV carries an order nobody recorded, and a record
     with tied or unreadable ranks orders nothing. A header record from before order_source reads as
     the header source; any other record without it as unknown.
+
+    A row naming a Console alias is the input the alias stands for (_opened_name), as Interactive's
+    recorded_order_source reads it, and a record may name it by that input's own name (_order_stems).
     """
     record = (provenance or {}).get("analytical_order")
     if not isinstance(record, dict) or not csv_rows:
@@ -3013,15 +3048,17 @@ def _recorded_order_source(provenance: dict | None, csv_rows: list[dict] | None)
         return None
     inputs = {Path(str(path).replace("\\", "/")).name.casefold()
               for path in (provenance or {}).get("input_candidates") or [] if str(path).strip()}
-    if not inputs or any(Path(str(row.get("file_path", "")).replace("\\", "/")).name.casefold() not in inputs
-                         for row in csv_rows):
+    aliases = _input_keys_by_console_path(provenance) if isinstance(provenance, dict) else {}
+    if not inputs or any(_opened_name(row, aliases) not in inputs for row in csv_rows):
         return None
+    translate = _order_stems(provenance, csv_rows)
     files = record.get("files") if isinstance(record.get("files"), list) else []
     recorded: dict = {}
     for item in files:
         if not isinstance(item, dict):
             return None
         stem = Path(str(item.get("file", ""))).stem.casefold()
+        stem = translate.get(stem, stem)
         rank = _as_rank(item.get("analytical_order"))
         if not stem or stem in recorded or rank is None or rank in recorded.values():
             return None
@@ -3068,8 +3105,15 @@ def _header_order_agreement(provenance: dict | None, csv_rows: list[dict] | None
     entries = [item for item in files if isinstance(item, dict)]
     mismatches = [] if len(entries) == len(files) else ["a recorded file entry is not an object"]
 
-    # Identity first: every recorded file once in the CSV, every CSV row recorded once.
-    recorded = Counter(Path(str(item.get("file", ""))).stem.casefold() for item in entries)
+    # Identity first: every recorded file once in the CSV, every CSV row recorded once. A recorded name
+    # is the CSV's for its row, or an aliased row's input's own (_order_stems).
+    translate = _order_stems(provenance, csv_rows)
+
+    def stem_of(item: dict) -> str:
+        stem = Path(str(item.get("file", ""))).stem.casefold()
+        return translate.get(stem, stem)
+
+    recorded = Counter(stem_of(item) for item in entries)
     in_csv = Counter(str(row.get("file_name", "")).strip().casefold() for row in csv_rows)
     for stem in sorted(set(recorded) | set(in_csv)):
         if recorded[stem] != 1 or in_csv[stem] != 1:
@@ -3077,7 +3121,7 @@ def _header_order_agreement(provenance: dict | None, csv_rows: list[dict] | None
 
     timed = []
     for item in entries:
-        stem = Path(str(item.get("file", ""))).stem.casefold()
+        stem = stem_of(item)
         when = _parse_header_time(item.get("acquisition_start_time"))
         if when is None:
             mismatches.append(f"{item.get('file')}: no readable recorded time")
@@ -3132,6 +3176,10 @@ def check_analytical_order_is_real(
     and the unit manifest says so with every file's time. It passes when the CSV carries exactly
     that order and fails when it does not, whatever the numbers look like: a header order can
     happen to equal the row order, and a row order can happen not to.
+
+    The record names each file as the CSV does (file_name) since Interactive builds the CSV from the
+    input lineage; one that names an aliased row's input by its own name is read as that row
+    (_order_stems), as _recorded_order_source reads it.
     """
     if stage != "before-production":
         return

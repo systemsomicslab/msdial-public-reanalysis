@@ -1,4 +1,4 @@
-"""CLS-2 on an analysis CSV Interactive built from the input lineage.
+"""CLS-2 and the order checks on an analysis CSV Interactive built from the input lineage.
 
 Interactive's folder branch (repository_analysis_rows) writes a repository unit's analysis CSV from its
 input lineage, one row per analysis input, folder or file. Three of its renames reach the gate: an
@@ -7,7 +7,8 @@ through an ASCII alias in raw/console-aliases, and its row's file_name is the al
 share a stem are named apart by a digest (file_name_not_unique); and a projected Class label the
 Console could not read back is folded to ASCII (analysis_csv.class_id_aliases). An input an applied
 campaign disposition excluded, or one the lease excluded, is no row at all. CLS-2 joined rows to
-samples by name and compared labels verbatim, so it refused every such unit while each was correct.
+samples by name and compared labels verbatim, so it refused every such unit while each was correct;
+and the order-source reading did not recognise an aliased row.
 
 The fixtures are built as that branch writes them (feat/folder-inputs-and-csv-builder at d3ccfdc):
 build_repository_analysis_rows for the rows, their aliases and names, create_console_aliases
@@ -296,6 +297,15 @@ class FolderBranchUnit:
             writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS, lineterminator="\n")
             writer.writeheader()
             writer.writerows({name: row.get(name, "") for name in CSV_COLUMNS} for row in rows)
+
+    def order(self, source: str, rows: list[dict], *, names: "dict[str, str] | None" = None, **record) -> None:
+        """record_analytical_order after order_rows: each file named as the CSV names it, unless told."""
+        times = record.get("times") or {}
+        self.manifest["analytical_order"] = {
+            "derived_from": record.get("derived_from"), "order_source": source,
+            "files": [{"file": (names or {}).get(row["input_path"], row["file_name"] + Path(row["file_path"]).suffix),
+                       "analytical_order": row["analytical_order"], **times.get(row["input_path"], {})}
+                      for row in rows]}
 
     def write(self) -> Path:
         (self.root / "provenance" / "run-manifest.json").write_text(
@@ -625,6 +635,96 @@ class RealMismatchesStillFailTests(unittest.TestCase):
         self.assertEqual(verifier.FAIL, check.status)
         self.assertEqual(["b"], check.evidence["missing"])
         self.assertEqual(["b"], check.evidence["unapproved"])
+
+
+# ---- ORD-1 and ORD-2 -------------------------------------------------------------------------------
+
+
+def _publication(unit: FolderBranchUnit) -> None:
+    """A report asserting a run-order criterion with a value and a verdict."""
+    (unit.output / "MS_DIAL_publication_report.json").write_text(json.dumps({"qa_assessment": {"checks": [
+        {"metric": "run_order_intensity_correlation", "value": 0.05, "status": "pass"}]}}), encoding="utf-8")
+
+
+class AliasedRowsInOrderTests(unittest.TestCase):
+    """_recorded_order_source and ORD-1 read an aliased row as the input it opens."""
+
+    def _unit(self, temporary: str, labels: list[str]) -> tuple[FolderBranchUnit, list[dict]]:
+        unit = FolderBranchUnit(temporary)
+        for index, label in enumerate(labels):
+            unit.file(f"S{index},x.mzML" if index == 0 else f"S{index}.mzML", f"S{index}", label)
+        return unit, unit.prepare()
+
+    def test_an_order_recorded_as_the_listing_is_recognised_through_an_alias(self) -> None:
+        """Interleaved Classes: without the recorded source the row-number heuristic passed it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, rows = self._unit(temporary, ["A", "B", "A", "B"])
+            unit.order("listing", rows)
+            _publication(unit)
+            check = _check(unit.gate("before-publish"), "ORD-2")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual("listing", check.evidence["recorded_source"])
+
+    def test_an_order_the_sample_table_declared_is_recognised_through_an_alias(self) -> None:
+        """Grouped Classes 1..N: without the recorded source the heuristic called it synthesized."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, rows = self._unit(temporary, ["A", "A", "B", "B"])
+            unit.order("repository_sample_table", rows)
+            _publication(unit)
+            check = _check(unit.gate("before-publish"), "ORD-2")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn("sample table declares", check.detail)
+
+    def _header(self, rows: list[dict]) -> dict:
+        return {row["input_path"]: {"acquisition_start_time": f"2026-01-0{index + 1}T00:00:00+00:00"}
+                for index, row in enumerate(rows)}
+
+    def test_a_header_order_naming_the_csv_names_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, rows = self._unit(temporary, ["A", "A", "B"])
+            unit.order(verifier.HEADER_ORDER_SOURCE, rows, derived_from=verifier.HEADER_ORDER_SOURCE,
+                       times=self._header(rows))
+            check = _check(unit.gate(), "ORD-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_a_header_order_naming_an_aliased_input_by_its_own_name_is_that_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, rows = self._unit(temporary, ["A", "A", "B"])
+            unit.order(verifier.HEADER_ORDER_SOURCE, rows, derived_from=verifier.HEADER_ORDER_SOURCE,
+                       times=self._header(rows), names={rows[0]["input_path"]: "S0,x.mzML"})
+            check = _check(unit.gate(), "ORD-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_a_header_order_the_csv_departs_from_is_still_refused_through_an_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, rows = self._unit(temporary, ["A", "A", "B"])
+            unit.order(verifier.HEADER_ORDER_SOURCE, rows, derived_from=verifier.HEADER_ORDER_SOURCE,
+                       times=self._header(rows), names={rows[0]["input_path"]: "S0,x.mzML"})
+            rows[0]["analytical_order"], rows[1]["analytical_order"] = 2, 1
+            unit.write_csv(rows)
+            check = _check(unit.gate(), "ORD-1")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+    def test_a_stem_two_inputs_share_names_neither_row(self) -> None:
+        """neg/x and pos/x are told apart only by the CSV's names; a record naming 'x' is no row."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("neg/x.mzML", "x negative", "A")
+            unit.file("pos/x,y.mzML", "x positive", "B")
+            unit.file("pos/x.mzML", "x positive 2", "B")
+            rows = unit.prepare()
+            self.assertNotIn("x", verifier._order_stems(unit.manifest, rows))
+            self.assertIn("x,y", verifier._order_stems(unit.manifest, rows))
+            unit.order(verifier.HEADER_ORDER_SOURCE, rows, derived_from=verifier.HEADER_ORDER_SOURCE,
+                       times=self._header(rows), names={rows[0]["input_path"]: "x.mzML"})
+            check = _check(unit.gate(), "ORD-1")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
 
 
 def _aliased(rows: list[dict]) -> dict:
