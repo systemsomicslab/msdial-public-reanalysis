@@ -246,16 +246,43 @@ class RunPolicyTests(unittest.TestCase):
                              {"check_id": "ELIG-1", "status": "pass"}, {"check_id": "ACQ-1", "status": "FAIL"})
         self.assertEqual(policy.run_blocking_failures(report), (["ACQ-1"], "runner_default"))
 
-    def test_the_gates_run_policy_decides_when_it_states_one(self) -> None:
+    def test_the_gate_can_add_to_the_users_list_and_never_take_from_it(self) -> None:
         per_check = self.report({"check_id": "SUM-1", "status": "fail", "run_policy": "record_only"},
                                 {"check_id": "CLS-1", "status": "fail", "run_policy": "blocks_run"},
                                 {"check_id": "ORD-1", "status": "fail"})
-        self.assertEqual(policy.run_blocking_failures(per_check), (["CLS-1"], "gate"))
+        self.assertEqual(policy.run_blocking_failures(per_check), (["CLS-1", "SUM-1"], "gate"))
+        self.assertEqual(len(policy.run_policy_mismatches(per_check)), 1, "SUM-1's record_only is the gate's mismatch")
         by_list = self.report({"check_id": "SUM-1", "status": "fail"}, {"check_id": "PKH-1", "status": "fail"},
-                              run_policy={"blocks_run": ["PKH-1"], "record_only": ["SUM-1"]})
-        self.assertEqual(policy.run_blocking_failures(by_list), (["PKH-1"], "gate"))
+                              {"check_id": "ORD-1", "status": "fail"},
+                              run_policy={"blocks_run": ["PKH-1"], "record_only": ["SUM-1", "ORD-1"]})
+        self.assertEqual(policy.run_blocking_failures(by_list), (["PKH-1", "SUM-1"], "gate"))
         by_check = self.report({"check_id": "INP-1", "status": "fail"}, run_policy={"INP-1": "record_only"})
-        self.assertEqual(policy.run_blocking_failures(by_check), ([], "gate"))
+        self.assertEqual(policy.run_blocking_failures(by_check), (["INP-1"], "gate"))
+        self.assertEqual(policy.run_policy_mismatches(self.report({"check_id": "ORD-1", "status": "fail", "run_policy": "record_only"})),
+                         [], "a record_only the user's rule agrees with")
+
+    def test_a_policy_stated_for_some_checks_keeps_the_list_for_the_others(self) -> None:
+        report = self.report({"check_id": "ELIG-1", "status": "fail"},
+                             {"check_id": "CLS-1", "status": "pass", "run_policy": "record_only"})
+        self.assertEqual(policy.run_blocking_failures(report), (["ELIG-1"], "gate"))
+
+    def test_a_rule_or_a_shape_this_reader_does_not_know_blocks_and_is_said(self) -> None:
+        for value in ("BLOCKS_RUN", "blocks-run", {"campaign": "blocks_run"}, True, "block", None):
+            with self.subTest(value=value):
+                report = self.report({"check_id": "ELIG-1", "status": "fail", "run_policy": value},
+                                     {"check_id": "CLS-1", "status": "fail", "run_policy": value})
+                self.assertEqual(policy.run_blocking_failures(report)[0], ["CLS-1", "ELIG-1"])
+                self.assertEqual(len(policy.run_policy_mismatches(report)), 2)
+        one_id = self.report({"check_id": "ELIG-1", "status": "fail"}, {"check_id": "CLS-1", "status": "fail"},
+                             run_policy={"blocks_run": "CLS-1"})
+        self.assertEqual(policy.run_blocking_failures(one_id), (["CLS-1", "ELIG-1"], "gate"), "one check id, not a list")
+        self.assertEqual(policy.run_policy_mismatches(one_id), [])
+        for top in ([["ELIG-1"]], "blocks_run", {"blocks_run": 5}, {"version": 1, "record_only": ["ELIG-1"]}):
+            with self.subTest(top=top):
+                report = self.report({"check_id": "ELIG-1", "status": "fail"}, {"check_id": "ORD-1", "status": "fail"},
+                                     run_policy=top)
+                self.assertEqual(policy.run_blocking_failures(report), (["ELIG-1"], "gate"))
+                self.assertTrue(policy.run_policy_mismatches(report), "said, so the contract can be mended")
 
 
 class OutputsTests(unittest.TestCase):

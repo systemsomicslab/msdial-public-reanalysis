@@ -607,6 +607,7 @@ class FakeGate:
         blocking, source = policy.run_blocking_failures(report)
         return {"stage": ports.GATE_STAGES[point], "strict": True, "gate_commit": "fake", "outcome": "ran",
                 "exit_code": exit_code, "fail_ids": sorted(fails), "blocking_fail_ids": blocking, "run_policy_source": source,
+                "run_policy_mismatches": policy.run_policy_mismatches(report),
                 "strict_hold_ids": ["READ-1"] if exit_code == 4 else [], "stage_reached": "B10",
                 "report_path": str(report_path), "report_sha256": hashlib.sha256(data).hexdigest(),
                 **({"detail": self.detail} if self.detail else {})}

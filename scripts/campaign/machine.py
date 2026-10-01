@@ -1577,11 +1577,10 @@ class Runner:
     def _state_diagnosed(self, unit: dict[str, Any]) -> bool:
         """The production plan, written without running; then the before-production gate.
 
-        A FAIL there stops the run only for a check that breaks results (the user's rule of 2026-10-01): a
-        check whose run_policy is blocks_run in the gate's report, or, while the gate states none,
-        policy.BLOCKS_RUN_CHECKS. Such a unit counts as failed, so it is retried twice and then its raw data
-        go. A FAIL of a record_only check, a WARN, a check left not evaluable and a gate that could not run
-        are recorded, and the unit runs.
+        A FAIL there stops the run only for a check that breaks results (the user's rule of 2026-10-01):
+        policy.BLOCKS_RUN_CHECKS, and any check the gate's report states blocks_run. Such a unit counts as
+        failed, so it is retried twice and then its raw data go. Any other FAIL, a WARN, a check left not
+        evaluable and a gate that could not run are recorded, and the unit runs.
         """
         answers = self.answers(unit, unit["minimum_peak_height"])
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_run", self.stamp(), tool="msdial_prepare_guided_analysis")
@@ -1590,6 +1589,10 @@ class Runner:
             self._fail(unit, step="prepare_run", result=result, retry_state="diagnosed", attempt_id=attempt)
             return True
         verdict = self._gate(unit, "before_production")
+        mismatches = list((verdict or {}).get("run_policy_mismatches") or [])
+        if mismatches:
+            # The gate's run_policy and this reader disagree: read the way that blocks, and said so.
+            self._event("run_policy_mismatch", {"point": "before_production", "mismatches": mismatches}, unit["unit_key"])
         blocking = list((verdict or {}).get("blocking_fail_ids") or [])
         if blocking:
             self._fail(

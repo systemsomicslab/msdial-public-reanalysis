@@ -850,6 +850,7 @@ class GatePort:
         verdict["strict_hold_ids"] = list(report.get("strict_failures") or [])
         verdict["stage_reached"] = (report.get("progress") or {}).get("stage_reached")
         verdict["blocking_fail_ids"], verdict["run_policy_source"] = policy.run_blocking_failures(report)
+        verdict["run_policy_mismatches"] = policy.run_policy_mismatches(report)
         return verdict
 
 

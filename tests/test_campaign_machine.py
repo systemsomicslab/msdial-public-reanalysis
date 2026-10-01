@@ -943,10 +943,13 @@ class BeforeProductionGateTests(Base):
         self.assertEqual(json.loads(verdict["blocking_fail_ids_json"]), [])
         self.assertEqual(self.production_starts(world, "u1"), 1)
 
-    def test_the_gates_own_run_policy_decides_when_it_states_one(self) -> None:
-        for fails, rules, blocks in (
-            (["SUM-1"], {"SUM-1": policy.RECORD_ONLY, "ELIG-1": policy.BLOCKS_RUN}, False),
-            (["CLS-1"], {"CLS-1": policy.BLOCKS_RUN}, True),
+    def test_the_gates_run_policy_adds_to_the_users_list_and_never_takes_from_it(self) -> None:
+        for fails, rules, blocks, mismatch in (
+            (["ORD-1"], {"ORD-1": policy.RECORD_ONLY, "ELIG-1": policy.BLOCKS_RUN}, False, False),
+            (["CLS-1"], {"CLS-1": policy.BLOCKS_RUN}, True, False),
+            # The user's rule stops the run on a SUM-1 FAIL whatever the gate states, and the disagreement is said.
+            (["SUM-1"], {"SUM-1": policy.RECORD_ONLY}, True, True),
+            (["CLS-2"], {"CLS-2": "BLOCKS-RUN"}, True, True),
         ):
             with self.subTest(fails=fails, rules=rules):
                 world = self.world()
@@ -954,8 +957,10 @@ class BeforeProductionGateTests(Base):
                 world.gate.run_policy = rules
                 book = self.finish(world)
                 self.assertEqual(book.unit("u1")["state"], "failed" if blocks else "done")
+                self.assertEqual(world.interactive.console_starts.count(("u1", "run")), 0 if blocks else 1)
                 verdict = [row for row in book.gate_verdicts("u1") if row["point"] == "before_production"][0]
                 self.assertEqual(verdict["run_policy_source"], "gate")
+                self.assertEqual(bool(book.events("run_policy_mismatch")), mismatch)
 
 
 class AppliedDispositionTests(Base):

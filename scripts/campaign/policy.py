@@ -56,8 +56,8 @@ _FOURIER_INSTRUMENT = re.compile(
 )
 # The before-production checks whose FAIL stops a unit's MS-DIAL run (the user's rule of 2026-10-01): the
 # ones that break results. A FAIL of any other check (CLS-1/2/3, ORD-1, PKH-1 and the rest) is recorded and
-# the unit runs. The gate says so itself in each check's run_policy once it carries one; this list is what
-# the runner reads when it does not.
+# the unit runs. A gate whose checks carry a run_policy can name more blocking checks; it cannot take one of
+# these off the list (run_blocking_failures).
 BLOCKS_RUN = "blocks_run"
 RECORD_ONLY = "record_only"
 BLOCKS_RUN_CHECKS = ("ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1")
@@ -548,33 +548,74 @@ def gate_verdict_token(exit_code: int | None) -> str:
     return {0: "pass", 2: "fail", 3: "unusable", 4: "held"}.get(exit_code, "not_run" if exit_code is None else "other")
 
 
+# A gate check id, such as ELIG-1 or CONV-1.
+_CHECK_ID = re.compile(r"[A-Z][A-Z0-9]*-\d+[A-Za-z]?")
+
+
+def _run_policy_statements(report: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """What a gate report states each check's run_policy to be, and what of it could not be read.
+
+    A check's own run_policy, or a top-level run_policy that maps a check id to its rule or a rule to the
+    check ids it covers (one id or a list of them). A check's own statement wins over the top level's."""
+    stated: dict[str, Any] = {}
+    problems: list[str] = []
+    declared = report.get("run_policy")
+    if isinstance(declared, Mapping):
+        for key, value in declared.items():
+            if key in (BLOCKS_RUN, RECORD_ONLY):
+                names = [value] if isinstance(value, str) else list(value) if isinstance(value, (list, tuple)) else None
+                if names is None or not all(isinstance(name, str) for name in names):
+                    problems.append(f"run_policy.{key} is {value!r}, neither a check id nor a list of them")
+                    continue
+                stated.update({name: key for name in names})
+            elif isinstance(key, str) and _CHECK_ID.fullmatch(key):
+                stated[key] = value
+            else:
+                problems.append(f"run_policy names {key!r}, neither a rule nor a check id")
+    elif declared is not None:
+        problems.append(f"run_policy is {type(declared).__name__}, not an object")
+    for item in report.get("checks") or []:
+        if isinstance(item, Mapping) and "run_policy" in item:
+            stated[str(item.get("check_id") or "")] = item["run_policy"]
+    return stated, problems
+
+
 def run_blocking_failures(report: Mapping[str, Any]) -> tuple[list[str], str]:
     """The FAILed checks of a gate --json report that stop a unit's run, and where that rule came from.
 
-    Each check's run_policy ("blocks_run" or "record_only"), when the gate states one, or a top-level
-    run_policy naming them; otherwise BLOCKS_RUN_CHECKS ("runner_default"). Statuses are the gate's own
-    lowercase words ("fail"), compared without case. Only a FAIL blocks: a check left not evaluable or a
-    WARN is recorded, and the unit runs.
+    The user's rule always holds: a FAIL of a check in BLOCKS_RUN_CHECKS blocks, whatever the gate says.
+    The gate's run_policy can add to it - a check it states blocks_run, or whose rule it states in a word
+    this reader does not know, blocks too - and never take from it: a record_only it states for one of the
+    user's checks is a mismatch (run_policy_mismatches), and the check blocks. Reading it the other way
+    round failed open: once any check stated a policy, the fixed list was dropped for every check, and a
+    misspelt rule blocked nothing. The source is "gate" when the report stated a run_policy, read with the
+    fixed list, and "runner_default" when it stated none. Statuses are the gate's own lowercase words
+    ("fail"), compared without case. Only a FAIL blocks: a check left not evaluable or a WARN is recorded,
+    and the unit runs.
     """
-    checks = [item for item in report.get("checks") or [] if isinstance(item, Mapping)]
-    declared = report.get("run_policy")
-    top: dict[str, str] = {}
-    if isinstance(declared, Mapping):
-        for key, value in declared.items():
-            if key in (BLOCKS_RUN, RECORD_ONLY) and isinstance(value, (list, tuple)):
-                top.update({str(check): key for check in value})
-            elif isinstance(value, str):
-                top[str(key)] = value
-    stated = any("run_policy" in item for item in checks) or bool(top)
+    stated, problems = _run_policy_statements(report)
     blocking: set[str] = set()
-    for item in checks:
-        if str(item.get("status") or "").casefold() != "fail":
+    for item in report.get("checks") or []:
+        if not isinstance(item, Mapping) or str(item.get("status") or "").casefold() != "fail":
             continue
         check = str(item.get("check_id") or "")
-        rule = item.get("run_policy") if "run_policy" in item else top.get(check)
-        if (rule == BLOCKS_RUN) if stated else (check in BLOCKS_RUN_CHECKS):
+        rule = stated.get(check)
+        if check in BLOCKS_RUN_CHECKS or (check in stated and rule != RECORD_ONLY):
             blocking.add(check)
-    return sorted(blocking), ("gate" if stated else "runner_default")
+    return sorted(blocking), ("gate" if stated or problems else "runner_default")
+
+
+def run_policy_mismatches(report: Mapping[str, Any]) -> list[str]:
+    """Where a gate report's run_policy disagrees with the user's rule or cannot be read. Each is read the
+    way that blocks (run_blocking_failures); the runner records them, so the contract can be mended."""
+    stated, problems = _run_policy_statements(report)
+    mismatches = list(problems)
+    for check, rule in sorted(stated.items()):
+        if not isinstance(rule, str) or rule not in (BLOCKS_RUN, RECORD_ONLY):
+            mismatches.append(f"{check}: run_policy {rule!r} is neither {BLOCKS_RUN!r} nor {RECORD_ONLY!r}; read as {BLOCKS_RUN}")
+        elif rule == RECORD_ONLY and check in BLOCKS_RUN_CHECKS:
+            mismatches.append(f"{check}: the gate states {RECORD_ONLY}, and the user's rule stops the run on its FAIL")
+    return mismatches
 
 
 # ---- pins ------------------------------------------------------------------------------------------

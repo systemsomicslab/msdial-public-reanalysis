@@ -275,7 +275,7 @@ CREATE TABLE IF NOT EXISTS gate_verdict(
     fail_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(fail_ids_json)),
     warn_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(warn_ids_json)),
     strict_hold_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(strict_hold_ids_json)),
-    -- The FAILs that stop a unit's run (blocks_run), and whether the gate or the runner's list said so.
+    -- The FAILs that stop a unit's run (blocks_run): 'gate' when its run_policy was read with the runner's list.
     blocking_fail_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blocking_fail_ids_json)),
     run_policy_source TEXT,
     report_path TEXT,
