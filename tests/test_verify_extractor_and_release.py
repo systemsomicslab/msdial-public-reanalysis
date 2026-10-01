@@ -601,6 +601,29 @@ class RetentionUnderACampaignTests(unittest.TestCase):
         self.assertEqual(verifier.WARN, check.status, check.detail)
         self.assertIn("not yet due", check.detail)
 
+    def test_a_campaign_units_deletion_without_a_boundary_5_crossing_warns(self) -> None:
+        """A confirmed=true records no crossing, and neither does a component that forgot its approval."""
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", raw_cleaned_at="2026-10-01T02:00:00+00:00",
+                              campaign_authorizations=[_crossing(1), _crossing(3), _crossing(4)], outputs=True,
+                              **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("boundaries 1, 3, 4 and none for boundary 5", check.detail)
+        self.assertNotIn("a person's confirmation:", check.detail)
+        self.assertEqual("validated", check.evidence["justification"])
+
+    def test_a_confirmed_cleanup_does_not_say_who_confirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="raw_cleaned", outputs=True, **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn("who gave it is not recorded", check.evidence["authority"])
+
 
 class ReleasedSplitParentTests(unittest.TestCase):
     """The parent's raw tree is released once every part has ended, recorded as its raw_release."""

@@ -5828,6 +5828,15 @@ def _deletion_crossings(*records: "dict | None") -> list[dict]:
     return found
 
 
+def _campaign_boundaries(*records: "dict | None") -> list[str]:
+    """Every boundary the unit, or the raw owner of its tree, recorded crossing under a campaign approval."""
+    found = {str(item.get("boundary")).strip() for record in records if isinstance(record, dict)
+             for item in (record.get("campaign_authorizations")
+                          if isinstance(record.get("campaign_authorizations"), list) else [])
+             if isinstance(item, dict)}
+    return sorted(found)
+
+
 def _recorded_deletion(provenance: dict, owner: dict) -> "tuple[str, str]":
     """(kind, where) of the deletion of the tree the unit reads, as its records state it, or ("", "")."""
     for record, whose in ((provenance, "the unit's"), (owner, "the raw owner's")):
@@ -5940,7 +5949,9 @@ def check_retention_policy_was_acted_on(
     the run to and B6's .mdpeak on disk. RET-1 never calls a deletion justified by outputs the progress
     walk or EXP-1 says are not there, and a cleanup after validated output (raw_cleaned) that lacks them
     is refused. A split part whose parent's release does not list it is a WARN: its tree went without its
-    own state being part of the decision.
+    own state being part of the decision. So is a deletion with no recorded authority in a unit that
+    carries campaign crossings: the gate cannot tell a person's confirmation from a campaign component
+    that deleted without recording its approval.
     """
     stage = "before-publish"
     if provenance is None:
@@ -6056,13 +6067,23 @@ def check_retention_policy_was_acted_on(
         verdict(FAIL, f"The raw tree was deleted ({deleted_where}) under campaign approval {keeping[0]}, which "
                       "keeps raw data: no approval that keeps raw data covers a deletion.")
         return
+    boundaries = _campaign_boundaries(provenance, owner if part else None)
     if crossings:
         authority = f"campaign approval {evidence['deletion_approvals'][0]} (boundary 5)"
     elif deletion == "split_release" and release.get("authorized_by"):
         authority = f"the release's recorded authority ({str(release.get('authorized_by'))[:120]})"
+    elif boundaries:
+        # A campaign unit whose deletion carries no crossing: a person's confirmed=true records no crossing
+        # either, so the records cannot say which it was.
+        authority = "a confirmed=true call whose authority is not recorded"
+        notes.append(f"The unit carries campaign crossings for boundar{'y' if len(boundaries) == 1 else 'ies'} "
+                     f"{', '.join(boundaries)} and none for boundary 5, so its deletion was not recorded under the "
+                     "campaign's approval: a person's confirmation is assumed, and a campaign component that deleted "
+                     "without recording its approval would look the same.")
     else:
-        # Interactive writes raw_cleaned and discarded only on confirmed=true or a boundary-5 crossing.
-        authority = "a person's confirmation"
+        # Interactive writes raw_cleaned and discarded only on confirmed=true or a boundary-5 crossing, and
+        # outside a campaign confirmed=true is a person's; who gave it is not recorded.
+        authority = "confirmed=true, a person's confirmation outside a campaign (who gave it is not recorded)"
     # Why the outputs do not count as validated: the mzTab-M, or else the outputs beside it.
     unvalidated, incomplete, absent = "", "", []
     if deletion == "split_release" and not part:
