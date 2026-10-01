@@ -748,6 +748,48 @@ class DiskHandTests(Base):
         self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["done"] * 3)
         self.assertEqual(world.interactive.download_starts.count("u1"), 2)
 
+    def test_a_volume_that_runs_short_as_an_archive_expands_defers_the_unit(self) -> None:
+        """Interactive's extraction guard (a 20 GB reserve of its own) ends the lease with ArchiveError
+        insufficient_disk_space once the fetch has completed, when the free-space floor no longer watches it.
+        That is a short disk: the unit waits, uncounted, for room for the expansion, and the campaign pauses."""
+        for message, recorded, declared in (
+            ("ST1.zip expands to 4000000000000 bytes; 3900000000000 are free and 20000000000 are held in reserve.",
+             {"declared_bytes": 4 * TB, "free_bytes": int(3.9 * TB)}, 4 * TB),
+            ("Free space fell below the 20000000000-byte reserve while ST1.tar.gz expanded.", {}, 0),
+            ("7-Zip was stopped while extracting ST1.7z: insufficient_disk_space.", {"elapsed_seconds": 5.0}, 0),
+        ):
+            with self.subTest(message=message):
+                world = self.world(("u1", "u2"))
+                with world.open() as book:
+                    book.connection.execute("UPDATE unit SET has_archive = 1")
+                world.scripts["u1"] = fakes.UnitScript(downloads=["corrupt", "ok"])
+                finish = world.interactive._finish
+
+                def short(job, outcome, finish=finish, message=message, recorded=recorded, world=world):
+                    finish(job, outcome)
+                    if job["kind"] == "download" and job["unit"] == "u1" and outcome == "corrupt":
+                        # As Interactive records it: str(error) in the job, the ArchiveError's record in the manifest.
+                        job["error"] = message
+                        world.interactive._update(job["manifest_path"], lambda manifest: manifest.update(download_failure={
+                            "reason": message, "error_type": "ArchiveError", "stage": "extract", "archive_failure": {
+                                "reason": "insufficient_disk_space", "message": message, "rejected_members": [],
+                                "detail": recorded}}))
+
+                world.interactive._finish = short
+                with world.open() as book:
+                    world.runner(book).run(max_iterations=200)
+                    unit = book.unit("u1")
+                    self.assertEqual((unit["state"], unit["failures"]), ("deferred_disk", 0))
+                    self.assertGreaterEqual(unit["known_bytes"], declared)
+                    self.assertEqual([(row["outcome"], row["counted"]) for row in book.attempts("u1") if row["step"] == "download"],
+                                     [("blocked", 0)])
+                    self.assertEqual(book.runner()["pause_kind"], "disk")
+                    self.assertTrue((Path(unit["workspace"]) / "raw").is_dir(), "its raw data stay for the resume")
+                world.disk.free = 19 * TB
+                book = self.finish(world)
+                self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+                self.assertEqual(book.unit("u1")["failures"], 0)
+
 
 class PartialDisk(fakes.FakeDisk):
     """A volume on which each named unit's download takes `sizes[unit]` bytes from the start of its lease

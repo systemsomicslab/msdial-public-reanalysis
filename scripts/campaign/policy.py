@@ -362,6 +362,34 @@ def lease_size_limit(detail: Mapping[str, Any]) -> int | None:
     return None
 
 
+# Interactive's extraction guard (archives.ExtractionLimits, 20 GB held in reserve) ending a lease because the
+# volume ran short while an archive expanded: ArchiveError insufficient_disk_space, recorded in the manifest's
+# download_failure.archive_failure, and in these words in the job's error (the listing's check, the stream's
+# check, and 7-Zip stopped by its watchdog).
+_EXTRACTION_EXPANDS = re.compile(r"expands to (\d+) bytes; \d+ are free and \d+ are held in reserve")
+_EXTRACTION_SHORT = re.compile(r"Free space fell below the \d+-byte reserve while|\binsufficient_disk_space\b")
+
+
+def extraction_disk_short(detail: Mapping[str, Any]) -> int | None:
+    """The bytes an archive was to expand to, when Interactive's extraction guard ended the lease because the
+    volume ran short (0 when it did not say), else None.
+
+    A short disk, never the unit's failure: the fetch had completed, so the free-space floor no longer
+    watched the lease, and Interactive's own reserve is what stopped it.
+    """
+    failure = detail.get("failure")
+    archive = failure.get("archive_failure") if isinstance(failure, Mapping) else None
+    text, _types = _failure_texts(detail)
+    named = isinstance(archive, Mapping) and archive.get("reason") == "insufficient_disk_space"
+    if not named and not (_EXTRACTION_EXPANDS.search(text) or _EXTRACTION_SHORT.search(text)):
+        return None
+    declared = (archive.get("detail") or {}).get("declared_bytes") if named and isinstance(archive.get("detail"), Mapping) else None
+    if isinstance(declared, int) and not isinstance(declared, bool) and declared > 0:
+        return declared
+    match = _EXTRACTION_EXPANDS.search(text)
+    return int(match.group(1)) if match else 0
+
+
 _NETWORK_TYPES = frozenset({
     "URLError", "TimeoutError", "timeout", "ConnectionError", "ConnectionResetError", "ConnectionAbortedError",
     "ConnectionRefusedError", "RemoteDisconnected", "IncompleteRead", "gaierror", "SSLError", "SSLEOFError",
@@ -447,6 +475,17 @@ def observed_factor(observations: Iterable[float], policy: DiskPolicy) -> float 
     return values[index]
 
 
+def disk_factor(has_archive: bool, policy: DiskPolicy, observations: Iterable[float] = ()) -> float:
+    factor = policy.archive_factor if has_archive else policy.file_factor
+    measured = observed_factor(observations, policy)
+    return factor if measured is None else max(factor, measured)
+
+
+def known_bytes_for_need(need: int, has_archive: bool, policy: DiskPolicy, observations: Iterable[float] = ()) -> int:
+    """The smallest size whose need (disk_need, the size known) is at least `need`."""
+    return int(math.ceil(max(0, int(need)) / disk_factor(has_archive, policy, observations)))
+
+
 def disk_need(
     known_bytes: int,
     size_known: bool,
@@ -458,10 +497,7 @@ def disk_need(
     """What the unit takes on the volume in all: its raw bytes times the factor, plus the reserve for a size
     not known. `held_bytes` is what it already holds there (a partial download kept for a resume): a size
     known only as a lower bound is at least that."""
-    factor = policy.archive_factor if has_archive else policy.file_factor
-    measured = observed_factor(observations, policy)
-    if measured is not None:
-        factor = max(factor, measured)
+    factor = disk_factor(has_archive, policy, observations)
     known = max(0, int(known_bytes or 0))
     if not size_known:
         known = max(known, int(held_bytes or 0))

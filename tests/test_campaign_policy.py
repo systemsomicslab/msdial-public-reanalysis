@@ -229,6 +229,26 @@ class DownloadFailureTests(unittest.TestCase):
             with self.subTest(detail):
                 self.assertFalse(policy.network_failure(detail))
 
+    def test_a_volume_that_ran_short_while_an_archive_expanded_is_read_as_a_short_disk(self) -> None:
+        listing = "ST1.zip expands to 4000 bytes; 3000 are free and 20 are held in reserve."
+        record = {"failure": {"reason": listing, "error_type": "ArchiveError", "archive_failure": {
+            "reason": "insufficient_disk_space", "message": listing, "detail": {"declared_bytes": 4000, "free_bytes": 3000}}}}
+        self.assertEqual(policy.extraction_disk_short(record), 4000)
+        self.assertEqual(policy.extraction_disk_short({"error": listing}), 4000, "the job's words alone")
+        for text in ("Free space fell below the 20000000000-byte reserve while ST1.tar.gz expanded.",
+                     "7-Zip was stopped while extracting ST1.7z: insufficient_disk_space."):
+            with self.subTest(text):
+                self.assertEqual(policy.extraction_disk_short({"error": text}), 0, "short, by an unstated amount")
+        self.assertEqual(policy.extraction_disk_short(
+            {"failure": {"reason": "x", "archive_failure": {"reason": "insufficient_disk_space"}}}), 0)
+        for detail in ({"failure": {"reason": "archive_member_escapes", "error_type": "ArchiveError",
+                                    "archive_failure": {"reason": "archive_member_escapes"}}},
+                       {"error": "HTTP Error 503: Service Unavailable"}):
+            with self.subTest(detail):
+                self.assertIsNone(policy.extraction_disk_short(detail))
+        self.assertFalse(policy.network_failure(record), "nor is it the network's")
+        self.assertEqual(policy.known_bytes_for_need(2661, True, policy.DiskPolicy()), 1001)
+
     def test_a_discard_blocked_for_good_is_not_waited_for(self) -> None:
         self.assertTrue(policy.discard_blocked_for_good(["mztab_output_exists"]))
         self.assertTrue(policy.discard_blocked_for_good(["finalisation_held", "validated_status"]))

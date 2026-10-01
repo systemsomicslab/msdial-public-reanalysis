@@ -1126,6 +1126,20 @@ class Runner:
                 reason=f"Unit {unit['unit_key']}'s download reached the disk bound; it needs at least {needed} bytes.",
                 new_attempt={"step": "download", "outcome": "blocked", "counted": False, "detail": detail},
             )
+        expands = policy.extraction_disk_short(detail)
+        if expands is not None:
+            # Interactive's extraction guard stopped because the volume ran short as an archive expanded: a
+            # short disk, never the unit's failure. The unit needs at least the archive's expansion, and more
+            # than it holds plus what was free then, so it is not admitted again into the same shortage.
+            held = self._held_bytes(unit)
+            free, _total = self.ports.disk.usage(self.campaign["workspace_root"])
+            floor = policy.known_bytes_for_need(held + free + 1, bool(unit["has_archive"]), self.policy.disk, self._observations())
+            return self._defer_for_disk(
+                unit, known_bytes=max(int(unit["known_bytes"] or 0), expands, floor),
+                reason=f"Unit {unit['unit_key']}'s archive did not fit as it expanded ({expands or 'unstated'} bytes); "
+                       f"{free} bytes were free.",
+                new_attempt={"step": "download", "outcome": "blocked", "counted": False, "detail": detail},
+            )
         outcome = "stalled" if reason == "stalled" else "failed"
         return self._download_failed(unit, result={"ok": False, "reason": outcome, **detail}, outcome=outcome,
                                      job_id=unit["download_job_id"])
