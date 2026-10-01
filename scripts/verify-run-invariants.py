@@ -1235,15 +1235,13 @@ def _read_archive_listing(path: Path, recorded_sha256: str, name: str) -> _Archi
     return listing
 
 
-def _lineage_checksum_basis(owner: dict, evidence: dict) -> tuple[str, str, dict]:
-    """SUM-1 for a manifest that carries input_lineage: every input resolved through its row."""
+def _lineage_checksum_basis(owner: dict, evidence: dict, candidates: list[str]) -> tuple[str, str, dict]:
+    """SUM-1 for a manifest that carries input_lineage: every analysed input resolved through its row."""
     lineage = _InputLineage(owner)
     evidence["lineage_schema"] = INPUT_LINEAGE_SCHEMA
     evidence["basis"] = "insufficient"
     if lineage.problem:
         return "insufficient", lineage.problem, evidence
-    raw_candidates = owner.get("input_candidates")
-    candidates = [str(item) for item in raw_candidates] if isinstance(raw_candidates, list) else []
     if not candidates:
         return "insufficient", "No input candidate is recorded, so the lineage vouches for nothing analysed.", evidence
     covers = [(item, lineage.resolve_input(item)) for item in candidates]
@@ -1300,7 +1298,7 @@ def _lineage_checksum_basis(owner: dict, evidence: dict) -> tuple[str, str, dict
     )
 
 
-def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
+def _checksum_basis(owner: dict, not_analysed: "dict[str, tuple[str, str]] | None" = None) -> tuple[str, str, dict]:
     """How this unit's inputs are known to be intact: (kind, detail, evidence).
 
     kind is "verified" (every declared file was checked against its published checksum, and every
@@ -1310,14 +1308,21 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
     input_lineage can say so), "download_sha256" (the repository publishes none, and every input rests
     on a sha256 recorded at download), or "insufficient" (anything else).
 
-    A manifest carrying input_lineage is resolved through it, input by input (_InputLineage). One
-    written before the table existed is read as it always was, below.
+    A manifest carrying input_lineage is resolved through it, input by input (_InputLineage), over the
+    input candidates less ``not_analysed`` (_not_analysed: excluded by the campaign disposition, and
+    opened by no CSV row), which are reported in the evidence and vouch for nothing. One written before
+    the table existed is read as it always was, below, exclusions and all: it predates campaign
+    dispositions (Interactive 0.5.9 against 0.5.17), and its validation counts every declared file
+    without naming one, so which of them an excluded input's were cannot be told.
     """
     validation = owner.get("allowlist_checksum_validation")
     files = [item for item in (owner.get("project") or {}).get("files") or [] if isinstance(item, dict)]
     downloads = [item for item in owner.get("downloads") or [] if isinstance(item, dict)]
     raw_candidates = owner.get("input_candidates")
     candidates = [str(item) for item in raw_candidates] if isinstance(raw_candidates, list) else []
+    not_analysed = (not_analysed or {}) if owner.get("input_lineage") is not None else {}
+    excluded = [not_analysed[_path_key(item)] for item in candidates if _path_key(item) in not_analysed]
+    candidates = [item for item in candidates if _path_key(item) not in not_analysed]
     raw_extracted = owner.get("extracted_files")
     extracted = {_path_key(item) for item in raw_extracted} if isinstance(raw_extracted, list) else set()
     input_directory = str(owner.get("input_directory") or "")
@@ -1364,8 +1369,15 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
         "declared_checksums": len(declared), "downloads_with_sha256": len(hashed_downloads),
         "repository": repository,
     }
+    if excluded:
+        evidence["inputs_excluded"] = len(excluded)
+        evidence["excluded"] = [{"input": Path(path.rstrip("\\/")).name, "reason": reason}
+                                for path, reason in excluded[:10]]
+        if not candidates:
+            return ("insufficient", f"All {len(excluded)} input candidate(s) were excluded by the campaign "
+                    "disposition, so no input is analysed for a checksum to vouch for.", evidence)
     if owner.get("input_lineage") is not None:
-        return _lineage_checksum_basis(owner, evidence)
+        return _lineage_checksum_basis(owner, evidence, candidates)
     if counts_known and files and skipped == 0 and verified == len(files):
         # The validator raises on a mismatch or on a file it cannot resolve, so a count equal to the
         # declared files means every one was checked. Sidecars such as .wiff.scan are declared and
@@ -1421,7 +1433,8 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
     return "insufficient", detail, evidence
 
 
-def check_checksum_coverage(report: Report, provenance: dict | None, reason: str) -> None:
+def check_checksum_coverage(report: Report, provenance: dict | None, reason: str,
+                           csv_rows: list[dict] | None = None) -> None:
     """SUM-1. Every admitted input had its declared checksum verified.
 
     The record's own "required" is true when at least one file carried a checksum, so
@@ -1443,6 +1456,12 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
     download, and named in that archive's recorded member listing, rests on basis archive_verified:
     ARCHIVE_VERIFIED_STATUS, a WARN until the user decides it passes. An unverified archive MD5, an
     input missing from the listing, and a member rejected at extraction are FAILs.
+
+    AN INPUT A BINDING CAMPAIGN DISPOSITION EXCLUDED is never analysed: Interactive leaves it among the
+    input candidates, where the disposition found it, and gives it no CSV row. Its checksum is not
+    required, and it is reported as excluded with the disposition's reason (_not_analysed). Where a CSV
+    row opens it all the same, through its Console alias or not, it is analysed, and covered or refused
+    like any other input; INP-1 refuses the row.
     """
     stage = "before-production"
     title = "Every input's checksum was verified"
@@ -1464,7 +1483,10 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
                    "The manifest records no checksum validation block or no input candidates.",
                    inherited_from=inherited_from)
         return
-    kind, detail, evidence = _checksum_basis(owner)
+    not_analysed = _not_analysed(provenance, owner, csv_rows)
+    kind, detail, evidence = _checksum_basis(owner, not_analysed)
+    if evidence.get("inputs_excluded") and evidence.get("inputs"):
+        detail += _excluded_sentence(not_analysed)
     status = {"verified": PASS, "archive_verified": ARCHIVE_VERIFIED_STATUS, "download_sha256": WARN}.get(kind, FAIL)
     report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, **evidence)
 
@@ -2199,6 +2221,32 @@ def _exclusion_reasons(*manifests: dict | None) -> dict[str, tuple[str, str]]:
             if isinstance(item, dict) and str(item.get("path") or "").strip():
                 reasons.setdefault(_path_key(item["path"]), (str(item["path"]), str(item.get("reason") or "")))
     return reasons
+
+
+def _not_analysed(provenance: dict, owner: dict, csv_rows: list[dict] | None) -> dict[str, tuple[str, str]]:
+    """The raw owner's input candidates a binding campaign disposition excluded and no CSV row opens.
+
+    By key, with the path and the disposition's reason. The dispositions are the raw owner's and, for a
+    split part, the part's own, as _excluded_candidates reads them. Interactive leaves such an input
+    among the candidates and gives it no row; a row that opens it all the same, through its Console
+    alias or not, makes it analysed, and it is then held to everything any input is.
+    """
+    reasons = _exclusion_reasons(owner, provenance)
+    if not reasons:
+        return {}
+    aliases = _input_keys_by_console_path(provenance)
+    opened = {_input_key(row, aliases) for row in csv_rows or []}
+    candidates = owner.get("input_candidates") if isinstance(owner.get("input_candidates"), list) else []
+    return {_path_key(item): reasons[_path_key(item)] for item in candidates
+            if _path_key(item) in reasons and _path_key(item) not in opened}
+
+
+def _excluded_sentence(not_analysed: dict[str, tuple[str, str]]) -> str:
+    """SUM-1's account of the inputs it did not hold to a checksum, with the disposition's reasons."""
+    names = [Path(path.rstrip("\\/")).name + " (" + (reason or "no reason recorded") + ")"
+             for path, reason in list(not_analysed.values())[:5]]
+    return (f" {len(not_analysed)} input candidate(s) the campaign disposition excluded are never analysed, so "
+            f"no checksum was required of them: {', '.join(names)}.")
 
 
 def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
@@ -5494,7 +5542,8 @@ PUBLICATION_ARTIFACTS = (
 )
 
 
-def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, output: Path) -> None:
+def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, output: Path,
+                                     csv_rows: list[dict] | None = None) -> None:
     """SUM-2. No published artifact calls inputs checksum-verified that were not.
 
     The second clause of the user's decision of 2026-09-25: a unit whose inputs rest on the sha256
@@ -5513,7 +5562,8 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     if owner is None:
         report.add("SUM-2", stage, title, NOT_EVALUABLE, owner_reason or "The manifest is absent.")
         return
-    kind, _detail, basis_evidence = _checksum_basis(owner)
+    # The inputs SUM-1 judged: what an artifact says of the inputs is said of those analysed.
+    kind, _detail, basis_evidence = _checksum_basis(owner, _not_analysed(provenance, owner, csv_rows))
     if kind not in ("download_sha256", "archive_verified"):
         report.add("SUM-2", stage, title, NOT_EVALUABLE,
                    "The inputs were checksum-verified, or SUM-1 refused them; there is no unearned "
@@ -7142,7 +7192,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_preflight_claim(report, provenance, provenance_reason)
         check_extractor_identity(report, provenance, provenance_reason)
         check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason)
-        check_checksum_coverage(report, provenance, provenance_reason)
+        check_checksum_coverage(report, provenance, provenance_reason, csv_rows)
         check_converted_inputs_are_their_conversions(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_class_distribution(report, csv_rows, csv_reason, "before-production")
         check_executed_class_matches_approved(report, provenance, provenance_reason, csv_rows, csv_reason)
@@ -7178,7 +7228,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_storage_shape(report, workspace, "before-publish", provenance)
         check_unit_reached_a_terminal_state(report, provenance, provenance_reason, output)
         check_no_finalisation_hold_stands(report, provenance, provenance_reason)
-        check_no_unearned_checksum_claim(report, provenance, output)
+        check_no_unearned_checksum_claim(report, provenance, output, csv_rows)
         check_retention_policy_was_acted_on(report, provenance, provenance_reason, workspace)
         check_no_private_path_in_a_shared_artifact(report, output, "before-publish")
         check_readings_recorded(report, workspace, "before-publish")

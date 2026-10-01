@@ -1,4 +1,4 @@
-"""CLS-2 and the order checks on an analysis CSV Interactive built from the input lineage.
+"""CLS-2, the order checks and SUM-1 on an analysis CSV Interactive built from the input lineage.
 
 Interactive's folder branch (repository_analysis_rows) writes a repository unit's analysis CSV from its
 input lineage, one row per analysis input, folder or file. Three of its renames reach the gate: an
@@ -8,7 +8,8 @@ share a stem are named apart by a digest (file_name_not_unique); and a projected
 Console could not read back is folded to ASCII (analysis_csv.class_id_aliases). An input an applied
 campaign disposition excluded, or one the lease excluded, is no row at all. CLS-2 joined rows to
 samples by name and compared labels verbatim, so it refused every such unit while each was correct;
-and the order-source reading did not recognise an aliased row.
+the order-source reading did not recognise an aliased row; and SUM-1 held an input the run never
+opens to a checksum.
 
 The fixtures are built as that branch writes them (feat/folder-inputs-and-csv-builder at d3ccfdc):
 build_repository_analysis_rows for the rows, their aliases and names, create_console_aliases
@@ -725,6 +726,96 @@ class AliasedRowsInOrderTests(unittest.TestCase):
             check = _check(unit.gate(), "ORD-1")
 
         self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+
+# ---- SUM-1 -----------------------------------------------------------------------------------------
+
+
+class ExcludedInputsInChecksumTests(unittest.TestCase):
+    """SUM-1 requires no checksum of an input a binding campaign disposition excluded and no row opens."""
+
+    def _unit(self, temporary: str, *, applied: bool = True) -> tuple[FolderBranchUnit, str]:
+        unit = FolderBranchUnit(temporary)
+        unit.file("S1.mzML", "S1", "A")
+        unit.file("S2.mzML", "S2", "B")
+        excluded = unit.file("IM1.d", "IM1", "B", verified=False)
+        unit.exclude(excluded, "raw_header_unreadable", applied=applied)
+        return unit, excluded
+
+    def test_an_excluded_input_is_reported_and_not_held_to_a_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _excluded = self._unit(temporary)
+            unit.prepare()
+            check = _check(unit.gate(), "SUM-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(1, check.evidence["inputs_excluded"])
+        self.assertEqual([{"input": "IM1.d", "reason": "raw_header_unreadable"}], check.evidence["excluded"])
+        self.assertEqual({"verified": 2}, check.evidence["inputs_by_basis"])
+        self.assertIn("1 input candidate(s) the campaign disposition excluded are never analysed", check.detail)
+        self.assertIn("IM1.d (raw_header_unreadable)", check.detail)
+
+    def test_an_excluded_input_a_row_opens_is_analysed_and_held(self) -> None:
+        for through_alias in (False, True):
+            with self.subTest(through_alias=through_alias), tempfile.TemporaryDirectory() as temporary:
+                unit, excluded = self._unit(temporary)
+                rows = unit.prepare()
+                path = excluded
+                if through_alias:
+                    path = str(unit.raw / ALIAS_DIRECTORY / "IM1-0000.d")
+                    _link(Path(excluded), Path(path))
+                    _lineage_row(unit, excluded).update(
+                        console_path=path, console_alias={"path": path, "kind": "hardlink", "target": excluded})
+                unit.write_csv(rows + [dict(rows[0], file_path=path, file_name="IM1", analytical_order=3)])
+                report = unit.gate()
+
+                self.assertEqual(verifier.FAIL, _check(report, "SUM-1").status)
+                self.assertNotIn("inputs_excluded", _check(report, "SUM-1").evidence)
+                self.assertEqual(verifier.FAIL, _check(report, "INP-1").status)
+
+    def test_a_disposition_that_was_not_applied_excludes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _excluded = self._unit(temporary, applied=False)
+            unit.prepare()
+            check = _check(unit.gate(), "SUM-1")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertEqual({"declared_checksum_unverified": 1}, check.evidence["uncovered_reasons"])
+
+    def test_a_unit_whose_every_input_was_excluded_has_nothing_vouched_for(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.exclude(unit.file("IM1.d", "IM1", "B"))
+            check = _check(unit.gate(), "SUM-1")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("All 1 input candidate(s) were excluded by the campaign disposition", check.detail)
+
+    def test_a_manifest_without_input_lineage_is_read_as_it_always_was(self) -> None:
+        """Its validation counts every declared file and names none, so the skipped one cannot be told to be
+        the excluded input's; such a manifest predates campaign dispositions, and nothing is lifted."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _excluded = self._unit(temporary)
+            unit.prepare()
+            del unit.manifest["input_lineage"]
+            check = _check(unit.gate(), "SUM-1")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertNotIn("inputs_excluded", check.evidence)
+        self.assertEqual(3, check.evidence["inputs"])
+        self.assertIn("Checksum coverage is partial", check.detail)
+
+    def test_sum2_judges_the_inputs_sum1_judged(self) -> None:
+        """An excluded input whose checksum was never verified does not leave the analysed ones unverified."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _excluded = self._unit(temporary)
+            unit.prepare()
+            (unit.output / "MS_DIAL_Materials_and_Methods.txt").write_text(
+                "All input checksums were verified.", encoding="utf-8")
+            check = _check(unit.gate("before-publish"), "SUM-2")
+
+        self.assertEqual(verifier.NOT_EVALUABLE, check.status)
+        self.assertEqual("verified", check.evidence["basis"])
 
 
 def _aliased(rows: list[dict]) -> dict:
