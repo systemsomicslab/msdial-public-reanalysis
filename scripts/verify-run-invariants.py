@@ -2332,6 +2332,17 @@ def check_analysis_inputs_are_the_inputs(
     report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names)
 
 
+def _absent_exports(run_manifest: dict | None) -> "tuple[int, list[str]] | None":
+    """(planned, absent): how many exports the run manifest planned, and those of them not on disk.
+
+    EXP-1's fact, which RET-1 shares; None when the manifest records no expected_analysis_exports.
+    """
+    if run_manifest is None or not isinstance(run_manifest.get("expected_analysis_exports"), list):
+        return None
+    expected = [Path(item) for item in run_manifest["expected_analysis_exports"]]
+    return len(expected), [str(path) for path in expected if not path.exists()]
+
+
 def check_expected_exports_present(
     report: Report, run_manifest: dict | None, output: Path, stage: str,
     provenance: dict | None = None,
@@ -2343,29 +2354,29 @@ def check_expected_exports_present(
     """
     if stage == "before-production":
         return
-    if run_manifest is None or not isinstance(run_manifest.get("expected_analysis_exports"), list):
+    exports = _absent_exports(run_manifest)
+    if exports is None:
         report.add("EXP-1", stage, "Every expected export exists", NOT_EVALUABLE,
                    "The run manifest records no expected_analysis_exports.")
         return
+    planned, absent = exports
     if not _production_started(output, provenance):
         report.add("EXP-1", stage, "Every expected export exists", NOT_EVALUABLE, NOT_STARTED,
-                   expected=len(run_manifest["expected_analysis_exports"]))
+                   expected=planned)
         return
-    expected = [Path(item) for item in run_manifest["expected_analysis_exports"]]
-    absent = [str(path) for path in expected if not path.exists()]
     if not absent:
         report.add("EXP-1", stage, "Every expected export exists", PASS,
-                   f"All {len(expected)} expected exports are present.", expected=len(expected))
+                   f"All {planned} expected exports are present.", expected=planned)
         return
     failure = _recorded_failure(provenance)
     report.add(
         "EXP-1", stage, "Every expected export exists", FAIL,
-        (f"{failure} after producing {len(expected) - len(absent)} of {len(expected)} planned exports."
+        (f"{failure} after producing {planned - len(absent)} of {planned} planned exports."
          if failure else
          "MS-DIAL reported success without producing every export the run planned. A file it could "
          "not read is skipped silently, and the exit code does not reflect it."
          + _earlier_failures(provenance)),
-        expected=len(expected), absent_count=len(absent), absent=absent[:10],
+        expected=planned, absent_count=len(absent), absent=absent[:10],
     )
 
 
@@ -5839,20 +5850,53 @@ def _release_parts(release: object) -> "list[str] | None":
     return [str(item.get("analysis_unit_id") or "") for item in release["parts"] if isinstance(item, dict)]
 
 
+def _mztab_not_validated(provenance: dict, output: Path) -> str:
+    """Why the unit's mzTab-M does not count as validated for deleting its raw data, or "" when it does.
+
+    B7's fact, from a validation that checked at least one file: a record of no failure among no files is
+    not an mzTab-M that validates.
+    """
+    return _unvalidated(provenance, output) or _validated_nothing(provenance.get("mztab_validation"))
+
+
+def _outputs_incomplete(output: Path) -> "tuple[str, list[str]]":
+    """Why the unit's MS-DIAL outputs are not all present, with the exports absent; ("", []) when they are.
+
+    EXP-1's fact, every export the run manifest planned on disk, and B6's, an .mdpeak in output. MS-DIAL
+    skips a file it cannot read without saying so, and finalisation reads only the mzTab-M, so a validated
+    mzTab-M does not by itself say the outputs are complete.
+    """
+    run_manifest, unreadable = _read_json(output / "run-manifest.json")
+    exports = _absent_exports(run_manifest)
+    if exports is None:
+        recorded = ("records no expected_analysis_exports" if run_manifest is not None
+                    else unreadable.split(" ", 1)[-1])
+        return f"its output's run manifest {recorded}, so whether every output is present is not established", []
+    planned, absent = exports
+    if absent:
+        names = ", ".join(Path(item).name for item in absent[:5]) + (", ..." if len(absent) > 5 else "")
+        return f"{len(absent)} of the {planned} exports its run planned are absent ({names})", absent
+    if not _mdpeak_count(output):
+        return "no .mdpeak is in its output", []
+    return "", []
+
+
 def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, str]":
     """What the campaign's deletion rule lets this unit's raw data go for: (kind, detail), or ("", "").
 
-    Validated outputs (B7's fact, from a validation that checked at least one file), a recorded failure
-    (after its retries: how many is the runner's decision, and a failure record is what is required of
-    it), or a skip or exclusion the campaign disposition decided.
+    Validated outputs, which are a validated mzTab-M and every MS-DIAL output present (the user's rule;
+    _mztab_not_validated and _outputs_incomplete), a recorded failure (after its retries: how many is the
+    runner's decision, and a failure record is what is required of it), or a skip or exclusion the
+    campaign disposition decided. A unit whose outputs are incomplete has in effect failed, so it is
+    judged by the rest.
     The gate's own verdicts do not enter: the user decided that deletion follows the outputs, whatever
     the gate says of them.
     """
     status = str(provenance.get("status") or "")
-    # B7's fact, and a validation that checked something: a record of no failure among no files is not
-    # an mzTab-M that validates.
-    if not (_unvalidated(provenance, workspace / "output") or _validated_nothing(provenance.get("mztab_validation"))):
-        return "validated", "its run was finalised, its mzTab-M validated, and the mzTab-M is in its output"
+    output = workspace / "output"
+    if not (_mztab_not_validated(provenance, output) or _outputs_incomplete(output)[0]):
+        return "validated", ("its run was finalised, its mzTab-M validated and is in its output, and every export "
+                             "its run planned is there")
     failures = _run_failures(provenance)
     if failures:
         last = failures[-1]
@@ -5890,11 +5934,13 @@ def check_retention_policy_was_acted_on(
     unit's records show raw data in, with neither a recorded deletion nor a campaign approval covering
     boundary 5 to account for it. A deletion under a campaign approval is correct once the outputs are
     validated, or for a unit that failed, was skipped or was excluded, and refused for any other unit:
-    those are the only cases the user's rule deletes. Validated is the fact B7 reaches on, an mzTab-M in
-    output as well as the manifest's record, and from a validation that checked at least one file, so
-    RET-1 never calls a deletion justified by outputs the progress walk says are not there. A split part
-    whose parent's release does not list it is a WARN: its tree went without its own state being part of
-    the decision.
+    those are the only cases the user's rule deletes. Validated is the user's "every MS-DIAL output
+    present and the mzTab-M validated": the fact B7 reaches on, an mzTab-M in output as well as the
+    manifest's record, from a validation that checked at least one file, with every export EXP-1 holds
+    the run to and B6's .mdpeak on disk. RET-1 never calls a deletion justified by outputs the progress
+    walk or EXP-1 says are not there, and a cleanup after validated output (raw_cleaned) that lacks them
+    is refused. A split part whose parent's release does not list it is a WARN: its tree went without its
+    own state being part of the decision.
     """
     stage = "before-publish"
     if provenance is None:
@@ -5969,6 +6015,12 @@ def check_retention_policy_was_acted_on(
                           "the raw tree is still on disk: the release has not completed.")
             return
         if policy == DELETE_RETENTION and status in VALIDATED_STATUSES - {"raw_cleaned"}:
+            incomplete = _outputs_incomplete(workspace / "output")[0]
+            if incomplete and not _mztab_not_validated(provenance, workspace / "output"):
+                verdict(WARN, f"Policy is delete_after_validated_output, the mzTab-M is validated, and {incomplete}: "
+                              "the raw tree is still present, and the deletion is not yet due. A unit whose outputs "
+                              "are incomplete has in effect failed, and its raw data go after its retries.")
+                return
             verdict(WARN, "Policy is delete_after_validated_output, the output is validated, and the raw tree is "
                           "still present. The deletion is due; it needs a person's confirmation or a campaign "
                           "approval covering boundary 5, and neither has been acted on yet.")
@@ -6011,29 +6063,38 @@ def check_retention_policy_was_acted_on(
     else:
         # Interactive writes raw_cleaned and discarded only on confirmed=true or a boundary-5 crossing.
         authority = "a person's confirmation"
+    # Why the outputs do not count as validated: the mzTab-M, or else the outputs beside it.
+    unvalidated, incomplete, absent = "", "", []
     if deletion == "split_release" and not part:
         parts = _release_parts(release) or []
         kind, why = ("released", f"its release lists {len(parts)} part(s)") if parts else ("", "")
     else:
         kind, why = _deletion_justification(provenance, workspace)
+        if kind != "validated":
+            unvalidated = _mztab_not_validated(provenance, workspace / "output")
+            incomplete, absent = ("", []) if unvalidated else _outputs_incomplete(workspace / "output")
     evidence.update(authority=authority, justification=kind)
     if deletion == "raw_cleaned" and kind != "validated":
-        missing = (_unvalidated(provenance, workspace / "output")
-                   or _validated_nothing(provenance.get("mztab_validation")))
-        evidence["unvalidated_because"] = missing
+        evidence["unvalidated_because"] = unvalidated or incomplete
+        if absent:
+            evidence.update(absent_export_count=len(absent), absent_exports=absent[:10])
         verdict(FAIL, f"The raw tree was deleted as a cleanup after validated output ({deleted_where}), and "
-                      f"{missing}: the cleanup rests on a validated mzTab-M that neither the unit's records nor its "
-                      "output show.")
+                      + (f"{unvalidated}: the cleanup rests on a validated mzTab-M that neither the unit's records "
+                         "nor its output show." if unvalidated else
+                         f"{incomplete}: the cleanup rests on outputs that are not all there. A unit whose outputs "
+                         "are incomplete has in effect failed, and the campaign deletes a failed unit's raw data "
+                         "only after its retries."))
         return
     if not kind:
+        neither = ("neither validated outputs" + (f" ({unvalidated or incomplete})" if unvalidated or incomplete else "")
+                   + " nor a failure, a skip or an exclusion")
         if crossings:
             verdict(WARN, f"The raw tree was deleted ({deleted_where}) under {authority}, and the unit records "
-                          "neither validated outputs nor a failure, a skip or an exclusion. The campaign deletes raw "
-                          "data for none but those, so either the unit's failure record was never written or the "
-                          "deletion broke the rule.")
+                          f"{neither}. The campaign deletes raw data for none but those, so either the unit's failure "
+                          "record was never written or the deletion broke the rule.")
             return
-        verdict(WARN, f"The raw tree was deleted ({deleted_where}) on {authority}, and the unit records neither "
-                      "validated outputs nor a failure, a skip or an exclusion, so why is not on record"
+        verdict(WARN, f"The raw tree was deleted ({deleted_where}) on {authority}, and the unit records {neither}, "
+                      "so why is not on record"
                       + (f" beyond {str(provenance.get('discard_reason'))[:160]!r}" if provenance.get("discard_reason") else "")
                       + ".")
         return

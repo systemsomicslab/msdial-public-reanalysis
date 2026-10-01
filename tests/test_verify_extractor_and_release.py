@@ -86,11 +86,28 @@ def _mztab(output: Path) -> Path:
     return path
 
 
-def _unit(root: Path, name: str = "unit", *, raw: bool = True, mztab: bool = False, **manifest) -> Path:
-    """One unit workspace under an accession directory, with a raw tree holding one input."""
+def _outputs(output: Path, planned: tuple[str, ...] = ("s0.mdpeak",), written: tuple[str, ...] | None = None) -> Path:
+    """A finished run's output: its mzTab-M, the exports its run manifest planned, and those it wrote.
+
+    Every planned export is written unless `written` names fewer, as MS-DIAL leaves a file it could not read.
+    """
+    for name in planned if written is None else written:
+        (output / name).write_bytes(b"peak")
+    _write(output / "run-manifest.json", {"expected_analysis_exports": [str(output / name) for name in planned]})
+    return _mztab(output)
+
+
+def _unit(root: Path, name: str = "unit", *, raw: bool = True, mztab: bool = False, outputs: bool = False,
+          **manifest) -> Path:
+    """One unit workspace under an accession directory, with a raw tree holding one input.
+
+    mztab writes the mzTab-M alone, and outputs a finished run's output (_outputs).
+    """
     workspace = root / name
     (workspace / "output").mkdir(parents=True)
-    if mztab:
+    if outputs:
+        _outputs(workspace / "output")
+    elif mztab:
         _mztab(workspace / "output")
     candidate = workspace / "raw" / "data" / "s0.mzML"
     if raw:
@@ -365,7 +382,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
     def test_a_validated_unit_deleted_under_the_campaign_passes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = _unit(Path(temporary), status="raw_cleaned", raw_cleaned_at="2026-10-01T02:00:00+00:00",
-                              campaign_authorizations=[_crossing(4), _crossing(5)], mztab=True, **VALIDATED)
+                              campaign_authorizations=[_crossing(4), _crossing(5)], outputs=True, **VALIDATED)
             shutil.rmtree(workspace / "raw")
             check = _ret1(workspace)
 
@@ -377,7 +394,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
         """Deletion follows the outputs, whatever the gate says of them: here ELIG-1 fails."""
         with tempfile.TemporaryDirectory() as temporary:
             workspace = _unit(Path(temporary), status="raw_cleaned", execution_allowed=False,
-                              downloads=[], campaign_authorizations=[_crossing(5)], mztab=True, **VALIDATED)
+                              downloads=[], campaign_authorizations=[_crossing(5)], outputs=True, **VALIDATED)
             shutil.rmtree(workspace / "raw")
             report = verifier.verify(workspace, "all")
 
@@ -480,7 +497,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
     def test_a_confirmed_cleanup_without_a_campaign_still_passes(self) -> None:
         """Outside a campaign raw_cleaned is written only on a person's confirmed=true, as before."""
         with tempfile.TemporaryDirectory() as temporary:
-            workspace = _unit(Path(temporary), status="raw_cleaned", mztab=True, **VALIDATED)
+            workspace = _unit(Path(temporary), status="raw_cleaned", outputs=True, **VALIDATED)
             shutil.rmtree(workspace / "raw")
             check = _ret1(workspace)
 
@@ -490,7 +507,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
     def test_a_live_store_claim_after_the_release_warns(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            workspace = _unit(root, status="raw_cleaned", campaign_authorizations=[_crossing(5)], mztab=True,
+            workspace = _unit(root, status="raw_cleaned", campaign_authorizations=[_crossing(5)], outputs=True,
                               **VALIDATED)
             shutil.rmtree(workspace / "raw")
             StoreBuilder(root).object("a" * 64, "s0.mzML", url="https://x/s0.mzML", claims={"unit": "materialized"})
@@ -523,7 +540,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
         for name, validation, said in cases:
             with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
                 workspace = _unit(Path(temporary), status="raw_cleaned", finalized_at="2026-10-01T01:00:00+00:00",
-                                  mztab_validation=validation, campaign_authorizations=[_crossing(5)], mztab=True)
+                                  mztab_validation=validation, campaign_authorizations=[_crossing(5)], outputs=True)
                 shutil.rmtree(workspace / "raw")
                 check = _ret1(workspace)
 
@@ -536,7 +553,7 @@ class RetentionUnderACampaignTests(unittest.TestCase):
                                                    "file_count": 1}}
         with tempfile.TemporaryDirectory() as temporary:
             workspace = _unit(Path(temporary), status="raw_cleaned", finalized_at="2026-10-01T01:00:00+00:00",
-                              mztab_validation=warned, campaign_authorizations=[_crossing(5)], mztab=True)
+                              mztab_validation=warned, campaign_authorizations=[_crossing(5)], outputs=True)
             shutil.rmtree(workspace / "raw")
             report = verifier.verify(workspace, "all")
 
@@ -544,6 +561,45 @@ class RetentionUnderACampaignTests(unittest.TestCase):
         self.assertEqual(verifier.PASS, check.status, check.detail)
         self.assertEqual("validated", check.evidence["justification"])
         self.assertTrue(report.progress["stages"]["B7"])
+
+    def test_a_cleanup_whose_outputs_are_incomplete_is_refused(self) -> None:
+        """Every MS-DIAL output present and the mzTab-M validated: a validated mzTab-M alone is not enough.
+
+        MS-DIAL skips a file it cannot read without saying so, and finalisation reads only the mzTab-M.
+        """
+        cases = (
+            ("an export absent", {"planned": ("s0.mdpeak", "s1.mdpeak"), "written": ("s0.mdpeak",)},
+             "1 of the 2 exports its run planned are absent (s1.mdpeak)"),
+            ("no .mdpeak", {"planned": (), "written": ()}, "no .mdpeak is in its output"),
+            ("no run manifest", None, "run manifest is absent"),
+        )
+        for name, written, said in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                workspace = _unit(Path(temporary), status="raw_cleaned", raw_cleaned_at="2026-10-01T02:00:00+00:00",
+                                  campaign_authorizations=[_crossing(4), _crossing(5)], mztab=True, **VALIDATED)
+                if written is not None:
+                    _outputs(workspace / "output", **written)
+                shutil.rmtree(workspace / "raw")
+                report = verifier.verify(workspace, "all")
+
+            check = _check(report, "RET-1")
+            self.assertEqual(verifier.FAIL, check.status, check.detail)
+            self.assertIn(said, check.detail)
+            self.assertNotEqual("validated", check.evidence["justification"])
+            self.assertTrue(report.progress["stages"]["B7"], "the mzTab-M itself is validated")
+            if name == "an export absent":
+                self.assertEqual(verifier.FAIL, _status(report, "EXP-1"))
+                self.assertEqual(1, check.evidence["absent_export_count"])
+                self.assertTrue(check.evidence["absent_exports"][0].endswith("s1.mdpeak"))
+
+    def test_a_validated_unit_with_incomplete_outputs_still_holding_its_raw_is_not_due(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = _unit(Path(temporary), status="mztab_validated", **VALIDATED)
+            _outputs(workspace / "output", ("s0.mdpeak", "s1.mdpeak"), ("s0.mdpeak",))
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("not yet due", check.detail)
 
 
 class ReleasedSplitParentTests(unittest.TestCase):
@@ -556,7 +612,7 @@ class ReleasedSplitParentTests(unittest.TestCase):
             _edit(fixture.part_manifest(part), status="raw_cleaned", raw_released_by=str(fixture.parent_manifest),
                   raw_cleaned_at="2026-10-01T05:00:00+00:00", raw_retention_policy="delete_after_validated_output",
                   **VALIDATED)
-            _mztab(fixture.part_roots[part] / "output")
+            _outputs(fixture.part_roots[part] / "output")
         _edit(fixture.parent_manifest, raw_retention_policy="delete_after_validated_output",
               campaign_authorizations=[_crossing(5, entry_point="cleanup_split_parent")],
               raw_release={"schema": "msdial-split-parent-raw-release.v1", "state": state, "kind": "released",
@@ -592,6 +648,25 @@ class ReleasedSplitParentTests(unittest.TestCase):
         self.assertEqual(verifier.WARN, missing.status, missing.detail)
         self.assertIn("does not list unit-dia", missing.detail)
         self.assertEqual(verifier.WARN, parent.status, parent.detail)
+
+    def test_a_part_whose_outputs_are_incomplete_is_judged_as_one_that_failed(self) -> None:
+        """A validated mzTab-M beside a missing export is in effect a failure: released after its retries it
+        passes on its failure record, and without one it warns, naming the export."""
+        failures = [{"reason": "an export is missing", "recorded_at": f"2026-10-01T0{i}:00:00+00:00"} for i in range(3)]
+        for name, extra, expected in (("retried", {"run_failures": failures}, verifier.PASS),
+                                      ("no failure record", {}, verifier.WARN)):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                fixture = self._released(temporary)
+                _edit(fixture.part_manifest(0), status="mztab_validated", **extra)
+                _outputs(fixture.part_roots[0] / "output", ("s0.mdpeak", "s1.mdpeak"), ("s0.mdpeak",))
+                check = _check(verifier.verify(fixture.part_roots[0], "before-publish"), "RET-1")
+
+            self.assertEqual(expected, check.status, check.detail)
+            if expected == verifier.PASS:
+                self.assertEqual("failed", check.evidence["justification"])
+            else:
+                self.assertEqual("", check.evidence["justification"])
+                self.assertIn("1 of the 2 exports its run planned are absent (s1.mdpeak)", check.detail)
 
     def test_a_part_claiming_raw_cleaned_while_its_tree_is_present_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
