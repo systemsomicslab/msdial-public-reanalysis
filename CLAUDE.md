@@ -301,24 +301,40 @@ list:
   outputs are present and its mzTab-M validates, so a Class, grouping, order or
   threshold error it carries is corrected only from a new download.
 
-**In neither list.** The user's rule does not name four `before-production`
-checks: ID-1 (the workspace is the unit its manifest names), SPL-1 (a split
-part partitions its parent's inputs), PRE-1 (a header-confirmed acquisition
-claim is permitted) and CONV-1 (every converted input is a validated
-conversion). It stops the run only for the five `blocks_run` checks, so a FAIL
-in one of these four is recorded with the unit and the unit runs, as a
-`record_only` FAIL is. PRE-1 never FAILs: it reports PASS, WARN or
-not_evaluable. A check the gate adds to `before-production` is named here
-until the user places it.
+The user's rule says what a FAIL in these ten checks does. It does not settle
+three cases, which are put to the user with this amendment. Each of the three
+paragraphs that follow is marked as awaiting the user's decision, and says
+what applies until the user decides.
 
-Nothing else stops the run. A check left `not_evaluable` is recorded with
-the unit and the unit runs, whichever list it is in and whether or not it is
-required; the report lists the required ones in `strict_failures`. A gate that
-produced no report is recorded the same way, and the unit runs: one that
-exited 3 (the workspace is unusable), or with any code other than 0, 2 and 4,
-or whose output does not parse as a report. The gate lifts none of
-Interactive's own refusals: a unit Interactive refuses to start does not run,
-whatever the gate said.
+**In neither list, awaiting the user's decision.** The user's rule does not
+name four `before-production` checks: ID-1 (the workspace is the unit its
+manifest names), SPL-1 (a split part partitions its parent's inputs), PRE-1 (a
+header-confirmed acquisition claim is permitted) and CONV-1 (every converted
+input is a validated conversion). Until the user places them, the rule's
+"only" is read as written: a FAIL in one of these four is recorded with the
+unit and the unit runs, as a `record_only` FAIL is. PRE-1 never FAILs: it
+reports PASS, WARN or not_evaluable. A check the gate adds to
+`before-production` is named here until the user places it.
+
+**Not evaluable, awaiting the user's decision.** A check left
+`not_evaluable` is not a FAIL, so the user's rule does not reach it. Until the
+user decides, it is recorded with the unit and the unit runs, whichever list
+it is in and whether or not it is required; the report lists the required ones
+in `strict_failures`.
+
+**No report, awaiting the user's decision.** Until the user decides, a gate
+that produced no report stops the run, and the attempt counts as a failed one.
+Such a gate exited 3 (the workspace is unusable), or with any code other than
+0, 2 and 4, or printed output that does not parse as a report, or gave no
+answer within the runner's time limit. Without a report the runner cannot tell
+whether a `blocks_run` check FAILed, so it cannot apply the user's rule.
+Stopping keeps MS-DIAL from producing a result that none of the five has
+checked, and the retries give a passing fault the chance to clear. Once they
+are spent, the unit's raw data go as any failed unit's do, so a fault that
+recurs on every attempt ends with no result and no raw data.
+
+The gate lifts none of Interactive's own refusals: a unit Interactive refuses
+to start does not run, whatever the gate said.
 
 The runner reads which checks failed from the `checks` of the gate's `--json`
 report, never from the exit code. The exit code is 2 for any FAIL, in a list

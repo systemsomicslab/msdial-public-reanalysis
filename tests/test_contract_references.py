@@ -20,6 +20,12 @@ exactly the checks the trial manifest records them giving, and every other befor
 must be named as in neither list. A list may not gain a check in either direction: one added to
 record_only is a FAIL that no longer stops a run, and one added to blocks_run is a unit failed and
 its raw data deleted, and neither is the contract's to decide.
+
+The user's rule says what a FAIL in the two lists does and leaves cases open: a FAIL in a check in
+neither list, a check left not_evaluable, a gate that produced no report. The contract says what
+applies to each until the user decides, and a reader must be able to tell that reading from the
+user's own rule. So every passage that says what an open case does to a unit's run is marked as
+awaiting the user's decision.
 """
 
 from __future__ import annotations
@@ -77,7 +83,16 @@ _GATE_RULE_SECTION = "## Gate verdicts in a campaign"
 _GATE_LISTS = ("blocks_run", "record_only")
 # The paragraph of the gate rule that names the before-production checks the user placed in neither
 # list.
-_NEITHER_LIST = "**In neither list.**"
+_NEITHER_LIST = "**In neither list, awaiting the user's decision.**"
+# What marks a passage as the contract's reading of a case the user has not settled. The discard
+# fallback is marked "awaiting the user's approval" instead.
+_AWAITING = "awaiting the user's decision"
+# A passage that says what a case does to a unit's run.
+_RUN_OUTCOME = re.compile(r"\bthe unit runs?\b|\bstops? the run\b|\bholds? the run\b", re.IGNORECASE)
+# Cases that are not a FAIL, so the user's gate rule of 2026-10-01 does not reach them: a check left
+# not_evaluable, and a gate that produced no report. Each stays open until a trial decision names it.
+_OPEN_VERDICTS = ("not_evaluable", "no report")
+_LIST_ITEM = re.compile(r"^[ \t]*(?:[-*]|\d+\.)[ \t]")
 
 
 def _normalised(token: str) -> str:
@@ -230,6 +245,43 @@ def _moved_into(contract: str, name: str, checks: set[str]) -> str:
 def _without_neither_list(contract: str) -> str:
     paragraph = r"\n" + re.escape(_NEITHER_LIST) + r".*?\n[ \t]*\n"
     return re.sub(paragraph, "\n", contract, count=1, flags=re.DOTALL)
+
+
+def _blocks(text: str) -> list[str]:
+    """A document's paragraphs, each list item on its own and on one line, with fenced blocks left out."""
+    blocks = []
+    for paragraph in re.split(r"\n[ \t]*\n", _FENCE.sub("", text)):
+        item: list[str] = []
+        for line in paragraph.splitlines():
+            if _LIST_ITEM.match(line) and item:
+                blocks.append(" ".join(" ".join(item).split()))
+                item = []
+            item.append(line)
+        if item:
+            blocks.append(" ".join(" ".join(item).split()))
+    return blocks
+
+
+def _open_verdicts(decisions: list[dict]) -> tuple[str, ...]:
+    """The verdicts that are not a FAIL and that no decision names yet."""
+    named = " ".join(str(entry.get("decision") or "") for entry in decisions)
+    return tuple(phrase for phrase in _OPEN_VERDICTS if phrase not in named)
+
+
+def _unmarked_open_cases(text: str, unplaced: set[str], open_verdicts: tuple[str, ...]) -> list[str]:
+    """Passages that say what a case the user has not settled does, with no mark that it awaits the user.
+
+    A passage speaks to such a case when it names a FAIL of a before-production check the user placed
+    in neither list, or says what a still-open verdict (a check left not_evaluable, a gate that
+    produced no report) does to a unit's run.
+    """
+    found = []
+    for block in _blocks(text):
+        unplaced_fail = bool(_check_ids(block) & unplaced) and "FAIL" in block
+        open_verdict = any(phrase in block for phrase in open_verdicts) and _RUN_OUTCOME.search(block)
+        if (unplaced_fail or open_verdict) and _AWAITING not in block.casefold():
+            found.append(block[:160])
+    return found
 
 
 class ContractReferencesTests(unittest.TestCase):
@@ -385,7 +437,7 @@ class ContractGateChecksTests(unittest.TestCase):
             "## Gate verdicts in a campaign\n\n"
             "- `blocks_run`: ELIG-1 and\n  ACQ-1. Such a unit fails.\n"
             "- `record_only`: CLS-1.\n\n"
-            "**In neither list.** SUM-1, and nothing else.\n\n"
+            f"{_NEITHER_LIST} SUM-1, and nothing else.\n\n"
             "The runner reads the report.\n"
         )
         gate = {"ELIG-1", "ACQ-1", "CLS-1", "SUM-1"}
@@ -404,6 +456,70 @@ class ContractGateChecksTests(unittest.TestCase):
         for case, (text, checks, lists) in cases.items():
             with self.subTest(case=case):
                 self.assertTrue(_gate_rule_disagreements(text, checks, lists))
+
+    def _unplaced(self) -> set[str]:
+        decided = self._decided()
+        return set(self.stages["before-production"]) - decided["blocks_run"] - decided["record_only"]
+
+    def test_every_case_the_user_left_open_is_marked_as_awaiting_the_user(self) -> None:
+        unplaced = self._unplaced()
+        open_verdicts = _open_verdicts(_trial_decisions())
+        self.assertTrue(unplaced or open_verdicts, "nothing is open; this test has nothing to hold")
+        found = {}
+        for document in DOCUMENTS:
+            text = (_ROOT / document).read_text(encoding="utf-8")
+            if _unmarked_open_cases(text, unplaced, open_verdicts):
+                found[document] = _unmarked_open_cases(text, unplaced, open_verdicts)
+        self.assertEqual({}, found)
+
+    def test_the_open_cases_written_as_settled_rule_are_refused(self) -> None:
+        # At 79a251c the contract stated its reading of the open cases as rule: "**In neither list.**",
+        # "Nothing else stops the run." and the mzXML polarity sentence carried no mark.
+        unplaced = self._unplaced()
+        open_verdicts = _open_verdicts(_trial_decisions())
+        unmarked = re.sub(r",? awaiting the user's decision", "", self.contract, flags=re.IGNORECASE)
+        found = _unmarked_open_cases(unmarked, unplaced, open_verdicts)
+        self.assertEqual(4, len(found), found)
+        for lead in ("**In neither list.**", "**Not evaluable.**", "**No report.**",
+                     "- **mzXML without a polarity.**"):
+            with self.subTest(lead=lead):
+                self.assertTrue(any(block.startswith(lead) for block in found), found)
+
+    def test_a_case_is_held_open_however_a_passage_settles_it(self) -> None:
+        unplaced, open_verdicts = {"CONV-1"}, ("not_evaluable", "no report")
+        # Each case as a passage that settles it, then the same passage marked. A mark in another list
+        # item does not count.
+        cases = {
+            "an unplaced FAIL": (
+                "A FAIL in CONV-1 is recorded, and the unit runs.",
+                "Awaiting the user's decision, a FAIL in CONV-1 is recorded, and the unit runs."),
+            "an unplaced FAIL in a list item": (
+                "- First, awaiting the user's decision.\n- CONV-1 FAILs the conversion, and it runs.\n",
+                "- First.\n- CONV-1 FAILs the conversion (awaiting the user's decision), and it runs.\n"),
+            "not evaluable": (
+                "A check left `not_evaluable` stops\nthe run.",
+                "**Open, awaiting the user's decision.** A check left `not_evaluable` stops\nthe run."),
+            "no report": (
+                "A gate that produced no report is recorded, and the unit runs.",
+                "A gate that produced no report, awaiting the user's decision, stops the run."),
+            "no report, put otherwise": (
+                "A gate with no report lets the unit run.",
+                "Awaiting the user's decision, a gate with no report lets the unit run."),
+        }
+        for case, (settled, marked) in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(1, len(_unmarked_open_cases(settled, unplaced, open_verdicts)))
+                self.assertEqual([], _unmarked_open_cases(marked, unplaced, open_verdicts))
+        for text in (
+            "A FAIL in CLS-1 is recorded, and the unit runs.",
+            "CONV-1 holds each converted input to its record.",
+            "Treat `not_evaluable` as a reason to stop, not as consent.",
+            "```text\nA FAIL in CONV-1 stops the run.\n```\n",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual([], _unmarked_open_cases(text, unplaced, open_verdicts))
+        decided = [{"decision": "A check left not_evaluable stops the run (blocks_run)."}]
+        self.assertEqual(("no report",), _open_verdicts(decided))
 
     def test_the_lists_are_read_from_their_bullets_only(self) -> None:
         section = (
