@@ -54,6 +54,7 @@ import math
 import os
 import re
 import sys
+import unicodedata
 import urllib.parse
 import zipfile
 from collections import Counter
@@ -2189,6 +2190,17 @@ def _excluded_inputs(manifest: dict | None) -> list[str]:
     return list(paths.values())
 
 
+def _exclusion_reasons(*manifests: dict | None) -> dict[str, tuple[str, str]]:
+    """The inputs these manifests' binding campaign dispositions excluded, by key: (path, reason)."""
+    reasons: dict[str, tuple[str, str]] = {}
+    for manifest in manifests:
+        excluded = _binding_disposition(manifest).get("excluded_inputs")
+        for item in excluded if isinstance(excluded, list) else []:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                reasons.setdefault(_path_key(item["path"]), (str(item["path"]), str(item.get("reason") or "")))
+    return reasons
+
+
 def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
     """The input candidates a campaign disposition excluded: the unit's own, and a split part's parent's.
 
@@ -2425,6 +2437,25 @@ def _per_file_records(provenance: dict) -> dict[str, dict]:
     return records
 
 
+def _lineage_manifests(provenance: dict) -> list[dict]:
+    """The manifests that hold a unit's input lineage: its own and, for a split part, its raw owner's."""
+    manifests = [provenance]
+    if isinstance(provenance.get("split_from"), dict):
+        parent, _ = _raw_owner_manifest(provenance)
+        if parent is not None:
+            manifests.append(parent)
+    return manifests
+
+
+def _lineage_rows(manifest: dict | None, part: str = "rows") -> list[dict]:
+    """A manifest's input_lineage rows that name a path: its inputs ("rows"), or what the lease excluded."""
+    lineage = (manifest or {}).get("input_lineage")
+    rows = lineage.get(part) if isinstance(lineage, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict) and str(row.get("path") or "").strip()]
+
+
 def _input_keys_by_console_path(provenance: dict) -> dict[str, str]:
     """The input each Console path stands for, where the CSV names an alias of it rather than the input.
 
@@ -2434,18 +2465,9 @@ def _input_keys_by_console_path(provenance: dict) -> dict[str, str]:
     The CSV's writer wrote that record, so while both are on disk the alias must be the input (a
     junction or a hard link to it); one that is another file stands for nothing.
     """
-    manifests = [provenance]
-    if isinstance(provenance.get("split_from"), dict):
-        parent, _ = _raw_owner_manifest(provenance)
-        if parent is not None:
-            manifests.append(parent)
     keys: dict[str, str] = {}
-    for manifest in manifests:
-        lineage = manifest.get("input_lineage")
-        rows = lineage.get("rows") if isinstance(lineage, dict) else None
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict) or not str(row.get("path") or "").strip():
-                continue
+    for manifest in _lineage_manifests(provenance):
+        for row in _lineage_rows(manifest):
             alias = row.get("console_alias") if isinstance(row.get("console_alias"), dict) else {}
             for console in (row.get("console_path"), alias.get("path")):
                 if not str(console or "").strip() or _same_path(console, row["path"]):
@@ -4985,6 +5007,163 @@ def _files_of_samples(provenance: dict | None, samples: set[str], csv_names: set
     return result
 
 
+def _samples_by_csv_name(provenance: dict | None, csv_rows: list[dict]) -> dict[str, str]:
+    """The sample each analysis-CSV row is, by the row's file_name, where the input lineage says so.
+
+    A row is the input it opens: its own path, or the input its Console alias stands for
+    (_input_keys_by_console_path reads console_path and console_alias). That input's lineage row names
+    the sample the lease attributed it to (sample_id) and, once Interactive built the CSV from the
+    lineage, the name the CSV gives it (file_name): the input's stem, its alias, or the stem made unique
+    by a digest. A lineage row recording another file_name than the row's describes another CSV, and
+    says nothing of this one. Rows the lineage says nothing of are left out.
+    """
+    if not isinstance(provenance, dict):
+        return {}
+    by_path: dict[str, dict] = {}
+    for manifest in _lineage_manifests(provenance):
+        for row in _lineage_rows(manifest):
+            by_path.setdefault(_path_key(row["path"]), row)
+    if not by_path:
+        return {}
+    aliases = _input_keys_by_console_path(provenance)
+    result: dict[str, str] = {}
+    for row in csv_rows:
+        name = str(row.get("file_name", ""))
+        lineage = by_path.get(_input_key(row, aliases)) or {}
+        sample = str(lineage.get("sample_id") or "").strip()
+        recorded = str(lineage.get("file_name") or "")
+        if sample and (not recorded or recorded == name):
+            result[name] = sample
+    return result
+
+
+def _container_stem(name: str) -> str:
+    """A path as the CSV names the input it is, compared without case: the last component less a
+    trailing "/" and an archive suffix, then less its container suffix, else less its last extension."""
+    base = str(name).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    unpacked = _strip_suffix(base, ARCHIVE_SUFFIXES)
+    stripped = _strip_suffix(unpacked, CONTAINER_SUFFIXES)
+    return (stripped if stripped != unpacked else unpacked.rsplit(".", 1)[0]).casefold()
+
+
+def _excluded_samples(provenance: dict | None, samples: set[str]) -> dict[str, list[str]]:
+    """Of these approved samples, those whose input was excluded from the run, with the inputs' names.
+
+    Excluded by a binding campaign disposition (the unit's, and a split part's parent's), or by the lease
+    itself (excluded_input_candidates: an mzML RawDataHandler cannot decode). Either is another writer
+    than the CSV's. The sample an excluded input is the input of is what the lease's lineage row names
+    for it; where that names none, the CSV record (analysis_csv.excluded_inputs), in which Interactive
+    names each such input with its sample; and else a sample whose id, or recorded raw_file, is the input
+    by name. The CSV record is the CSV writer's own, so it never outranks the lease's: a CSV that dropped
+    one sample's row and named that sample beside another's excluded input would otherwise excuse both.
+    An entry of the CSV record that neither exclusion bears out excludes nothing, and nor does any
+    exclusion excuse a sample the lineage gives an input that runs (a candidate nobody excluded): that
+    sample's row is missing, whatever else of it was excluded.
+    """
+    if not isinstance(provenance, dict) or not samples:
+        return {}
+    manifests = _lineage_manifests(provenance)
+    excluded = {key: path for key, (path, _reason) in _exclusion_reasons(*manifests).items()}
+    for manifest in manifests:
+        for item in manifest.get("excluded_input_candidates") or []:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                excluded.setdefault(_path_key(item["path"]), str(item["path"]))
+    if not excluded:
+        return {}
+    candidates = provenance.get("input_candidates") if isinstance(provenance.get("input_candidates"), list) else []
+    runnable = {_path_key(item) for item in candidates if str(item).strip()} - set(excluded)
+    running = {str(row.get("sample_id") or "").strip() for manifest in manifests for row in _lineage_rows(manifest)
+               if _path_key(row["path"]) in runnable}
+    named: dict[str, str] = {}
+    record = provenance.get("analysis_csv")
+    listed = record.get("excluded_inputs") if isinstance(record, dict) else None
+    sources = [_lineage_rows(manifest, part) for manifest in manifests for part in ("rows", "excluded")]
+    sources.append([item for item in listed if isinstance(item, dict)] if isinstance(listed, list) else [])
+    for source in sources:
+        for item in source:
+            key = _path_key(item.get("path") or "")
+            sample = str(item.get("sample_id") or "").strip()
+            if key in excluded and sample:
+                named.setdefault(key, sample)
+    by_id = {sample.strip(): sample for sample in samples}
+    raw_files: dict[str, set[str]] = {}
+    for row in ((provenance.get("project") or {}).get("sample_metadata") or []):
+        if not isinstance(row, dict):
+            continue
+        sample, raw = str(row.get("sample_id") or "").strip(), str(row.get("raw_file") or "").strip()
+        if sample and raw:
+            raw_files.setdefault(_container_stem(raw), set()).add(sample)
+    result: dict[str, list[str]] = {}
+    for key, path in excluded.items():
+        stem = _container_stem(path)
+        owners = {named[key]} if key in named else (
+            {sample for sample in by_id if sample.casefold() == stem} | raw_files.get(stem, set()))
+        for sample in owners - running:
+            if sample in by_id:
+                result.setdefault(by_id[sample], []).append(Path(path.rstrip("\\/")).name)
+    return result
+
+
+def _class_token(value: object) -> str:
+    """A Class label as Interactive projects it into the analysis CSV (repository_metadata.class_token,
+    which apply_class_proposal applies to every approved label): NFKC, runs of white space and "_" as
+    "-", anything but a letter, a digit or ".+-" as "-", and the "-" runs joined and trimmed."""
+    text = unicodedata.normalize("NFKC", str(value if value is not None else "").strip())
+    text = re.sub(r"[\s_]+", "-", text.strip())
+    text = "".join(character if character.isalnum() or character in ".+-" else "-" for character in text)
+    return re.sub(r"-+", "-", text).strip("-")
+
+
+def _console_reads_back(value: object) -> bool:
+    """Whether the Console's analysis-CSV parser reads this value back as written (Interactive's
+    workflow.console_safe_text): printable ASCII without a comma or a quote."""
+    text = str(value)
+    return all(" " <= character <= "~" for character in text) and "," not in text and '"' not in text
+
+
+# The name Interactive gives a Class label whose ASCII fold is empty or another label's (Class1, Class2, ...).
+_NUMBERED_CLASS = re.compile(r"Class[1-9][0-9]*")
+
+
+def _class_id_aliases(provenance: dict | None) -> tuple[dict[str, str], dict[str, str]]:
+    """The ASCII Class each projected label the Console could not read back was written as, and the
+    entries of the record that are no such fold.
+
+    Interactive's lineage-built CSV (repository_analysis_rows._class_aliases) leaves a label the Console
+    reads back as it is, folds any other to ASCII (class_token of its NFKD fold), or numbers it (Class1,
+    Class2, ...) where the fold is empty or meets another label, keeping the grouping, and records the
+    map in analysis_csv.class_id_aliases of the CSV it wrote (status "written"); a failed record wrote no
+    CSV and maps nothing. The record is the CSV writer's own, so an entry is taken only as that fold: one
+    that renames a label the Console reads back, or gives a label another meaningful name, would let a
+    CSV that swapped "Control" and "Treated" record the swap and pass. Such entries are returned apart.
+    """
+    record = provenance.get("analysis_csv") if isinstance(provenance, dict) else None
+    aliases = record.get("class_id_aliases") if isinstance(record, dict) and record.get("status") == "written" else None
+    if not isinstance(aliases, dict):
+        return {}, {}
+    folds: dict[str, str] = {}
+    refused: dict[str, str] = {}
+    for label, alias in aliases.items():
+        label = str(label)
+        if not isinstance(alias, str) or not alias:
+            continue
+        ascii_fold = _class_token(unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode("ascii"))
+        if (not _console_reads_back(label) and _console_reads_back(alias)
+                and (alias == ascii_fold or _NUMBERED_CLASS.fullmatch(alias))):
+            folds[label] = alias
+        else:
+            refused[label] = alias
+    return folds, refused
+
+
+def _executed_forms(label: str, aliases: dict[str, str]) -> set[str]:
+    """The Class labels an approved label may run as: itself, as projected ("Sample" where the projection
+    leaves nothing, as apply_class_proposal writes it), and as folded for the Console."""
+    token = _class_token(label) or "Sample"
+    forms = {label, token} | {aliases[form] for form in (label, token) if form in aliases}
+    return {form for form in forms if form}
+
+
 def check_executed_class_matches_approved(
     report: Report, provenance: dict | None, reason: str,
     csv_rows: list[dict] | None, csv_reason: str,
@@ -4999,6 +5178,25 @@ def check_executed_class_matches_approved(
 
     CLS-1 asks whether the executed grouping is stated and unambiguous. It is satisfied by a
     perfectly clean grouping of the wrong thing.
+
+    A ROW IS JOINED TO ITS SAMPLE through the input lineage first (_samples_by_csv_name): the input the
+    row opens, through its Console alias, and the sample its lineage row names. Since Interactive builds
+    the CSV from the lineage, a row's file_name may be an ASCII alias or a stem made unique by a digest
+    (file_name_not_unique), which no sample's name or raw file is. A row the lineage says nothing of is
+    joined by name, as before (_files_of_samples). An approved sample with no row is absent unless its
+    input was excluded from the run, by a binding campaign disposition or by the lease, and then it is
+    reported as excluded (_excluded_samples). Whose input an excluded one was is the lease's lineage to
+    say before the CSV record, which is the CSV writer's own, and a sample the lineage gives an input
+    that runs is absent however much else of it was excluded. Where every approved sample was excluded
+    the Console reads no grouping, and that is a FAIL, not a comparison of nothing.
+
+    A LABEL IS COMPARED AS INTERACTIVE WRITES IT: projected (_class_token, "Wild type" as "Wild-type",
+    and "Sample" where the projection leaves nothing), and, where the Console could not read the
+    projection back, folded to the ASCII Class the CSV record names (analysis_csv.class_id_aliases),
+    an entry taken only where it is Interactive's fold of the label (_class_id_aliases). Each approved
+    Class must still run as one executed Class and no executed Class carry two: a projection or a fold
+    that merges or splits Classes is a grouping nobody approved, which the label comparison alone would
+    not see.
     """
     stage = "before-production"
     proposal = _class_proposal(provenance)
@@ -5025,36 +5223,90 @@ def check_executed_class_matches_approved(
     # MetaboLights does not: MTBLS2207's "DDA E. coli" is the file M3T-Std_Ecoli_neg_DDA_1mz, and
     # joining on equal strings called all six approved samples absent and all six rows unapproved
     # while every one carried its approved Class. The repository's own sample-to-file record
-    # (sample_metadata raw_file) is the link; it is neither of the two writers being compared.
-    files_of_sample = _files_of_samples(provenance, set(approved), set(executed))
+    # (sample_metadata raw_file) is the link; it is neither of the two writers being compared. The
+    # input lineage, written by the lease, is the link for a CSV built from it.
+    through_lineage = _samples_by_csv_name(provenance, csv_rows)
+    by_id = {sample.strip(): sample for sample in approved}
+    files_of_sample: dict[str, list[str]] = {}
+    for name, sample in through_lineage.items():
+        if sample in by_id:
+            files_of_sample.setdefault(by_id[sample], []).append(name)
+    by_name = _files_of_samples(provenance, set(approved) - set(files_of_sample), set(executed) - set(through_lineage))
+    files_of_sample.update(by_name)
+    unmatched = {sample for sample in approved if not files_of_sample.get(sample)}
+    excluded = _excluded_samples(provenance, unmatched)
+    aliases, refused = _class_id_aliases(provenance)
     mapped: set[str] = set()
     missing = []
     differing = []
+    ran_as: dict[str, set[str]] = {}
+    carried: dict[str, set[str]] = {}
+    folded: dict[str, str] = {}
     for sample, label in sorted(approved.items()):
         files = files_of_sample.get(sample) or []
         if not files:
-            missing.append(sample)
+            if sample not in excluded:
+                missing.append(sample)
             continue
+        forms = _executed_forms(label, aliases)
         for name in files:
             mapped.add(name)
-            if executed[name] != label:
+            if executed[name] not in forms:
                 differing.append(
                     f"{sample}{'' if name == sample else f' ({name})'}: approved {label!r}, "
                     f"executed {executed[name]!r}"
                 )
+                continue
+            ran_as.setdefault(label, set()).add(executed[name])
+            carried.setdefault(executed[name], set()).add(label)
+            if executed[name] != label:
+                folded[label] = executed[name]
     extra = sorted(set(executed) - mapped)
-    joined_by_file = sum(1 for sample, files in files_of_sample.items() if files and files != [sample])
-    if not missing and not extra and not differing:
-        report.add("CLS-2", stage, "Executed Class is the Class that was approved", PASS,
-                   f"All {len(approved)} approved assignments appear in the analysis CSV with the "
-                   "same Class.", assignments=len(approved), joined_through_raw_file=joined_by_file)
+    regrouped = ([f"approved {label!r} runs as {sorted(labels)}" for label, labels in sorted(ran_as.items())
+                  if len(labels) > 1]
+                 + [f"{label!r} carries approved {sorted(labels)}" for label, labels in sorted(carried.items())
+                    if len(labels) > 1])
+    joined_by_file = sum(1 for sample, files in by_name.items() if files and files != [sample])
+    joined_by_lineage = len(set(files_of_sample) - set(by_name))
+    evidence = {"assignments": len(approved), "joined_through_raw_file": joined_by_file}
+    if joined_by_lineage:
+        evidence["joined_through_lineage"] = joined_by_lineage
+    if excluded:
+        evidence["excluded_samples"] = {sample: names for sample, names in sorted(excluded.items())[:10]}
+    if folded:
+        evidence["written_as"] = dict(sorted(folded.items())[:10])
+    if refused:
+        evidence["class_id_aliases_not_a_fold"] = dict(sorted(refused.items())[:10])
+    if not missing and not extra and not differing and not regrouped and len(excluded) == len(approved):
+        report.add(
+            "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
+            f"None of the {len(approved)} approved sample(s) is analysed: the input of every one was excluded by "
+            "the campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + "), so the Console "
+            "reads no grouping at all.", **evidence)
+        return
+    if not missing and not extra and not differing and not regrouped:
+        if not excluded and not folded:
+            detail = f"All {len(approved)} approved assignments appear in the analysis CSV with the same Class."
+        else:
+            detail = (f"All {len(approved) - len(excluded)} approved assignments of the samples analysed appear in "
+                      "the analysis CSV with the same Class")
+            if folded:
+                detail += (f", {len(folded)} Class label(s) written as the Console reads them ("
+                           + ", ".join(f"{label!r} as {alias!r}" for label, alias in sorted(folded.items())[:3]) + ")")
+            if excluded:
+                detail += (f"; {len(excluded)} approved sample(s) are not analysed, their input excluded by the "
+                           "campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + ")")
+            detail += "."
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved", PASS, detail, **evidence)
         return
     report.add(
         "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
         "The grouping the Console will read is not the grouping that was approved. "
         f"{len(differing)} sample(s) carry a different Class, {len(missing)} approved sample(s) "
-        f"are absent from the CSV, {len(extra)} CSV row(s) were never approved.",
+        f"are absent from the CSV, {len(extra)} CSV row(s) were never approved"
+        + (f", and {len(regrouped)} Class(es) were merged or split on the way" if regrouped else "") + ".",
         differing=differing[:10], missing=missing[:10], unapproved=extra[:10],
+        **({"regrouped": regrouped[:10]} if regrouped else {}), **evidence,
     )
 
 
