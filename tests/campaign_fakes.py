@@ -204,7 +204,7 @@ class FakeInteractive:
         })
         self.jobs[job] = {"id": job, "kind": "download", "status": "running", "done_at": self._due(script.ticks), "received": 0,
                           "outcome": outcome, "unit": unit, "manifest_path": str(manifest_path), "maximum_bytes": maximum,
-                          "remote_bytes": script.remote_bytes}
+                          "remote_bytes": script.remote_bytes, "repository": arguments["repository"]}
         self.download_starts.append(unit)
         return {"ok": True, "job_id": job}
 
@@ -266,7 +266,7 @@ class FakeInteractive:
         manifest_path = job["manifest_path"]
         outcome = "ok" if outcome == "shared" else outcome
         if job["kind"] == "download":
-            if outcome == "ok" and self.world.outage:
+            if outcome == "ok" and (self.world.outage or job.get("repository") in self.world.outage_repositories):
                 outcome = "fail"
             if outcome == "ok" and job.get("remote_bytes", 0) > job.get("maximum_bytes", 0) > 0:
                 # The lease streams to maximum_gb and stops (repository_reanalysis: the safety limit).
@@ -634,8 +634,10 @@ class World:
         self.clock = FakeClock()
         self.disk = FakeDisk()
         self.scripts: dict[str, UnitScript] = {}
-        # While set, every download that would have finished fails with HTTP 503: the repository is down.
+        # While set, every download that would have finished fails with HTTP 503: the repository is down. The
+        # repositories named in outage_repositories are down while the others are up.
         self.outage = False
+        self.outage_repositories: set[str] = set()
         # While set, Interactive refuses every campaign preflight: the extractor is not a verified, pinned build.
         self.extractor_refused = False
         self.extractor_sha = SHA["extractor"]

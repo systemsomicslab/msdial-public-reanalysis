@@ -843,6 +843,57 @@ class OutageTests(Base):
         self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["failed"] * 3)
         self.assertEqual(book.events("paused"), [])
 
+    def test_one_download_groups_failing_object_is_not_an_outage(self) -> None:
+        """The units of one download group share objects: a 503 on one shared study archive is that object's
+        failure, however many units it serves, and the units after the group run."""
+        world = self.world(("u1", "u2", "u3", "u4", "u5"))
+        for key in ("u1", "u2", "u3"):
+            world.scripts[key] = fakes.UnitScript(downloads=["fail"])
+        with world.open() as book:
+            book.connection.execute("UPDATE unit SET download_group_id = 'group-0' WHERE unit_key IN ('u1', 'u2', 'u3')")
+        book = self.finish(world, max_iterations=5000)
+        self.assertEqual([(book.unit(key)["state"], book.unit(key)["failures"]) for key in ("u1", "u2", "u3")],
+                         [("failed", 3)] * 3)
+        self.assertEqual([book.unit(key)["state"] for key in ("u4", "u5")], ["done", "done"])
+        self.assertEqual(book.events("paused"), [])
+
+    def test_a_probe_of_another_group_tells_failing_groups_from_an_outage(self) -> None:
+        """Three groups whose own objects keep failing look like an outage once. The recheck tries a unit of
+        another group first; its download finishes, so the three are failures of their own and end, and
+        the campaign reaches its end instead of re-pausing on the same three units for ever."""
+        world = self.world(("u1", "u2", "u3", "u4", "u5"))
+        for key in ("u1", "u2", "u3"):
+            world.scripts[key] = fakes.UnitScript(downloads=["fail"])
+        book = self.finish(world, max_iterations=20000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3", "u4", "u5")], ["failed"] * 3 + ["done"] * 2)
+        self.assertEqual([book.unit(key)["failures"] for key in ("u1", "u2", "u3")], [3, 3, 3])
+        self.assertIsNone(book.runner()["pause_kind"])
+        first_trip = min(row["attempt_id"] for row in book.attempts() if row["outcome"] == "fault")
+        after = [row["unit_key"] for row in book.attempts() if row["attempt_id"] > first_trip and row["step"] == "download_start"]
+        self.assertEqual(after[0], "u4", "the recheck probes a unit of another group first")
+        self.assertEqual(len(book.events("paused")), 1, "failures that outlived u4's download are the groups' own")
+        self.assertEqual([book.unit(key)["interruptions"] for key in ("u1", "u2", "u3")], [0, 0, 1])
+
+    def test_an_outage_of_one_repository_lets_the_others_units_run(self) -> None:
+        units = [f"u{index}" for index in range(1, 9)]
+        world = self.world(units)
+        with world.open() as book:
+            book.connection.execute("UPDATE unit SET repository = 'metabolomics_workbench' WHERE unit_key IN ('u2', 'u4', 'u6', 'u8')")
+        world.outage_repositories = {"metabolights"}
+        with world.open() as book:
+            world.runner(book).run(max_iterations=1200)  # about ten hours
+            states = {key: book.unit(key)["state"] for key in units}
+            self.assertEqual([states[key] for key in ("u2", "u4", "u6", "u8")], ["done"] * 4,
+                             "a download that finishes elsewhere ends no streak of this repository, and runs")
+            self.assertEqual([key for key in units if states[key] == "failed"], [])
+            self.assertLessEqual(sum(book.unit(key)["failures"] for key in units), 2)
+            interruptions = [book.unit(key)["interruptions"] for key in ("u1", "u3", "u5", "u7")]
+            self.assertGreaterEqual(min(interruptions), 1, "every unit of the outage takes its turn")
+            self.assertLessEqual(max(interruptions) - min(interruptions), 1, f"in turn: {interruptions}")
+        world.outage_repositories = set()
+        book = self.finish(world, max_iterations=20000)
+        self.assertEqual({book.unit(key)["state"] for key in units}, {"done"})
+
 
 class BeforeProductionGateTests(Base):
     """A before-production FAIL stops the unit's run only for a check that breaks results (2026-10-01)."""

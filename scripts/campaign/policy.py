@@ -200,9 +200,12 @@ class CampaignPolicy:
     # A stop the unit did not cause (a reboot, a backend restart) is retried without counting against it,
     # this many times; past that it counts, so a unit that always kills its backend still ends.
     max_interruptions: int = 5
-    # Downloads of this many different units failing in a row on the network (a 5xx, a timeout, a reset,
-    # a stall) are a repository outage, not unit failures: the campaign pauses as a fault, and from the
-    # attempt that trips it on nothing counts against a unit. 0 turns the breaker off.
+    # Downloads from one repository failing in a row on the network (a 5xx, a timeout, a reset, a stall) for
+    # this many different download groups are a repository outage, not unit failures: the campaign pauses
+    # as a fault, the unit that tripped it is not counted (it uses an interruption), and at the recheck a
+    # unit of another download group is tried first. Groups, not units: the units of one group share
+    # objects, so their failures are one object's. 0 turns the breaker off. (The name is the field's
+    # since the first manifest.)
     outage_units: int = 3
     prefetch: int = 0
     poll_seconds: float = 30.0

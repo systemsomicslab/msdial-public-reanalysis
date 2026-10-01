@@ -161,6 +161,17 @@ def started_download_job(manifest: Mapping[str, Any] | None, since: datetime, kn
     return job if job and started and started >= since and job not in set(known) else ""
 
 
+def _group(unit: Mapping[str, Any]) -> str:
+    """The unit's download group: the units that share download objects."""
+    return str(unit.get("download_group_id") or unit["unit_key"])
+
+
+def _downloads_next(unit: Mapping[str, Any]) -> bool:
+    """Whether the unit's next call to a repository is its download: it holds no raw data yet."""
+    state = unit["resume_state"] if unit["state"] in ledger_module.WAITING_STATES else unit["state"]
+    return state in ("pending", "class_settled", "handoff_ready")
+
+
 def thermo_raw_inputs(manifest: Mapping[str, Any] | None) -> int:
     """Thermo .raw inputs are files; a Waters .raw is a folder."""
     count = 0
@@ -367,28 +378,41 @@ class Runner:
         disk pauses new work, as the user's rule says. It does not hold back a retry or a split part: those
         already have their raw data on the volume, and their end is what gives the space back. A unit no
         volume could hold holds nothing back.
+
+        While a streak of network failures is long enough to trip the outage breaker, a unit whose next
+        step is a download from one of the streak's groups comes last: a unit of another group is the probe
+        that tells an outage, which fails it too, from those groups' own objects failing, which it does
+        not. Among them the one tried longest ago goes first, so an outage that lasts uses every unit's
+        interruptions in turn rather than one unit's.
         """
         now = self.now()
         held_back = False
+        suspected = self._suspected_outage()
+        last: dict[str, Any] | None = None
         for unit in self.ledger.units(IDLE):
             state = unit["state"]
+            candidate = False
             if state == "pending":
-                if not held_back:
-                    return unit
+                candidate = not held_back
             elif state == "queued":
-                return unit
+                candidate = True
             elif state == "waiting_retry":
                 due = policy.parse_iso(unit["next_attempt_at"])
-                if due is None or due <= now:
-                    return unit
+                candidate = due is None or due <= now
             elif state == "deferred_disk":
                 verdict = self._disk_verdict(unit)
                 if verdict.never_fits:
                     continue
-                if verdict.admit:
-                    return unit
-                held_back = True
-        return None
+                candidate = verdict.admit
+                held_back = held_back or not verdict.admit
+            if not candidate:
+                continue
+            if suspected and _downloads_next(unit) and (unit["repository"], _group(unit)) in suspected:
+                if last is None or str(unit["next_attempt_at"] or "") < str(last["next_attempt_at"] or ""):
+                    last = unit
+                continue
+            return unit
+        return last
 
     def _waiting_for_disk(self) -> bool:
         """Whether a unit still waits for space: deferred for it, or about to be looked at (handoff_ready),
@@ -892,43 +916,83 @@ class Runner:
         self, unit: dict[str, Any], *, result: dict[str, Any], outcome: str = "failed",
         attempt_id: int | None = None, job_id: str | None = None,
     ) -> bool:
-        """A download that failed: the unit's failure, unless it completes a repository outage."""
+        """A download that failed: the unit's failure, unless it completes a repository outage.
+
+        The unit that trips the breaker leaves the hand uncounted, using an interruption, until the fault
+        recheck, which tries a unit of another download group first (_next_candidate). So a group whose own
+        objects keep failing cannot hold the campaign: the probe's success ends the streak, and the group's
+        next failures count. Past its interruptions a unit's failure counts here too, so even a unit that
+        meets an outage at every recheck ends.
+        """
         if policy.classify_result(result) == policy.FAILED and policy.network_failure(result, outcome):
             result = {**result, "network": True}
-            streak = self._outage_streak(unit["unit_key"])
-            if self.policy.outage_units and len(streak) >= self.policy.outage_units:
-                detail = self.redact({**result, "outage_units": sorted(streak), **({"job_id": job_id} if job_id else {})})
+            groups = self._outage_streaks().get(unit["repository"], set()) | {_group(unit)}
+            if (
+                self.policy.outage_units and len(groups) >= self.policy.outage_units
+                and not policy.interruption_counts(int(unit["interruptions"]), self.policy)
+            ):
+                detail = self.redact({**result, "outage_groups": sorted(groups), **({"job_id": job_id} if job_id else {})})
+                due = self.now() + timedelta(seconds=float(self.policy.fault_recheck_seconds))
                 self._move(
-                    unit, "handoff_ready", detail={"outage": True},
+                    unit, "waiting_retry", resume_state="handoff_ready", next_attempt_at=policy.iso(due),
+                    interruptions=int(unit["interruptions"]) + 1, detail={"outage": True},
                     **({"close_attempt": (attempt_id, "fault", False, detail)} if attempt_id is not None
                        else {"new_attempt": {"step": "download", "outcome": "fault", "counted": False, "detail": detail}}),
                 )
                 self._pause(
                     "fault",
-                    f"Downloads of {len(streak)} different units failed on the network in a row (last {unit['unit_key']}): "
-                    "a repository outage, not unit failures. The download is tried again at the fault recheck, uncounted.",
+                    f"Downloads from {unit['repository']} failed on the network for {len(groups)} different download "
+                    f"groups in a row (last unit {unit['unit_key']}): a repository outage, not unit failures. At the "
+                    "fault recheck a unit of another download group is tried first; this one waits, uncounted.",
                 )
                 return True
         self._fail(unit, step="download", result=result, retry_state="handoff_ready", attempt_id=attempt_id,
                    outcome=outcome, job_id=job_id)
         return True
 
-    def _outage_streak(self, unit_key: str) -> set[str]:
-        """The units whose downloads failed on the network since the last download that finished, this one
-        included. A failure of any other kind ends the run: bytes arrived, so the network worked."""
-        units = {unit_key}
+    def _outage_streaks(self) -> dict[str, set[str]]:
+        """For each repository, the download groups whose downloads failed on the network since its last
+        download that finished. A failure of any other kind ends that repository's run: bytes arrived, so
+        its server worked. Another repository's downloads say nothing about this one's server.
+
+        A group that failed on the network before that download too, and has not downloaded since, is left
+        out: its failure outlived the server's working, so it is the group's own, and it does not make the
+        next run look like an outage (the probe's verdict, _next_candidate, stands)."""
+        units = {unit["unit_key"]: unit for unit in self.ledger.units()}
+        streaks: dict[str, set[str]] = {}
+        persistent: dict[str, set[str]] = {}
+        recovered: dict[str, set[str]] = {}
+        ended: set[str] = set()
         for row in self.ledger.recent_attempts(("download", "download_start")):
-            outcome = row["outcome"]
+            unit = units.get(row["unit_key"])
+            if unit is None:
+                continue
+            repository, group, outcome = unit["repository"], _group(unit), row["outcome"]
             if outcome == "ok":
                 if row["step"] == "download":
-                    break
+                    ended.add(repository)
+                    recovered.setdefault(repository, set()).add(group)
                 continue
             if outcome not in ("failed", "stalled", "fault"):
                 continue
-            if not _loads(row["detail_json"]).get("network"):
-                break
-            units.add(row["unit_key"])
-        return units
+            network = bool(_loads(row["detail_json"]).get("network"))
+            if repository not in ended:
+                if network:
+                    streaks.setdefault(repository, set()).add(group)
+                else:
+                    ended.add(repository)
+            elif network and group not in recovered.get(repository, set()):
+                persistent.setdefault(repository, set()).add(group)
+        return {repository: groups - persistent.get(repository, set()) for repository, groups in streaks.items()}
+
+    def _suspected_outage(self) -> set[tuple[str, str]]:
+        """(repository, download group) of every streak long enough to trip the breaker."""
+        if not self.policy.outage_units:
+            return set()
+        return {
+            (repository, group) for repository, groups in self._outage_streaks().items()
+            if len(groups) >= self.policy.outage_units for group in groups
+        }
 
     def _cancel(self, unit: Mapping[str, Any], job_id: str | None, reason: str) -> None:
         """Stop a job, with why recorded first: a resumed runner reads the reason from the record, and a
@@ -994,7 +1058,7 @@ class Runner:
         raw = str(manifest.get("raw_directory") or "")
         size = self.ports.disk.tree_bytes(raw) if raw else 0
         self._progress.pop(unit["download_job_id"] or "", None)
-        # A download that finished, which ends a run of network failures (_outage_streak).
+        # A download that finished, which ends its repository's run of network failures (_outage_streaks).
         finished = {"step": "download", "outcome": "ok", "counted": False,
                     "detail": {"job_id": unit["download_job_id"], "bytes": size}}
         if self._cancel_reason(unit["download_job_id"] or "") == "skip":
