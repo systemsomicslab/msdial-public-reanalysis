@@ -5798,23 +5798,42 @@ def _store_claim_file_name(unit_id: str) -> str:
     return f"_u_{hashlib.sha256(unit_id.encode('utf-8')).hexdigest()[:24]}.json"
 
 
-def _store_claims(store: Path, unit_id: str) -> "dict[str, int] | None":
-    """How many of the unit's claims in the accession store are in each state; None without a store."""
+def _store_claims(store: Path, unit_id: str) -> "list[dict] | None":
+    """The unit's claims in the accession store, one that cannot be read as {"state": "unreadable"};
+    None without a store."""
     claims = store / "claims"
     if not unit_id or not claims.is_dir():
         return None
     name = _store_claim_file_name(unit_id)
-    counts: Counter = Counter()
+    found: list[dict] = []
     for directory in sorted(claims.iterdir()):
         path = directory / name
         if not path.is_file():
             continue
         record, _ = _read_json(path)
         if record is None or str(record.get("unit_id") or "") != unit_id:
-            counts["unreadable"] += 1
+            found.append({"state": "unreadable"})
             continue
-        counts[str(record.get("state") or "unrecorded")] += 1
-    return dict(counts)
+        found.append(record)
+    return found
+
+
+def _claim_opened_after(claim: dict, deleted_at: object) -> bool:
+    """Whether a store claim was opened after the deletion recorded at `deleted_at`: a new consumer's.
+
+    download_store.claim stamps claimed_at whenever it opens a claim, a released one it reopens included,
+    and keeps the claim's earlier life in history; a record without claimed_at is dated by the last
+    release it reopened. A deletion with no recorded time orders nothing.
+    """
+    deleted = _instant(deleted_at) if deleted_at else None
+    if deleted is None:
+        return False
+    opened = _instant(claim.get("claimed_at")) if claim.get("claimed_at") else None
+    if opened is None:
+        released = [_instant(item.get("released_at")) for item in claim.get("history") or []
+                    if isinstance(item, dict) and item.get("released_at")]
+        opened = max((item for item in released if item is not None), default=None)
+    return opened is not None and opened > deleted
 
 
 def _deletion_crossings(*records: "dict | None") -> list[dict]:
@@ -5837,20 +5856,23 @@ def _campaign_boundaries(*records: "dict | None") -> list[str]:
     return sorted(found)
 
 
-def _recorded_deletion(provenance: dict, owner: dict) -> "tuple[str, str]":
-    """(kind, where) of the deletion of the tree the unit reads, as its records state it, or ("", "")."""
+def _recorded_deletion(provenance: dict, owner: dict) -> "tuple[str, str, str]":
+    """(kind, where, at) of the deletion of the tree the unit reads, as its records state it, or ("", "", "").
+
+    `at` is the time the record gives, "" when it gives none.
+    """
     for record, whose in ((provenance, "the unit's"), (owner, "the raw owner's")):
         if whose == "the raw owner's" and record is provenance:
             break
         status = str(record.get("status") or "")
-        if status == "raw_cleaned":
-            return "raw_cleaned", f"{whose} status raw_cleaned ({record.get('raw_cleaned_at') or 'no time recorded'})"
-        if status == "discarded":
-            return "discarded", f"{whose} status discarded ({record.get('discarded_at') or 'no time recorded'})"
+        if status in ("raw_cleaned", "discarded"):
+            at = str(record.get(f"{status}_at") or "")
+            return status, f"{whose} status {status} ({at or 'no time recorded'})", at
     release = owner.get(SPLIT_RELEASE)
     if isinstance(release, dict) and str(release.get("state") or "") == SPLIT_RELEASE_DELETED:
-        return "split_release", f"the split parent's raw_release ({release.get('deleted_at') or 'no time recorded'})"
-    return "", ""
+        at = str(release.get("deleted_at") or "")
+        return "split_release", f"the split parent's raw_release ({at or 'no time recorded'})", at
+    return "", "", ""
 
 
 def _release_parts(release: object) -> "list[str] | None":
@@ -5985,14 +6007,15 @@ def check_retention_policy_was_acted_on(
     part = isinstance(provenance.get("split_from"), dict)
     unit_id = str((provenance.get("project") or {}).get("analysis_unit_id") or "")
     owner_id = str((owner.get("project") or {}).get("analysis_unit_id") or "") if part else unit_id
-    deletion, deleted_where = _recorded_deletion(provenance, owner)
+    deletion, deleted_where, deleted_at = _recorded_deletion(provenance, owner)
     crossings = _deletion_crossings(provenance, owner if part else None)
     release = owner.get(SPLIT_RELEASE)
     store_claims = _store_claims(workspace.parent / STORE_DIRECTORY, owner_id)
     evidence = {
         "policy": policy, "raw_present": present, "status": status, "recorded_deletion": deletion,
         "deletion_approvals": sorted({str(item.get("approval_id") or "") for item in crossings}),
-        "store_claims": store_claims,
+        "store_claims": None if store_claims is None else dict(Counter(
+            str(item.get("state") or "unrecorded") for item in store_claims)),
     }
     notes: list[str] = []
     # A release that names its parts and leaves this one out went without this part's state.
@@ -6123,10 +6146,15 @@ def check_retention_policy_was_acted_on(
         verdict(WARN, f"Policy is 'keep' and the raw tree was deleted ({deleted_where}) on {authority}: the "
                       "deletion was authorized, and it is not what the retention decision recorded.")
         return
-    live = sum((store_claims or {}).get(state, 0) for state in STORE_LIVE_CLAIM_STATES)
-    if live:
-        notes.append(f"{live} of the unit's claims in the accession store are still live, so the store keeps "
-                     "the objects this tree linked to until they are released.")
+    # A claim opened after the deletion is a new consumer's, such as a re-run's pre-claim, which reopens the
+    # released claim; only one opened before it is left over from the tree that went.
+    live = [item for item in store_claims or [] if item.get("state") in STORE_LIVE_CLAIM_STATES]
+    reopened = sum(1 for item in live if _claim_opened_after(item, deleted_at))
+    if reopened:
+        evidence["store_claims_opened_after_deletion"] = reopened
+    if len(live) > reopened:
+        notes.append(f"{len(live) - reopened} of the unit's claims in the accession store are still live, so the store "
+                     "keeps the objects this tree linked to until they are released.")
     verdict(PASS, f"The raw tree was deleted ({deleted_where}) under {authority}: {why}.")
 
 

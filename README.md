@@ -150,15 +150,19 @@ checks that judge each stage under `progress` and `checks_by_stage`.
 reads an accession's download store (`<repository>\<accession>\_dl`, where each
 repository object is held once and linked into every unit that uses it) beside
 the unit manifests, and changes nothing. It refuses (exit 2) an orphan object, a
-claim still live for a unit whose raw tree is released, an object no unit ever
-claimed, which the store's collection can never delete, and a tombstone whose
-bytes remain or that names no approval covering boundary 5. It lists every
-tombstone, and warns about abandoned partial transfers, linked files modified in
-place and locks whose heartbeat has lapsed. Exit 3 means no store was found.
-It may run beside a campaign: an object the store holds a fresh lock on, or one
-that changed as it was read, is reported as `object_busy` for information and
-left for a later run, and its output escapes what the console code page cannot
-print rather than ending without a verdict.
+claim still live for a unit whose raw tree is released and opened before that
+deletion (one opened after it, such as a re-run's pre-claim, is a new consumer,
+listed for information), an object no unit ever claimed, which the store's
+collection can never delete, and a tombstone whose bytes remain or that names no
+approval covering boundary 5. It lists every tombstone, and warns about
+abandoned partial transfers, linked files modified in place and locks whose
+heartbeat has lapsed. Exit 3 means no store was found. It may run beside a
+campaign: an object the store holds a fresh lock on, or one that changed as it
+was read, is reported as `object_busy` for information and left for a later run,
+and so is a released unit's claim whose release is under way (its lock fresh,
+released as it was read, or a deletion recorded within a lock's heartbeat
+window), and its output escapes what the console code page cannot print rather
+than ending without a verdict.
 
 ## Codex pre-audit
 

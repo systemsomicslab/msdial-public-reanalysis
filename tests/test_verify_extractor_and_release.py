@@ -28,6 +28,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -624,6 +625,27 @@ class RetentionUnderACampaignTests(unittest.TestCase):
         self.assertEqual(verifier.PASS, check.status, check.detail)
         self.assertIn("who gave it is not recorded", check.evidence["authority"])
 
+    def test_a_claim_opened_after_the_deletion_is_not_left_over(self) -> None:
+        """A re-run's pre-claim reopens the released claim; it is a new consumer, not the tree that went."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = _unit(root, status="raw_cleaned", raw_cleaned_at="2026-09-01T02:00:00+00:00",
+                              campaign_authorizations=[_crossing(5)], outputs=True, **VALIDATED)
+            shutil.rmtree(workspace / "raw")
+            builder = StoreBuilder(root)
+            builder.object("a" * 64, "s0.mzML", url="https://x/s0.mzML")
+            builder.claim("https://x/s0.mzML", "unit", "pending", claimed_at="2026-09-02T00:00:00+00:00",
+                          history=[{"state": "released", "released_at": "2026-09-01T03:00:00+00:00"}])
+            reopened = _ret1(workspace)
+            builder.claim("https://x/s0.mzML", "unit", "materialized", object_id="a" * 16,
+                          claimed_at="2026-09-01T00:00:00+00:00")
+            left_over = _ret1(workspace)
+
+        self.assertEqual(verifier.PASS, reopened.status, reopened.detail)
+        self.assertEqual(1, reopened.evidence["store_claims_opened_after_deletion"])
+        self.assertEqual(verifier.WARN, left_over.status, left_over.detail)
+        self.assertIn("still live", left_over.detail)
+
 
 class ReleasedSplitParentTests(unittest.TestCase):
     """The parent's raw tree is released once every part has ended, recorded as its raw_release."""
@@ -758,11 +780,12 @@ class StoreBuilder:
             self.claim(url, unit, claim_state, object_id=object_id)
         return directory
 
-    def claim(self, url: str, unit: str, state: str, *, object_id: str | None = None) -> Path:
+    def claim(self, url: str, unit: str, state: str, *, object_id: str | None = None,
+              claimed_at: str = "2026-10-01T00:00:00+00:00", history: list | None = None) -> Path:
         key = self.key(url)
         path = self.root / "claims" / key / f"{unit}.json"
         record = {"schema": "msdial-download-store-claim.v1", "url": url, "url_key": key, "unit_id": unit,
-                  "state": state, "object_id": object_id, "claimed_at": "2026-10-01T00:00:00+00:00", "history": []}
+                  "state": state, "object_id": object_id, "claimed_at": claimed_at, "history": history or []}
         if state == "released":
             record.update(release_reason="raw_cleaned", released_at="2026-10-01T06:00:00+00:00")
         _write(path, record)
@@ -865,6 +888,37 @@ class DownloadStoreCheckerTests(unittest.TestCase):
 
             self.assertEqual(2, code)
             self.assertEqual(["live_claim_on_terminal_unit"], _kinds(result, "fail"))
+
+    def test_a_claim_opened_after_the_deletion_is_a_new_consumer(self) -> None:
+        """download_store.claim reopens a released claim, as a batch pre-claim for a re-run of the unit does."""
+        released = [{"state": "released", "object_id": "4" * 16, "release_reason": "raw_cleaned",
+                     "released_at": "2026-09-01T03:00:00+00:00"}]
+        for status in ("raw_cleaned", "discarded"):
+            for name, claimed_at in (("claimed after", "2026-09-02T00:00:00+00:00"),
+                                     ("dated by the release it reopened", "")):
+                with self.subTest(status=status, record=name), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    _unit(root, "unit-a", raw=False, status=status, **{f"{status}_at": "2026-09-01T02:00:00+00:00"})
+                    builder = StoreBuilder(root)
+                    builder.object("4" * 64, "a.zip", url="https://x/a.zip")
+                    builder.claim("https://x/a.zip", "unit-a", "pending", claimed_at=claimed_at, history=released)
+                    code, result = _run_store_checker(root)
+
+                self.assertEqual(0, code, result)
+                self.assertEqual(["claimed_after_release"], _kinds(result, "info"))
+
+    def test_a_claim_opened_before_the_deletion_is_left_over(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _unit(root, "unit-a", raw=False, status="raw_cleaned", raw_cleaned_at="2026-09-01T02:00:00+00:00")
+            builder = StoreBuilder(root)
+            builder.object("4" * 64, "a.zip", url="https://x/a.zip")
+            builder.claim("https://x/a.zip", "unit-a", "materialized", object_id="4" * 16,
+                          claimed_at="2026-09-01T00:00:00+00:00")
+            code, result = _run_store_checker(root)
+
+        self.assertEqual(2, code)
+        self.assertEqual(["live_claim_on_terminal_unit"], _kinds(result, "fail"))
 
     def test_a_released_split_parent_releases_its_claims_too(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1106,6 +1160,53 @@ class StoreCheckerWhileACampaignRunsTests(unittest.TestCase):
                     return ""
 
             result = FetchEndsNow(builder.root).run()
+
+        self.assertEqual([], [item["kind"] for item in result["findings"] if item["severity"] == "fail"])
+        self.assertEqual(["object_busy"], [item["kind"] for item in result["findings"] if item["severity"] == "info"])
+
+    def test_a_claim_whose_release_is_under_way_is_busy_not_left_over(self) -> None:
+        """The deletion is recorded first, and then each of the unit's claims is released under c-<key>."""
+        url = "https://x/a.zip"
+        long_ago = "2026-09-01T02:00:00+00:00"
+        just_now = datetime.now(timezone.utc).isoformat()
+        for name, deleted_at, lock_age, severity in (("its c-<key> lock fresh", long_ago, 0.0, "info"),
+                                                     ("deleted seconds ago", just_now, None, "info"),
+                                                     ("long deleted, the lock lapsed", long_ago, 3600.0, "fail")):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _unit(root, "unit-a", raw=False, status="raw_cleaned", raw_cleaned_at=deleted_at)
+                builder = StoreBuilder(root)
+                builder.object("8" * 64, "a.zip", url=url)
+                builder.claim(url, "unit-a", "materialized", object_id="8" * 16, claimed_at="2026-09-01T00:00:00+00:00")
+                if lock_age is not None:
+                    self._lock(builder, "c-" + builder.key(url), age=lock_age)
+                code, result = _run_store_checker(root)
+
+            if severity == "info":
+                self.assertEqual(0, code, result)
+                self.assertEqual(["object_busy"], _kinds(result, "info"))
+                busy = next(item for item in result["stores"][0]["findings"] if item["kind"] == "object_busy")
+                self.assertEqual("live_claim_on_terminal_unit", busy["deferred"])
+            else:
+                self.assertEqual(2, code, result)
+                self.assertIn("live_claim_on_terminal_unit", _kinds(result, "fail"))
+
+    def test_a_claim_released_while_it_was_checked_is_busy(self) -> None:
+        url = "https://x/a.zip"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _unit(root, "unit-a", raw=False, status="raw_cleaned", raw_cleaned_at="2026-09-01T02:00:00+00:00")
+            builder = StoreBuilder(root)
+            builder.object("9" * 64, "a.zip", url=url)
+            builder.claim(url, "unit-a", "materialized", object_id="9" * 16, claimed_at="2026-09-01T00:00:00+00:00")
+
+            class ReleaseEndsNow(store_checker.StoreCheck):
+                def _held(self, names):
+                    # The release wrote the claim between the checker's first reading of it and the lock's.
+                    builder.claim(url, "unit-a", "released", object_id="9" * 16)
+                    return ""
+
+            result = ReleaseEndsNow(builder.root).run()
 
         self.assertEqual([], [item["kind"] for item in result["findings"] if item["severity"] == "fail"])
         self.assertEqual(["object_busy"], [item["kind"] for item in result["findings"] if item["severity"] == "info"])

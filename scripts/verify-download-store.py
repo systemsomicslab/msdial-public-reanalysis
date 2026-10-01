@@ -19,8 +19,10 @@ tombstone. What that rule leaves for a person to look at is what this script fin
 
 - orphan objects: bytes in o/ that no readable record describes, or that no index and no claim reaches;
 - live claims on terminal units: a claim still pending or materialized for a unit whose raw tree is
-  released (raw_cleaned, discarded, or its split parent's raw_release deleted), which keeps the object
-  for ever;
+  released (raw_cleaned, discarded, or its split parent's raw_release deleted), opened before that
+  deletion, which keeps the object for ever. One opened after it is a new consumer's, a re-run's
+  pre-claim say, and is listed for information; so is one whose release is under way (its c-<key> lock
+  fresh, released by the time it is read again, or a deletion recorded within a lock's heartbeat window);
 - objects with no releasing unit: bytes that no claim names at all, which gc keeps for ever, because no
   approval can name the unit they belong to;
 - tombstones: collected objects, each listed; one whose bytes are still there, or that names no approval
@@ -71,6 +73,9 @@ COLLECTED = "collected"
 COLLECTION_INCOMPLETE = "collection_incomplete"
 READY = "ready"
 LOCK_STALE_SECONDS = 600.0
+# A unit's deletion is recorded and then its claims are released; a live claim of a deletion younger than a
+# lock's heartbeat window may be that release still under way.
+RELEASE_GRACE_SECONDS = LOCK_STALE_SECONDS
 MEMBERS_HEADER = ("path", "size", "crc", "mtime_ns")
 # members.tsv escapes a backslash, a tab and a line break in a member's path (download_store._escape_tsv).
 _ESCAPED = re.compile(r"\\[\\tnr]")
@@ -226,24 +231,27 @@ class StoreCheck:
 
     # ---- the units the claims name -----------------------------------------------------------------
 
-    def _released(self, unit_id: str) -> "tuple[str, str]":
-        """(state, why) of the unit a claim names: released, unknown (no workspace) or active."""
+    def _released(self, unit_id: str) -> "tuple[str, str, str]":
+        """(state, why, deleted_at) of the unit a claim names: released, unknown (no workspace) or active.
+
+        deleted_at is the time the deletion's record gives, "" when it gives none (the runner's record).
+        """
         workspace = self.accession / unit_id
         manifest, reason = gate._read_json(workspace / "provenance" / "run-manifest.json")
         if manifest is None:
-            return "unknown", reason
+            return "unknown", reason, ""
         if isinstance(manifest.get("split_from"), dict):
             owner, _ = gate._raw_owner_manifest(manifest)
         else:
             owner = manifest
-        kind, where = gate._recorded_deletion(manifest, owner or manifest)
+        kind, where, deleted_at = gate._recorded_deletion(manifest, owner or manifest)
         if kind:
-            return "released", where
+            return "released", where, deleted_at
         record, _ = gate._read_json(workspace / gate.CAMPAIGN_RECORD_FILE)
         if record is not None and record.get("schema") == gate.CAMPAIGN_RECORD_SCHEMA \
                 and str(record.get("raw_disposition") or "") in ("released", "discarded"):
-            return "released", f"the campaign runner's record ({record.get('raw_disposition')})"
-        return "active", str(manifest.get("status") or "")
+            return "released", f"the campaign runner's record ({record.get('raw_disposition')})", ""
+        return "active", str(manifest.get("status") or ""), ""
 
     # ---- the check ---------------------------------------------------------------------------------
 
@@ -408,9 +416,37 @@ class StoreCheck:
                                                  "the store's own file, so a reader that wrote into a linked file "
                                                  "changed every unit's copy.", object_id=object_id, members=changed[:_LISTED])
 
+    def _being_released(self, key: str, unit_id: str, deleted_at: str, where: dict) -> bool:
+        """Whether a live claim of a unit whose tree is released is that release under way, not a leftover.
+
+        The deletion is recorded first, and then each of the unit's claims is released under c-<key>. The
+        lock is looked at after the claim was seen and the claim read again after that, and a deletion
+        recorded within a lock's heartbeat window may not have reached its release yet. True means an INFO
+        was recorded instead.
+        """
+        held = self._held([f"c-{key}"])
+        why = f"lock {held} is fresh" if held else ""
+        if not why:
+            _, fresh = self._records_now([key])
+            if not any(str(item.get("unit_id") or "") == unit_id and item.get("state") in gate.STORE_LIVE_CLAIM_STATES
+                       for item in fresh.get(key, [])):
+                why = "it was released as it was read"
+        if not why:
+            deleted = gate._instant(deleted_at) if deleted_at else None
+            age = time.time() - deleted.timestamp() if deleted is not None else None
+            if age is not None and 0 <= age <= RELEASE_GRACE_SECONDS:
+                why = f"the deletion was recorded {age:.0f} s ago, and its release may not have reached this claim yet"
+        if not why:
+            return False
+        self.add(INFO, "object_busy", f"Unit {unit_id}'s claim on {key} was being released while it was checked ({why}), "
+                                      "so what looked like live_claim_on_terminal_unit is left for a later run to judge.",
+                 deferred="live_claim_on_terminal_unit", lock=held or None, **where)
+        return True
+
     def _claims(self, claims: dict, object_ids: set) -> None:
-        verdicts: dict[str, tuple[str, str]] = {}
+        verdicts: dict[str, tuple[str, str, str]] = {}
         pre_claimed: list[str] = []
+        reopened: list[str] = []
         for key, records in claims.items():
             for record in records:
                 unit_id = str(record.get("unit_id") or "")
@@ -418,14 +454,20 @@ class StoreCheck:
                 if state not in gate.STORE_LIVE_CLAIM_STATES:
                     continue
                 if unit_id not in verdicts:
-                    verdicts[unit_id] = self._released(unit_id) if unit_id else ("unknown", "the claim names no unit")
-                released, why = verdicts[unit_id]
+                    verdicts[unit_id] = (self._released(unit_id) if unit_id
+                                         else ("unknown", "the claim names no unit", ""))
+                released, why, deleted_at = verdicts[unit_id]
                 where = {"url_key": key, "unit_id": unit_id, "object_id": record.get("object_id")}
                 if released == "released":
-                    self.add(FAIL, "live_claim_on_terminal_unit",
-                             f"Unit {unit_id}'s claim on {record.get('url') or key} is still {state}, and the unit's raw "
-                             f"tree is released ({why}): the store keeps the object for a consumer that has gone.",
-                             **where)
+                    # A claim opened after the deletion is a new consumer's: download_store.claim reopens a
+                    # released claim, as a batch pre-claim for a re-run of the unit does.
+                    if gate._claim_opened_after(record, deleted_at):
+                        reopened.append(unit_id)
+                    elif not self._being_released(key, unit_id, deleted_at, where):
+                        self.add(FAIL, "live_claim_on_terminal_unit",
+                                 f"Unit {unit_id}'s claim on {record.get('url') or key} is still {state}, and the unit's "
+                                 f"raw tree is released ({why}): the store keeps the object for a consumer that has gone.",
+                                 **where)
                 elif released == "unknown":
                     if state == "materialized":
                         self.add(WARN, "live_claim_without_unit",
@@ -441,6 +483,12 @@ class StoreCheck:
             units = sorted(set(pre_claimed))
             self.add(INFO, "pre_claimed", f"{len(pre_claimed)} pending claim(s) of {len(units)} unit(s) with no workspace "
                                            f"yet ({', '.join(units[:5])}): pre-claims for units that have not started.",
+                     units=units[:_LISTED])
+        if reopened:
+            units = sorted(set(reopened))
+            self.add(INFO, "claimed_after_release",
+                     f"{len(reopened)} live claim(s) of {len(units)} unit(s) whose raw tree is released were opened after "
+                     f"the deletion ({', '.join(units[:5])}): new consumers, such as a re-run's pre-claim, not leftovers.",
                      units=units[:_LISTED])
 
     def _partials(self, claims: dict) -> None:
