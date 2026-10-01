@@ -343,6 +343,47 @@ class InteractiveContractTests(unittest.TestCase):
                                           unit_id="u1")
                 self.assertTrue(result["deleted"], result)
 
+    def test_a_failed_leases_record_tells_a_short_disk_from_the_network(self) -> None:
+        """The download_failure a lease writes into the unit manifest as it fails (_record_download_failure)
+        is what the machine adds to a failed job's detail (Runner._lease_failure, only for that job's lease)
+        and what the policy reads: a volume that ran short while an archive expanded is a short disk with the
+        expansion it declared, a stalled or lost transfer is the network's. The job's own text, str(error),
+        says the same for the backend's job record, which carries nothing else."""
+        from types import SimpleNamespace
+
+        from campaign import machine
+        from msdial_app import archives
+
+        port = ports.InteractivePort(port=8766)
+        reader = SimpleNamespace(_manifest=lambda unit: port.read_manifest(unit["manifest_path"]))
+        short = archives.ArchiveError(
+            "insufficient_disk_space", "S.zip expands to 5000 bytes; 900 are free and 100 are held in reserve.",
+            detail={"declared_bytes": 5000, "free_bytes": 900},
+        )
+        cases = (
+            (short, "extract", 5000, False),
+            (archives.ArchiveError("insufficient_disk_space", "Free space fell below the 100-byte reserve while S.zip expanded."),
+             "extract", 0, False),
+            (self.rr.download_interruption(TimeoutError("timed out"), 300), "fetch", None, True),
+            (self.rr.download_interruption(ConnectionResetError(10054, "reset by peer"), 300), "fetch", None, True),
+            (archives.ArchiveError("archive_member_escapes", "S.zip names a member outside its folder."), "extract", None, False),
+        )
+        for error, stage, expands, network in cases:
+            with self.subTest(error=str(error)), tempfile.TemporaryDirectory() as directory:
+                manifest_path = Path(directory) / "run-manifest.json"
+                lease = {"status": "downloading", "project": {"files": []}, "lease_owner": self.rr._new_lease_owner("dl1")}
+                self.rr._record_download_failure(manifest_path, lease, [], error, stage=stage)
+                unit = {"manifest_path": str(manifest_path)}
+                failure = machine.Runner._lease_failure(reader, unit, "dl1")
+                self.assertEqual(failure["error_type"], type(error).__name__)
+                self.assertEqual(machine.Runner._lease_failure(reader, unit, "dl2"), {}, "another job's lease")
+                detail = {"job_id": "dl1", "status": "failed", "error": str(error), "stop_reason": None, "failure": failure}
+                self.assertEqual(policy.extraction_disk_short(detail), expands)
+                self.assertEqual(policy.network_failure(detail), network)
+                job_only = {"job_id": "dl1", "status": "failed", "error": str(error), "stop_reason": None}
+                self.assertEqual(policy.network_failure(job_only), network)
+                self.assertEqual(policy.extraction_disk_short(job_only) is None, expands is None)
+
     def test_the_default_extractor_is_the_newest_built_pin(self) -> None:
         import msdial_app
         from msdial_app import raw_metadata_extractor as extractor
