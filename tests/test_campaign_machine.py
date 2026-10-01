@@ -635,6 +635,94 @@ class HeldRawTests(Base):
         self.assertIn("cleanup", names)
         self.assertNotIn("discard", names)
 
+    def test_held_raw_data_go_once_interactives_discard_accepts_them(self) -> None:
+        """Plan item 14 lands: Interactive's discard now accepts a failed run that left an mzTab-M. The next
+        runner start looks at the held raw data again and deletes them; the unit stays failed."""
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(runs=["invalid", "invalid", "invalid"])
+        world.run()
+        world.interactive.discard_blockers = lambda manifest: []
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["raw_disposition"]), ("failed", 3, "discarded"))
+        self.assertFalse((Path(unit["workspace"]) / "raw").exists())
+        self.assertEqual(self.boundaries(book, "u1")[-1], "5")
+        self.assertTrue((Path(unit["workspace"]) / "output" / "result.mztab").is_file(), "the output is never touched")
+        record = json.loads((Path(unit["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["state"], record["raw_disposition"]), ("failed", "discarded"))
+        self.assertEqual(machine.summary(book)["raw_held"]["units"], 0)
+        self.assertEqual(world.interactive.console_starts.count(("u1", "run")), 3, "not run again")
+
+    def test_a_hold_that_clears_is_released_at_the_periodic_recheck(self) -> None:
+        world = self.world(("u1", "u2"), policy_values={"prefetch": 1, "held_recheck_seconds": 3600.0})
+        world.scripts["u1"] = fakes.UnitScript(cleanup="blocked")  # a finalisation hold that keeps refusing
+        world.scripts["u2"] = fakes.UnitScript(ticks=300)  # u2 runs for hours after u1 has ended
+        with world.open() as book:
+            runner = world.runner(book)
+            self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "done", limit=2000)
+            self.assertEqual(book.unit("u1")["raw_disposition"], "held")
+            world.scripts["u1"].cleanup = "ok"  # the hold clears
+            runner.run(until_idle=True, max_iterations=5000)
+            unit = book.unit("u1")
+            self.assertEqual((unit["state"], unit["raw_disposition"]), ("done", "released"))
+            released = [row["at"] for row in book.transitions("u1") if row["boundary"] == "5"][-1]
+            u2_done = [row["at"] for row in book.transitions("u2") if row["to_state"] == "done"][0]
+            self.assertLess(released, u2_done, "by the runner that ran on, not only at a start")
+
+    def test_an_operator_releases_held_raw_data_without_running_the_unit_again(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(runs=["invalid", "invalid", "invalid"])
+        with world.open() as book:
+            runner = world.runner(book)
+            runner.run(until_idle=True, max_iterations=2000)
+            self.assertEqual(book.unit("u1")["raw_disposition"], "held")
+            book.add_request("release_held", "u1", "item 14 is in", "Test Person", runner.stamp())
+            book.add_request("release_held", "u2", "nothing there", "Test Person", runner.stamp())
+            runner.iterate()
+            first = [row["handled_detail"] for row in book.connection.execute("SELECT handled_detail FROM request ORDER BY request_id")]
+            self.assertTrue(first[0].startswith("still held"), first)
+            self.assertTrue(first[1].startswith("nothing held"), first)
+            world.interactive.discard_blockers = lambda manifest: []
+            book.add_request("release_held", "u1", "item 14 is in", "Test Person", runner.stamp())
+            runner.iterate()
+            detail = book.connection.execute("SELECT handled_detail FROM request ORDER BY request_id DESC").fetchone()[0]
+            self.assertTrue(detail.startswith("released (discarded)"), detail)
+            unit = book.unit("u1")
+            self.assertEqual((unit["state"], unit["raw_disposition"]), ("failed", "discarded"))
+            self.assertEqual((world.interactive.download_starts.count("u1"), world.interactive.console_starts.count(("u1", "run"))),
+                             (1, 3))
+
+    def test_a_split_parent_held_for_want_of_a_release_is_released_once_interactive_has_one(self) -> None:
+        world = self.world(("u1",))
+        world.scripts["u1"] = fakes.UnitScript(disposition="split")
+        world.run()
+        world.interactive.split_release_supported = True
+        book = self.finish(world)
+        parent = book.unit("u1")
+        self.assertEqual((parent["state"], parent["raw_disposition"]), ("split_done", "released"))
+        self.assertEqual(self.boundaries(book, "u1")[-1], "5")
+
+    def test_held_raw_data_no_longer_fill_the_disk_for_good(self) -> None:
+        """Each raw tree takes 510 GB of a volume with a 1 TB reserve: u1's held raw data leave u2 no room.
+        Once Interactive can delete them, they go, and u2 and u3 run."""
+        world = self.world(("u1", "u2", "u3"))
+
+        class RawDisk(fakes.FakeDisk):
+            def usage(self_inner, _path):
+                present = [path for path in world.workspace_root.rglob("raw") if path.is_dir() and any(path.rglob("*.mzML"))]
+                return 1520 * GB - 510 * GB * len(present), 20 * TB
+
+        world.disk = RawDisk()
+        world.scripts["u1"] = fakes.UnitScript(runs=["invalid", "invalid", "invalid"])
+        book = self.finish(world, max_iterations=4000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["failed", "deferred_disk", "pending"])
+        self.assertEqual(book.runner()["pause_kind"], "disk")
+        book.close()
+        world.interactive.discard_blockers = lambda manifest: []
+        book = self.finish(world, max_iterations=4000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["failed", "done", "done"])
+        self.assertEqual(book.unit("u1")["raw_disposition"], "discarded")
+
 
 class DiskHandTests(Base):
     def test_a_unit_that_does_not_fit_leaves_the_hand_to_the_retry_that_frees_the_space(self) -> None:

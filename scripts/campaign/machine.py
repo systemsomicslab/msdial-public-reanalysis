@@ -28,8 +28,10 @@ deleted too; a short disk pauses the campaign; a before-production FAIL stops th
 check that breaks results (blocks_run), and the unit then counts as failed, while any other FAIL is
 recorded and the unit runs. Every production attempt is recorded in the Catalog as it ends. Raw data
 the rules delete and Interactive would not are "held", counted apart (summary), never reported as kept
-or deleted. The runner never records a person's reading (boundary 6): READ-1 holding the gate at exit 4
-is a state it stores, and such a unit is reported as "outputs produced", never "completed".
+or deleted, and looked at again when the runner starts, every few hours and at an operator's
+release-held, until Interactive's own deletion takes them. The runner never records a person's reading
+(boundary 6): READ-1 holding the gate at exit 4 is a state it stores, and such a unit is reported as
+"outputs produced", never "completed".
 """
 
 from __future__ import annotations
@@ -217,6 +219,9 @@ class Runner:
         # only after busy_retry_seconds (a kill can wait ten seconds for the process), and recorded once.
         self._orphan_kills: dict[str, datetime] = {}
         self._orphans_recorded: set[tuple[str, bool]] = set()
+        # When this process last looked at the raw data held against the rules: never yet, so a runner that
+        # starts (on an Interactive that may now delete them) looks first.
+        self._held_checked_at: datetime | None = None
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -345,6 +350,7 @@ class Runner:
             progressed |= self._guard(unit)
         if self._paused() in BLOCKING_PAUSES:
             return progressed
+        progressed |= self._held_recheck()
         for unit in self.ledger.units(("split_parent",)):
             progressed |= self._guard(unit)
         for unit in self._in_hand():
@@ -705,6 +711,16 @@ class Runner:
                         end_console_run=self._open_console_end(unit, "skipped"),
                     )
                     detail = "skipped"
+            elif request["action"] == "release_held":
+                # Only the unit's raw data, under boundary 5, through Interactive's own deletion: the unit keeps
+                # how it ended. A retry would run it again from its Class decision.
+                if unit["raw_disposition"] != "held" or state not in ledger_module.TERMINAL_STATES:
+                    detail = f"nothing held: the unit is {state}, its raw data {unit['raw_disposition']}"
+                elif self._pin_check_failed():
+                    detail = "not released: the pinned identities changed since the approval"
+                else:
+                    raw, why = self._release_held(unit)
+                    detail = f"released ({raw}): {why}" if raw in ("released", "discarded") else f"still held: {why}"
             else:
                 if state == "waiting_retry":
                     self._move(unit, "waiting_retry", resume_state=unit["resume_state"], next_attempt_at=self.stamp(),
@@ -1322,35 +1338,12 @@ class Runner:
 
     def _state_split_parent(self, unit: dict[str, Any]) -> bool:
         """The single trigger for a split parent's raw data: once every part has ended."""
-        parts = [item for item in self.ledger.units() if item["parent_unit_key"] == unit["unit_key"]]
+        parts = self._parts(unit)
         if not parts or any(item["state"] not in ledger_module.TERMINAL_STATES for item in parts):
             return False
-        produced = any(item["outputs_produced"] for item in parts)
-        raw, detail, boundary = "kept", "", None
-        if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
-            detail = "the campaign keeps raw data"
-        elif not self._live("5"):
-            detail = "no live approval covers boundary 5"
-        elif produced:
-            result = self.ports.interactive.release_split_parent(
-                manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit)
-            )
-            if result.get("ok") is not False and result.get("deleted"):
-                raw, boundary, detail = "released", "5", "released after its parts' validated outputs"
-            else:
-                raw = "kept" if policy.classify_result(result) == policy.REFUSED else "held"
-                detail = str(result.get("detail") or result.get("reason") or "not released")
-                self._event("split_parent_release_held", {"detail": detail}, unit["unit_key"])
-        else:
-            result = self.ports.interactive.discard(
-                manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
-                unit_id=unit["unit_key"],
-            )
-            if result.get("ok") is not False and result.get("deleted"):
-                raw, boundary, detail = "discarded", "5", "no part produced validated outputs"
-            else:
-                raw = "kept" if policy.classify_result(result) == policy.REFUSED else "held"
-                detail = str(result.get("detail") or result.get("reason") or "not discarded")
+        raw, detail, boundary = self._split_parent_raw(unit, parts)
+        if raw == "held" and any(item["outputs_produced"] for item in parts):
+            self._event("split_parent_release_held", {"detail": detail}, unit["unit_key"])
         reason = "parts_ended"
         self._write_record(unit, "split_done", reason, raw, detail)
         self._move(
@@ -1358,6 +1351,32 @@ class Runner:
             boundary=boundary, detail={"parts": [item["unit_key"] for item in parts]},
         )
         return True
+
+    def _parts(self, unit: Mapping[str, Any]) -> list[dict[str, Any]]:
+        return [item for item in self.ledger.units() if item["parent_unit_key"] == unit["unit_key"]]
+
+    def _split_parent_raw(self, unit: Mapping[str, Any], parts: list[dict[str, Any]]) -> tuple[str, str, str | None]:
+        """(raw disposition, detail, boundary crossed) for a split parent whose parts have all ended."""
+        if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
+            return "kept", "the campaign keeps raw data", None
+        if not self._live("5"):
+            return "kept", "no live approval covers boundary 5", None
+        if any(item["outputs_produced"] for item in parts):
+            result = self.ports.interactive.release_split_parent(
+                manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit)
+            )
+            if result.get("ok") is not False and result.get("deleted"):
+                return "released", "released after its parts' validated outputs", "5"
+            raw = "kept" if policy.classify_result(result) == policy.REFUSED else "held"
+            return raw, str(result.get("detail") or result.get("reason") or "not released"), None
+        result = self.ports.interactive.discard(
+            manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+            unit_id=unit["unit_key"],
+        )
+        if result.get("ok") is not False and result.get("deleted"):
+            return "discarded", "no part produced validated outputs", "5"
+        raw = "kept" if policy.classify_result(result) == policy.REFUSED else "held"
+        return raw, str(result.get("detail") or result.get("reason") or "not discarded"), None
 
     def _state_preflighted(self, unit: dict[str, Any]) -> bool:
         """The analysis CSV and the reviewed metadata, with the approved Class applied (boundary 3)."""
@@ -1787,11 +1806,13 @@ class Runner:
         )
         return True
 
-    def _discard_raw(self, unit: Mapping[str, Any]) -> tuple[str, str, str | None]:
+    def _discard_raw(self, unit: Mapping[str, Any], *, contract_pauses: bool = True) -> tuple[str, str, str | None]:
         """(raw disposition, detail, boundary crossed) for a unit ending without validated output, ("wait", ...)
         to try again, or ("pause", ...) when the campaign paused on a contract. Each deletion is the one
         Interactive performs for the unit's state: its cleanup for outputs that validated, else its discard
-        (InteractivePort.discard: the approval-taking one once plan item 14 lands, the fallback until then)."""
+        (InteractivePort.discard: the approval-taking one once plan item 14 lands, the fallback until then).
+        Without contract_pauses, a deletion this Interactive cannot make leaves the raw data held instead."""
+        ending = unit["pending_terminal"] or unit["state"]
         manifest = self._manifest(unit) if unit["manifest_path"] else None
         if manifest is None:
             return "none", "no raw data were downloaded", None
@@ -1811,10 +1832,12 @@ class Runner:
             # the normal cleanup, and discards only what produced no validated output.
             result = self.ports.interactive.cleanup(manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit))
             if result.get("ok") is not False and result.get("deleted"):
-                return "released", f"deleted: the unit {unit['pending_terminal']}, its outputs validated", "5"
+                return "released", f"deleted: the unit {ending}, its outputs validated", "5"
             if policy.classify_result(result) == policy.REFUSED:
                 return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
             if policy.classify_result(result) == policy.CONTRACT:
+                if not contract_pauses:
+                    return "held", f"not deleted: {result.get('reason')}: {result.get('detail')}", None
                 return self._contract_pause(unit, "raw cleanup", result)
             return "wait", str(result.get("blockers") or result.get("detail") or result.get("reason") or "not deleted"), None
         result = self.ports.interactive.discard(
@@ -1822,10 +1845,12 @@ class Runner:
             unit_id=unit["unit_key"], parent_unit_id=unit["parent_unit_key"] or "",
         )
         if result.get("ok") is not False and result.get("deleted"):
-            return "discarded", f"deleted: the unit {unit['pending_terminal']}", "5"
+            return "discarded", f"deleted: the unit {ending}", "5"
         if policy.classify_result(result) == policy.REFUSED:
             return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
         if policy.classify_result(result) == policy.CONTRACT:
+            if not contract_pauses:
+                return "held", f"not deleted: {result.get('reason')}: {result.get('detail')}", None
             return self._contract_pause(unit, "raw discard", result)
         blockers = [str(code) for code in result.get("blockers") or []]
         detail = str(result.get("detail") or result.get("reason") or "not deleted")
@@ -1841,6 +1866,54 @@ class Runner:
         contract, not the unit's end. The unit stays where it is until an operator resumes."""
         self._pause("contract", f"The {step} of unit {unit['unit_key']}: {result.get('reason')}: {result.get('detail')}")
         return "pause", str(result.get("detail") or ""), None
+
+    def _held_recheck(self) -> bool:
+        """Look again at every unit whose raw data are held, when the runner starts and every
+        held_recheck_seconds after.
+
+        Held raw data are ones the rules delete and Interactive would not: a failed run that left an mzTab-M,
+        a split parent whose release Interactive does not have yet, a deletion a finalisation hold or a
+        Console kept refusing. Their units have ended, and nothing else looks at an ended unit again, so
+        raw data held once stayed for good, counted as used space by the disk guard, even after Interactive
+        could delete them. A runner started on such an Interactive, or a hold that has since cleared, now
+        releases them; their units end as they ended."""
+        now = self.now()
+        if self._held_checked_at is not None and (now - self._held_checked_at).total_seconds() < self.policy.held_recheck_seconds:
+            return False
+        held = [unit for unit in self.ledger.units(ledger_module.TERMINAL_STATES) if unit["raw_disposition"] == "held"]
+        if held and self._pin_check_failed():
+            return False
+        self._held_checked_at = now
+        released = False
+        for unit in held:
+            try:
+                raw, _detail = self._release_held(unit)
+            except sqlite3.Error:
+                raise
+            except Exception as error:  # noqa: BLE001 - an ended unit's raw data are looked at again next time
+                self._event("held_recheck_error", {"error_type": type(error).__name__, "detail": str(error)}, unit["unit_key"])
+                continue
+            released |= raw in ("released", "discarded")
+        return released
+
+    def _release_held(self, unit: Mapping[str, Any]) -> tuple[str, str]:
+        """Delete one ended unit's held raw data under boundary 5, with Interactive's own deletion for its
+        state, and record what became of them without changing how the unit ended."""
+        if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
+            return "held", "the campaign keeps raw data"
+        if not self._live("5"):
+            return "held", "no live approval covers boundary 5"
+        if unit["role"] == "split_parent":
+            raw, detail, boundary = self._split_parent_raw(unit, self._parts(unit))
+        else:
+            raw, detail, boundary = self._discard_raw(unit, contract_pauses=False)
+        if raw not in ("released", "discarded"):
+            return "held", detail
+        current = self._move(unit, unit["state"], raw_disposition=raw, raw_detail=self.redact(f"held, then {detail}"),
+                             boundary=boundary, detail={"held_released": raw})
+        self._write_record(current, current["state"], str(current["terminal_reason"]), raw, str(current["raw_detail"]),
+                           final_exit=current["gate_exit_final"])
+        return raw, detail
 
     def _state_waiting_retry(self, unit: dict[str, Any]) -> bool:
         due = policy.parse_iso(unit["next_attempt_at"])

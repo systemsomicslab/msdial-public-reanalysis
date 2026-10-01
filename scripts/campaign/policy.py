@@ -213,6 +213,9 @@ class CampaignPolicy:
     # A campaign fault (a backend that will not answer, a contract Interactive broke) is looked at again
     # after this long, and the step retried; it pauses again if the fault is still there.
     fault_recheck_seconds: float = 3600.0
+    # Raw data held against the rules (a deletion Interactive refused) are looked at again when the runner
+    # starts and after this long, and deleted once Interactive's deletion accepts them.
+    held_recheck_seconds: float = 6 * 3600.0
     # Stall detection, never an outer limit (review contradiction 10). 0 means no limit.
     console_idle_timeout_seconds: float = 6 * 3600.0
     console_timeout_seconds: float = 0.0

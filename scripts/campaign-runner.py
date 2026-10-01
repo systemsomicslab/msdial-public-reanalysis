@@ -17,7 +17,10 @@ THE ORDER OF USE
         --by NAME --statement "the person's words" --covers 1,3,4,5,split
         only after the person approved that digest in the conversation; the approval id is theirs
     python scripts/campaign-runner.py run --campaign ID [--until-idle] [--max-units N] [--prefetch N]
-    python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|revoke --campaign ID ...
+    python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|release-held|revoke --campaign ID ...
+        release-held --unit KEY deletes, under boundary 5, the raw data an ended unit holds against the rules
+        once Interactive's deletion accepts them (the runner also looks again at every start and every few
+        hours); retry runs the unit again from its Class decision.
 
 THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
 of the approved manifest, naming each library as "library:<file name>" and never by location:
@@ -398,9 +401,10 @@ def command_resume(args: argparse.Namespace) -> int:
 
 
 def command_request(args: argparse.Namespace) -> int:
+    action = getattr(args, "action", None) or args.command
     with _open(args) as book:
-        request_id = book.add_request(args.command, args.unit, args.reason, args.by or "", _now())
-    print(f"Request {request_id} ({args.command} {args.unit}) recorded; the runner acts on it at its next step.")
+        request_id = book.add_request(action, args.unit, args.reason, args.by or "", _now())
+    print(f"Request {request_id} ({action} {args.unit}) recorded; the runner acts on it at its next step.")
     return EXIT_OK
 
 
@@ -512,13 +516,17 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--reason", default="")
         command.set_defaults(handler=handler)
 
-    for name in ("skip", "retry"):
-        command = commands.add_parser(name, help=f"ask the runner to {name} one unit")
+    for name, action, text in (
+        ("skip", "skip", "ask the runner to skip one unit"),
+        ("retry", "retry", "ask the runner to run one unit again from its Class decision"),
+        ("release-held", "release_held", "ask the runner to delete the raw data an ended unit holds, as the rules say"),
+    ):
+        command = commands.add_parser(name, help=text)
         command.add_argument("--campaign", required=True)
         command.add_argument("--unit", required=True)
         command.add_argument("--reason", required=True)
         command.add_argument("--by", default="")
-        command.set_defaults(handler=command_request)
+        command.set_defaults(handler=command_request, action=action)
 
     revoke = commands.add_parser("revoke", help="revoke the campaign's approval")
     revoke.add_argument("--campaign", required=True)

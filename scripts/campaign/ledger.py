@@ -324,7 +324,7 @@ CREATE TABLE IF NOT EXISTS campaign_event(
 CREATE TABLE IF NOT EXISTS request(
     request_id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
-    action TEXT NOT NULL CHECK(action IN ('skip', 'retry')),
+    action TEXT NOT NULL CHECK(action IN ('skip', 'retry', 'release_held')),
     unit_key TEXT NOT NULL REFERENCES unit(unit_key),
     reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
     requested_by TEXT NOT NULL DEFAULT '',

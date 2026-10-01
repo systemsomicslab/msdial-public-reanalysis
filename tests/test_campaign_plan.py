@@ -372,6 +372,20 @@ class PlanTests(unittest.TestCase):
         self.assertIn("schtasks /Create", out)
         self.assertIn("runs none of them", out)
 
+    def test_each_operator_request_is_recorded_under_its_action(self) -> None:
+        for command, action in (("skip", "skip"), ("retry", "retry"), ("release-held", "release_held")):
+            with self.subTest(command=command):
+                args = runner_cli.parser().parse_args([command, "--campaign", "c1", "--unit", "u1", "--reason", "why"])
+                self.assertEqual((args.handler, args.action), (runner_cli.command_request, action))
+        with tempfile.TemporaryDirectory() as directory:
+            book = ledger.Ledger(Path(directory) / "ledger.sqlite", durable=False)
+            self.addCleanup(book.close)
+            book.connection.execute(
+                "INSERT INTO unit(unit_key, catalog_unit_id, repository, accession, order_index, state, state_since, updated_at) "
+                "VALUES ('u1', 'u1', 'r', 'a', 0, 'pending', 'now', 'now')")
+            self.assertGreater(book.add_request("release_held", "u1", "why", "Test", "now"), 0, "the ledger takes it")
+            book.close()
+
     def test_the_scheduled_command_keeps_a_path_with_a_space_one_word(self) -> None:
         line = runner_cli.schedule_task_command(r"C:\Users\Hiroshi Tsugawa\python.exe", r"D:\code\scripts\campaign-runner.py", "c1")
         self.assertIn(r'/TR "\"C:\Users\Hiroshi Tsugawa\python.exe\" \"D:\code\scripts\campaign-runner.py\" run --campaign c1 --until-idle"', line)
