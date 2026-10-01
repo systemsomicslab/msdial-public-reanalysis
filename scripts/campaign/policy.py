@@ -453,12 +453,19 @@ def disk_need(
     has_archive: bool,
     policy: DiskPolicy,
     observations: Iterable[float] = (),
+    held_bytes: int = 0,
 ) -> int:
+    """What the unit takes on the volume in all: its raw bytes times the factor, plus the reserve for a size
+    not known. `held_bytes` is what it already holds there (a partial download kept for a resume): a size
+    known only as a lower bound is at least that."""
     factor = policy.archive_factor if has_archive else policy.file_factor
     measured = observed_factor(observations, policy)
     if measured is not None:
         factor = max(factor, measured)
-    need = int(math.ceil(max(0, int(known_bytes or 0)) * factor))
+    known = max(0, int(known_bytes or 0))
+    if not size_known:
+        known = max(known, int(held_bytes or 0))
+    need = int(math.ceil(known * factor))
     if not size_known:
         need += int(policy.unknown_size_reserve_bytes)
     return need
@@ -475,20 +482,29 @@ class DiskVerdict:
     free: int
     reserve: int
     never_fits: bool
+    # What the unit already holds on the volume, which the free space already lacks.
+    held: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def disk_verdict(need: int, free: int, total: int, policy: DiskPolicy) -> DiskVerdict:
+def disk_verdict(need: int, free: int, total: int, policy: DiskPolicy, held: int = 0) -> DiskVerdict:
+    """Whether a unit that takes `need` bytes in all, `held` of them already on the volume, fits now.
+
+    Its own partial download is credited: the free space already lacks those bytes, and asking for the
+    whole need on top of them deferred the retry of a unit that fitted, and every pending unit behind it,
+    for good. Whether it could ever fit is its whole need against the volume."""
     reserve = disk_reserve(total, policy)
+    held = max(0, int(held or 0))
     return DiskVerdict(
-        admit=free - reserve >= need,
+        admit=free - reserve >= max(0, need - held),
         need=need,
         free=free,
         reserve=reserve,
         # Physics, not a size policy: even an empty volume could not hold it.
         never_fits=need > max(0, total - reserve),
+        held=held,
     )
 
 

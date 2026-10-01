@@ -306,14 +306,15 @@ class Runner:
         return summary(self.ledger)
 
     def idle(self) -> bool:
-        """Every unit has ended, or waits on a disk that could never hold it."""
+        """Every unit has ended, or waits on a disk that could never hold it, or on space that nothing left
+        in the campaign gives back: only units deferred for disk and the pending units held back behind
+        them remain, and none of them can be taken now. The disk pause says why; run --until-idle returns
+        (releasing the Catalog lock), and the campaign goes on once someone frees space and runs it again."""
         for unit in self.ledger.units():
-            if unit["state"] in ledger_module.TERMINAL_STATES:
-                continue
-            if unit["state"] == "deferred_disk" and self._disk_verdict(unit).never_fits:
+            if unit["state"] in ledger_module.TERMINAL_STATES or unit["state"] in ("deferred_disk", "pending"):
                 continue
             return False
-        return True
+        return self._next_candidate() is None
 
     def _sleep_seconds(self) -> float:
         wait = float(self.policy.poll_seconds)
@@ -762,12 +763,21 @@ class Runner:
         return values
 
     def _disk_verdict(self, unit: Mapping[str, Any]) -> policy.DiskVerdict:
+        held = self._held_bytes(unit)
         need = policy.disk_need(
             int(unit["known_bytes"] or 0), bool(unit["size_known"]), bool(unit["has_archive"]),
-            self.policy.disk, self._observations(),
+            self.policy.disk, self._observations(), held_bytes=held,
         )
         free, total = self.ports.disk.usage(self.campaign["workspace_root"])
-        return policy.disk_verdict(need, free, total, self.policy.disk)
+        return policy.disk_verdict(need, free, total, self.policy.disk, held=held)
+
+    def _held_bytes(self, unit: Mapping[str, Any]) -> int:
+        """What the unit already has on the volume before its download: its own raw tree, the partial files a
+        failed or cancelled lease keeps for the resume included. A split part's raw data are its parent's."""
+        if unit.get("role") == "split_part" or not unit.get("workspace"):
+            return 0
+        raw = Path(str(unit["workspace"])) / "raw"
+        return int(self.ports.disk.tree_bytes(str(raw))) if raw.is_dir() else 0
 
     # ---- the steps, one per state -----------------------------------------------------------------
 
@@ -836,7 +846,8 @@ class Runner:
         if not verdict.admit:
             # Out of the hand, so a retry that already holds raw data can run and give the space back.
             return self._defer_for_disk(
-                unit, reason=f"Unit {unit['unit_key']} needs {verdict.need} bytes above the reserve; {verdict.free} are free."
+                unit, reason=f"Unit {unit['unit_key']} needs {max(0, verdict.need - verdict.held)} bytes above the reserve "
+                             f"({verdict.need} in all, {verdict.held} already on the volume); {verdict.free} are free."
             )
         if self._paused() == "disk":
             self.ledger.resume(self.stamp(), kinds=["disk"], detail={"unit_key": unit["unit_key"]})
@@ -1089,10 +1100,13 @@ class Runner:
 
     def _download_ended(self, unit: dict[str, Any], status: str, reason: str, detail: dict[str, Any]) -> bool:
         if reason == "disk":
-            # Cancelled because the disk ran short: nothing the unit did. It resumes from its .part file.
+            # Cancelled because the disk ran short: nothing the unit did. It resumes from its .part file. A size
+            # known only as a lower bound is at least what arrived, kept even should the partial file go.
+            held = self._held_bytes(unit)
             return self._defer_for_disk(
                 unit, reason=f"Download of unit {unit['unit_key']} was stopped because free space ran below the floor.",
-                new_attempt={"step": "download", "outcome": "cancelled", "counted": False, "detail": detail},
+                known_bytes=max(int(unit["known_bytes"] or 0), held) if not unit["size_known"] else None,
+                new_attempt={"step": "download", "outcome": "cancelled", "counted": False, "detail": {**detail, "held_bytes": held}},
             )
         if reason == "skip":
             self._move(

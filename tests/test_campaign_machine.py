@@ -23,6 +23,7 @@ import campaign_fakes as fakes  # noqa: E402
 from campaign import ledger, machine, policy, ports  # noqa: E402
 
 GB = 1000**3
+TB = 1000**4
 
 
 class Base(unittest.TestCase):
@@ -707,6 +708,73 @@ class DiskHandTests(Base):
             self.assertEqual(book.unit("u1")["state"], "waiting_retry")
         gaps = sorted((later - earlier).total_seconds() for earlier, later in zip(polls[-200:], polls[-199:]))
         self.assertGreaterEqual(gaps[len(gaps) // 2], 29.0)
+
+    def test_a_retry_is_given_credit_for_the_partial_download_it_holds(self) -> None:
+        """u1 (1.2 TB) fits a 4 TB volume and fails after 1.1 TB arrived, kept for the resume. The retry needs
+        what is still to come, not its whole need on top of the bytes already there."""
+        world = self.world(("u1", "u2", "u3"), known_bytes=int(1.2 * TB))
+        world.disk = PartialDisk(world, free=int(3.5 * TB), total=4 * TB, sizes={"u1": int(1.1 * TB)})
+        world.scripts["u1"] = fakes.UnitScript(downloads=["fail", "ok"])
+        with world.open() as book:
+            book.connection.execute("UPDATE unit SET known_bytes = ? WHERE unit_key IN ('u2', 'u3')", (10 * GB,))
+        book = self.finish(world, max_iterations=5000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["done"] * 3)
+        self.assertEqual((book.unit("u1")["failures"], world.interactive.download_starts.count("u1")), (1, 2))
+        self.assertIsNone(book.runner()["pause_kind"])
+
+    def test_a_unit_stopped_at_the_floor_counts_what_arrived_and_the_campaign_goes_idle(self) -> None:
+        """A download of unknown size outgrows the volume and is stopped at the free-space floor. Its size is
+        at least what arrived; it does not fit beside what fills the volume, nothing left in the campaign
+        frees space, so the disk pause stands and run --until-idle returns. Space freed, it resumes."""
+        world = self.world(("u1", "u2", "u3"), size_known=False, known_bytes=0)
+        world.disk = PartialDisk(world, free=800 * GB, total=4 * TB, sizes={"u1": 750 * GB})
+        world.scripts["u1"] = fakes.UnitScript(downloads=["hold", "ok"])  # bytes keep coming until cancelled
+        with world.open() as book:
+            book.connection.execute("UPDATE unit SET known_bytes = ?, size_known = 1 WHERE unit_key IN ('u2', 'u3')", (5 * GB,))
+            book.connection.commit()
+            runner = world.runner(book)
+            runner.run(until_idle=True, max_iterations=3000)
+            hours = (world.clock.now() - fakes.FakeClock().now()).total_seconds() / 3600
+            unit = book.unit("u1")
+            self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["deferred_disk", "pending", "pending"])
+            self.assertEqual((unit["known_bytes"], unit["failures"]), (750 * GB, 0))
+            verdict = runner._disk_verdict(unit)
+            self.assertEqual((verdict.held, verdict.need), (750 * GB, int(750 * GB * 1.66) + 200 * GB))
+            self.assertEqual(book.runner()["pause_kind"], "disk")
+            self.assertTrue(runner.idle())
+            self.assertLess(hours, 2, "run --until-idle returned")
+        world.disk.free += 2 * TB  # an operator frees space
+        book = self.finish(world, max_iterations=5000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["done"] * 3)
+        self.assertEqual(world.interactive.download_starts.count("u1"), 2)
+
+
+class PartialDisk(fakes.FakeDisk):
+    """A volume on which each named unit's download takes `sizes[unit]` bytes from the start of its lease
+    until its raw tree goes: what arrived, kept in .part files for the resume when the lease fails."""
+
+    def __init__(self, world: fakes.World, free: int, total: int, sizes: dict[str, int]) -> None:
+        super().__init__(free, total)
+        self.world = world
+        self.sizes = sizes
+
+    def _taken(self, unit_key: str) -> int:
+        raw = None
+        for job in self.world.interactive.jobs.values():
+            if job.get("unit") == unit_key and job["kind"] == "download":
+                if job["status"] in ("queued", "running"):
+                    return self.sizes[unit_key]
+                raw = Path(job["manifest_path"]).parent.parent / "raw"
+        return self.sizes[unit_key] if raw is not None and raw.is_dir() else 0
+
+    def usage(self, _path: str) -> tuple[int, int]:
+        return self.free - sum(self._taken(key) for key in self.sizes), self.total
+
+    def tree_bytes(self, path: str) -> int:
+        location = Path(path)
+        if location.name == "raw" and location.parent.name in self.sizes:
+            return self._taken(location.parent.name)
+        return super().tree_bytes(path)
 
 
 class EndStepErrorTests(Base):

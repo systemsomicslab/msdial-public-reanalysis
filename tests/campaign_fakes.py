@@ -268,6 +268,13 @@ class FakeInteractive:
         if job["kind"] == "download":
             if outcome == "ok" and (self.world.outage or job.get("repository") in self.world.outage_repositories):
                 outcome = "fail"
+            partial = Path(manifest_path).parent.parent / "raw" / "data" / "S1.mzML.part"
+            if outcome not in ("ok", "interrupt"):
+                # A lease that fails or is cancelled keeps what arrived for the resume.
+                partial.parent.mkdir(parents=True, exist_ok=True)
+                partial.write_bytes(b"p" * 100)
+            else:
+                partial.unlink(missing_ok=True)
             if outcome == "ok" and job.get("remote_bytes", 0) > job.get("maximum_bytes", 0) > 0:
                 # The lease streams to maximum_gb and stops (repository_reanalysis: the safety limit).
                 error = f"Download exceeded the {job['maximum_bytes']}-byte safety limit."

@@ -163,6 +163,9 @@ class DiskTests(unittest.TestCase):
         rules = policy.DiskPolicy(unknown_size_reserve_bytes=500)
         self.assertEqual(policy.disk_need(0, False, False, rules), 500)
         self.assertEqual(policy.disk_need(1000, False, False, rules), 2160)
+        # A lower bound is at least what has already arrived; a declared size is the size.
+        self.assertEqual(policy.disk_need(0, False, False, rules, held_bytes=1000), 2160)
+        self.assertEqual(policy.disk_need(1000, True, False, rules, held_bytes=5000), 1660)
 
     def test_observed_units_raise_the_factor_never_lower_it(self) -> None:
         rules = policy.DiskPolicy(observed_minimum_units=3)
@@ -177,6 +180,10 @@ class DiskTests(unittest.TestCase):
         self.assertFalse(short.admit)
         self.assertFalse(short.never_fits, "short now is not too big ever")
         self.assertTrue(policy.disk_verdict(901, 1000, 1000, rules).never_fits)
+        # A partial download already on the volume is credited: the free space already lacks it.
+        self.assertTrue(policy.disk_verdict(600, 500, 1000, rules, held=200).admit)
+        self.assertFalse(policy.disk_verdict(600, 500, 1000, rules, held=199).admit)
+        self.assertTrue(policy.disk_verdict(901, 1000, 1000, rules, held=900).never_fits, "its whole need, ever")
         # What the volume could hold above its reserve, whatever is free now: the floor pauses a short disk.
         self.assertEqual(policy.download_bound_gb(1000 * 1000**3, rules), (1000 * 1000**3 - 100) / 1000**3)
         self.assertEqual(policy.download_bound_gb(1000, rules), 1.0)
