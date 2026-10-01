@@ -2328,6 +2328,27 @@ def _exclusion_reasons(*manifests: dict | None) -> dict[str, tuple[str, str]]:
     return reasons
 
 
+def _lease_excluded(manifest: dict | None) -> dict[str, tuple[str, str]]:
+    """The inputs a unit's lease excluded itself, by key: (path, reason).
+
+    Interactive 0.5.18 keeps an mzML whose arrays RawDataHandler cannot decode (unsupported_mzml_encoding)
+    out of the input candidates and lists it in excluded_input_candidates and among input_lineage's
+    excluded rows; the rest of the unit runs without it. It was declared and downloaded, and is no
+    candidate and no CSV row. Both records are the lease's, and each names the same inputs.
+    """
+    manifest = manifest or {}
+    recorded = manifest.get("excluded_input_candidates")
+    sources = [recorded if isinstance(recorded, list) else [], _lineage_rows(manifest, "excluded")]
+    excluded: dict[str, tuple[str, str]] = {}
+    for source in sources:
+        for item in source:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                exclusion = item.get("exclusion") if isinstance(item.get("exclusion"), dict) else {}
+                reason = str(item.get("reason") or exclusion.get("reason") or "")
+                excluded.setdefault(_path_key(item["path"]), (str(item["path"]), reason))
+    return excluded
+
+
 def _not_analysed(provenance: dict, owner: dict, csv_rows: list[dict] | None) -> dict[str, tuple[str, str]]:
     """The raw owner's input candidates a binding campaign disposition excluded and no CSV row opens.
 
@@ -2392,6 +2413,12 @@ def check_analysis_inputs_are_the_inputs(
     Interactive recorded without applying it (applied: false, a unit outside a campaign) excludes
     nothing, as its execution gate reads it.
 
+    An input the lease excluded itself (_lease_excluded: an mzML RawDataHandler cannot decode, Interactive
+    0.5.18) was declared too, and is neither a candidate nor a row, so it is counted beside the candidates
+    as well. Without it a correct unit with one undecodable mzML FAILed here, and INP-1 stops the run: the
+    unit counted as failed and lost its raw data, where the rule is that the file is excluded and the rest
+    of the unit runs.
+
     A split part's project is its parent's with, where the split carries them, only the part's own
     samples' inputs: the parent's declaration is compared with the parent's candidates, a declaration
     of the part's own with the part's candidates, and the part's candidates with its rows. SPL-1 holds
@@ -2440,9 +2467,14 @@ def check_analysis_inputs_are_the_inputs(
     own_excluded = _excluded_inputs(provenance) if split else owner_excluded
     excluded_keys = {_path_key(item) for item in owner_excluded + own_excluded}
     outside = beside(owner_excluded, owner_candidates)
+    # What the lease excluded itself is no candidate either, and is counted once beside them.
+    owner_lease = _lease_excluded(owner)
+    lease_out = beside([path for path, _reason in owner_lease.values()], owner_candidates + outside)
     # A part that carries a declaration of its own samples' inputs: a list other than its parent's.
     own_list = split and own_declared is not None and own_declared != declared
     own_outside = beside(own_excluded, own_candidates) if own_list else []
+    own_lease_out = beside([path for path, _reason in _lease_excluded(provenance).values()],
+                           own_candidates + own_outside) if own_list else []
     # The candidates the CSV leaves out: the disposition found them there and excluded them.
     held = _excluded_candidates(provenance, own_candidates)
     counts = {"analysis_inputs": len(declared or []), "input_candidates": len(own_candidates),
@@ -2455,18 +2487,22 @@ def check_analysis_inputs_are_the_inputs(
         counts["excluded_inputs"] = len(excluded_keys)
     if held:
         counts["excluded input_candidates"] = len(held)
+    if lease_out:
+        counts["lease excluded_input_candidates"] = len(lease_out)
     # A part's own list is its parent's cut to its samples, so a count it carries is the parent's.
     problems = [contradiction] if contradiction else []
-    if declared is not None and len(declared) != len(owner_candidates) + len(outside):
+    if declared is not None and len(declared) != len(owner_candidates) + len(outside) + len(lease_out):
         problems.append(
             f"the Catalog declared {len(declared)} analysis input(s) and the lease found {len(owner_candidates)} "
             "input candidate(s)" + (" in the parent" if split else "")
-            + (f", with {len(outside)} more excluded" if outside else ""))
-    if own_list and len(own_declared) != len(own_candidates) + len(own_outside):
+            + (f", with {len(outside)} more excluded" if outside else "")
+            + (f", and excluded {len(lease_out)} itself" if lease_out else ""))
+    if own_list and len(own_declared) != len(own_candidates) + len(own_outside) + len(own_lease_out):
         problems.append(
             f"the part declares {len(own_declared)} analysis input(s) of its own samples and holds "
             f"{len(own_candidates)} input candidate(s)"
-            + (f", with {len(own_outside)} more excluded" if own_outside else ""))
+            + (f", with {len(own_outside)} more excluded" if own_outside else "")
+            + (f", and its lease excluded {len(own_lease_out)} itself" if own_lease_out else ""))
     if len(own_candidates) - len(held) != len(csv_rows):
         problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
                         + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))
@@ -2477,27 +2513,32 @@ def check_analysis_inputs_are_the_inputs(
         problems.append(f"{len(listed_excluded)} CSV row(s) name an input the campaign disposition excluded "
                         f"({', '.join(listed_excluded[:5])})")
     excluded_names = [Path(item.rstrip("\\/")).name for item in dict.fromkeys(owner_excluded + own_excluded)][:10]
+    lease = {"lease_excluded": [{"input": Path(item.rstrip("\\/")).name, "reason": owner_lease[_path_key(item)][1]}
+                                for item in lease_out[:10]]} if lease_out else {}
     if problems:
         report.add("INP-1", stage, INP1_TITLE, FAIL,
                    "What MS-DIAL will open is not what the Catalog declared it opens: " + "; ".join(problems)
                    + ". A vendor folder read as its member files, or a sample dropped on the way, looks like this.",
-                   counts=counts, excluded=excluded_names)
+                   counts=counts, excluded=excluded_names, **lease)
         return
     less = f", less the {len(held)} the campaign disposition excluded," if held else ""
+    reasons = sorted({owner_lease[_path_key(item)][1] or "no reason recorded" for item in lease_out})
+    by_lease = (f" and {len(lease_out)} input(s) the lease excluded itself ({', '.join(reasons)})"
+                if lease_out else "")
     if split:
         detail = ((f"The parent declared {len(declared)} analysis input(s), which are its {len(owner_candidates)} "
                    "input candidates" + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
-                   + "; " if declared is not None else "")
+                   + by_lease + "; " if declared is not None else "")
                   + (f"this part declares {len(own_declared)} of its own samples'; " if own_list else "")
                   + f"this part's {len(own_candidates)} input candidates{less} are its {len(csv_rows)} CSV rows.")
-    elif held or outside:
+    elif held or outside or lease_out:
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates"
                   + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
-                  + f"; the candidates{less} are the {len(csv_rows)} CSV rows.")
+                  + by_lease + f"; the candidates{less} are the {len(csv_rows)} CSV rows.")
     else:
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates "
                   f"and the {len(csv_rows)} CSV rows.")
-    report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names)
+    report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names, **lease)
 
 
 def _absent_exports(run_manifest: dict | None) -> "tuple[int, list[str]] | None":

@@ -1,4 +1,4 @@
-"""CLS-2, the order checks and SUM-1 on an analysis CSV Interactive built from the input lineage.
+"""CLS-2, the order checks, INP-1 and SUM-1 on an analysis CSV Interactive built from the input lineage.
 
 Interactive's folder branch (repository_analysis_rows) writes a repository unit's analysis CSV from its
 input lineage, one row per analysis input, folder or file. Three of its renames reach the gate: an
@@ -8,8 +8,8 @@ share a stem are named apart by a digest (file_name_not_unique); and a projected
 Console could not read back is folded to ASCII (analysis_csv.class_id_aliases). An input an applied
 campaign disposition excluded, or one the lease excluded, is no row at all. CLS-2 joined rows to
 samples by name and compared labels verbatim, so it refused every such unit while each was correct;
-the order-source reading did not recognise an aliased row; and SUM-1 held an input the run never
-opens to a checksum.
+the order-source reading did not recognise an aliased row; INP-1 called an mzML the lease excluded a
+declared input lost on the way; and SUM-1 held an input the run never opens to a checksum.
 
 The fixtures are built as that branch writes them (feat/folder-inputs-and-csv-builder at d3ccfdc):
 build_repository_analysis_rows for the rows, their aliases and names, create_console_aliases
@@ -726,6 +726,71 @@ class AliasedRowsInOrderTests(unittest.TestCase):
             check = _check(unit.gate(), "ORD-1")
 
         self.assertEqual(verifier.FAIL, check.status, check.detail)
+
+
+# ---- INP-1 -----------------------------------------------------------------------------------------
+
+
+class LeaseExcludedInputsTests(unittest.TestCase):
+    """INP-1 counts an input the lease excluded itself beside the candidates (Interactive 0.5.18)."""
+
+    def test_an_mzml_the_lease_excluded_is_declared_and_no_candidate(self) -> None:
+        """THE DEFECT (wave-4 review, finding 1): 'the Catalog declared 3 analysis input(s) and the lease found
+        2 input candidate(s)', and INP-1 stops the run, so a correct unit was failed and lost its raw data."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("S1.mzML", "S1", "A")
+            unit.file("S2.mzML", "S2", "B")
+            unit.lease_excluded("S3.mzML", "S3", "B")
+            unit.prepare()
+            report = unit.gate()
+
+        check = _check(report, "INP-1")
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(1, check.evidence["counts"]["lease excluded_input_candidates"])
+        self.assertEqual([{"input": "S3.mzML", "reason": "unsupported_mzml_encoding"}], check.evidence["lease_excluded"])
+        self.assertIn("1 input(s) the lease excluded itself (unsupported_mzml_encoding)", check.detail)
+        self.assertEqual([], report.run_blocked_by)
+
+    def test_either_record_of_the_lease_names_the_exclusion(self) -> None:
+        for kept in ("excluded_input_candidates", "input_lineage"):
+            with self.subTest(kept=kept), tempfile.TemporaryDirectory() as temporary:
+                unit = FolderBranchUnit(temporary)
+                unit.file("S1.mzML", "S1", "A")
+                unit.lease_excluded("S2.mzML", "S2", "A")
+                unit.prepare()
+                if kept == "input_lineage":
+                    del unit.manifest["excluded_input_candidates"]
+                else:
+                    unit.manifest["input_lineage"]["excluded"] = []
+                check = _check(unit.gate(), "INP-1")
+
+                self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_a_lease_exclusion_does_not_account_for_an_input_never_found(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("S1.mzML", "S1", "A")
+            unit.lease_excluded("S2.mzML", "S2", "A")
+            unit._declare("S3.mzML", "file", "S3", "A")
+            unit.prepare()
+            check = _check(unit.gate(), "INP-1")
+
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("the Catalog declared 3 analysis input(s) and the lease found 1 input candidate(s), "
+                      "and excluded 1 itself", check.detail)
+
+    def test_an_input_both_the_lease_and_the_disposition_name_is_counted_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("S1.mzML", "S1", "A")
+            excluded = unit.lease_excluded("S2.mzML", "S2", "A")
+            unit.exclude(excluded, "raw_header_unreadable")
+            unit.prepare()
+            check = _check(unit.gate(), "INP-1")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertNotIn("lease excluded_input_candidates", check.evidence["counts"])
 
 
 # ---- SUM-1 -----------------------------------------------------------------------------------------
