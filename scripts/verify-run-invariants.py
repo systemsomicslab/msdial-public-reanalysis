@@ -39,6 +39,12 @@ produces no FAILs at all. Run against a directory holding an empty provenance/ a
 output/, this file reported 15 not_evaluable, ok=True and exit 0, while the batch skill tells an
 agent that exit 0 "means every evaluated check passed". A unit nobody ran and a unit that ran
 correctly gave the same answer. Every unattended run must pass --strict.
+
+Every before-production check carries a run_policy in --json: "blocks_run" where its FAIL stops a
+campaign unit's MS-DIAL run, "record_only" where the FAIL is recorded and the unit runs (the user's
+rule of 2026-10-01: only a check whose failure breaks the MS-DIAL results blocks the run). RUN_POLICY
+holds the table, and each check's docstring says why it is classed as it is. A check of a later stage
+has no run left to stop, and states no run_policy.
 """
 
 from __future__ import annotations
@@ -68,6 +74,35 @@ WARN = "warn"
 NOT_EVALUABLE = "not_evaluable"
 
 STAGES = ("before-production", "after-run", "before-publish")
+
+# What a before-production FAIL does to a campaign unit's MS-DIAL run (the user's rule of 2026-10-01).
+# A FAIL stops the run only for the checks that break the results, which the user named: ELIG-1, ACQ-1,
+# SUM-1, CNT-1 and INP-1. The unit then counts as failed, so it is retried twice and its raw data are
+# deleted. Any other FAIL is recorded and the unit runs: the user named CLS-1, CLS-2, CLS-3, ORD-1 and
+# PKH-1. Of the five checks the rule does not name, ID-1, SPL-1 and PRE-1 record because their FAIL
+# leaves what MS-DIAL computes as it is; PRE-2 and CONV-1 record because the rule stops a run "only"
+# for the five, as the campaign contract reads it until the user places them, although some of their
+# FAILs reach the results. Each check's docstring gives its reason under "RUN POLICY". The campaign
+# runner reads the class from each check's run_policy in --json.
+BLOCKS_RUN = "blocks_run"
+RECORD_ONLY = "record_only"
+RUN_POLICY = {
+    "ID-1": RECORD_ONLY,
+    "SPL-1": RECORD_ONLY,
+    "ELIG-1": BLOCKS_RUN,
+    "PRE-1": RECORD_ONLY,
+    "PRE-2": RECORD_ONLY,
+    "ACQ-1": BLOCKS_RUN,
+    "SUM-1": BLOCKS_RUN,
+    "CONV-1": RECORD_ONLY,
+    "CLS-1": RECORD_ONLY,
+    "CLS-2": RECORD_ONLY,
+    "CLS-3": RECORD_ONLY,
+    "PKH-1": RECORD_ONLY,
+    "ORD-1": RECORD_ONLY,
+    "INP-1": BLOCKS_RUN,
+    "CNT-1": BLOCKS_RUN,
+}
 
 # A user-profile path inside an artifact built to be shared. Deliberately narrow: it
 # matches what this machine actually leaks (a Windows profile path) rather than trying to
@@ -118,7 +153,22 @@ class Check:
     def strict_failure(self) -> bool:
         return self.status == NOT_EVALUABLE and self.required
 
+    @property
+    def run_policy(self) -> str | None:
+        """What this check's FAIL does to the MS-DIAL run (RUN_POLICY); None after production, with no
+        run left to stop. CNT-1, which runs at each stage, stops the run only from before-production."""
+        return RUN_POLICY.get(self.check_id) if self.stage == "before-production" else None
+
+    @property
+    def blocks_run(self) -> bool:
+        return self.status == FAIL and self.run_policy == BLOCKS_RUN
+
     def as_dict(self) -> dict:
+        # A check after production states no run_policy at all. A reader that takes a stated policy it
+        # does not know as blocking (the campaign runner's run_blocking_failures) would read a null as a
+        # check that stops the run, and the after-run CNT-1, keyed like the before-production one, would
+        # state over it.
+        policy = {"run_policy": self.run_policy} if self.run_policy is not None else {}
         return {
             "check_id": self.check_id,
             "stage": self.stage,
@@ -126,6 +176,7 @@ class Check:
             "status": self.status,
             "detail": self.detail,
             "required": self.required,
+            **policy,
             "evidence": self.evidence,
         }
 
@@ -163,12 +214,22 @@ class Report:
         """
         return [check for check in self.checks if check.strict_failure]
 
+    @property
+    def run_blocked_by(self) -> list[str]:
+        """The FAILed before-production checks whose run_policy is blocks_run, each once.
+
+        Only a FAIL: the user's rule stops a run on a FAIL, and a blocks_run check left not evaluable is
+        not one (the campaign contract records it and the unit runs). strict_failures names it where
+        this stage owed what it reads."""
+        return list(dict.fromkeys(check.check_id for check in self.checks if check.blocks_run))
+
     def as_dict(self) -> dict:
         return {
             "workspace": str(self.workspace),
             "ok": self.ok,
             "counts": self.counts(),
             "strict_failures": [check.check_id for check in self.strict_failures],
+            "run_blocked_by": self.run_blocked_by,
             "progress": getattr(self, "progress", None),
             "checks_by_stage": _checks_by_stage(self),
             "checks": [check.as_dict() for check in self.checks],
@@ -213,6 +274,11 @@ def check_unit_identity(report: Report, provenance: dict | None, reason: str) ->
     does. Both declare the same manifest schema, so the schema string cannot separate them. A loop
     that resolves results by accession will find whichever it meets first, and the sample names
     inside are identical, so the substitution is invisible.
+
+    RUN POLICY: record_only. Its FAIL does not break the results: MS-DIAL computes them from this
+    workspace's own CSV, into its own output, whichever unit the manifest names, and the checks that
+    stop the run hold that CSV to this manifest's inputs and samples. A FAIL says the results cannot be
+    attributed to the unit the directory names, which the report records beside them.
     """
     stage = "before-production"
     if provenance is None:
@@ -254,6 +320,9 @@ def check_execution_allowed(report: Report, provenance: dict | None, reason: str
 
     The server writes execution_allowed and then consults it nowhere, so the verdict currently
     gates nothing on its own. Reading it here is what turns it back into a gate.
+
+    RUN POLICY: blocks_run, as the user named it (2026-10-01). A unit judged ineligible, unresolved or
+    split is not a run whose results mean anything.
     """
     stage = "before-production"
     if provenance is None:
@@ -289,6 +358,9 @@ def check_preflight_claim(report: Report, provenance: dict | None, reason: str) 
     correct degradation. What it forbids is asserting anywhere downstream that polarity or
     acquisition mode were confirmed from the raw headers, when the reader that would confirm them
     never ran.
+
+    RUN POLICY: record_only. It governs what may be claimed about the headers, never what the
+    Console computes, and it never FAILs.
     """
     stage = "before-production"
     if provenance is None:
@@ -443,6 +515,15 @@ def check_extractor_identity(report: Report, provenance: dict | None, reason: st
     crossings the unit carries now: a unit adopted by a campaign after its preflight did not have it read
     under one. A pair Interactive recorded as pinned and this mirror does not list is a WARN: the mirror
     may be behind Interactive, which is not a fact about the unit.
+
+    RUN POLICY: record_only. The user's rule stops a run only for the five checks it names, and this
+    is not one; the campaign contract reads that "only" as written until the user places it. Its FAIL
+    can reach the results without showing that it did: ACQ-1, which does stop the run, holds every row
+    to the header verdict, and a FAIL here says that the code that gave the verdict did not run as
+    recorded, or that a campaign acted on a read the pinned extractor did not make, so the types the
+    results rest on rest on a verdict ACQ-1 cannot question. Stopping the run would make the unit a
+    failed one, whose raw data go after its retries with no result; recorded, the FAIL stays beside the
+    results for the verification that follows the campaign.
     """
     stage = "before-production"
     if provenance is None:
@@ -1462,6 +1543,9 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
     required, and it is reported as excluded with the disposition's reason (_not_analysed). Where a CSV
     row opens it all the same, through its Console alias or not, it is analysed, and covered or refused
     like any other input; INP-1 refuses the row.
+
+    RUN POLICY: blocks_run, as the user named it (2026-10-01). Bytes nothing vouches for give results
+    that may not describe the published data.
     """
     stage = "before-production"
     title = "Every input's checksum was verified"
@@ -1704,6 +1788,16 @@ def check_converted_inputs_are_their_conversions(
 
     PASS where nothing was converted and nothing MS-DIAL cannot open is an input: every unit prepared
     before the converter existed.
+
+    RUN POLICY: record_only. The user's rule stops a run only for the five checks it names, and this
+    is not one; the campaign contract reads that "only" as written until the user places it, and says
+    what follows for an mzXML without polarity: the FAIL is recorded and the unit runs without those
+    spectra. Most of its refusals do reach the results: an mzML that is not its recorded, validated
+    conversion, or whose spectra were given a polarity the unit did not declare, describes the
+    published data no better than SUM-1's unverified bytes, and an input MS-DIAL cannot open is
+    skipped without a word (EXP-1 and CNT-1 find it after the run). One, an output outside the raw
+    tree, is about its release only. Stopping the run would make the unit a failed one, whose raw data
+    go after its retries with no result; recorded, the FAIL stays beside the results that were made.
     """
     stage = "before-production"
     if provenance is None:
@@ -1858,6 +1952,13 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     into two parts or into none; the parent's split_into and each part's input_candidates are the
     two records that must agree. An input the parent's binding campaign disposition excluded stays
     among the parent's candidates and goes into no part.
+
+    RUN POLICY: record_only. Its FAIL does not break this part's results: they come from the part's
+    own rows, whose types ACQ-1 holds to their headers, and whose inputs INP-1, SUM-1 and CNT-1 hold
+    to the part's candidates, all of which do stop the run. What a FAIL here adds is that the parts
+    together do not hold the parent's inputs once each, or that the part's records name another raw
+    tree than its parent's: a file analysed by two parts or by none, which is the campaign's coverage,
+    or records RET-1 and DSK-1 would follow to another unit's disk.
     """
     stage = "before-production"
     title = "A split part partitions its parent's inputs"
@@ -2106,6 +2207,10 @@ def check_sample_count_invariant(
     planner response that would report the same number is large enough to be truncated in transport,
     and its blockers field is serialised after the payload, so its absence and its emptiness look
     alike.
+
+    RUN POLICY: blocks_run before production, as the user named it (2026-10-01): a run that would
+    analyse another number of samples than were found describes a study nobody approved. Its later
+    instances have no run left to stop.
     """
     counts: dict[str, int] = {}
     missing: list[str] = []
@@ -2291,6 +2396,9 @@ def check_analysis_inputs_are_the_inputs(
     samples' inputs: the parent's declaration is compared with the parent's candidates, a declaration
     of the part's own with the part's candidates, and the part's candidates with its rows. SPL-1 holds
     that the parts partition the parent.
+
+    RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
+    an input the run never opens, gives results for files that are not the unit's.
     """
     stage = "before-production"
     if provenance is None:
@@ -2685,6 +2793,9 @@ def check_acquisition_type_is_the_headers(
     The header comparison is not required without a preflight: a unit whose acquisition mode was known
     from the repository never needed a header read (PRE-1). Nor is it made for a GC-MS unit, outside
     this campaign's LC-MS/MS scope, whose EI spectra are deconvoluted as MS1 whatever the column says.
+
+    RUN POLICY: blocks_run, as the user named it (2026-10-01). A file deconvoluted as another
+    acquisition type completes, validates and is wrong.
     """
     stage = "before-production"
     gcms = _is_gcms(provenance)
@@ -2980,6 +3091,9 @@ def check_class_distribution(report: Report, csv_rows: list[dict] | None, reason
     biological class whose name contains "qc" or "blank" is removed from the comparison and
     simultaneously used as the QC-precision basis. The study that motivated this check contains a
     wine strain named QA23 with samples QA1..QA3; it survives that matcher, but only just.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01). The grouping decides the comparison
+    made from the results, not the spectra each file yields.
     """
     if stage != "before-production":
         return
@@ -3228,6 +3342,9 @@ def check_analytical_order_is_real(
     The record names each file as the CSV does (file_name) since Interactive builds the CSV from the
     input lineage; one that names an aliased row's input by its own name is read as that row
     (_order_stems), as _recorded_order_source reads it.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01). The order decides what a run-order
+    metric may claim, which ORD-2 holds at publication, not what each file yields.
     """
     if stage != "before-production":
         return
@@ -5293,6 +5410,8 @@ def check_executed_class_matches_approved(
     Class must still run as one executed Class and no executed Class carry two: a projection or a fold
     that merges or splits Classes is a grouping nobody approved, which the label comparison alone would
     not see.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01), as for CLS-1.
     """
     stage = "before-production"
     proposal = _class_proposal(provenance)
@@ -5414,6 +5533,8 @@ def check_class_proposal_was_accepted(report: Report, provenance: dict | None, r
     status. A proposal still reading "proposed" beside an executed, published run says the
     ratification happened somewhere no artifact records -- which, for a machine-authored grouping,
     is the whole of the safety argument.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01), as for CLS-1.
     """
     stage = "before-production"
     proposal = _class_proposal(provenance)
@@ -5983,6 +6104,9 @@ def check_threshold_was_measured_on_this_unit(
 
     Compared as numbers, so 500 and 500.0 are the same threshold. Whether the Console can PARSE
     that literal is MTH-1's question, not this one.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01). A threshold not measured here keeps
+    more or fewer peaks; what it keeps is still this unit's data.
     """
     stage = "before-production"
     if provenance is None:
@@ -7388,6 +7512,9 @@ def render(report: Report) -> str:
             "UNEVALUABLE ON ARTIFACTS THIS STAGE OWED: "
             + ", ".join(check.check_id for check in strict)
         )
+    blocked = report.run_blocked_by
+    if blocked:
+        lines.append("FAILS THAT STOP A CAMPAIGN RUN (run_policy blocks_run): " + ", ".join(blocked))
     progress = getattr(report, "progress", None)
     if progress:
         line = f"PROGRESS (from artifacts, not a verdict): {progress['stage_reached']}"
