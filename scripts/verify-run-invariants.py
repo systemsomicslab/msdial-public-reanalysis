@@ -39,6 +39,12 @@ produces no FAILs at all. Run against a directory holding an empty provenance/ a
 output/, this file reported 15 not_evaluable, ok=True and exit 0, while the batch skill tells an
 agent that exit 0 "means every evaluated check passed". A unit nobody ran and a unit that ran
 correctly gave the same answer. Every unattended run must pass --strict.
+
+Every before-production check carries a run_policy in --json: "blocks_run" where its FAIL stops a
+campaign unit's MS-DIAL run, "record_only" where the FAIL is recorded and the unit runs (the user's
+rule of 2026-10-01: only a check whose failure breaks the MS-DIAL results blocks the run). RUN_POLICY
+holds the table, and each check's docstring says why it is classed as it is. A check of a later stage
+has no run left to stop, and states no run_policy.
 """
 
 from __future__ import annotations
@@ -54,6 +60,7 @@ import math
 import os
 import re
 import sys
+import unicodedata
 import urllib.parse
 import zipfile
 from collections import Counter
@@ -67,6 +74,35 @@ WARN = "warn"
 NOT_EVALUABLE = "not_evaluable"
 
 STAGES = ("before-production", "after-run", "before-publish")
+
+# What a before-production FAIL does to a campaign unit's MS-DIAL run (the user's rule of 2026-10-01).
+# A FAIL stops the run only for the checks that break the results, which the user named: ELIG-1, ACQ-1,
+# SUM-1, CNT-1 and INP-1. The unit then counts as failed, so it is retried twice and its raw data are
+# deleted. Any other FAIL is recorded and the unit runs: the user named CLS-1, CLS-2, CLS-3, ORD-1 and
+# PKH-1. Of the five checks the rule does not name, ID-1, SPL-1 and PRE-1 record because their FAIL
+# leaves what MS-DIAL computes as it is; PRE-2 and CONV-1 record because the rule stops a run "only"
+# for the five, as the campaign contract reads it until the user places them, although some of their
+# FAILs reach the results. Each check's docstring gives its reason under "RUN POLICY". The campaign
+# runner reads the class from each check's run_policy in --json.
+BLOCKS_RUN = "blocks_run"
+RECORD_ONLY = "record_only"
+RUN_POLICY = {
+    "ID-1": RECORD_ONLY,
+    "SPL-1": RECORD_ONLY,
+    "ELIG-1": BLOCKS_RUN,
+    "PRE-1": RECORD_ONLY,
+    "PRE-2": RECORD_ONLY,
+    "ACQ-1": BLOCKS_RUN,
+    "SUM-1": BLOCKS_RUN,
+    "CONV-1": RECORD_ONLY,
+    "CLS-1": RECORD_ONLY,
+    "CLS-2": RECORD_ONLY,
+    "CLS-3": RECORD_ONLY,
+    "PKH-1": RECORD_ONLY,
+    "ORD-1": RECORD_ONLY,
+    "INP-1": BLOCKS_RUN,
+    "CNT-1": BLOCKS_RUN,
+}
 
 # A user-profile path inside an artifact built to be shared. Deliberately narrow: it
 # matches what this machine actually leaks (a Windows profile path) rather than trying to
@@ -117,7 +153,22 @@ class Check:
     def strict_failure(self) -> bool:
         return self.status == NOT_EVALUABLE and self.required
 
+    @property
+    def run_policy(self) -> str | None:
+        """What this check's FAIL does to the MS-DIAL run (RUN_POLICY); None after production, with no
+        run left to stop. CNT-1, which runs at each stage, stops the run only from before-production."""
+        return RUN_POLICY.get(self.check_id) if self.stage == "before-production" else None
+
+    @property
+    def blocks_run(self) -> bool:
+        return self.status == FAIL and self.run_policy == BLOCKS_RUN
+
     def as_dict(self) -> dict:
+        # A check after production states no run_policy at all. A reader that takes a stated policy it
+        # does not know as blocking (the campaign runner's run_blocking_failures) would read a null as a
+        # check that stops the run, and the after-run CNT-1, keyed like the before-production one, would
+        # state over it.
+        policy = {"run_policy": self.run_policy} if self.run_policy is not None else {}
         return {
             "check_id": self.check_id,
             "stage": self.stage,
@@ -125,6 +176,7 @@ class Check:
             "status": self.status,
             "detail": self.detail,
             "required": self.required,
+            **policy,
             "evidence": self.evidence,
         }
 
@@ -162,12 +214,22 @@ class Report:
         """
         return [check for check in self.checks if check.strict_failure]
 
+    @property
+    def run_blocked_by(self) -> list[str]:
+        """The FAILed before-production checks whose run_policy is blocks_run, each once.
+
+        Only a FAIL: the user's rule stops a run on a FAIL, and a blocks_run check left not evaluable is
+        not one (the campaign contract records it and the unit runs). strict_failures names it where
+        this stage owed what it reads."""
+        return list(dict.fromkeys(check.check_id for check in self.checks if check.blocks_run))
+
     def as_dict(self) -> dict:
         return {
             "workspace": str(self.workspace),
             "ok": self.ok,
             "counts": self.counts(),
             "strict_failures": [check.check_id for check in self.strict_failures],
+            "run_blocked_by": self.run_blocked_by,
             "progress": getattr(self, "progress", None),
             "checks_by_stage": _checks_by_stage(self),
             "checks": [check.as_dict() for check in self.checks],
@@ -212,6 +274,11 @@ def check_unit_identity(report: Report, provenance: dict | None, reason: str) ->
     does. Both declare the same manifest schema, so the schema string cannot separate them. A loop
     that resolves results by accession will find whichever it meets first, and the sample names
     inside are identical, so the substitution is invisible.
+
+    RUN POLICY: record_only. Its FAIL does not break the results: MS-DIAL computes them from this
+    workspace's own CSV, into its own output, whichever unit the manifest names, and the checks that
+    stop the run hold that CSV to this manifest's inputs and samples. A FAIL says the results cannot be
+    attributed to the unit the directory names, which the report records beside them.
     """
     stage = "before-production"
     if provenance is None:
@@ -253,6 +320,9 @@ def check_execution_allowed(report: Report, provenance: dict | None, reason: str
 
     The server writes execution_allowed and then consults it nowhere, so the verdict currently
     gates nothing on its own. Reading it here is what turns it back into a gate.
+
+    RUN POLICY: blocks_run, as the user named it (2026-10-01). A unit judged ineligible, unresolved or
+    split is not a run whose results mean anything.
     """
     stage = "before-production"
     if provenance is None:
@@ -288,6 +358,9 @@ def check_preflight_claim(report: Report, provenance: dict | None, reason: str) 
     correct degradation. What it forbids is asserting anywhere downstream that polarity or
     acquisition mode were confirmed from the raw headers, when the reader that would confirm them
     never ran.
+
+    RUN POLICY: record_only. It governs what may be claimed about the headers, never what the
+    Console computes, and it never FAILs.
     """
     stage = "before-production"
     if provenance is None:
@@ -442,6 +515,15 @@ def check_extractor_identity(report: Report, provenance: dict | None, reason: st
     crossings the unit carries now: a unit adopted by a campaign after its preflight did not have it read
     under one. A pair Interactive recorded as pinned and this mirror does not list is a WARN: the mirror
     may be behind Interactive, which is not a fact about the unit.
+
+    RUN POLICY: record_only. The user's rule stops a run only for the five checks it names, and this
+    is not one; the campaign contract reads that "only" as written until the user places it. Its FAIL
+    can reach the results without showing that it did: ACQ-1, which does stop the run, holds every row
+    to the header verdict, and a FAIL here says that the code that gave the verdict did not run as
+    recorded, or that a campaign acted on a read the pinned extractor did not make, so the types the
+    results rest on rest on a verdict ACQ-1 cannot question. Stopping the run would make the unit a
+    failed one, whose raw data go after its retries with no result; recorded, the FAIL stays beside the
+    results for the verification that follows the campaign.
     """
     stage = "before-production"
     if provenance is None:
@@ -1234,15 +1316,13 @@ def _read_archive_listing(path: Path, recorded_sha256: str, name: str) -> _Archi
     return listing
 
 
-def _lineage_checksum_basis(owner: dict, evidence: dict) -> tuple[str, str, dict]:
-    """SUM-1 for a manifest that carries input_lineage: every input resolved through its row."""
+def _lineage_checksum_basis(owner: dict, evidence: dict, candidates: list[str]) -> tuple[str, str, dict]:
+    """SUM-1 for a manifest that carries input_lineage: every analysed input resolved through its row."""
     lineage = _InputLineage(owner)
     evidence["lineage_schema"] = INPUT_LINEAGE_SCHEMA
     evidence["basis"] = "insufficient"
     if lineage.problem:
         return "insufficient", lineage.problem, evidence
-    raw_candidates = owner.get("input_candidates")
-    candidates = [str(item) for item in raw_candidates] if isinstance(raw_candidates, list) else []
     if not candidates:
         return "insufficient", "No input candidate is recorded, so the lineage vouches for nothing analysed.", evidence
     covers = [(item, lineage.resolve_input(item)) for item in candidates]
@@ -1299,7 +1379,7 @@ def _lineage_checksum_basis(owner: dict, evidence: dict) -> tuple[str, str, dict
     )
 
 
-def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
+def _checksum_basis(owner: dict, not_analysed: "dict[str, tuple[str, str]] | None" = None) -> tuple[str, str, dict]:
     """How this unit's inputs are known to be intact: (kind, detail, evidence).
 
     kind is "verified" (every declared file was checked against its published checksum, and every
@@ -1309,14 +1389,21 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
     input_lineage can say so), "download_sha256" (the repository publishes none, and every input rests
     on a sha256 recorded at download), or "insufficient" (anything else).
 
-    A manifest carrying input_lineage is resolved through it, input by input (_InputLineage). One
-    written before the table existed is read as it always was, below.
+    A manifest carrying input_lineage is resolved through it, input by input (_InputLineage), over the
+    input candidates less ``not_analysed`` (_not_analysed: excluded by the campaign disposition, and
+    opened by no CSV row), which are reported in the evidence and vouch for nothing. One written before
+    the table existed is read as it always was, below, exclusions and all: it predates campaign
+    dispositions (Interactive 0.5.9 against 0.5.17), and its validation counts every declared file
+    without naming one, so which of them an excluded input's were cannot be told.
     """
     validation = owner.get("allowlist_checksum_validation")
     files = [item for item in (owner.get("project") or {}).get("files") or [] if isinstance(item, dict)]
     downloads = [item for item in owner.get("downloads") or [] if isinstance(item, dict)]
     raw_candidates = owner.get("input_candidates")
     candidates = [str(item) for item in raw_candidates] if isinstance(raw_candidates, list) else []
+    not_analysed = (not_analysed or {}) if owner.get("input_lineage") is not None else {}
+    excluded = [not_analysed[_path_key(item)] for item in candidates if _path_key(item) in not_analysed]
+    candidates = [item for item in candidates if _path_key(item) not in not_analysed]
     raw_extracted = owner.get("extracted_files")
     extracted = {_path_key(item) for item in raw_extracted} if isinstance(raw_extracted, list) else set()
     input_directory = str(owner.get("input_directory") or "")
@@ -1363,8 +1450,15 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
         "declared_checksums": len(declared), "downloads_with_sha256": len(hashed_downloads),
         "repository": repository,
     }
+    if excluded:
+        evidence["inputs_excluded"] = len(excluded)
+        evidence["excluded"] = [{"input": Path(path.rstrip("\\/")).name, "reason": reason}
+                                for path, reason in excluded[:10]]
+        if not candidates:
+            return ("insufficient", f"All {len(excluded)} input candidate(s) were excluded by the campaign "
+                    "disposition, so no input is analysed for a checksum to vouch for.", evidence)
     if owner.get("input_lineage") is not None:
-        return _lineage_checksum_basis(owner, evidence)
+        return _lineage_checksum_basis(owner, evidence, candidates)
     if counts_known and files and skipped == 0 and verified == len(files):
         # The validator raises on a mismatch or on a file it cannot resolve, so a count equal to the
         # declared files means every one was checked. Sidecars such as .wiff.scan are declared and
@@ -1420,7 +1514,8 @@ def _checksum_basis(owner: dict) -> tuple[str, str, dict]:
     return "insufficient", detail, evidence
 
 
-def check_checksum_coverage(report: Report, provenance: dict | None, reason: str) -> None:
+def check_checksum_coverage(report: Report, provenance: dict | None, reason: str,
+                           csv_rows: list[dict] | None = None) -> None:
     """SUM-1. Every admitted input had its declared checksum verified.
 
     The record's own "required" is true when at least one file carried a checksum, so
@@ -1442,6 +1537,17 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
     download, and named in that archive's recorded member listing, rests on basis archive_verified:
     ARCHIVE_VERIFIED_STATUS, a WARN until the user decides it passes. An unverified archive MD5, an
     input missing from the listing, and a member rejected at extraction are FAILs.
+
+    AN INPUT A BINDING CAMPAIGN DISPOSITION EXCLUDED is never analysed: Interactive leaves it among the
+    input candidates, where the disposition found it, and gives it no CSV row. Its checksum is not
+    required, and it is reported as excluded with the disposition's reason (_not_analysed). Where a CSV
+    row opens it all the same, through its Console alias or not, it is analysed, and covered or refused
+    like any other input; INP-1 refuses the row. So is every excluded input where a row opens something
+    the gate cannot tie to a candidate, which may be any of them under another name, and where the
+    analysis CSV is absent or cannot be read, which leaves no row to tie at all.
+
+    RUN POLICY: blocks_run, as the user named it (2026-10-01). Bytes nothing vouches for give results
+    that may not describe the published data.
     """
     stage = "before-production"
     title = "Every input's checksum was verified"
@@ -1463,7 +1569,10 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
                    "The manifest records no checksum validation block or no input candidates.",
                    inherited_from=inherited_from)
         return
-    kind, detail, evidence = _checksum_basis(owner)
+    not_analysed = _not_analysed(provenance, owner, csv_rows)
+    kind, detail, evidence = _checksum_basis(owner, not_analysed)
+    if evidence.get("inputs_excluded") and evidence.get("inputs"):
+        detail += _excluded_sentence(not_analysed)
     status = {"verified": PASS, "archive_verified": ARCHIVE_VERIFIED_STATUS, "download_sha256": WARN}.get(kind, FAIL)
     report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, **evidence)
 
@@ -1681,6 +1790,16 @@ def check_converted_inputs_are_their_conversions(
 
     PASS where nothing was converted and nothing MS-DIAL cannot open is an input: every unit prepared
     before the converter existed.
+
+    RUN POLICY: record_only. The user's rule stops a run only for the five checks it names, and this
+    is not one; the campaign contract reads that "only" as written until the user places it, and says
+    what follows for an mzXML without polarity: the FAIL is recorded and the unit runs without those
+    spectra. Most of its refusals do reach the results: an mzML that is not its recorded, validated
+    conversion, or whose spectra were given a polarity the unit did not declare, describes the
+    published data no better than SUM-1's unverified bytes, and an input MS-DIAL cannot open is
+    skipped without a word (EXP-1 and CNT-1 find it after the run). One, an output outside the raw
+    tree, is about its release only. Stopping the run would make the unit a failed one, whose raw data
+    go after its retries with no result; recorded, the FAIL stays beside the results that were made.
     """
     stage = "before-production"
     if provenance is None:
@@ -1835,6 +1954,13 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     into two parts or into none; the parent's split_into and each part's input_candidates are the
     two records that must agree. An input the parent's binding campaign disposition excluded stays
     among the parent's candidates and goes into no part.
+
+    RUN POLICY: record_only. Its FAIL does not break this part's results: they come from the part's
+    own rows, whose types ACQ-1 holds to their headers, and whose inputs INP-1, SUM-1 and CNT-1 hold
+    to the part's candidates, all of which do stop the run. What a FAIL here adds is that the parts
+    together do not hold the parent's inputs once each, or that the part's records name another raw
+    tree than its parent's: a file analysed by two parts or by none, which is the campaign's coverage,
+    or records RET-1 and DSK-1 would follow to another unit's disk.
     """
     stage = "before-production"
     title = "A split part partitions its parent's inputs"
@@ -2083,6 +2209,10 @@ def check_sample_count_invariant(
     planner response that would report the same number is large enough to be truncated in transport,
     and its blockers field is serialised after the payload, so its absence and its emptiness look
     alike.
+
+    RUN POLICY: blocks_run before production, as the user named it (2026-10-01): a run that would
+    analyse another number of samples than were found describes a study nobody approved. Its later
+    instances have no run left to stop.
     """
     counts: dict[str, int] = {}
     missing: list[str] = []
@@ -2189,6 +2319,118 @@ def _excluded_inputs(manifest: dict | None) -> list[str]:
     return list(paths.values())
 
 
+def _exclusion_reasons(*manifests: dict | None) -> dict[str, tuple[str, str]]:
+    """The inputs these manifests' binding campaign dispositions excluded, by key: (path, reason)."""
+    reasons: dict[str, tuple[str, str]] = {}
+    for manifest in manifests:
+        excluded = _binding_disposition(manifest).get("excluded_inputs")
+        for item in excluded if isinstance(excluded, list) else []:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                reasons.setdefault(_path_key(item["path"]), (str(item["path"]), str(item.get("reason") or "")))
+    return reasons
+
+
+def _lease_excluded(manifest: dict | None) -> dict[str, tuple[str, str]]:
+    """The inputs a unit's lease excluded itself, by key: (path, reason).
+
+    Interactive 0.5.18 keeps an mzML whose arrays RawDataHandler cannot decode (unsupported_mzml_encoding)
+    out of the input candidates and lists it in excluded_input_candidates and among input_lineage's
+    excluded rows; the rest of the unit runs without it. It was declared and downloaded, and is no
+    candidate and no CSV row. Both records are the lease's, and each names the same inputs.
+    """
+    manifest = manifest or {}
+    recorded = manifest.get("excluded_input_candidates")
+    sources = [recorded if isinstance(recorded, list) else [], _lineage_rows(manifest, "excluded")]
+    excluded: dict[str, tuple[str, str]] = {}
+    for source in sources:
+        for item in source:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                exclusion = item.get("exclusion") if isinstance(item.get("exclusion"), dict) else {}
+                reason = str(item.get("reason") or exclusion.get("reason") or "")
+                excluded.setdefault(_path_key(item["path"]), (str(item["path"]), reason))
+    return excluded
+
+
+def _not_analysed(provenance: dict, owner: dict, csv_rows: list[dict] | None) -> dict[str, tuple[str, str]]:
+    """The raw owner's input candidates a binding campaign disposition excluded and no CSV row opens.
+
+    By key, with the path and the disposition's reason. The dispositions are the raw owner's and, for a
+    split part, the part's own, as _excluded_candidates reads them. Interactive leaves such an input
+    among the candidates and gives it no row; a row that opens it all the same, through its Console
+    alias or not, makes it analysed, and it is then held to everything any input is.
+
+    Which input a row opens is read by _inputs_opened, and that no row opens an excluded input is said
+    only where each row is known to open one of the unit's candidates. A row compared by its spelling
+    alone said nothing of the rest: one that opened the excluded input through a link the lineage does
+    not record, or through a \\\\?\\ prefix, left it unheld, and SUM-1 passed an input nothing vouches
+    for. A row the gate cannot tie to a candidate may open any of them, so then no excluded input is
+    taken as unopened, and each is held to its checksum.
+
+    Nor is it said without the CSV. An analysis CSV that is absent, or that the gate cannot read (csv_rows
+    None), has no row to tie to anything, and the Console may still read a file this reader refused, so
+    every excluded input is held as if a row opened it. Reading the missing rows as none excused them all:
+    SUM-1 passed an excluded input nothing vouches for while INP-1 and CNT-1, which read the same CSV,
+    were not evaluable, and no check that stops the run said a word.
+    """
+    if csv_rows is None:
+        return {}
+    reasons = _exclusion_reasons(owner, provenance)
+    if not reasons:
+        return {}
+    candidates = owner.get("input_candidates") if isinstance(owner.get("input_candidates"), list) else []
+    own = provenance.get("input_candidates") if isinstance(provenance.get("input_candidates"), list) else []
+    opened = set(_inputs_opened(csv_rows, _input_keys_by_console_path(provenance), [*candidates, *own]))
+    if "" in opened:
+        return {}
+    return {_path_key(item): reasons[_path_key(item)] for item in candidates
+            if _path_key(item) in reasons and _path_key(item) not in opened}
+
+
+def _inputs_opened(csv_rows: list[dict], aliases: dict[str, str], inputs: list) -> list[str]:
+    """The key of the input each CSV row opens, of these inputs, row by row; "" for a row that opens none.
+
+    A row opens the input its path names, or the one its Console alias stands for (_input_key). Compared
+    as spelt, a row opening an input under a name the lineage does not record, a hard link or a \\\\?\\
+    prefix, opens nothing known, so while both are on disk a row that is an input's file record
+    (_record_of) opens that input whatever it is called. A row that is none of them, or one the gate can
+    no longer compare once the files are gone, is "".
+    """
+    keys = {_path_key(item) for item in inputs}
+    records: "dict[tuple[int, int], str] | None" = None
+    opened = []
+    for row in csv_rows:
+        key = _input_key(row, aliases)
+        if key in keys:
+            opened.append(key)
+            continue
+        if records is None:
+            # Only for a row its spelling does not tie to an input, so a unit whose rows all do stats nothing.
+            records = {}
+            for item in inputs:
+                record = _record_of(item)
+                if record is not None:
+                    records.setdefault(record, _path_key(item))
+        record = _record_of(row.get("file_path")) if key else None
+        opened.append(records.get(record, "") if record is not None else "")
+    return opened
+
+
+def _record_of(path: object) -> "tuple[int, int] | None":
+    """The file record a path names (_file_record), or None for one that is not on disk or cannot be read."""
+    try:
+        return _file_record(os.stat(str(path)))
+    except (OSError, ValueError):
+        return None
+
+
+def _excluded_sentence(not_analysed: dict[str, tuple[str, str]]) -> str:
+    """SUM-1's account of the inputs it did not hold to a checksum, with the disposition's reasons."""
+    names = [Path(path.rstrip("\\/")).name + " (" + (reason or "no reason recorded") + ")"
+             for path, reason in list(not_analysed.values())[:5]]
+    return (f" {len(not_analysed)} input candidate(s) the campaign disposition excluded are never analysed, so "
+            f"no checksum was required of them: {', '.join(names)}.")
+
+
 def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
     """The input candidates a campaign disposition excluded: the unit's own, and a split part's parent's.
 
@@ -2227,10 +2469,26 @@ def check_analysis_inputs_are_the_inputs(
     Interactive recorded without applying it (applied: false, a unit outside a campaign) excludes
     nothing, as its execution gate reads it.
 
+    An input the lease excluded itself (_lease_excluded: an mzML RawDataHandler cannot decode, Interactive
+    0.5.18) was declared too, and is neither a candidate nor a row, so it is counted beside the candidates
+    as well. Without it a correct unit with one undecodable mzML FAILed here, and INP-1 stops the run: the
+    unit counted as failed and lost its raw data, where the rule is that the file is excluded and the rest
+    of the unit runs.
+
+    EACH ROW IS AN INPUT, not only a count of them. A row that opens an input the disposition or the lease
+    excluded, under any name, in place of another sample's row leaves every count equal, so each row
+    must open a candidate that runs (_inputs_opened: by its path, by a Console alias the lineage
+    records, or while both are on disk by file record), and no candidate may be opened twice. Rows
+    compared by count alone let an excluded input that nothing vouches for run through a hard link
+    while SUM-1 was told it was never opened.
+
     A split part's project is its parent's with, where the split carries them, only the part's own
     samples' inputs: the parent's declaration is compared with the parent's candidates, a declaration
     of the part's own with the part's candidates, and the part's candidates with its rows. SPL-1 holds
     that the parts partition the parent.
+
+    RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
+    an input the run never opens, gives results for files that are not the unit's.
     """
     stage = "before-production"
     if provenance is None:
@@ -2272,9 +2530,14 @@ def check_analysis_inputs_are_the_inputs(
     own_excluded = _excluded_inputs(provenance) if split else owner_excluded
     excluded_keys = {_path_key(item) for item in owner_excluded + own_excluded}
     outside = beside(owner_excluded, owner_candidates)
+    # What the lease excluded itself is no candidate either, and is counted once beside them.
+    owner_lease = _lease_excluded(owner)
+    lease_out = beside([path for path, _reason in owner_lease.values()], owner_candidates + outside)
     # A part that carries a declaration of its own samples' inputs: a list other than its parent's.
     own_list = split and own_declared is not None and own_declared != declared
     own_outside = beside(own_excluded, own_candidates) if own_list else []
+    own_lease_out = beside([path for path, _reason in _lease_excluded(provenance).values()],
+                           own_candidates + own_outside) if own_list else []
     # The candidates the CSV leaves out: the disposition found them there and excluded them.
     held = _excluded_candidates(provenance, own_candidates)
     counts = {"analysis_inputs": len(declared or []), "input_candidates": len(own_candidates),
@@ -2287,49 +2550,80 @@ def check_analysis_inputs_are_the_inputs(
         counts["excluded_inputs"] = len(excluded_keys)
     if held:
         counts["excluded input_candidates"] = len(held)
+    if lease_out:
+        counts["lease excluded_input_candidates"] = len(lease_out)
     # A part's own list is its parent's cut to its samples, so a count it carries is the parent's.
     problems = [contradiction] if contradiction else []
-    if declared is not None and len(declared) != len(owner_candidates) + len(outside):
+    if declared is not None and len(declared) != len(owner_candidates) + len(outside) + len(lease_out):
         problems.append(
             f"the Catalog declared {len(declared)} analysis input(s) and the lease found {len(owner_candidates)} "
             "input candidate(s)" + (" in the parent" if split else "")
-            + (f", with {len(outside)} more excluded" if outside else ""))
-    if own_list and len(own_declared) != len(own_candidates) + len(own_outside):
+            + (f", with {len(outside)} more excluded" if outside else "")
+            + (f", and excluded {len(lease_out)} itself" if lease_out else ""))
+    if own_list and len(own_declared) != len(own_candidates) + len(own_outside) + len(own_lease_out):
         problems.append(
             f"the part declares {len(own_declared)} analysis input(s) of its own samples and holds "
             f"{len(own_candidates)} input candidate(s)"
-            + (f", with {len(own_outside)} more excluded" if own_outside else ""))
+            + (f", with {len(own_outside)} more excluded" if own_outside else "")
+            + (f", and its lease excluded {len(own_lease_out)} itself" if own_lease_out else ""))
     if len(own_candidates) - len(held) != len(csv_rows):
         problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
                         + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))
-    aliases = _input_keys_by_console_path(provenance)
-    listed_excluded = [str(row.get("file_name") or "") or Path(str(row.get("file_path") or "")).name
-                       for row in csv_rows if _input_key(row, aliases) in excluded_keys]
+    # Which input each row opens, not only how many rows there are: a row that opens an excluded input,
+    # or another candidate's twice, in place of one candidate's leaves every count above as it was.
+    own_lease = _lease_excluded(provenance) if split else owner_lease
+    lease_keys = set(owner_lease) | set(own_lease)
+    known = [*own_candidates, *owner_excluded, *own_excluded,
+             *(path for path, _reason in [*owner_lease.values(), *own_lease.values()])]
+    opened = _inputs_opened(csv_rows, _input_keys_by_console_path(provenance), known)
+    names = [str(row.get("file_name") or "") or Path(str(row.get("file_path") or "")).name for row in csv_rows]
+    own_keys = {_path_key(item) for item in own_candidates}
+    listed_excluded = [name for name, key in zip(names, opened) if key in excluded_keys]
+    listed_lease = [name for name, key in zip(names, opened) if key in lease_keys and key not in excluded_keys]
+    unknown = [name for name, key in zip(names, opened) if not key]
+    rows_of: dict[str, list[str]] = {}
+    for name, key in zip(names, opened):
+        if key in own_keys and key not in excluded_keys | lease_keys:
+            rows_of.setdefault(key, []).append(name)
+    twice = [" and ".join(group) for group in rows_of.values() if len(group) > 1]
     if listed_excluded:
         problems.append(f"{len(listed_excluded)} CSV row(s) name an input the campaign disposition excluded "
                         f"({', '.join(listed_excluded[:5])})")
+    if listed_lease:
+        problems.append(f"{len(listed_lease)} CSV row(s) open an input the lease excluded "
+                        f"({', '.join(listed_lease[:5])})")
+    if unknown:
+        problems.append(f"{len(unknown)} CSV row(s) open no input candidate of this unit, by their path, by a "
+                        f"Console alias the lineage records or by file record ({', '.join(unknown[:5])})")
+    if twice:
+        problems.append(f"{len(twice)} input candidate(s) are opened by more than one CSV row ({'; '.join(twice[:5])})")
     excluded_names = [Path(item.rstrip("\\/")).name for item in dict.fromkeys(owner_excluded + own_excluded)][:10]
+    lease = {"lease_excluded": [{"input": Path(item.rstrip("\\/")).name, "reason": owner_lease[_path_key(item)][1]}
+                                for item in lease_out[:10]]} if lease_out else {}
     if problems:
         report.add("INP-1", stage, INP1_TITLE, FAIL,
                    "What MS-DIAL will open is not what the Catalog declared it opens: " + "; ".join(problems)
                    + ". A vendor folder read as its member files, or a sample dropped on the way, looks like this.",
-                   counts=counts, excluded=excluded_names)
+                   counts=counts, excluded=excluded_names, **lease)
         return
     less = f", less the {len(held)} the campaign disposition excluded," if held else ""
+    reasons = sorted({owner_lease[_path_key(item)][1] or "no reason recorded" for item in lease_out})
+    by_lease = (f" and {len(lease_out)} input(s) the lease excluded itself ({', '.join(reasons)})"
+                if lease_out else "")
     if split:
         detail = ((f"The parent declared {len(declared)} analysis input(s), which are its {len(owner_candidates)} "
                    "input candidates" + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
-                   + "; " if declared is not None else "")
+                   + by_lease + "; " if declared is not None else "")
                   + (f"this part declares {len(own_declared)} of its own samples'; " if own_list else "")
                   + f"this part's {len(own_candidates)} input candidates{less} are its {len(csv_rows)} CSV rows.")
-    elif held or outside:
+    elif held or outside or lease_out:
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates"
                   + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
-                  + f"; the candidates{less} are the {len(csv_rows)} CSV rows.")
+                  + by_lease + f"; the candidates{less} are the {len(csv_rows)} CSV rows.")
     else:
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates "
                   f"and the {len(csv_rows)} CSV rows.")
-    report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names)
+    report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names, **lease)
 
 
 def _absent_exports(run_manifest: dict | None) -> "tuple[int, list[str]] | None":
@@ -2425,6 +2719,25 @@ def _per_file_records(provenance: dict) -> dict[str, dict]:
     return records
 
 
+def _lineage_manifests(provenance: dict) -> list[dict]:
+    """The manifests that hold a unit's input lineage: its own and, for a split part, its raw owner's."""
+    manifests = [provenance]
+    if isinstance(provenance.get("split_from"), dict):
+        parent, _ = _raw_owner_manifest(provenance)
+        if parent is not None:
+            manifests.append(parent)
+    return manifests
+
+
+def _lineage_rows(manifest: dict | None, part: str = "rows") -> list[dict]:
+    """A manifest's input_lineage rows that name a path: its inputs ("rows"), or what the lease excluded."""
+    lineage = (manifest or {}).get("input_lineage")
+    rows = lineage.get(part) if isinstance(lineage, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict) and str(row.get("path") or "").strip()]
+
+
 def _input_keys_by_console_path(provenance: dict) -> dict[str, str]:
     """The input each Console path stands for, where the CSV names an alias of it rather than the input.
 
@@ -2434,18 +2747,9 @@ def _input_keys_by_console_path(provenance: dict) -> dict[str, str]:
     The CSV's writer wrote that record, so while both are on disk the alias must be the input (a
     junction or a hard link to it); one that is another file stands for nothing.
     """
-    manifests = [provenance]
-    if isinstance(provenance.get("split_from"), dict):
-        parent, _ = _raw_owner_manifest(provenance)
-        if parent is not None:
-            manifests.append(parent)
     keys: dict[str, str] = {}
-    for manifest in manifests:
-        lineage = manifest.get("input_lineage")
-        rows = lineage.get("rows") if isinstance(lineage, dict) else None
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict) or not str(row.get("path") or "").strip():
-                continue
+    for manifest in _lineage_manifests(provenance):
+        for row in _lineage_rows(manifest):
             alias = row.get("console_alias") if isinstance(row.get("console_alias"), dict) else {}
             for console in (row.get("console_path"), alias.get("path")):
                 if not str(console or "").strip() or _same_path(console, row["path"]):
@@ -2615,6 +2919,9 @@ def check_acquisition_type_is_the_headers(
     The header comparison is not required without a preflight: a unit whose acquisition mode was known
     from the repository never needed a header read (PRE-1). Nor is it made for a GC-MS unit, outside
     this campaign's LC-MS/MS scope, whose EI spectra are deconvoluted as MS1 whatever the column says.
+
+    RUN POLICY: blocks_run, as the user named it (2026-10-01). A file deconvoluted as another
+    acquisition type completes, validates and is wrong.
     """
     stage = "before-production"
     gcms = _is_gcms(provenance)
@@ -2910,6 +3217,9 @@ def check_class_distribution(report: Report, csv_rows: list[dict] | None, reason
     biological class whose name contains "qc" or "blank" is removed from the comparison and
     simultaneously used as the QC-precision basis. The study that motivated this check contains a
     wine strain named QA23 with samples QA1..QA3; it survives that matcher, but only just.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01). The grouping decides the comparison
+    made from the results, not the spectra each file yields.
     """
     if stage != "before-production":
         return
@@ -2973,6 +3283,38 @@ def _parse_header_time(value) -> "datetime | None":
         return None
 
 
+def _opened_name(row: dict, aliases: dict[str, str]) -> str:
+    """The file name of the input a CSV row opens, without case: its own path's, or, where the row names
+    a Console alias, that of the input the alias stands for (_input_keys_by_console_path)."""
+    path = str(row.get("file_path", ""))
+    target = aliases.get(_path_key(path)) if path.strip() else None
+    return Path((target or path).replace("\\", "/")).name.casefold()
+
+
+def _order_stems(provenance: dict | None, csv_rows: list[dict]) -> dict[str, str]:
+    """The CSV file_name an analytical-order record may name a row by other than the row's own.
+
+    Interactive's record names each file as the CSV does, by its file_name, since it builds the CSV from
+    the input lineage (repository_analysis_rows.order_rows): an input read through a Console alias is
+    named in the CSV by neither its own stem nor its path. A record naming an aliased row's input by
+    the input's own name is read as that row, where no row carries the name as its file_name and only
+    one row opens an input of that stem; two inputs sharing a stem are told apart by nothing but the
+    CSV's names. Empty for a unit with no alias, as every unit prepared before the lineage-built CSV.
+    """
+    if not isinstance(provenance, dict) or not csv_rows:
+        return {}
+    aliases = _input_keys_by_console_path(provenance)
+    if not aliases:
+        return {}
+    names = {str(row.get("file_name", "")).strip().casefold() for row in csv_rows}
+    stems: dict[str, list[str]] = {}
+    for row in csv_rows:
+        stem = Path(_opened_name(row, aliases)).stem
+        if stem:
+            stems.setdefault(stem, []).append(str(row.get("file_name", "")).strip().casefold())
+    return {stem: rows[0] for stem, rows in stems.items() if len(rows) == 1 and stem not in names}
+
+
 def _recorded_order_source(provenance: dict | None, csv_rows: list[dict] | None) -> "str | None":
     """What the unit manifest records the CSV's analytical order as taken from, or None.
 
@@ -2981,6 +3323,9 @@ def _recorded_order_source(provenance: dict | None, csv_rows: list[dict] | None)
     or the ranks renumbered included. A reordered CSV carries an order nobody recorded, and a record
     with tied or unreadable ranks orders nothing. A header record from before order_source reads as
     the header source; any other record without it as unknown.
+
+    A row naming a Console alias is the input the alias stands for (_opened_name), as Interactive's
+    recorded_order_source reads it, and a record may name it by that input's own name (_order_stems).
     """
     record = (provenance or {}).get("analytical_order")
     if not isinstance(record, dict) or not csv_rows:
@@ -2991,15 +3336,17 @@ def _recorded_order_source(provenance: dict | None, csv_rows: list[dict] | None)
         return None
     inputs = {Path(str(path).replace("\\", "/")).name.casefold()
               for path in (provenance or {}).get("input_candidates") or [] if str(path).strip()}
-    if not inputs or any(Path(str(row.get("file_path", "")).replace("\\", "/")).name.casefold() not in inputs
-                         for row in csv_rows):
+    aliases = _input_keys_by_console_path(provenance) if isinstance(provenance, dict) else {}
+    if not inputs or any(_opened_name(row, aliases) not in inputs for row in csv_rows):
         return None
+    translate = _order_stems(provenance, csv_rows)
     files = record.get("files") if isinstance(record.get("files"), list) else []
     recorded: dict = {}
     for item in files:
         if not isinstance(item, dict):
             return None
         stem = Path(str(item.get("file", ""))).stem.casefold()
+        stem = translate.get(stem, stem)
         rank = _as_rank(item.get("analytical_order"))
         if not stem or stem in recorded or rank is None or rank in recorded.values():
             return None
@@ -3046,8 +3393,15 @@ def _header_order_agreement(provenance: dict | None, csv_rows: list[dict] | None
     entries = [item for item in files if isinstance(item, dict)]
     mismatches = [] if len(entries) == len(files) else ["a recorded file entry is not an object"]
 
-    # Identity first: every recorded file once in the CSV, every CSV row recorded once.
-    recorded = Counter(Path(str(item.get("file", ""))).stem.casefold() for item in entries)
+    # Identity first: every recorded file once in the CSV, every CSV row recorded once. A recorded name
+    # is the CSV's for its row, or an aliased row's input's own (_order_stems).
+    translate = _order_stems(provenance, csv_rows)
+
+    def stem_of(item: dict) -> str:
+        stem = Path(str(item.get("file", ""))).stem.casefold()
+        return translate.get(stem, stem)
+
+    recorded = Counter(stem_of(item) for item in entries)
     in_csv = Counter(str(row.get("file_name", "")).strip().casefold() for row in csv_rows)
     for stem in sorted(set(recorded) | set(in_csv)):
         if recorded[stem] != 1 or in_csv[stem] != 1:
@@ -3055,7 +3409,7 @@ def _header_order_agreement(provenance: dict | None, csv_rows: list[dict] | None
 
     timed = []
     for item in entries:
-        stem = Path(str(item.get("file", ""))).stem.casefold()
+        stem = stem_of(item)
         when = _parse_header_time(item.get("acquisition_start_time"))
         if when is None:
             mismatches.append(f"{item.get('file')}: no readable recorded time")
@@ -3110,6 +3464,13 @@ def check_analytical_order_is_real(
     and the unit manifest says so with every file's time. It passes when the CSV carries exactly
     that order and fails when it does not, whatever the numbers look like: a header order can
     happen to equal the row order, and a row order can happen not to.
+
+    The record names each file as the CSV does (file_name) since Interactive builds the CSV from the
+    input lineage; one that names an aliased row's input by its own name is read as that row
+    (_order_stems), as _recorded_order_source reads it.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01). The order decides what a run-order
+    metric may claim, which ORD-2 holds at publication, not what each file yields.
     """
     if stage != "before-production":
         return
@@ -4985,6 +5346,271 @@ def _files_of_samples(provenance: dict | None, samples: set[str], csv_names: set
     return result
 
 
+# The kinds of declared analysis input MS-DIAL opens, as Interactive's declared_analysis_inputs keeps them.
+# A declared directory is a sample but never an input, and an input that must be converted first (mzXML)
+# is attributed through its conversion's record, not through the declaration.
+DECLARED_INPUT_KINDS = frozenset({"file", "vendor_folder", "archived_container"})
+
+
+def _declared_input_key(value: object) -> str:
+    """A declared path as Interactive keys it (_safe_relative_name): "/"-separated and casefolded, less a
+    leading "/" and FILES/ and any empty or "." component; "" for none, or for one that climbs out."""
+    parts = [part for part in _declared_name(value).split("/") if part not in ("", ".")]
+    return "" if not parts or ".." in parts else "/".join(parts)
+
+
+def _allowlist_forms(relative: str) -> list[str]:
+    """Interactive's _allowlist_forms, most specific first: the path relative to the data root, less a
+    leading FILES/, and less its first component (the folder an archive unpacks into), again less a
+    FILES/ under it. Nothing deeper."""
+    forms = {relative}
+    if relative.startswith("files/"):
+        forms.add(relative[6:])
+    parts = relative.split("/")
+    if len(parts) > 1:
+        rest = "/".join(parts[1:])
+        forms.add(rest)
+        if rest.startswith("files/"):
+            forms.add(rest[6:])
+    return sorted(forms, key=len, reverse=True)
+
+
+def _declared_samples(manifest: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """The sample the Catalog declared each analysis input for (project.analysis_inputs), keyed as
+    Interactive keys it (_declared_input_key); and an archived container's, keyed by its archive."""
+    project = manifest.get("project") if isinstance(manifest.get("project"), dict) else {}
+    inputs = project.get("analysis_inputs")
+    by_path: dict[str, str] = {}
+    by_archive: dict[str, str] = {}
+    for entry in inputs if isinstance(inputs, list) else []:
+        if (not isinstance(entry, dict) or entry.get("requires_conversion")
+                or str(entry.get("kind") or "") not in DECLARED_INPUT_KINDS):
+            continue
+        path = _declared_input_key(entry.get("path"))
+        sample = str(entry.get("sample_id") or "").strip()
+        if path:
+            by_path.setdefault(path, sample)
+        archive = _declared_input_key(entry.get("archive")) if entry.get("kind") == "archived_container" else ""
+        if archive and sample:
+            by_archive.setdefault(archive, sample)
+    return by_path, by_archive
+
+
+def _declared_sample_of(manifest: dict, row: dict, declared: tuple[dict[str, str], dict[str, str]]) -> str:
+    """The sample the Catalog declared a lineage row's input for, read as Interactive's CSV builder reads it.
+
+    Interactive's build_input_lineage fills a row's sample_id only where exactly one of the unit's samples
+    names the input by its base name, so neg/x.mzML and pos/x.mzML, which share x.mzml, both carry "". Its
+    analysis-CSV builder takes the sample from the Catalog's declared analysis input first
+    (project.analysis_inputs[].sample_id, _declared_samples), matched by the input's path relative to the
+    data root, the most specific form first (match_declared_inputs, _allowlist_forms), and so writes each
+    row with its own sample's Class. So is the sample read here: by that path, else through the one
+    declared input, or the archive of the one archived container, that the row's declared_names name. The
+    declaration is the Catalog's, the writer of the assignments, never the CSV writer's. Where the lineage
+    row does name a sample, that is still the one, as this check always read it (_input_samples). A
+    container its archive unpacked under another name than the one declared is matched by neither, and is
+    left to the name.
+    """
+    by_path, by_archive = declared
+    if not by_path:
+        return ""
+    root_text = str(manifest.get("input_directory") or "").strip()
+    root = _path_key(root_text).rstrip("\\/") if root_text else ""
+    path = _path_key(row["path"])
+    if root and path.startswith(root + os.sep):
+        relative = path[len(root) + 1:].replace(os.sep, "/").casefold()
+        form = next((form for form in _allowlist_forms(relative) if form in by_path), None)
+        if form is not None:
+            return by_path[form]
+    names = row.get("declared_names") if isinstance(row.get("declared_names"), list) else []
+    named = {by_path.get(name) or by_archive.get(name, "") for name in map(_declared_input_key, names) if name}
+    named.discard("")
+    return next(iter(named)) if len(named) == 1 else ""
+
+
+def _input_samples(provenance: dict, parts: tuple[str, ...] = ("rows",)) -> dict[str, str]:
+    """The sample each input of the unit's lineage is, by key: the one its lineage row names (sample_id),
+    else the one the Catalog declared the input for (_declared_sample_of); "" where neither names one.
+
+    The lineage rows are the unit's own and, for a split part, its raw owner's (_lineage_manifests), each
+    read against its own manifest's declaration and data root; an input's first row to name a sample
+    gives it. ``parts`` are the lineage's inputs ("rows") and what the lease excluded ("excluded").
+    """
+    samples: dict[str, str] = {}
+    for manifest in _lineage_manifests(provenance):
+        declared: "tuple[dict[str, str], dict[str, str]] | None" = None
+        for part in parts:
+            for row in _lineage_rows(manifest, part):
+                key = _path_key(row["path"])
+                if samples.get(key):
+                    continue
+                sample = str(row.get("sample_id") or "").strip()
+                if not sample:
+                    declared = declared if declared is not None else _declared_samples(manifest)
+                    sample = _declared_sample_of(manifest, row, declared)
+                samples[key] = sample
+    return samples
+
+
+def _samples_by_csv_name(provenance: dict | None, csv_rows: list[dict]) -> dict[str, str]:
+    """The sample each analysis-CSV row is, by the row's file_name, where the input lineage says so.
+
+    A row is the input it opens: its own path, or the input its Console alias stands for
+    (_input_keys_by_console_path reads console_path and console_alias). That input's lineage row names
+    the sample the lease attributed it to (sample_id), and where it names none the input is the sample
+    the Catalog declared it for (_input_samples); and once Interactive built the CSV from the lineage,
+    the row records the name the CSV gives it (file_name): the input's stem, its alias, or the stem made
+    unique by a digest. A lineage row recording another file_name than the row's describes another CSV,
+    and says nothing of this one. Rows the lineage says nothing of are left out.
+    """
+    if not isinstance(provenance, dict):
+        return {}
+    by_path: dict[str, dict] = {}
+    for manifest in _lineage_manifests(provenance):
+        for row in _lineage_rows(manifest):
+            by_path.setdefault(_path_key(row["path"]), row)
+    if not by_path:
+        return {}
+    aliases = _input_keys_by_console_path(provenance)
+    samples = _input_samples(provenance)
+    result: dict[str, str] = {}
+    for row in csv_rows:
+        name = str(row.get("file_name", ""))
+        key = _input_key(row, aliases)
+        lineage = by_path.get(key) or {}
+        sample = samples.get(key, "") if lineage else ""
+        recorded = str(lineage.get("file_name") or "")
+        if sample and (not recorded or recorded == name):
+            result[name] = sample
+    return result
+
+
+def _container_stem(name: str) -> str:
+    """A path as the CSV names the input it is, compared without case: the last component less a
+    trailing "/" and an archive suffix, then less its container suffix, else less its last extension."""
+    base = str(name).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    unpacked = _strip_suffix(base, ARCHIVE_SUFFIXES)
+    stripped = _strip_suffix(unpacked, CONTAINER_SUFFIXES)
+    return (stripped if stripped != unpacked else unpacked.rsplit(".", 1)[0]).casefold()
+
+
+def _excluded_samples(provenance: dict | None, samples: set[str]) -> dict[str, list[str]]:
+    """Of these approved samples, those whose input was excluded from the run, with the inputs' names.
+
+    Excluded by a binding campaign disposition (the unit's, and a split part's parent's), or by the lease
+    itself (excluded_input_candidates: an mzML RawDataHandler cannot decode). Either is another writer
+    than the CSV's. The sample an excluded input is the input of is what the lease's lineage row names
+    for it, or where that names none the sample the Catalog declared the input for (_input_samples);
+    where neither does, the CSV record (analysis_csv.excluded_inputs), in which Interactive names each
+    such input with its sample; and else a sample whose id, or recorded raw_file, is the input by name.
+    The CSV record is the CSV writer's own, so it never outranks the lease's or the Catalog's: a CSV that
+    dropped one sample's row and named that sample beside another's excluded input would otherwise
+    excuse both. An entry of the CSV record that neither exclusion bears out excludes nothing, and nor
+    does any exclusion excuse a sample the lineage or the declaration gives an input that runs (a
+    candidate nobody excluded): that sample's row is missing, whatever else of it was excluded.
+    """
+    if not isinstance(provenance, dict) or not samples:
+        return {}
+    manifests = _lineage_manifests(provenance)
+    excluded = {key: path for key, (path, _reason) in _exclusion_reasons(*manifests).items()}
+    for manifest in manifests:
+        for item in manifest.get("excluded_input_candidates") or []:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                excluded.setdefault(_path_key(item["path"]), str(item["path"]))
+    if not excluded:
+        return {}
+    candidates = provenance.get("input_candidates") if isinstance(provenance.get("input_candidates"), list) else []
+    runnable = {_path_key(item) for item in candidates if str(item).strip()} - set(excluded)
+    attributed = _input_samples(provenance, ("rows", "excluded"))
+    running = {sample for key, sample in attributed.items() if key in runnable}
+    named: dict[str, str] = {key: sample for key, sample in attributed.items() if key in excluded and sample}
+    record = provenance.get("analysis_csv")
+    listed = record.get("excluded_inputs") if isinstance(record, dict) else None
+    for item in listed if isinstance(listed, list) else []:
+        if isinstance(item, dict):
+            key = _path_key(item.get("path") or "")
+            sample = str(item.get("sample_id") or "").strip()
+            if key in excluded and sample:
+                named.setdefault(key, sample)
+    by_id = {sample.strip(): sample for sample in samples}
+    raw_files: dict[str, set[str]] = {}
+    for row in ((provenance.get("project") or {}).get("sample_metadata") or []):
+        if not isinstance(row, dict):
+            continue
+        sample, raw = str(row.get("sample_id") or "").strip(), str(row.get("raw_file") or "").strip()
+        if sample and raw:
+            raw_files.setdefault(_container_stem(raw), set()).add(sample)
+    result: dict[str, list[str]] = {}
+    for key, path in excluded.items():
+        stem = _container_stem(path)
+        owners = {named[key]} if key in named else (
+            {sample for sample in by_id if sample.casefold() == stem} | raw_files.get(stem, set()))
+        for sample in owners - running:
+            if sample in by_id:
+                result.setdefault(by_id[sample], []).append(Path(path.rstrip("\\/")).name)
+    return result
+
+
+def _class_token(value: object) -> str:
+    """A Class label as Interactive projects it into the analysis CSV (repository_metadata.class_token,
+    which apply_class_proposal applies to every approved label): NFKC, runs of white space and "_" as
+    "-", anything but a letter, a digit or ".+-" as "-", and the "-" runs joined and trimmed."""
+    text = unicodedata.normalize("NFKC", str(value if value is not None else "").strip())
+    text = re.sub(r"[\s_]+", "-", text.strip())
+    text = "".join(character if character.isalnum() or character in ".+-" else "-" for character in text)
+    return re.sub(r"-+", "-", text).strip("-")
+
+
+def _console_reads_back(value: object) -> bool:
+    """Whether the Console's analysis-CSV parser reads this value back as written (Interactive's
+    workflow.console_safe_text): printable ASCII without a comma or a quote."""
+    text = str(value)
+    return all(" " <= character <= "~" for character in text) and "," not in text and '"' not in text
+
+
+# The name Interactive gives a Class label whose ASCII fold is empty or another label's (Class1, Class2, ...).
+_NUMBERED_CLASS = re.compile(r"Class[1-9][0-9]*")
+
+
+def _class_id_aliases(provenance: dict | None) -> tuple[dict[str, str], dict[str, str]]:
+    """The ASCII Class each projected label the Console could not read back was written as, and the
+    entries of the record that are no such fold.
+
+    Interactive's lineage-built CSV (repository_analysis_rows._class_aliases) leaves a label the Console
+    reads back as it is, folds any other to ASCII (class_token of its NFKD fold), or numbers it (Class1,
+    Class2, ...) where the fold is empty or meets another label, keeping the grouping, and records the
+    map in analysis_csv.class_id_aliases of the CSV it wrote (status "written"); a failed record wrote no
+    CSV and maps nothing. The record is the CSV writer's own, so an entry is taken only as that fold: one
+    that renames a label the Console reads back, or gives a label another meaningful name, would let a
+    CSV that swapped "Control" and "Treated" record the swap and pass. Such entries are returned apart.
+    """
+    record = provenance.get("analysis_csv") if isinstance(provenance, dict) else None
+    aliases = record.get("class_id_aliases") if isinstance(record, dict) and record.get("status") == "written" else None
+    if not isinstance(aliases, dict):
+        return {}, {}
+    folds: dict[str, str] = {}
+    refused: dict[str, str] = {}
+    for label, alias in aliases.items():
+        label = str(label)
+        if not isinstance(alias, str) or not alias:
+            continue
+        ascii_fold = _class_token(unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode("ascii"))
+        if (not _console_reads_back(label) and _console_reads_back(alias)
+                and (alias == ascii_fold or _NUMBERED_CLASS.fullmatch(alias))):
+            folds[label] = alias
+        else:
+            refused[label] = alias
+    return folds, refused
+
+
+def _executed_forms(label: str, aliases: dict[str, str]) -> set[str]:
+    """The Class labels an approved label may run as: itself, as projected ("Sample" where the projection
+    leaves nothing, as apply_class_proposal writes it), and as folded for the Console."""
+    token = _class_token(label) or "Sample"
+    forms = {label, token} | {aliases[form] for form in (label, token) if form in aliases}
+    return {form for form in forms if form}
+
+
 def check_executed_class_matches_approved(
     report: Report, provenance: dict | None, reason: str,
     csv_rows: list[dict] | None, csv_reason: str,
@@ -4999,6 +5625,28 @@ def check_executed_class_matches_approved(
 
     CLS-1 asks whether the executed grouping is stated and unambiguous. It is satisfied by a
     perfectly clean grouping of the wrong thing.
+
+    A ROW IS JOINED TO ITS SAMPLE through the input lineage first (_samples_by_csv_name): the input the
+    row opens, through its Console alias, and the sample its lineage row names, or where it names none
+    (two inputs sharing a base name) the sample the Catalog declared the input for. Since Interactive builds
+    the CSV from the lineage, a row's file_name may be an ASCII alias or a stem made unique by a digest
+    (file_name_not_unique), which no sample's name or raw file is. A row the lineage says nothing of is
+    joined by name, as before (_files_of_samples). An approved sample with no row is absent unless its
+    input was excluded from the run, by a binding campaign disposition or by the lease, and then it is
+    reported as excluded (_excluded_samples). Whose input an excluded one was is the lease's lineage to
+    say before the CSV record, which is the CSV writer's own, and a sample the lineage gives an input
+    that runs is absent however much else of it was excluded. Where every approved sample was excluded
+    the Console reads no grouping, and that is a FAIL, not a comparison of nothing.
+
+    A LABEL IS COMPARED AS INTERACTIVE WRITES IT: projected (_class_token, "Wild type" as "Wild-type",
+    and "Sample" where the projection leaves nothing), and, where the Console could not read the
+    projection back, folded to the ASCII Class the CSV record names (analysis_csv.class_id_aliases),
+    an entry taken only where it is Interactive's fold of the label (_class_id_aliases). Each approved
+    Class must still run as one executed Class and no executed Class carry two: a projection or a fold
+    that merges or splits Classes is a grouping nobody approved, which the label comparison alone would
+    not see.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01), as for CLS-1.
     """
     stage = "before-production"
     proposal = _class_proposal(provenance)
@@ -5025,36 +5673,90 @@ def check_executed_class_matches_approved(
     # MetaboLights does not: MTBLS2207's "DDA E. coli" is the file M3T-Std_Ecoli_neg_DDA_1mz, and
     # joining on equal strings called all six approved samples absent and all six rows unapproved
     # while every one carried its approved Class. The repository's own sample-to-file record
-    # (sample_metadata raw_file) is the link; it is neither of the two writers being compared.
-    files_of_sample = _files_of_samples(provenance, set(approved), set(executed))
+    # (sample_metadata raw_file) is the link; it is neither of the two writers being compared. The
+    # input lineage, written by the lease, is the link for a CSV built from it.
+    through_lineage = _samples_by_csv_name(provenance, csv_rows)
+    by_id = {sample.strip(): sample for sample in approved}
+    files_of_sample: dict[str, list[str]] = {}
+    for name, sample in through_lineage.items():
+        if sample in by_id:
+            files_of_sample.setdefault(by_id[sample], []).append(name)
+    by_name = _files_of_samples(provenance, set(approved) - set(files_of_sample), set(executed) - set(through_lineage))
+    files_of_sample.update(by_name)
+    unmatched = {sample for sample in approved if not files_of_sample.get(sample)}
+    excluded = _excluded_samples(provenance, unmatched)
+    aliases, refused = _class_id_aliases(provenance)
     mapped: set[str] = set()
     missing = []
     differing = []
+    ran_as: dict[str, set[str]] = {}
+    carried: dict[str, set[str]] = {}
+    folded: dict[str, str] = {}
     for sample, label in sorted(approved.items()):
         files = files_of_sample.get(sample) or []
         if not files:
-            missing.append(sample)
+            if sample not in excluded:
+                missing.append(sample)
             continue
+        forms = _executed_forms(label, aliases)
         for name in files:
             mapped.add(name)
-            if executed[name] != label:
+            if executed[name] not in forms:
                 differing.append(
                     f"{sample}{'' if name == sample else f' ({name})'}: approved {label!r}, "
                     f"executed {executed[name]!r}"
                 )
+                continue
+            ran_as.setdefault(label, set()).add(executed[name])
+            carried.setdefault(executed[name], set()).add(label)
+            if executed[name] != label:
+                folded[label] = executed[name]
     extra = sorted(set(executed) - mapped)
-    joined_by_file = sum(1 for sample, files in files_of_sample.items() if files and files != [sample])
-    if not missing and not extra and not differing:
-        report.add("CLS-2", stage, "Executed Class is the Class that was approved", PASS,
-                   f"All {len(approved)} approved assignments appear in the analysis CSV with the "
-                   "same Class.", assignments=len(approved), joined_through_raw_file=joined_by_file)
+    regrouped = ([f"approved {label!r} runs as {sorted(labels)}" for label, labels in sorted(ran_as.items())
+                  if len(labels) > 1]
+                 + [f"{label!r} carries approved {sorted(labels)}" for label, labels in sorted(carried.items())
+                    if len(labels) > 1])
+    joined_by_file = sum(1 for sample, files in by_name.items() if files and files != [sample])
+    joined_by_lineage = len(set(files_of_sample) - set(by_name))
+    evidence = {"assignments": len(approved), "joined_through_raw_file": joined_by_file}
+    if joined_by_lineage:
+        evidence["joined_through_lineage"] = joined_by_lineage
+    if excluded:
+        evidence["excluded_samples"] = {sample: names for sample, names in sorted(excluded.items())[:10]}
+    if folded:
+        evidence["written_as"] = dict(sorted(folded.items())[:10])
+    if refused:
+        evidence["class_id_aliases_not_a_fold"] = dict(sorted(refused.items())[:10])
+    if not missing and not extra and not differing and not regrouped and len(excluded) == len(approved):
+        report.add(
+            "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
+            f"None of the {len(approved)} approved sample(s) is analysed: the input of every one was excluded by "
+            "the campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + "), so the Console "
+            "reads no grouping at all.", **evidence)
+        return
+    if not missing and not extra and not differing and not regrouped:
+        if not excluded and not folded:
+            detail = f"All {len(approved)} approved assignments appear in the analysis CSV with the same Class."
+        else:
+            detail = (f"All {len(approved) - len(excluded)} approved assignments of the samples analysed appear in "
+                      "the analysis CSV with the same Class")
+            if folded:
+                detail += (f", {len(folded)} Class label(s) written as the Console reads them ("
+                           + ", ".join(f"{label!r} as {alias!r}" for label, alias in sorted(folded.items())[:3]) + ")")
+            if excluded:
+                detail += (f"; {len(excluded)} approved sample(s) are not analysed, their input excluded by the "
+                           "campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + ")")
+            detail += "."
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved", PASS, detail, **evidence)
         return
     report.add(
         "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
         "The grouping the Console will read is not the grouping that was approved. "
         f"{len(differing)} sample(s) carry a different Class, {len(missing)} approved sample(s) "
-        f"are absent from the CSV, {len(extra)} CSV row(s) were never approved.",
+        f"are absent from the CSV, {len(extra)} CSV row(s) were never approved"
+        + (f", and {len(regrouped)} Class(es) were merged or split on the way" if regrouped else "") + ".",
         differing=differing[:10], missing=missing[:10], unapproved=extra[:10],
+        **({"regrouped": regrouped[:10]} if regrouped else {}), **evidence,
     )
 
 
@@ -5066,6 +5768,8 @@ def check_class_proposal_was_accepted(report: Report, provenance: dict | None, r
     status. A proposal still reading "proposed" beside an executed, published run says the
     ratification happened somewhere no artifact records -- which, for a machine-authored grouping,
     is the whole of the safety argument.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01), as for CLS-1.
     """
     stage = "before-production"
     proposal = _class_proposal(provenance)
@@ -5194,7 +5898,8 @@ PUBLICATION_ARTIFACTS = (
 )
 
 
-def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, output: Path) -> None:
+def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, output: Path,
+                                     csv_rows: list[dict] | None = None) -> None:
     """SUM-2. No published artifact calls inputs checksum-verified that were not.
 
     The second clause of the user's decision of 2026-09-25: a unit whose inputs rest on the sha256
@@ -5213,7 +5918,8 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     if owner is None:
         report.add("SUM-2", stage, title, NOT_EVALUABLE, owner_reason or "The manifest is absent.")
         return
-    kind, _detail, basis_evidence = _checksum_basis(owner)
+    # The inputs SUM-1 judged: what an artifact says of the inputs is said of those analysed.
+    kind, _detail, basis_evidence = _checksum_basis(owner, _not_analysed(provenance, owner, csv_rows))
     if kind not in ("download_sha256", "archive_verified"):
         report.add("SUM-2", stage, title, NOT_EVALUABLE,
                    "The inputs were checksum-verified, or SUM-1 refused them; there is no unearned "
@@ -5633,6 +6339,9 @@ def check_threshold_was_measured_on_this_unit(
 
     Compared as numbers, so 500 and 500.0 are the same threshold. Whether the Console can PARSE
     that literal is MTH-1's question, not this one.
+
+    RUN POLICY: record_only, as the user named it (2026-10-01). A threshold not measured here keeps
+    more or fewer peaks; what it keeps is still this unit's data.
     """
     stage = "before-production"
     if provenance is None:
@@ -6842,7 +7551,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_preflight_claim(report, provenance, provenance_reason)
         check_extractor_identity(report, provenance, provenance_reason)
         check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason)
-        check_checksum_coverage(report, provenance, provenance_reason)
+        check_checksum_coverage(report, provenance, provenance_reason, csv_rows)
         check_converted_inputs_are_their_conversions(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_class_distribution(report, csv_rows, csv_reason, "before-production")
         check_executed_class_matches_approved(report, provenance, provenance_reason, csv_rows, csv_reason)
@@ -6878,7 +7587,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_storage_shape(report, workspace, "before-publish", provenance)
         check_unit_reached_a_terminal_state(report, provenance, provenance_reason, output)
         check_no_finalisation_hold_stands(report, provenance, provenance_reason)
-        check_no_unearned_checksum_claim(report, provenance, output)
+        check_no_unearned_checksum_claim(report, provenance, output, csv_rows)
         check_retention_policy_was_acted_on(report, provenance, provenance_reason, workspace)
         check_no_private_path_in_a_shared_artifact(report, output, "before-publish")
         check_readings_recorded(report, workspace, "before-publish")
@@ -7038,6 +7747,9 @@ def render(report: Report) -> str:
             "UNEVALUABLE ON ARTIFACTS THIS STAGE OWED: "
             + ", ".join(check.check_id for check in strict)
         )
+    blocked = report.run_blocked_by
+    if blocked:
+        lines.append("FAILS THAT STOP A CAMPAIGN RUN (run_policy blocks_run): " + ", ".join(blocked))
     progress = getattr(report, "progress", None)
     if progress:
         line = f"PROGRESS (from artifacts, not a verdict): {progress['stage_reached']}"
