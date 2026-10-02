@@ -339,16 +339,36 @@ the unit's failure. A held unit is not run and keeps its raw data, and it is
 counted neither as a retry nor as a failure. Its state is `gate_held`, with a
 warning in the ledger and in the status export, and every other unit goes on.
 The runner runs the gate again for held units at each of its starts and every
-few hours. An operator can ask for it at once with
-`scripts/campaign-runner.py recheck-held`. Once a report exists, the unit goes
-on as any other. After the run, at `pre_cleanup` and `final`, a missing report
-is only recorded, and the raw data go by the deletion rule whatever the gate
-says.
+few hours. A held unit is therefore not idle: `run --until-idle`, the
+scheduled task's command, does not return while a unit is held, and the
+runner sleeps between polls until the recheck is due. A unit that stays held
+keeps the runner going until a recheck gives a report or an operator skips
+the unit. An operator can ask for the recheck at once with
+`scripts/campaign-runner.py recheck-held`. Like every request, it is acted on
+by the runner that holds the campaign, and the command says when no runner
+does and one must be started. Once a report exists, the unit goes on as any
+other. After the run, at `pre_cleanup` and `final`, a missing report is only
+recorded, and the raw data go by the deletion rule whatever the gate says.
 
 **A stop is per unit.** A FAIL, a check left unevaluated or a hold stops that
 unit's analysis, never the runner, which goes on with the other units. A pin
 change, a short disk and a repository outage pause the whole campaign
-instead, and each pause lifts by itself once its cause has gone.
+instead, and each pause lifts by itself once its cause has gone. So does a
+campaign backend that does not answer, which every unit would meet alike: the
+runner looks at it again hourly. The user's decision of 2026-10-02 names the
+first three pauses; the backend pause is the runner's reading of the same
+rule. Nothing one unit does pauses the campaign. A reply or a record of
+Interactive's that the runner cannot read or act on for one unit holds that
+unit as `contract_held`. The user's words do not name this case, and the
+runner treats it as the no-report rule treats a gate with no report. It
+covers a missing or malformed `campaign_disposition`, one that nothing
+applied, one another extractor made, an extractor Interactive refuses or
+does not find, and a reply of another shape. The unit goes no further,
+keeps its raw data, is counted neither as a retry nor as a failure, is warned
+about in the ledger and the status export, and is rechecked as a `gate_held`
+unit is. A cleanup or discard that Interactive cannot make as called leaves
+that unit's raw data held, looked at again at each start and every few hours,
+and the unit ends as it was going to.
 
 The gate lifts none of Interactive's own refusals: a unit Interactive refuses
 to start does not run, whatever the gate said.

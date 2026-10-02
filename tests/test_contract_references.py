@@ -28,8 +28,12 @@ decided, with no passage still marked as awaiting the user: a blocks_run check l
 it is required stops the run; a gate that gives no usable report holds the unit, unrun and uncounted
 with its raw data kept, and after the run is only recorded; an mzXML without a polarity is given its
 unit's one declared ion mode, and CONV-1 stops the unit where there is none; and a stop is the unit's,
-never the runner's. Every passage that describes the confirmed=true discard fallback names the policy
-field that carries the user's approval of it.
+never the runner's. The contract states what the runner does under that last rule: a held unit keeps
+run --until-idle going for its rechecks; a reply of Interactive's the runner cannot read for one unit
+holds that unit (contract_held), as a missing report does, and pauses nothing; and only what every unit
+meets alike pauses the campaign, each pause lifting by itself, the backend pause named as the runner's
+reading beside the three the user named. Every passage that describes the confirmed=true discard
+fallback names the policy field that carries the user's approval of it.
 """
 
 from __future__ import annotations
@@ -109,9 +113,18 @@ _DECIDED_CASES = {
         "holds the unit", "keeps its raw data", "counted neither as a retry nor as a failure", "`gate_held`",
         "every other unit goes on", "runs the gate again", "`scripts/campaign-runner.py recheck-held`",
         "a missing report is only recorded",
+        # A held unit is not idle, so the rechecks every few hours come by themselves; a request waits for a
+        # runner, and the command says when none holds the campaign.
+        "`run --until-idle`", "does not return while a unit is held", "one must be started",
     )),
     "a stop is per unit": (_GATE_RULE_SECTION, "**A stop is per unit.**", (
         "never the runner", "pause the whole campaign",
+        # Every pause the runner makes, each lifting by itself, and the backend's named as the runner's reading.
+        "A pin change, a short disk and a repository outage", "lifts by itself",
+        "campaign backend that does not answer", "the backend pause is the runner's reading",
+        # One unit's record holds that unit; it pauses nothing.
+        "Nothing one unit does pauses the campaign", "`contract_held`", "counted neither as a retry nor as a failure",
+        "leaves that unit's raw data held",
     )),
     "mzXML without a polarity": (_SCOPE_SECTION, "- **mzXML without a polarity.**", (
         "exactly one polarity", "`technical_settings.ion_mode`", "imputed from that", "as an inference",
@@ -602,6 +615,36 @@ class ContractGateChecksTests(unittest.TestCase):
                 "`blocks_run` check (the user's decision) is no list.")
         self.assertEqual([{"ELIG-1", "ACQ-1"}], _parenthesised_lists(text, "blocks_run"))
         self.assertEqual([{"CLS-1"}], _parenthesised_lists(text, "record_only"))
+
+
+class StopIsPerUnitTests(unittest.TestCase):
+    """What the contract says a stop is, held to the runner the campaign runs (scripts/campaign)."""
+
+    def setUp(self) -> None:
+        self.contract = (_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+        heading, lead, _phrases = _DECIDED_CASES["a stop is per unit"]
+        self.passage = next(block for block in _blocks(_section(self.contract, heading)) if block.startswith(lead))
+
+    def test_every_held_state_of_the_runner_is_named_in_the_gate_rule(self) -> None:
+        sys.path.insert(0, str(_ROOT / "scripts"))
+        try:
+            from campaign import ledger
+        finally:
+            sys.path.remove(str(_ROOT / "scripts"))
+        section = _section(self.contract, _GATE_RULE_SECTION)
+        self.assertEqual(("gate_held", "contract_held"), ledger.HELD_STATES)
+        for state in ledger.HELD_STATES:
+            with self.subTest(state=state):
+                self.assertIn(f"`{state}`", section)
+
+    def test_no_pause_waits_for_an_operator(self) -> None:
+        """Before 2026-10-02 one unit's broken record paused the campaign until an operator resumed it."""
+        for earlier in ("until an operator resumes", "only an operator lifts", "waits for an operator"):
+            with self.subTest(earlier=earlier):
+                self.assertNotIn(earlier, self.passage)
+                put_back = self.contract.replace("Nothing one unit does pauses the campaign.",
+                                                 f"A broken contract pauses the campaign {earlier}.")
+                self.assertTrue(any(item.startswith("a stop is per unit:") for item in _case_problems(put_back)))
 
 
 class TrialDecisionsTests(unittest.TestCase):

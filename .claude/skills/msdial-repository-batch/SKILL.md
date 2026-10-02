@@ -325,11 +325,17 @@ that does not parse, or a gate the runner could not start. The held unit is
 not run, keeps its raw data and is counted neither as a retry nor as a
 failure. It is warned about in the ledger and the status export while the
 other units go on. The runner runs the gate again for it at each start and
-every few hours, and `scripts/campaign-runner.py recheck-held` asks for that
-at once. After the run a missing report is only recorded. A stop is per unit
-and never stops the runner, which goes on with the other units; a pin
-change, a short disk and a repository outage pause the whole campaign
-instead, and each pause lifts by itself. Read which checks failed, and which
+every few hours, so a held unit keeps `run --until-idle` from returning, and
+`scripts/campaign-runner.py recheck-held` asks for that at once of the runner
+that holds the campaign, or says that none does and one must be started.
+After the run a missing report is only recorded. A stop is per unit and never
+stops the runner, which goes on with the other units. A reply or a record of
+Interactive's that the runner cannot read or act on for one unit holds that
+unit in `contract_held` the same way, and a cleanup or discard Interactive
+cannot make as called leaves that unit's raw data held; neither pauses the
+campaign. A pin change, a short disk, a repository outage and a campaign
+backend that does not answer pause the whole campaign instead, and each
+pause lifts by itself. Read which checks failed, and which
 were left unevaluated, from the `checks` of the `--json` report, never from
 the exit code. It is 2 for any FAIL, in either list, and a FAIL outranks a
 strict refusal, so it is 2, not 4, however many required checks were left
