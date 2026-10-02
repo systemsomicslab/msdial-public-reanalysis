@@ -324,7 +324,7 @@ class InteractiveContractTests(unittest.TestCase):
                 unit["manifest_path"].write_text(json.dumps(manifest), encoding="utf-8")
                 calls = []
 
-                def discard_download_lease(manifest_path, confirmed=False, campaign_authorization_path=""):
+                def discard_download_lease(manifest_path, confirmed=False, campaign_authorization_path="", **_entry):
                     calls.append(str(manifest_path))
                     return {"deleted": True, "raw_directory": "raw"}
 
@@ -431,10 +431,12 @@ class InteractiveContractTests(unittest.TestCase):
         port = ports.InteractivePort(port=8766)
         calls = []
 
-        def discard_download_lease(manifest_path, confirmed=False, campaign_authorization_path=""):
+        def discard_download_lease(manifest_path, confirmed=False, campaign_authorization_path="", **_entry):
             calls.append((str(manifest_path), campaign_authorization_path))
             if "refuse" in str(manifest_path):
-                raise ValueError("mzTab-M output exists; finalize the run before deleting raw data.")
+                # Interactive 0.5.22: a refusal under an approval is returned as blockers, nothing deleted.
+                return {"deleted": False, "confirmation_required": False,
+                        "blockers": ["mzTab-M output exists; finalize the run before deleting raw data."]}
             return {"deleted": True, "raw_directory": "raw"}
 
         with tempfile.TemporaryDirectory() as directory:
@@ -444,7 +446,11 @@ class InteractiveContractTests(unittest.TestCase):
                 self.assertTrue(port.capabilities()["authorized_discard"])
                 result = port.discard(manifest_path=str(unit["manifest_path"]), authorization_path="auth.json", unit_id="u1")
                 self.assertEqual((result["ok"], result["deleted"]), (True, True))
-                refused = port.discard(manifest_path=str(Path(directory) / "refuse.json"), authorization_path="auth.json", unit_id="u1")
+                # A unit whose manifest exists, as the MCP tool resolves it before it discards anything.
+                refuse_root = Path(directory) / "refuse"
+                refuse_root.mkdir()
+                refuse_unit = campaign_unit(refuse_root)
+                refused = port.discard(manifest_path=str(refuse_unit["manifest_path"]), authorization_path="auth.json", unit_id="u1")
             self.assertEqual((refused["deleted"], refused["blockers"]), (False, ["mztab_output_exists"]))
             self.assertEqual(calls[0], (str(unit["manifest_path"]), "auth.json"))
             self.assertEqual(boundary_5_crossings(unit["manifest_path"]), [])
