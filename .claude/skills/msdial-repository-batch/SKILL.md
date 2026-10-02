@@ -56,7 +56,9 @@ For a repository range:
    readable. In a campaign, an mzXML that is the encoding a sample is analysed
    by (a vendor container and mzML outrank it; it outranks a twin nothing
    reads, such as a `.dat`) is converted to mzML by Interactive's converter
-   with every inference off, and the conversion is recorded as that input's
+   with every inference off but a polarity imputed from the unit's one
+   declared ion mode (`CLAUDE.md`, Supported production scope), and the
+   conversion is recorded as that input's
    provenance; until the unit's manifest records it, the mzXML stays
    `requires_conversion`, and a file whose conversion fails is excluded with
    its reason while the rest of the unit runs. mzData stays
@@ -120,16 +122,17 @@ For a repository range:
 12. Write the production bundle with `msdial_prepare_guided_analysis`, with the
    accepted `minimum_peak_height` in the answers, then run the
    `before-production` gate (see below) against it and stop the unit on a
-   refusal. In a campaign, a FAIL stops it only in a `blocks_run` check
-   (ELIG-1, ACQ-1, SUM-1, CNT-1 and INP-1): the unit is then a failed unit,
-   retried and its raw data deleted as the campaign's rule for one says. A
-   FAIL in a `record_only` check (CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1) is
-   recorded, and the unit runs. Three cases are awaiting the user's decision,
-   and until then (`CLAUDE.md`, Gate verdicts in a campaign) a FAIL in a check
-   the user's rule names in neither list (ID-1, SPL-1, PRE-1, PRE-2 and CONV-1) and a
-   check left `not_evaluable` are recorded, and the unit runs, while a gate
-   that produced no report stops the run as a failed attempt. The gate reads
-   `output\method.txt`, so it cannot run before this.
+   refusal. In a campaign (`CLAUDE.md`, Gate verdicts in a campaign), a FAIL
+   stops it only in a `blocks_run` check (ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1,
+   ID-1, PRE-2 and CONV-1), and so does one of them left `not_evaluable` where
+   it is required: the unit is then a failed unit, retried and its raw data
+   deleted as the campaign's rule for one says. A FAIL in a `record_only` check
+   (CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1 and PRE-1, which never FAILs) is
+   recorded, and the unit runs, as it does past a check left `not_evaluable`
+   where it is not required. A gate that gives no usable report holds the unit
+   unrun, its raw data kept and nothing counted, until a recheck gives one; the
+   other units go on. The gate reads `output\method.txt`, so it cannot run
+   before this.
    The diagnostic in step 11 does not touch the production files: it writes its
    own single-file `analysis_files.csv`, `method.txt` and `run-manifest.json`
    under `<workspace>\diagnostics\<diagnostic-job-id>`, and
@@ -195,8 +198,9 @@ payload, so a missing `blockers` and an empty `blockers` look identical.
 A check that cannot be evaluated reports `not_evaluable`, never `pass`. Treat
 `not_evaluable` on a stage's own artifacts as a reason to stop, not as consent.
 In a campaign, what stops a unit is decided instead by `CLAUDE.md`, Gate
-verdicts in a campaign: there, while the case is awaiting the user's decision,
-a check left `not_evaluable` is recorded with the unit, and the unit runs.
+verdicts in a campaign: there a `blocks_run` check left `not_evaluable` where
+it is required stops the run as its FAIL does, and any other check left
+`not_evaluable` is recorded with the unit, and the unit runs.
 
 Run the gate even where the server now refuses the same thing. The two checks are
 independent on purpose: one is a property of the artifacts on disk, the other a
@@ -310,20 +314,29 @@ never stops the campaign.
 In a campaign the runner runs the gate at each of its points and keeps every
 report for the verification that follows the campaign. A verdict never holds
 the raw-data deletion (the user's decision of 2026-09-30), and at
-`before-production` a FAIL holds the run only in a `blocks_run` check (the
-user's decision of 2026-10-01; step 12 and `CLAUDE.md`, Gate verdicts in a
-campaign). Three cases are awaiting the user's decision, and until then a
-FAIL in a check in neither list and a check left `not_evaluable`, in either
-list or in neither, are recorded and the unit runs, while a gate that
-produced no report (exit 3, a crash, output that does not parse, or no answer
-within the runner's time limit) stops the run as a failed attempt. Read which
-checks failed from the `checks` of the `--json` report, never from the exit
-code: it is 2 for any FAIL, in a list or in neither, and a FAIL outranks a
+`before-production` a FAIL holds the run only in a `blocks_run` check, and
+so does such a check left `not_evaluable` where it is required (the user's
+decisions of 2026-10-01 and 2026-10-02; step 12 and `CLAUDE.md`, Gate verdicts
+in a campaign). A FAIL in a `record_only` check and any other check left
+`not_evaluable` are recorded and the unit runs. A gate that gives no usable
+report holds the unit in `gate_held`. That is no answer within the runner's
+time limit, a crash or an exit code other than 0, 2, 3 and 4, exit 3, output
+that does not parse, or a gate the runner could not start. The held unit is
+not run, keeps its raw data and is counted neither as a retry nor as a
+failure. It is warned about in the ledger and the status export while the
+other units go on. The runner runs the gate again for it at each start and
+every few hours, and `scripts/campaign-runner.py recheck-held` asks for that
+at once. After the run a missing report is only recorded. A stop is per unit
+and never stops the runner, which goes on with the other units; a pin
+change, a short disk and a repository outage pause the whole campaign
+instead, and each pause lifts by itself. Read which checks failed, and which
+were left unevaluated, from the `checks` of the `--json` report, never from
+the exit code. It is 2 for any FAIL, in either list, and a FAIL outranks a
 strict refusal, so it is 2, not 4, however many required checks were left
 unevaluated beside a `record_only` FAIL; the report lists those in
-`strict_failures`. On gate `main` (50fd28d) the report does not yet say which
-list a check is in; the gate is to report it as `run_policy`, and until it
-does the runner holds the lists as `CLAUDE.md` states them.
+`strict_failures`, and `run_blocked_by` names every check that stops the run.
+The report states each check's list as `run_policy`, and the runner holds the
+`blocks_run` list itself whatever a report states.
 Report a unit whose outputs are all present and whose mzTab-M validates as
 `outputs produced`, not `completed`: a run is completed only when it reaches
 B10 and its gate, run with `--stage all --strict`, exits 0, which a run whose

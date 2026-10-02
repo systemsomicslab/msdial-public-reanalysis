@@ -112,27 +112,29 @@ location.
   is `requires_conversion`: stop before download/execution, and require a
   reviewed ProteoWizard-to-mzML conversion with new provenance. In a campaign,
   where an mzXML is the one analysed, Interactive's validated converter turns
-  it into mzML with every inference the converter offers switched off, and
-  records the conversion as that input's own provenance (source and output
-  sha256, converter identity, validation). The mzML, written into the unit's
+  it into mzML with every inference the converter offers switched off but the
+  polarity imputation the next item states, and records the conversion as
+  that input's own provenance (source and output sha256, converter identity,
+  validation). The mzML, written into the unit's
   own raw tree under `raw\converted` and never into the download store, is the
   input. An mzXML runs only as the mzML its recorded conversion made: until
   the unit's manifest records that conversion it stays `requires_conversion`,
   and a file whose conversion fails is excluded with its reason recorded while
   the rest of the unit runs. mzData has no converter: where it is the encoding
   a sample has, it is `requires_conversion` and excludes the unit.
-- **mzXML without a polarity, awaiting the user's decision.** Whether
-  imputing a polarity is one of the inferences a campaign's conversion keeps
-  off is not decided. The converter imputes one only when asked
-  (`impute_polarity`), and then the unit's declared ion mode, which CONV-1
-  holds it to. Until the user decides, it stays off. A scan whose mzXML
-  records no polarity (the attribute is optional, and may be `any`) then
-  becomes a spectrum with none, which MS-DIAL skips as it skips any spectrum
-  whose polarity is not the method's ion mode, and CONV-1 FAILs the
-  conversion. CONV-1 is in neither of the campaign's gate lists (Gate verdicts
-  in a campaign), so the FAIL is recorded, the unit runs without those
-  spectra, with none at all where no scan records a polarity, and its raw data
-  then go as any finished run's do.
+- **mzXML without a polarity.** The user decided it on 2026-10-02. A scan
+  whose mzXML records no polarity (the attribute is optional, and may be
+  `any`) is given one by a campaign's conversion only when the unit's Catalog
+  handoff declares exactly one polarity, Positive or Negative, in
+  `technical_settings.ion_mode`. The polarity is then imputed from that
+  declared ion mode, and the conversion records the imputation as an
+  inference, with the number of spectra it gave a polarity to; CONV-1 holds
+  it to the declared ion mode. In any other unit nothing is imputed. The scan
+  becomes a spectrum with no polarity, which MS-DIAL would skip as it skips
+  any spectrum whose polarity is not the method's ion mode, so CONV-1 FAILs
+  the conversion. CONV-1 is a `blocks_run` check (Gate verdicts in a
+  campaign), so the unit does not run, and it is a failed unit under the
+  deletion rule.
 - One project type, ion mode, acquisition mode, chromatography regime, and ion
   mobility regime per MS-DIAL run.
 - GC-MS, SRM/MRM, SIM, DI-MS, imaging MS, product-ion-only
@@ -297,58 +299,66 @@ verification that follows the campaign.
 The runner runs the gate at each of its points and keeps every report for the
 verification that follows the campaign. No verdict holds the raw-data
 deletion. Which `before-production` FAILs stop a unit's MS-DIAL run is the
-user's decision of 2026-10-01, which stops it only for a FAIL in the first
-list:
+user's decision. The rule of 2026-10-01 stops a run only for a FAIL that breaks
+the results, and on 2026-10-02 the user placed every check in one of two lists:
 
-- `blocks_run`: ELIG-1, ACQ-1, SUM-1, CNT-1 and INP-1. A FAIL in one of them
-  breaks the results, so it stops the run, and the unit is a failed unit under
-  the deletion rule: it is retried twice, and its raw data are then deleted.
-- `record_only`: CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1. A FAIL in one of them is
-  recorded with the unit, and the unit runs. Its raw data then go once its
-  outputs are present and its mzTab-M validates, so a Class, grouping, order or
-  threshold error it carries is corrected only from a new download.
+- `blocks_run`: ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1. A
+  FAIL in one of them breaks the results, so it stops the run, and the unit is
+  a failed unit under the deletion rule: it is retried twice, and its raw data
+  are then deleted.
+- `record_only`: CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1 and PRE-1. A FAIL in
+  one of them is recorded with the unit, and the unit runs. Its raw data then go
+  once its outputs are present and its mzTab-M validates, so a Class, grouping,
+  order, threshold or split-coverage error it carries is corrected only from a
+  new download. PRE-1 never FAILs: it reports PASS, WARN or not_evaluable.
 
-The user's rule says what a FAIL in these ten checks does. It does not settle
-three cases, which are put to the user with this amendment. Each of the three
-paragraphs that follow is marked as awaiting the user's decision, and says
-what applies until the user decides.
+The gate states each check's list as its `run_policy`, and the runner holds
+the `blocks_run` list itself, whatever a report states.
 
-**In neither list, awaiting the user's decision.** The user's rule does not
-name five `before-production` checks: ID-1 (the workspace is the unit its
-manifest names), SPL-1 (a split part partitions its parent's inputs), PRE-1 (a
-header-confirmed acquisition claim is permitted), PRE-2 (the raw headers were
-read by a verified, pinned extractor) and CONV-1 (every converted input is a
-validated conversion). Until the user places them, the rule's "only" is read
-as written: a FAIL in one of these five is recorded with the
-unit and the unit runs, as a `record_only` FAIL is. PRE-1 never FAILs: it
-reports PASS, WARN or not_evaluable. A check the gate adds to
+**In neither list.** No check, since 2026-10-02. The gate's `RUN_POLICY`
+places every `before-production` check it runs as the two lists do, and its
+tests refuse one the user has not placed. A check the gate adds to
 `before-production` is named here until the user places it.
 
-**Not evaluable, awaiting the user's decision.** A check left
-`not_evaluable` is not a FAIL, so the user's rule does not reach it. Until the
-user decides, it is recorded with the unit and the unit runs, whichever list
-it is in and whether or not it is required; the report lists the required ones
-in `strict_failures`.
+**Not evaluable.** A `blocks_run` check left `not_evaluable` where it is
+required stops the run exactly as its FAIL does. The unit is then a failed
+unit, retried twice before its raw data are deleted. A required check is one
+`--strict` counts: the report lists it in `strict_failures`, and the gate's
+`run_blocked_by` names it beside the FAILs. A check left `not_evaluable` where
+it is not required never stops the run, such as INP-1 for a unit that declares
+no analysis inputs, and neither does a `record_only` check left
+`not_evaluable`. Either is recorded with the unit, and the unit runs.
 
-**No report, awaiting the user's decision.** Until the user decides, a gate
-that produced no report stops the run, and the attempt counts as a failed one.
-Such a gate exited 3 (the workspace is unusable), or with any code other than
-0, 2 and 4, or printed output that does not parse as a report, or gave no
-answer within the runner's time limit. Without a report the runner cannot tell
-whether a `blocks_run` check FAILed, so it cannot apply the user's rule.
-Stopping keeps MS-DIAL from producing a result that none of the five has
-checked, and the retries give a passing fault the chance to clear. Once they
-are spent, the unit's raw data go as any failed unit's do, so a fault that
-recurs on every attempt ends with no result and no raw data.
+**No report.** Before production, a gate that gives the runner no usable
+report holds the unit. That is a gate that gave no answer within the runner's
+time limit, that crashed or exited with a code other than 0, 2, 3 and 4, that
+exited 3 (the workspace is unusable), that printed output that does not parse
+as a report, or that the runner could not start. Without a report the runner
+cannot tell whether a `blocks_run` check FAILed, and the gate's silence is not
+the unit's failure. A held unit is not run and keeps its raw data, and it is
+counted neither as a retry nor as a failure. Its state is `gate_held`, with a
+warning in the ledger and in the status export, and every other unit goes on.
+The runner runs the gate again for held units at each of its starts and every
+few hours. An operator can ask for it at once with
+`scripts/campaign-runner.py recheck-held`. Once a report exists, the unit goes
+on as any other. After the run, at `pre_cleanup` and `final`, a missing report
+is only recorded, and the raw data go by the deletion rule whatever the gate
+says.
+
+**A stop is per unit.** A FAIL, a check left unevaluated or a hold stops that
+unit's analysis, never the runner, which goes on with the other units. A pin
+change, a short disk and a repository outage pause the whole campaign
+instead, and each pause lifts by itself once its cause has gone.
 
 The gate lifts none of Interactive's own refusals: a unit Interactive refuses
 to start does not run, whatever the gate said.
 
-The runner reads which checks failed from the `checks` of the gate's `--json`
-report, never from the exit code. The exit code is 2 for any FAIL, in a list
-or in neither, and a FAIL outranks a strict refusal, so one `record_only` FAIL
-gives 2 however many required checks were left unevaluated. Outside a
-campaign every `before-production` refusal still stops the unit.
+The runner reads which checks failed, and which were left unevaluated, from
+the `checks` of the gate's `--json` report, never from the exit code. The exit
+code is 2 for any FAIL, in either list, and a FAIL outranks a strict refusal,
+so one `record_only` FAIL gives 2 however many required checks were left
+unevaluated. Outside a campaign every `before-production` refusal still stops
+the unit.
 
 ## Batch behavior
 
