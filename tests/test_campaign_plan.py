@@ -387,8 +387,8 @@ class PlanTests(unittest.TestCase):
             book.close()
 
     def test_the_scheduled_command_keeps_a_path_with_a_space_one_word(self) -> None:
-        line = runner_cli.schedule_task_command(r"C:\Users\Hiroshi Tsugawa\python.exe", r"D:\code\scripts\campaign-runner.py", "c1")
-        self.assertIn(r'/TR "\"C:\Users\Hiroshi Tsugawa\python.exe\" \"D:\code\scripts\campaign-runner.py\" run --campaign c1 --until-idle"', line)
+        line = runner_cli.schedule_task_command(r"C:\Program Files\Python314\python.exe", r"D:\code\scripts\campaign-runner.py", "c1")
+        self.assertIn(r'/TR "\"C:\Program Files\Python314\python.exe\" \"D:\code\scripts\campaign-runner.py\" run --campaign c1 --until-idle"', line)
         self.assertIn("/SC ONLOGON", line)
         self.assertNotIn('""', line, "no unescaped quote inside /TR")
 
