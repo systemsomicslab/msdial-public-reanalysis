@@ -26,6 +26,11 @@ And the gate rule, decided on 2026-10-01 and completed on 2026-10-02:
 - "Stop" is per unit: a gate verdict, a failure or a hold stops that unit's analysis, never the runner. A
   pin change, a short disk and a repository outage pause the whole campaign, and each lifts by itself.
 
+The runner's reading of that last rule, which the user's words do not spell out: a backend that does not
+answer, which every unit would meet alike, pauses the campaign too and lifts by itself at the fault
+recheck; and a reply or a record of Interactive's that the runner cannot read for one unit (CONTRACT)
+holds that unit, as a missing gate report does, and pauses nothing.
+
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
 msdial-campaign-disposition.v1); read_disposition only reads and checks it. A second mapping of
@@ -81,9 +86,10 @@ class DispositionError(ValueError):
     """A campaign_disposition that does not have the shared contract's shape.
 
     Interactive writes the record and this runner reads it, in two repositories merged independently. A
-    record the runner cannot read is a contract mismatch between the two, which is a campaign fault: it
-    would recur for every unit, so the campaign pauses instead of failing each unit and deleting its raw
-    data.
+    record the runner cannot read is a contract mismatch between the two, never the unit's failure, which
+    would delete its raw data for the runner's fault. "Stop" is per unit (2026-10-02), so the unit is held
+    (contract_held), uncounted and with its raw data kept, until a recheck finds a record it can read, and
+    the other units go on.
     """
 
 
@@ -224,13 +230,14 @@ class CampaignPolicy:
     prefetch: int = 0
     poll_seconds: float = 30.0
     busy_retry_seconds: float = 120.0
-    # A campaign fault (a backend that will not answer, a contract Interactive broke) is looked at again
-    # after this long, and the step retried; it pauses again if the fault is still there.
+    # A campaign fault (a backend that will not answer, a repository outage) is looked at again after this
+    # long, and the step retried; it pauses again if the fault is still there.
     fault_recheck_seconds: float = 3600.0
     # Raw data held against the rules (a deletion Interactive refused) are looked at again when the runner
     # starts and after this long, and deleted once Interactive's deletion accepts them. A unit held because
-    # the before-production gate gave no usable report (gate_held) has the gate run again when the runner
-    # starts and this long after each try.
+    # the before-production gate gave no usable report (gate_held), or because Interactive's reply or record
+    # for it could not be read (contract_held), has its step made again when the runner starts and this long
+    # after each try.
     held_recheck_seconds: float = 6 * 3600.0
     # Stall detection, never an outer limit (review contradiction 10). 0 means no limit.
     console_idle_timeout_seconds: float = 6 * 3600.0
@@ -298,17 +305,17 @@ class CampaignPolicy:
 # for a failure it caught (mcp_server._structured_validation_errors); the ports wrap anything that
 # escapes that as reason "exception".
 OK, FAILED, BUSY, FAULT, REFUSED, CONTRACT = "ok", "failed", "busy", "fault", "refused", "contract"
-# Refusals that are the campaign's, not the unit's, and that time does not mend: a tool or parameter this
-# Interactive does not have, a reply of another shape, and (0.5.17) an extractor that is not a verified,
-# pinned build. Each would recur for every unit, so the campaign pauses for an operator instead of failing
-# units one by one and deleting their raw data.
+# Refusals that are no fault of the unit's: a tool or parameter this Interactive does not have, a reply of
+# another shape, and (0.5.17) an extractor that is not a verified, pinned build. None is counted against the
+# unit or deletes its raw data. "Stop" is per unit (2026-10-02), so the unit is held (contract_held) and the
+# other units go on, and a deletion refused so leaves that unit's raw data held.
 CONTRACT_REASONS = frozenset({"unsupported", "malformed", "raw_metadata_extractor_refused"})
 
 
 def classify_result(result: Any) -> str:
     """ok, failed (counts against the unit), busy (wait, counts nothing), fault (pause the campaign and look
-    again later), contract (pause the campaign for an operator) or refused (the campaign approval does not
-    cover it)."""
+    again later), contract (hold the unit, counting nothing, for a recheck) or refused (the campaign approval
+    does not cover it)."""
     if not isinstance(result, Mapping):
         return FAILED
     if result.get("ok") is not False:

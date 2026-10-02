@@ -371,6 +371,11 @@ class PlanTests(unittest.TestCase):
         code, out, _err = self.cli("schedule-command", "--campaign", "c1")
         self.assertIn("schtasks /Create", out)
         self.assertIn("runs none of them", out)
+        self.assertIn("While a unit is held it keeps running", out)
+        # A request waits in the ledger for a runner's loop, and the command says so when none runs.
+        code, out, _err = self.cli("retry", "--campaign", "c1", "--unit", "uA", "--reason", "why")
+        self.assertEqual(code, 0)
+        self.assertIn("no runner is running, so nothing acts on it until one is started", out)
 
     def test_each_operator_request_is_recorded_under_its_action(self) -> None:
         for command, action in (("skip", "skip"), ("retry", "retry"), ("release-held", "release_held")):

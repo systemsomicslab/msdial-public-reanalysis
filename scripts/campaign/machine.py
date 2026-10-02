@@ -30,8 +30,12 @@ and the unit then counts as failed, while any other FAIL is recorded and the uni
 before-production gate that gives no usable report holds the unit (gate_held), unrun and uncounted with
 its raw data kept, until a recheck gives one, while the other units go on. "Stop" is per unit, never the
 runner's: what pauses the whole campaign is what every unit would meet alike (a pin change, a short disk,
-a repository outage, a backend that does not answer, a contract Interactive broke). Every production
-attempt is recorded in the Catalog as it ends. Raw data
+a repository outage, a backend that does not answer), and each such pause lifts by itself. A reply or a
+record of Interactive's that the runner cannot read or act on for one unit holds that unit (contract_held)
+as a missing report does, and a deletion Interactive cannot make as called leaves the unit's raw data
+held. A held unit keeps the runner going, as a retry does: run --until-idle returns only once no unit waits
+for a recheck, so the rechecks every few hours happen. Every production attempt is recorded in the Catalog
+as it ends. Raw data
 the rules delete and Interactive would not are "held", counted apart (summary), never reported as kept
 or deleted, and looked at again when the runner starts, every few hours and at an operator's
 release-held, until Interactive's own deletion takes them. The runner never records a person's reading
@@ -58,8 +62,12 @@ UNIT_RECORD_SCHEMA = "msdial-campaign-unit-record.v1"
 STATUS_SCHEMA = "msdial-campaign-status.v1"
 IN_FLIGHT = ("downloading", "diagnosing", "running")
 IDLE = ("pending",) + ledger_module.WAITING_STATES
-# Pauses under which nothing new starts; jobs already running are still watched to their end.
+# Pauses under which nothing new starts; jobs already running are still watched to their end. This runner
+# makes no "contract" pause (it holds the unit instead, contract_held); one an earlier runner left in the
+# ledger still blocks until an operator resumes.
 BLOCKING_PAUSES = ("operator", "contract", "pin", "fault")
+# Units held for a recheck that comes by itself (and at an operator's recheck-held), counted nothing.
+HELD_STATES = ledger_module.HELD_STATES
 # A unit's end once its outputs exist, and the discard that ends one without them. A step here that raises
 # is tried again later without counting against the unit, still ending as it was going to: nothing after
 # the outputs exist turns a unit into a failed one, or rewrites what became of its raw data.
@@ -78,11 +86,17 @@ TSV_COLUMNS = (
     "raw_disposition", "failures", "interruptions", "run_job_id", "minimum_peak_height", "threshold_step",
     "workspace", "warnings",
 )
-# What the status export says of a unit in gate_held (the user's rule of 2026-10-02).
+# What the status export says of a unit in gate_held (the user's rule of 2026-10-02), and of one in
+# contract_held (that rule applied to a reply or a record the runner cannot read: "stop" is per unit).
 GATE_HELD_WARNING = (
     "held: the before-production gate gave no usable report, so the unit has not run, its raw data are kept "
     "and nothing is counted against it. The gate is run again at the runner's next start, every few hours "
-    "and at an operator's recheck-held"
+    "while it runs and at an operator's recheck-held"
+)
+CONTRACT_HELD_WARNING = (
+    "held: Interactive gave a reply or a record for this unit that the runner cannot read or act on, so the "
+    "unit goes no further, its raw data are kept and nothing is counted against it. The step it was held at "
+    "is made again at the runner's next start, every few hours while it runs and at an operator's recheck-held"
 )
 
 
@@ -233,9 +247,9 @@ class Runner:
         # When this process last looked at the raw data held against the rules: never yet, so a runner that
         # starts (on an Interactive that may now delete them) looks first.
         self._held_checked_at: datetime | None = None
-        # Whether this process has brought forward the recheck of every unit held for a gate report: a runner
-        # that starts runs the gate again for each of them first (_gate_held_recheck).
-        self._gate_held_rechecked = False
+        # Whether this process has brought forward the recheck of every held unit (HELD_STATES): a runner that
+        # starts makes each one's step again first (_held_units_recheck).
+        self._held_units_rechecked = False
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -326,13 +340,17 @@ class Runner:
 
     def idle(self) -> bool:
         """Every unit has ended, or waits on a disk that could never hold it, or on space that nothing left
-        in the campaign gives back, or for a gate report whose recheck is not due: only units deferred for
-        disk, the pending units held back behind them and units held for a gate report remain, and none of
-        them can be taken now. The disk pause and the gate_held warning say why; run --until-idle returns
-        (releasing the Catalog lock), and the campaign goes on once someone frees space and runs it again,
-        or the runner starts again and runs the gate again for the held units."""
+        in the campaign gives back: only units deferred for disk and the pending units held back behind them
+        remain, and none of them can be taken now. The disk pause says why; run --until-idle returns
+        (releasing the Catalog lock), and the campaign goes on once someone frees space and runs it again.
+
+        A held unit (HELD_STATES) is not idle, nor is a split parent one of whose parts is held: its recheck
+        comes by itself every held_recheck_seconds, so the runner stays and sleeps until it is due, as it
+        does for a retry. Were it idle, run --until-idle would return and the rechecks every few hours that
+        the user's rule of 2026-10-02 promises would wait for the next start. A unit that stays held keeps
+        the runner going until a recheck gives what it lacked or an operator skips it."""
         for unit in self.ledger.units():
-            if unit["state"] in ledger_module.TERMINAL_STATES or unit["state"] in ("deferred_disk", "pending", "gate_held"):
+            if unit["state"] in ledger_module.TERMINAL_STATES or unit["state"] in ("deferred_disk", "pending"):
                 continue
             return False
         return self._next_candidate() is None
@@ -340,7 +358,7 @@ class Runner:
     def _sleep_seconds(self) -> float:
         wait = float(self.policy.poll_seconds)
         now = self.now()
-        for unit in self.ledger.units(("waiting_retry", "gate_held")):
+        for unit in self.ledger.units(("waiting_retry",) + HELD_STATES):
             due = policy.parse_iso(unit["next_attempt_at"])
             # A retry already due waits for room in the hand, which the next poll looks for anyway.
             if due is not None and due > now:
@@ -367,7 +385,7 @@ class Runner:
         if self._paused() in BLOCKING_PAUSES:
             return progressed
         progressed |= self._held_recheck()
-        progressed |= self._gate_held_recheck()
+        progressed |= self._held_units_recheck()
         for unit in self.ledger.units(("split_parent",)):
             progressed |= self._guard(unit)
         for unit in self._in_hand():
@@ -420,8 +438,9 @@ class Runner:
                 candidate = not held_back
             elif state == "queued":
                 candidate = True
-            elif state in ("waiting_retry", "gate_held"):
-                # A unit held for a gate report already has its raw data, as a retry does: no disk holds it back.
+            elif state == "waiting_retry" or state in HELD_STATES:
+                # A held unit is due for its recheck as a retry is for its next attempt; no disk holds either
+                # back here, and one whose step is a download meets the disk guard there (handoff_ready).
                 due = policy.parse_iso(unit["next_attempt_at"])
                 candidate = due is None or due <= now
             elif state == "deferred_disk":
@@ -556,9 +575,15 @@ class Runner:
                 detail={"step": step, "busy": True}, end_console_run=console_run, gate=gate, **attempt("busy", False),
             )
             return
-        if kind in (policy.FAULT, policy.CONTRACT):
-            # The campaign's, not the unit's: nothing counts, the unit stays where it is, and the step is made
-            # again when the pause lifts - by itself at the fault recheck, by an operator for a contract.
+        if kind == policy.CONTRACT:
+            # A reply of another shape, a tool or parameter Interactive lacks, an extractor it refuses: no fault
+            # of the unit's, and "stop" is per unit, so the unit is held and the others go on.
+            self._contract_hold(unit, step=step, problem=str(detail.get("reason") or "contract"), detail=detail,
+                                resume_state=retry_state, attempt_id=attempt_id, console_run=console_run, gate=gate)
+            return
+        if kind == policy.FAULT:
+            # A backend that does not answer, which every unit would meet alike: nothing counts, the unit stays
+            # where it is, and the step is made again when the pause lifts by itself at the fault recheck.
             if attempt_id is not None:
                 self.ledger.close_attempt(attempt_id, "fault", self.stamp(), detail=detail)
             if console_run is not None:
@@ -740,21 +765,19 @@ class Runner:
                     raw, why = self._release_held(unit)
                     detail = f"released ({raw}): {why}" if raw in ("released", "discarded") else f"still held: {why}"
             elif request["action"] == "recheck_held":
-                # The before-production gate, run again now for a unit held for want of its report.
-                if state == "gate_held":
-                    self._bring_gate_recheck_forward(unit, {"request_id": request["request_id"], "gate_recheck": "operator"})
-                    detail = "gate recheck brought forward"
+                # The step a held unit was held at, made again now: for gate_held, the before-production gate.
+                if state in HELD_STATES:
+                    detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
                 else:
-                    detail = f"nothing held at the gate: the unit is {state}"
+                    detail = f"nothing held for a recheck: the unit is {state}"
             else:
                 if state == "waiting_retry":
                     self._move(unit, "waiting_retry", resume_state=unit["resume_state"], next_attempt_at=self.stamp(),
                                pending_terminal=unit.get("pending_terminal"), terminal_detail=unit.get("terminal_detail"),
                                detail={"request_id": request["request_id"]})
                     detail = "retry brought forward"
-                elif state == "gate_held":
-                    self._bring_gate_recheck_forward(unit, {"request_id": request["request_id"], "gate_recheck": "operator"})
-                    detail = "gate recheck brought forward"
+                elif state in HELD_STATES:
+                    detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
                 elif state == "deferred_disk":
                     self._move(unit, unit["resume_state"] or "handoff_ready", detail={"request_id": request["request_id"]})
                     detail = "disk deferral lifted"
@@ -1244,16 +1267,22 @@ class Runner:
             manifest_path=unit["manifest_path"], extractor_path=extractor, authorization_path=self._authorization(unit)
         )
         if result.get("ok") is False:
-            # An extractor Interactive refuses as unverified or unpinned (0.5.17) is a contract pause, not a
-            # failure of this unit: _fail reads it so.
+            # An extractor Interactive refuses as unverified or unpinned (0.5.17) is no failure of this unit:
+            # _fail holds it (contract_held).
             self._fail(unit, step="preflight", result=result, retry_state="downloaded", attempt_id=attempt)
             return True
         if result.get("extractor_found") is False:
-            self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"extractor_found": False})
-            self._pause("contract", "The pinned raw-metadata extractor was not found by Interactive.")
-            return False
-        # A broken contract pauses as "contract", which only an operator lifts: a pause that lifted itself
-        # would run the preflight again, hours for a large unit, only to find the same record.
+            if self._pin_check_failed():
+                # The pinned binary is gone or changed: the pin pause, which lifts once it matches again.
+                self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"extractor_found": False})
+                return False
+            return self._contract_hold(
+                unit, step="preflight", problem="extractor_not_found", attempt_id=attempt,
+                detail={"extractor_found": False, "detail": "Interactive did not find the pinned raw-metadata extractor."},
+            )
+        # A record the runner cannot read or act on holds the unit (contract_held), never the campaign: "stop"
+        # is per unit (2026-10-02). Its recheck makes the preflight again, which for a large unit takes hours,
+        # every held_recheck_seconds while the record stays as it is.
         held = dict(result.get("preflight_held") or {})
         try:
             disposition = policy.read_disposition(self._manifest(unit) or {})
@@ -1269,41 +1298,35 @@ class Runner:
                 held = held or dict(classified.get("held") or {})
                 disposition = policy.read_disposition(self._manifest(unit) or {})
         except policy.DispositionError as error:
-            self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"contract": str(error)})
-            self._pause("contract", f"Unit {unit['unit_key']}: {error}")
-            return False
+            return self._contract_hold(unit, step="preflight", problem="disposition_malformed", attempt_id=attempt,
+                                       detail={"detail": str(error)})
         if (disposition is None or not disposition.applied) and held:
             return self._preflight_held(unit, held, attempt)
         if disposition is None:
-            self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"contract": "no campaign_disposition"})
-            self._pause(
-                "contract",
-                "Interactive wrote no campaign_disposition after the preflight; this runner reads that decision "
-                "and makes none of its own (classify_preflight, plan item 11).",
+            return self._contract_hold(
+                unit, step="preflight", problem="no_disposition", attempt_id=attempt,
+                detail={"detail": "Interactive wrote no campaign_disposition after the preflight; this runner reads "
+                                  "that decision and makes none of its own (classify_preflight, plan item 11)."},
             )
-            return False
         if not disposition.applied:
-            self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"contract": "disposition not applied"})
-            self._pause(
-                "contract",
-                f"Unit {unit['unit_key']}'s campaign_disposition is not applied, even by classify_preflight under the "
-                "approval; the runner acts only on an applied disposition.",
+            return self._contract_hold(
+                unit, step="preflight", problem="disposition_not_applied", attempt_id=attempt,
+                detail={"detail": "The campaign_disposition is not applied, even by classify_preflight under the "
+                                  "approval; the runner acts only on an applied disposition."},
             )
-            return False
         pinned = str((self.pins.get("extractor") or {}).get("binary_sha256") or "")
         if (pinned and disposition.extractor.get("sha256") != pinned) or disposition.extractor.get("pinned") is False:
             # The pinned binary is where it was (the pin check found no difference before the unit started),
             # so Interactive ran another one, or reused verdicts another one made, or no longer counts the
             # build among its PINNED_BUILDS.
-            self.ledger.close_attempt(attempt, "fault", self.stamp(), detail={"extractor": disposition.extractor})
             self._event("contract_broken", {"extractor_sha256": disposition.extractor.get("sha256"), "pinned_sha256": pinned},
                         unit["unit_key"])
-            self._pause(
-                "contract",
-                f"Unit {unit['unit_key']} was classified by extractor {str(disposition.extractor.get('sha256'))[:12]}, "
-                f"not the pinned {pinned[:12]}. Resume once that is understood; the preflight then runs again.",
+            return self._contract_hold(
+                unit, step="preflight", problem="disposition_from_another_extractor", attempt_id=attempt,
+                detail={"extractor": disposition.extractor,
+                        "detail": f"Classified by extractor {str(disposition.extractor.get('sha256'))[:12]}, "
+                                  f"not the pinned {pinned[:12]}."},
             )
-            return False
         record = disposition.as_dict()
         close = (attempt, "ok", False, {"disposition": disposition.disposition, "reasons": list(disposition.reasons),
                                         "warnings": list(disposition.warnings)})
@@ -1706,33 +1729,85 @@ class Runner:
         self._event("gate_held", {**said, "warning": GATE_HELD_WARNING, "recheck_at": due}, unit["unit_key"])
         return True
 
+    def _contract_hold(
+        self,
+        unit: dict[str, Any],
+        *,
+        step: str,
+        problem: str,
+        detail: Mapping[str, Any],
+        resume_state: str = "downloaded",
+        attempt_id: int | None = None,
+        console_run: tuple[int, str] | None = None,
+        gate: tuple[str, dict[str, Any]] | None = None,
+    ) -> bool:
+        """Interactive gave a reply or a record for this unit that the runner cannot read or act on: the unit is
+        held (contract_held).
+
+        "Stop" is per unit, never the runner's (the user's rule of 2026-10-02), so one unit's record pauses
+        nothing; where an earlier runner paused the whole campaign until an operator resumed it, this one
+        holds the unit as a missing gate report does (_gate_hold). It is not the unit's failure either,
+        which would end in its raw data's deletion for a fault of the runner's: nothing is counted, its raw
+        data are kept, and it leaves the hand, so the other units go on, with a warning in the ledger (the
+        transition, the attempt and a contract_held event) and in the status export. The step it was held at
+        is made again at the runner's next start, held_recheck_seconds after this try, and at an operator's
+        recheck-held. A contract that breaks for every unit holds each one in turn, with its raw data, until
+        the disk guard's pause."""
+        due = policy.iso(self.now() + timedelta(seconds=float(self.policy.held_recheck_seconds)))
+        said = self.redact({**dict(detail), "step": step, "contract": problem})
+        record: dict[str, Any] = (
+            {"close_attempt": (attempt_id, "fault", False, said)} if attempt_id is not None
+            else {"new_attempt": {"step": step, "outcome": "fault", "counted": False, "detail": said}}
+        )
+        self._move(
+            unit, "contract_held", resume_state=resume_state, next_attempt_at=due,
+            detail={"contract_held": problem, "step": step, "recheck_at": due},
+            end_console_run=(console_run[0], "not_started") if console_run is not None else None, gate=gate, **record,
+        )
+        self._event("contract_held", {**said, "warning": CONTRACT_HELD_WARNING, "recheck_at": due}, unit["unit_key"])
+        return True
+
     def _state_gate_held(self, unit: dict[str, Any]) -> bool:
         """Once its recheck is due, a held unit goes back to diagnosed, whose step runs the gate again: a usable
         report then sends it on as any other, and none holds it again."""
+        return self._recheck_due(unit, "gate_recheck", "diagnosed")
+
+    def _state_contract_held(self, unit: dict[str, Any]) -> bool:
+        """Once its recheck is due, a held unit goes back to the state it was held at, whose step is made again:
+        a reply or a record the runner can read then sends it on as any other, and none holds it again."""
+        return self._recheck_due(unit, "contract_recheck", "downloaded")
+
+    def _recheck_due(self, unit: dict[str, Any], key: str, default: str) -> bool:
         due = policy.parse_iso(unit["next_attempt_at"])
         if due is not None and due > self.now():
             return False
-        self._move(unit, unit["resume_state"] or "diagnosed", detail={"gate_recheck": True})
+        self._move(unit, unit["resume_state"] or default, detail={key: True})
         return True
 
-    def _bring_gate_recheck_forward(self, unit: Mapping[str, Any], detail: Mapping[str, Any]) -> None:
-        self._move(unit, "gate_held", resume_state=unit["resume_state"] or "diagnosed", next_attempt_at=self.stamp(),
-                   detail=dict(detail))
+    def _bring_recheck_forward(self, unit: Mapping[str, Any], source: str, request_id: int | None = None) -> str:
+        """Make a held unit's recheck due now. Says what was done, for the operator's request."""
+        gate = unit["state"] == "gate_held"
+        detail: dict[str, Any] = {"gate_recheck" if gate else "contract_recheck": source}
+        if request_id is not None:
+            detail["request_id"] = request_id
+        self._move(unit, unit["state"], resume_state=unit["resume_state"] or ("diagnosed" if gate else "downloaded"),
+                   next_attempt_at=self.stamp(), detail=detail)
+        return "gate recheck brought forward" if gate else "contract recheck brought forward"
 
-    def _gate_held_recheck(self) -> bool:
-        """When the runner starts, run the gate again for every unit held for want of a report: their recheck
-        is brought forward to now, and each is taken into the hand in its turn. Later rechecks come
-        held_recheck_seconds after each try (_gate_hold), so a hold the next start or a passing fault clears
-        does not wait for an operator."""
-        if self._gate_held_rechecked:
+    def _held_units_recheck(self) -> bool:
+        """When the runner starts, make the step of every held unit (HELD_STATES) again: their recheck is brought
+        forward to now, and each is taken into the hand in its turn. Later rechecks come held_recheck_seconds
+        after each try (_gate_hold, _contract_hold), so a hold the next start or a passing fault clears does
+        not wait for an operator."""
+        if self._held_units_rechecked:
             return False
-        self._gate_held_rechecked = True
+        self._held_units_rechecked = True
         now = self.now()
         moved = False
-        for unit in self.ledger.units(("gate_held",)):
+        for unit in self.ledger.units(HELD_STATES):
             due = policy.parse_iso(unit["next_attempt_at"])
             if due is None or due > now:
-                self._bring_gate_recheck_forward(unit, {"gate_recheck": "runner_start"})
+                self._bring_recheck_forward(unit, "runner_start")
                 moved = True
         return moved
 
@@ -1852,8 +1927,10 @@ class Runner:
                 elif policy.classify_result(result) == policy.REFUSED:
                     detail = f"deletion refused: {result.get('codes') or result.get('detail')}"
                 elif policy.classify_result(result) == policy.CONTRACT:
-                    self._pause("contract", f"The raw cleanup of unit {unit['unit_key']}: {result.get('reason')}: {result.get('detail')}")
-                    return False
+                    # A cleanup this Interactive cannot make as called: the unit's raw data are held, looked at
+                    # again at every start and every few hours (_held_recheck), and the campaign goes on.
+                    raw = "held"
+                    detail = f"not deleted: {result.get('reason')}: {result.get('detail')}"
                 else:
                     tried = self.ledger.count_attempts(unit["unit_key"], "release", ("failed",))
                     record = {"step": "release", "outcome": "failed", "counted": False,
@@ -1888,8 +1965,6 @@ class Runner:
         info = _loads(unit["terminal_detail"])
         reason = str(info.get("reason") or pending)
         raw, detail, boundary = self._discard_raw(unit)
-        if raw == "pause":
-            return False
         if raw == "wait":
             tried = self.ledger.count_attempts(unit["unit_key"], "discard", ("failed",))
             record = {"step": "discard", "outcome": "failed", "counted": False, "detail": {"detail": detail}}
@@ -1912,12 +1987,13 @@ class Runner:
         )
         return True
 
-    def _discard_raw(self, unit: Mapping[str, Any], *, contract_pauses: bool = True) -> tuple[str, str, str | None]:
-        """(raw disposition, detail, boundary crossed) for a unit ending without validated output, ("wait", ...)
-        to try again, or ("pause", ...) when the campaign paused on a contract. Each deletion is the one
-        Interactive performs for the unit's state: its cleanup for outputs that validated, else its discard
-        (InteractivePort.discard: the approval-taking one once plan item 14 lands, the fallback until then).
-        Without contract_pauses, a deletion this Interactive cannot make leaves the raw data held instead."""
+    def _discard_raw(self, unit: Mapping[str, Any]) -> tuple[str, str, str | None]:
+        """(raw disposition, detail, boundary crossed) for a unit ending without validated output, or ("wait",
+        ...) to try again. Each deletion is the one Interactive performs for the unit's state: its cleanup for
+        outputs that validated, else its discard (InteractivePort.discard: the approval-taking one once plan
+        item 14 lands, the fallback until then). A deletion this Interactive cannot make as called (a tool or
+        parameter it lacks, a reply of another shape) leaves the raw data held, looked at again at every start
+        and every few hours (_held_recheck): one unit's deletion pauses nothing, as "stop" is per unit."""
         ending = unit["pending_terminal"] or unit["state"]
         manifest = self._manifest(unit) if unit["manifest_path"] else None
         if manifest is None:
@@ -1942,9 +2018,7 @@ class Runner:
             if policy.classify_result(result) == policy.REFUSED:
                 return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
             if policy.classify_result(result) == policy.CONTRACT:
-                if not contract_pauses:
-                    return "held", f"not deleted: {result.get('reason')}: {result.get('detail')}", None
-                return self._contract_pause(unit, "raw cleanup", result)
+                return "held", f"not deleted: {result.get('reason')}: {result.get('detail')}", None
             return "wait", str(result.get("blockers") or result.get("detail") or result.get("reason") or "not deleted"), None
         result = self.ports.interactive.discard(
             manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
@@ -1955,9 +2029,7 @@ class Runner:
         if policy.classify_result(result) == policy.REFUSED:
             return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
         if policy.classify_result(result) == policy.CONTRACT:
-            if not contract_pauses:
-                return "held", f"not deleted: {result.get('reason')}: {result.get('detail')}", None
-            return self._contract_pause(unit, "raw discard", result)
+            return "held", f"not deleted: {result.get('reason')}: {result.get('detail')}", None
         blockers = [str(code) for code in result.get("blockers") or []]
         detail = str(result.get("detail") or result.get("reason") or "not deleted")
         if policy.discard_blocked_for_good(blockers):
@@ -1967,19 +2039,13 @@ class Runner:
             return "held", f"not deleted ({', '.join(blockers)}): {detail}", None
         return "wait", detail, None
 
-    def _contract_pause(self, unit: Mapping[str, Any], step: str, result: Mapping[str, Any]) -> tuple[str, str, None]:
-        """A deletion this Interactive cannot make as called (a tool or parameter it lacks): the campaign's
-        contract, not the unit's end. The unit stays where it is until an operator resumes."""
-        self._pause("contract", f"The {step} of unit {unit['unit_key']}: {result.get('reason')}: {result.get('detail')}")
-        return "pause", str(result.get("detail") or ""), None
-
     def _held_recheck(self) -> bool:
         """Look again at every unit whose raw data are held, when the runner starts and every
         held_recheck_seconds after.
 
         Held raw data are ones the rules delete and Interactive would not: a failed run that left an mzTab-M,
         a split parent whose release Interactive does not have yet, a deletion a finalisation hold or a
-        Console kept refusing. Their units have ended, and nothing else looks at an ended unit again, so
+        Console kept refusing, a cleanup or discard this Interactive cannot make as called. Their units have ended, and nothing else looks at an ended unit again, so
         raw data held once stayed for good, counted as used space by the disk guard, even after Interactive
         could delete them. A runner started on such an Interactive, or a hold that has since cleared, now
         releases them; their units end as they ended."""
@@ -2012,7 +2078,7 @@ class Runner:
         if unit["role"] == "split_parent":
             raw, detail, boundary = self._split_parent_raw(unit, self._parts(unit))
         else:
-            raw, detail, boundary = self._discard_raw(unit, contract_pauses=False)
+            raw, detail, boundary = self._discard_raw(unit)
         if raw not in ("released", "discarded"):
             return "held", detail
         current = self._move(unit, unit["state"], raw_disposition=raw, raw_detail=self.redact(f"held, then {detail}"),
@@ -2161,13 +2227,16 @@ def _write_json(path: Path, value: Any) -> None:
 
 # ---- status, for the operator and for the later verification work ----------------------------------
 
-def unit_status(unit: Mapping[str, Any], gate_hold: str | None = None) -> dict[str, Any]:
-    """One unit's status row. `gate_hold` is why a unit in gate_held is held (policy.gate_report_problem),
-    as its hold recorded it (_gate_hold_reasons)."""
+def unit_status(unit: Mapping[str, Any], hold: str | None = None) -> dict[str, Any]:
+    """One unit's status row. `hold` is why a held unit is held, as its hold recorded it (_hold_reasons): for
+    gate_held what the gate gave instead of a report (policy.gate_report_problem), for contract_held what
+    the runner could not read."""
     terms = policy.report_terms(bool(unit["outputs_produced"]), unit["gate_exit_final"])
     warnings = []
     if unit["state"] == "gate_held":
-        warnings.append(GATE_HELD_WARNING + (f" (no report: {gate_hold})" if gate_hold else ""))
+        warnings.append(GATE_HELD_WARNING + (f" (no report: {hold})" if hold else ""))
+    elif unit["state"] == "contract_held":
+        warnings.append(CONTRACT_HELD_WARNING + (f" (contract: {hold})" if hold else ""))
     return {
         **{key: unit.get(key) for key in TSV_COLUMNS if key not in ("report_terms", "warnings")},
         "report_terms": terms,
@@ -2181,15 +2250,16 @@ def unit_status(unit: Mapping[str, Any], gate_hold: str | None = None) -> dict[s
     }
 
 
-def _gate_hold_reasons(ledger: ledger_module.Ledger, units: Iterable[Mapping[str, Any]]) -> dict[str, str]:
-    """For each unit in gate_held, why its last hold was made, read from the transition that made it."""
+def _hold_reasons(ledger: ledger_module.Ledger, units: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """For each held unit (HELD_STATES), why its last hold was made, read from the transition that made it."""
     reasons = {}
     for unit in units:
-        if unit["state"] != "gate_held":
+        state = unit["state"]
+        if state not in HELD_STATES:
             continue
         for row in reversed(ledger.transitions(unit["unit_key"])):
-            held = _loads(row["detail_json"]).get("gate_held")
-            if row["to_state"] == "gate_held" and held:
+            held = _loads(row["detail_json"]).get(state)
+            if row["to_state"] == state and held:
                 reasons[unit["unit_key"]] = str(held)
                 break
     return reasons
@@ -2206,6 +2276,7 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     runner = ledger.runner()
     held = [unit for unit in units if unit["raw_disposition"] == "held"]
     gate_held = [unit for unit in units if unit["state"] == "gate_held"]
+    contract_held = [unit for unit in units if unit["state"] == "contract_held"]
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
@@ -2219,6 +2290,10 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         # Not run, for want of a before-production report: a warning, never a failure (2026-10-02).
         "gate_held": {"units": len(gate_held), "unit_keys": [unit["unit_key"] for unit in gate_held],
                       "warning": GATE_HELD_WARNING if gate_held else None},
+        # Held for a reply or a record of Interactive's the runner cannot read: a warning, never a failure, and
+        # never a pause of the campaign ("stop" is per unit, 2026-10-02).
+        "contract_held": {"units": len(contract_held), "unit_keys": [unit["unit_key"] for unit in contract_held],
+                          "warning": CONTRACT_HELD_WARNING if contract_held else None},
         "paused": {"kind": runner["pause_kind"], "reason": runner["pause_reason"], "at": runner["paused_at"]}
         if runner["paused"] else None,
         "terms": {
@@ -2232,7 +2307,7 @@ def export_status(ledger: ledger_module.Ledger) -> tuple[dict[str, Any], str]:
     """The per-unit status as JSON and as TSV, for the later verification work."""
     campaign = ledger.campaign()
     units = ledger.units()
-    reasons = _gate_hold_reasons(ledger, units)
+    reasons = _hold_reasons(ledger, units)
     rows = [unit_status(unit, reasons.get(unit["unit_key"])) for unit in units]
     document = {
         "schema": STATUS_SCHEMA,

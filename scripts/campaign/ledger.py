@@ -30,8 +30,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
-# 2 (2026-10-02): the gate_held state, the recheck_held request and the gate verdict's blocking unevaluated
-# checks. A ledger of schema 1 is brought to 2 when it is opened (Ledger._migrate).
+# 2 (2026-10-02): the gate_held and contract_held states, the recheck_held request and the gate verdict's
+# blocking unevaluated checks. A ledger of schema 1 is brought to 2 when it is opened (Ledger._migrate).
 SCHEMA_VERSION = 2
 
 ACTIVE_STATES = (
@@ -45,7 +45,13 @@ ACTIVE_STATES = (
 # gate_held: a unit the before-production gate gave no usable report for (the user's rule of 2026-10-02). It
 # has not run, keeps its raw data and is counted nothing, and waits for the gate to be run again: at the
 # runner's next start, held_recheck_seconds after each try, or at an operator's recheck-held.
-WAITING_STATES = ("waiting_retry", "deferred_disk", "queued", "gate_held")
+# contract_held: a unit Interactive gave a reply or a record for that the runner cannot read or act on (no
+# campaign_disposition, a malformed one, one another extractor made, a reply of another shape). "Stop" is
+# per unit (2026-10-02), so it is held as gate_held is, never the campaign paused for it, and the step it
+# was held at is made again at the same rechecks.
+WAITING_STATES = ("waiting_retry", "deferred_disk", "queued", "gate_held", "contract_held")
+# The waiting states a recheck releases, by itself or at an operator's recheck-held.
+HELD_STATES = ("gate_held", "contract_held")
 TERMINAL_STATES = (
     "done", "skipped", "excluded", "failed", "split_done", "stopped_no_approval", "stopped_policy_drift",
 )
@@ -59,13 +65,15 @@ RAW_DISPOSITIONS = ("none", "present", "released", "discarded", "kept", "held", 
 ATTEMPT_OUTCOMES = (
     "ok", "failed", "timeout", "cancelled", "interrupted", "stalled", "refused", "busy", "blocked", "fault",
 )
-# contract: Interactive broke the contract the runner reads (no disposition, a malformed one, one decided by
-# another extractor). Time does not mend it, so only an operator lifts it.
+# contract: what a runner before 2026-10-02 paused for when Interactive broke the contract it reads for one
+# unit. The runner now holds that unit (contract_held) and makes no such pause; one an earlier runner left in
+# a ledger is lifted by an operator's resume. fault: a backend that does not answer, or a repository outage,
+# looked at again by itself after fault_recheck_seconds.
 PAUSE_KINDS = ("operator", "contract", "pin", "fault", "disk")
 # A pause never gives way to a lesser one: a disk that runs short while the operator has paused the
 # campaign must not lift the operator's pause by replacing it.
 PAUSE_RANK = {kind: len(PAUSE_KINDS) - index for index, kind in enumerate(PAUSE_KINDS)}
-# recheck_held: run the before-production gate again now for a unit held in gate_held.
+# recheck_held: make the step a held unit (HELD_STATES) was held at again now: for gate_held, the gate.
 REQUEST_ACTIONS = ("skip", "retry", "release_held", "recheck_held")
 
 
@@ -432,7 +440,7 @@ class Ledger:
             raise LedgerError(f"Ledger schema {row['value']} is not {SCHEMA_VERSION}.")
 
     # The tables whose CHECK constraints name a list schema 2 widened: unit and transition the states
-    # (gate_held), request the actions (recheck_held).
+    # (gate_held, contract_held), request the actions (recheck_held).
     _REBUILT_FOR_2 = ("unit", "transition", "request")
 
     def _migrate(self) -> None:

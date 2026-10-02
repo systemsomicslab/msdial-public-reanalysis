@@ -210,6 +210,13 @@ class LedgerTests(unittest.TestCase):
         self.book.transition("u1", "gate_held", NOW, resume_state="diagnosed", next_attempt_at=NOW)
         self.assertEqual(self.book.unit("u1")["state"], "gate_held")
         self.book.add_request("recheck_held", "u1", "run the gate again", "Test Person", NOW)
+        # Held for a reply or a record the runner cannot read: a waiting state too, with the step it resumes.
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+            self.sql("UPDATE unit SET state = 'contract_held', resume_state = NULL WHERE unit_key = 'u1'")
+        self.book.transition("u1", "contract_held", NOW, resume_state="downloaded", next_attempt_at=NOW)
+        self.assertEqual(self.book.unit("u1")["state"], "contract_held")
+        self.assertEqual(ledger.HELD_STATES, ("gate_held", "contract_held"))
+        self.assertLessEqual(set(ledger.HELD_STATES), set(ledger.WAITING_STATES))
         with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
             self.sql("INSERT INTO request(at, action, unit_key, reason) VALUES (?, 'recheck_everything', 'u1', 'x')", NOW)
 
@@ -222,9 +229,9 @@ SCHEMA_1_TABLES = (
 
 
 def schema_1() -> str:
-    """The ledger's schema as merged in msdial-public-reanalysis#27: without gate_held, recheck_held and the
-    gate verdict's blocking unevaluated checks."""
-    text = ledger.SCHEMA.replace(", 'gate_held'", "").replace(", 'recheck_held'", "")
+    """The ledger's schema as merged in msdial-public-reanalysis#27: without gate_held, contract_held,
+    recheck_held and the gate verdict's blocking unevaluated checks."""
+    text = ledger.SCHEMA.replace(", 'gate_held'", "").replace(", 'contract_held'", "").replace(", 'recheck_held'", "")
     dropped = ("blocking_unevaluated_ids_json", "The blocks_run checks left not evaluable", "Last, where schema 1")
     return "".join(line for line in text.splitlines(keepends=True) if not any(mark in line for mark in dropped))
 
@@ -259,10 +266,13 @@ class MigrationTests(unittest.TestCase):
 
     def test_the_old_schema_refuses_what_schema_2_adds(self) -> None:
         self.assertNotIn("gate_held", schema_1())
+        self.assertNotIn("contract_held", schema_1())
         connection = sqlite3.connect(str(self.old))
         try:
             with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
                 connection.execute("UPDATE unit SET state = 'gate_held', resume_state = 'diagnosed' WHERE unit_key = 'u1'")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+                connection.execute("UPDATE unit SET state = 'contract_held', resume_state = 'downloaded' WHERE unit_key = 'u1'")
         finally:
             connection.close()
 
@@ -293,8 +303,11 @@ class MigrationTests(unittest.TestCase):
             book.transition("u1", "gate_held", NOW, resume_state="diagnosed", next_attempt_at=NOW, detail={"gate_held": "timeout"})
             self.assertGreater(book.transitions("u1")[-1]["seq"], last, "the sequence goes on from the old rows")
             book.add_request("recheck_held", "u1", "run the gate again", "Test Person", NOW)
+            book.transition("u2", "contract_held", NOW, resume_state="downloaded", next_attempt_at=NOW,
+                            detail={"contract_held": "no_disposition"})
         with ledger.Ledger(self.old) as again:
             self.assertEqual(again.unit("u1")["state"], "gate_held", "a migrated ledger opens as schema 2")
+            self.assertEqual(again.unit("u2")["state"], "contract_held")
 
     def test_a_migration_that_stops_leaves_schema_1_as_it_was(self) -> None:
         def crash(phase: str) -> None:

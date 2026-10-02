@@ -20,16 +20,23 @@ THE ORDER OF USE
     python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|release-held|recheck-held|revoke --campaign ID ...
         release-held --unit KEY deletes, under boundary 5, the raw data an ended unit holds against the rules
         once Interactive's deletion accepts them (the runner also looks again at every start and every few
-        hours); retry runs the unit again from its Class decision. recheck-held [--unit KEY] runs the
-        before-production gate again now for every unit (or the one) held because the gate gave no usable
-        report; the runner also runs it again at every start and every few hours.
+        hours); retry runs the unit again from its Class decision. recheck-held [--unit KEY] makes the step
+        every held unit (or the one) was held at again now: for a unit the before-production gate gave no
+        usable report for, the gate. The runner also makes it again at every start and every few hours.
+        Every request is acted on by the runner that holds the campaign; with none running, by the next run.
 
-A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, a failure or a gate hold
-stops one unit's analysis, and the runner goes on with the others. A pin change, a short disk and a
-repository outage pause the whole campaign, each lifting by itself once its cause has gone; so does a
-backend that does not answer, looked at again hourly. Besides an operator's own pause, only a contract
-Interactive broke (a tool, a reply or a record the runner cannot read, which every unit would meet) waits
-for an operator's resume.
+A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, a failure or a hold stops
+one unit's analysis, and the runner goes on with the others. A unit is held, unrun and uncounted with its
+raw data kept, when the before-production gate gives no usable report (gate_held), or when Interactive
+gives a reply or a record for it that the runner cannot read or act on (contract_held); a deletion
+Interactive cannot make as called leaves that unit's raw data held. What pauses the whole campaign is what
+every unit would meet alike: a pin change, a short disk, a repository outage, and a backend that does not
+answer (looked at again hourly). Each lifts by itself once its cause has gone. Only an operator's own pause
+waits for an operator's resume, as does a "contract" pause a runner before 2026-10-02 left in the ledger.
+
+RUN --UNTIL-IDLE returns once every unit has ended or waits for disk. A held unit is not idle: the runner
+stays, polling, and makes the held unit's step again every few hours, so a unit that stays held keeps it
+running until a recheck gives what was missing or an operator skips the unit.
 
 THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
 of the approved manifest, naming each library as "library:<file name>" and never by location:
@@ -409,23 +416,52 @@ def command_resume(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _runner_note(book: Any) -> str:
+    """Who acts on a request: the runner that holds the campaign now, or none until one is started.
+
+    A request is a row in the ledger, read only by a runner's loop: recorded while no runner runs, it waits."""
+    from campaign import policy, ports
+
+    campaign = book.campaign()
+    record = book.runner()
+    stale = policy.CampaignPolicy.from_dict(campaign["policy"]).runner_lock_stale_seconds
+    now = datetime.now(timezone.utc)
+    alive = False
+    if record.get("pid"):
+        try:
+            alive = ports.runner_alive(record, now, stale)
+        except ImportError:
+            # Without Interactive's process probe, the heartbeat alone says whether a runner holds the campaign.
+            heartbeat = policy.parse_iso(record.get("heartbeat_at"))
+            alive = heartbeat is not None and (now - heartbeat).total_seconds() <= stale
+    if alive:
+        return f"runner pid {record['pid']} on {record.get('host')} acts on it at its next step"
+    return (f"no runner is running, so nothing acts on it until one is started "
+            f"(campaign-runner.py run --campaign {campaign['campaign_id']})")
+
+
 def command_request(args: argparse.Namespace) -> int:
     action = getattr(args, "action", None) or args.command
     with _open(args) as book:
         request_id = book.add_request(action, args.unit, args.reason, args.by or "", _now())
-    print(f"Request {request_id} ({action} {args.unit}) recorded; the runner acts on it at its next step.")
+        note = _runner_note(book)
+    print(f"Request {request_id} ({action} {args.unit}) recorded; {note}.")
     return EXIT_OK
 
 
 def command_recheck_held(args: argparse.Namespace) -> int:
-    """A recheck_held request for the named unit, or for every unit the gate gave no usable report for."""
+    """A recheck_held request for the named unit, or for every held unit: held because the gate gave no
+    usable report (gate_held) or because Interactive's reply or record could not be read (contract_held)."""
+    from campaign import ledger
+
     with _open(args) as book:
-        units = [args.unit] if args.unit else [unit["unit_key"] for unit in book.units(("gate_held",))]
+        units = [args.unit] if args.unit else [unit["unit_key"] for unit in book.units(ledger.HELD_STATES)]
         requests = [book.add_request("recheck_held", unit, args.reason, args.by or "", _now()) for unit in units]
+        note = _runner_note(book)
     if not requests:
-        print("No unit is held for a gate report.")
+        print("No unit is held for a recheck.")
     for request_id, unit in zip(requests, units):
-        print(f"Request {request_id} (recheck_held {unit}) recorded; the runner runs the gate again at its next step.")
+        print(f"Request {request_id} (recheck_held {unit}) recorded; {note}.")
     return EXIT_OK
 
 
@@ -463,6 +499,8 @@ def command_schedule(args: argparse.Namespace) -> int:
     print("# ONLOGON runs the task when the user logs on, with no password stored. For ONSTART, before anyone")
     print("# logs on, the task needs the account's password: add /RP and type it at schtasks' own prompt.")
     print(f'# In Task Scheduler, set the task to restart on failure and "Do not start a new instance" if one runs.')
+    print("# run --until-idle ends once every unit has ended or waits for disk. While a unit is held it keeps running,")
+    print("# to make the held unit's step again every few hours; a request (recheck-held, skip) waits for a runner.")
     print("# Keep the machine awake while the campaign runs (AC power), for example:")
     print("powercfg /change standby-timeout-ac 0")
     print("powercfg /change hibernate-timeout-ac 0")
@@ -513,7 +551,9 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--port", type=int, default=DEFAULT_PORT)
         command.add_argument("--no-backend", action="store_true", help="use a backend already listening on --port")
         if name == "run":
-            command.add_argument("--until-idle", action="store_true")
+            command.add_argument("--until-idle", action="store_true",
+                                 help="return once every unit has ended or waits for disk; a held unit keeps the runner "
+                                      "going to recheck it every few hours")
             command.add_argument("--max-units", type=int)
             command.add_argument("--prefetch", type=int)
             command.add_argument("--allow-dirty", action="store_true")
@@ -550,10 +590,10 @@ def parser() -> argparse.ArgumentParser:
         command.set_defaults(handler=command_request, action=action)
 
     recheck = commands.add_parser(
-        "recheck-held", help="run the before-production gate again for the units held because it gave no usable report")
+        "recheck-held", help="make the step of the held units again now: the gate, for a unit it gave no usable report for")
     recheck.add_argument("--campaign", required=True)
     recheck.add_argument("--unit", help="one held unit; every held unit when left out")
-    recheck.add_argument("--reason", default="operator recheck of the before-production gate")
+    recheck.add_argument("--reason", default="operator recheck of a held unit")
     recheck.add_argument("--by", default="")
     recheck.set_defaults(handler=command_recheck_held)
 
