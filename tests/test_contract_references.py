@@ -69,9 +69,7 @@ _LINK = re.compile(r"\]\(([^)\s]+)\)")
 # colon as the start of an alternate data stream name.
 _LINE_REFERENCE = re.compile(r":\d+(?:-\d+)?$")
 
-PENDING = {
-    "scripts/campaign-runner.py": "plan item 21, the campaign runner (feat/campaign-runner)",
-}
+PENDING: dict[str, str] = {}
 # Named on purpose and kept out of the repository by .gitignore: audit outputs under feedback/ are
 # local by default, and only the review template is version controlled (README).
 LOCAL_ONLY = frozenset({"feedback/codex-pre-audit-2026-09-02.md"})

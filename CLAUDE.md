@@ -314,11 +314,12 @@ paragraphs that follow is marked as awaiting the user's decision, and says
 what applies until the user decides.
 
 **In neither list, awaiting the user's decision.** The user's rule does not
-name four `before-production` checks: ID-1 (the workspace is the unit its
+name five `before-production` checks: ID-1 (the workspace is the unit its
 manifest names), SPL-1 (a split part partitions its parent's inputs), PRE-1 (a
-header-confirmed acquisition claim is permitted) and CONV-1 (every converted
-input is a validated conversion). Until the user places them, the rule's
-"only" is read as written: a FAIL in one of these four is recorded with the
+header-confirmed acquisition claim is permitted), PRE-2 (the raw headers were
+read by a verified, pinned extractor) and CONV-1 (every converted input is a
+validated conversion). Until the user places them, the rule's "only" is read
+as written: a FAIL in one of these five is recorded with the
 unit and the unit runs, as a `record_only` FAIL is. PRE-1 never FAILs: it
 reports PASS, WARN or not_evaluable. A check the gate adds to
 `before-production` is named here until the user places it.

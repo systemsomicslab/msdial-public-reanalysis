@@ -126,7 +126,7 @@ For a repository range:
    FAIL in a `record_only` check (CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1) is
    recorded, and the unit runs. Three cases are awaiting the user's decision,
    and until then (`CLAUDE.md`, Gate verdicts in a campaign) a FAIL in a check
-   the user's rule names in neither list (ID-1, SPL-1, PRE-1 and CONV-1) and a
+   the user's rule names in neither list (ID-1, SPL-1, PRE-1, PRE-2 and CONV-1) and a
    check left `not_evaluable` are recorded, and the unit runs, while a gate
    that produced no report stops the run as a failed attempt. The gate reads
    `output\method.txt`, so it cannot run before this.
