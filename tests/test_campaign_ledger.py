@@ -204,6 +204,119 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(ledger.LedgerError):
             self.book.update("u1", NOW, library_path="somewhere")
 
+    def test_a_unit_held_for_a_gate_report_says_what_it_resumes(self) -> None:
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+            self.sql("UPDATE unit SET state = 'gate_held' WHERE unit_key = 'u1'")
+        self.book.transition("u1", "gate_held", NOW, resume_state="diagnosed", next_attempt_at=NOW)
+        self.assertEqual(self.book.unit("u1")["state"], "gate_held")
+        self.book.add_request("recheck_held", "u1", "run the gate again", "Test Person", NOW)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+            self.sql("INSERT INTO request(at, action, unit_key, reason) VALUES (?, 'recheck_everything', 'u1', 'x')", NOW)
+
+
+# The tables a schema 1 ledger holds, in an order whose references and triggers each row satisfies.
+SCHEMA_1_TABLES = (
+    "meta", "campaign", "approval", "download_group", "unit", "transition", "attempt", "console_run", "console_slot",
+    "gate_verdict", "disk_event", "runner", "campaign_event", "request",
+)
+
+
+def schema_1() -> str:
+    """The ledger's schema as merged in msdial-public-reanalysis#27: without gate_held, recheck_held and the
+    gate verdict's blocking unevaluated checks."""
+    text = ledger.SCHEMA.replace(", 'gate_held'", "").replace(", 'recheck_held'", "")
+    dropped = ("blocking_unevaluated_ids_json", "The blocks_run checks left not evaluable", "Last, where schema 1")
+    return "".join(line for line in text.splitlines(keepends=True) if not any(mark in line for mark in dropped))
+
+
+class MigrationTests(unittest.TestCase):
+    """A ledger of schema 1 is brought to schema 2 when it is opened, with every row it holds."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.world = fakes.World(Path(self.directory.name), ["u1", "u2"])
+        with self.world.open() as book:
+            book.add_request("skip", "u2", "not this one", "Test Person", NOW)
+        self.world.gate.exits.update(pre_cleanup=0, final=0)
+        self.world.run()
+        self.old = Path(self.directory.name) / "schema-1.sqlite"
+        source = sqlite3.connect(str(self.world.ledger_path))
+        target = sqlite3.connect(str(self.old))
+        try:
+            target.executescript(schema_1())
+            for table in SCHEMA_1_TABLES:
+                columns = [row[1] for row in target.execute(f"PRAGMA table_info({table})")]
+                rows = source.execute(f"SELECT {', '.join(columns)} FROM {table}").fetchall()
+                target.executemany(
+                    f"INSERT OR REPLACE INTO {table}({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", rows)
+            target.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+            target.commit()
+            self.rows = {table: source.execute(f"SELECT * FROM {table}").fetchall() for table in SCHEMA_1_TABLES if table != "meta"}
+        finally:
+            source.close()
+            target.close()
+
+    def test_the_old_schema_refuses_what_schema_2_adds(self) -> None:
+        self.assertNotIn("gate_held", schema_1())
+        connection = sqlite3.connect(str(self.old))
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+                connection.execute("UPDATE unit SET state = 'gate_held', resume_state = 'diagnosed' WHERE unit_key = 'u1'")
+        finally:
+            connection.close()
+
+    def test_a_schema_1_ledger_is_migrated_with_every_row(self) -> None:
+        with ledger.Ledger(self.old) as book:
+            db = book.connection
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], "2")
+            for table, rows in self.rows.items():
+                with self.subTest(table=table):
+                    self.assertEqual([tuple(row) for row in db.execute(f"SELECT * FROM {table}")], [tuple(row) for row in rows])
+            self.assertEqual({row[0] for row in db.execute("SELECT blocking_unevaluated_ids_json FROM gate_verdict")}, {"[]"})
+            self.assertEqual(db.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type IN ('trigger', 'index')")}
+            fresh = sqlite3.connect(str(self.world.ledger_path))
+            try:
+                expected = {row[0] for row in fresh.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('trigger', 'index') AND name NOT LIKE 'sqlite_%'")}
+            finally:
+                fresh.close()
+            self.assertLessEqual(expected, names, "every trigger and index of the dropped tables is made again")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                db.execute("UPDATE transition SET to_state = 'done'")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "approval"):
+                db.execute("INSERT INTO transition(unit_key, at, to_state, boundary, approval_id) VALUES ('u1', ?, 'done', '5', 'x')", (NOW,))
+            last = max(row["seq"] for row in book.transitions())
+            book.transition("u1", "gate_held", NOW, resume_state="diagnosed", next_attempt_at=NOW, detail={"gate_held": "timeout"})
+            self.assertGreater(book.transitions("u1")[-1]["seq"], last, "the sequence goes on from the old rows")
+            book.add_request("recheck_held", "u1", "run the gate again", "Test Person", NOW)
+        with ledger.Ledger(self.old) as again:
+            self.assertEqual(again.unit("u1")["state"], "gate_held", "a migrated ledger opens as schema 2")
+
+    def test_a_migration_that_stops_leaves_schema_1_as_it_was(self) -> None:
+        def crash(phase: str) -> None:
+            if phase == "before":
+                raise fakes.Crash()
+
+        with self.assertRaises(fakes.Crash):
+            ledger.Ledger(self.old, commit_hook=crash)
+        connection = sqlite3.connect(str(self.old))
+        try:
+            self.assertEqual(connection.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], "1")
+            self.assertEqual(len(connection.execute("SELECT * FROM transition").fetchall()), len(self.rows["transition"]))
+            self.assertEqual(connection.execute("SELECT name FROM sqlite_master WHERE name LIKE '%_2'").fetchall(), [])
+        finally:
+            connection.close()
+        with ledger.Ledger(self.old) as book:
+            self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], [row["state"] for row in self.world_units()])
+
+    def world_units(self) -> list[sqlite3.Row]:
+        with self.world.open() as book:
+            return [book.unit(key) for key in ("u1", "u2")]
+
 
 if __name__ == "__main__":
     unittest.main()

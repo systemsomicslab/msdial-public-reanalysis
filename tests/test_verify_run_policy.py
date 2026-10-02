@@ -56,6 +56,15 @@ class RunPolicyTests(unittest.TestCase):
         for check_id in self.USER_RECORDS:
             self.assertEqual(verifier.RECORD_ONLY, verifier.RUN_POLICY[check_id], check_id)
 
+    def test_the_runner_holds_the_same_blocking_checks_as_the_gate(self) -> None:
+        """The campaign runner blocks on its own list whatever a report states, so the two lists are one."""
+        sys.path.insert(0, str(TESTS.parent / "scripts"))
+        from campaign import policy as campaign_policy
+
+        blocking = {check_id for check_id, policy in verifier.RUN_POLICY.items() if policy == verifier.BLOCKS_RUN}
+        self.assertEqual(blocking, set(campaign_policy.BLOCKS_RUN_CHECKS))
+        self.assertEqual(len(campaign_policy.BLOCKS_RUN_CHECKS), len(set(campaign_policy.BLOCKS_RUN_CHECKS)))
+
     def test_the_checks_the_user_placed_on_2026_10_02_stop_the_run_on_their_fail(self) -> None:
         """ID-1 (the manifest names another unit), PRE-2 (a stale extractor read the headers) and CONV-1 (an
         input MS-DIAL cannot open), each FAILed in a unit that is otherwise ready."""

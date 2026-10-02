@@ -101,6 +101,9 @@ class RetryTests(unittest.TestCase):
     def test_the_policy_refuses_what_would_break_the_rules(self) -> None:
         with self.assertRaises(ValueError):
             policy.CampaignPolicy.from_dict({"gate_points": ["final"]})
+        # A unit runs only on a before-production report (2026-10-02): without the point, every unit is held.
+        with self.assertRaisesRegex(ValueError, "before_production"):
+            policy.CampaignPolicy.from_dict({"gate_points": ["pre_cleanup", "final"]})
         with self.assertRaises(ValueError):
             policy.CampaignPolicy.from_dict({"max_attempts": 5})
         with self.assertRaises(ValueError):
@@ -265,8 +268,60 @@ class RunPolicyTests(unittest.TestCase):
 
     def test_without_a_stated_policy_the_fixed_list_decides(self) -> None:
         report = self.report(*({"check_id": check, "status": "fail"} for check in (
-            "ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1")))
+            "ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1",
+            "CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1")))
         self.assertEqual(policy.run_blocking_failures(report), (sorted(policy.BLOCKS_RUN_CHECKS), "runner_default"))
+
+    def test_the_users_list_is_the_eight_checks_of_2026_10_02(self) -> None:
+        self.assertEqual(set(policy.BLOCKS_RUN_CHECKS),
+                         {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1"})
+        for check in ("ID-1", "PRE-2", "CONV-1"):
+            with self.subTest(check=check):
+                report = self.report({"check_id": check, "status": "fail", "run_policy": "record_only"})
+                self.assertEqual(policy.run_blocking_failures(report), ([check], "gate"),
+                                 "a gate that still states record_only for it does not take it off the list")
+                self.assertEqual(len(policy.run_policy_mismatches(report)), 1)
+
+    def test_a_blocking_check_left_unevaluated_where_required_stops_the_run(self) -> None:
+        """2026-10-02: as its FAIL does. Required is the check's own word, or strict_failures where it gives none."""
+        report = self.report(
+            {"check_id": "SUM-1", "stage": "before-production", "status": "not_evaluable", "required": True,
+             "run_policy": "blocks_run"},
+            {"check_id": "INP-1", "stage": "before-production", "status": "not_evaluable", "required": False,
+             "run_policy": "blocks_run"},
+            {"check_id": "PKH-1", "stage": "before-production", "status": "not_evaluable", "required": True,
+             "run_policy": "record_only"},
+            {"check_id": "CONV-1", "status": "not_evaluable"},
+            {"check_id": "ID-1", "status": "not_evaluable"},
+            {"check_id": "CNT-1", "stage": "after-run", "status": "not_evaluable", "required": True},
+            strict_failures=["SUM-1", "PKH-1", "CONV-1", "CNT-1"],
+        )
+        self.assertEqual(policy.run_blocking_unevaluated(report), ["CONV-1", "SUM-1"])
+        self.assertEqual(policy.run_blocking_failures(report)[0], [], "none of them FAILed")
+        named = self.report({"check_id": "ACQ-1", "stage": "before-production", "status": "not_evaluable",
+                             "required": True, "run_policy": "blocks_run"}, run_blocked_by=["ACQ-1"])
+        self.assertEqual(policy.run_blocking_unevaluated(named), ["ACQ-1"])
+        self.assertEqual(policy.run_blocking_failures(named)[0], [], "run_blocked_by names it, and it is not evaluable")
+        stated = self.report({"check_id": "CLS-1", "status": "not_evaluable", "required": True, "run_policy": "blocks_run"})
+        self.assertEqual(policy.run_blocking_unevaluated(stated), ["CLS-1"], "the gate can add to the list here too")
+
+    def test_a_gate_that_gave_no_usable_report_is_told_from_one_that_did(self) -> None:
+        usable = {"outcome": "ran", "exit_code": 2, "report_parsed": True}
+        self.assertIsNone(policy.gate_report_problem(usable))
+        for exit_code in (0, 4):
+            self.assertIsNone(policy.gate_report_problem({**usable, "exit_code": exit_code}))
+        cases = {
+            policy.GATE_NOT_RUN: [None, {"outcome": "error", "not_started": True}],
+            policy.GATE_TIMEOUT: [{"outcome": "timeout"}],
+            policy.GATE_ERROR: [{"outcome": "error", "exit_code": None}, {**usable, "exit_code": 1},
+                                {**usable, "exit_code": None}, {**usable, "exit_code": True}],
+            policy.GATE_UNUSABLE: [{**usable, "exit_code": 3}, {"outcome": "ran", "exit_code": 3, "report_parsed": False}],
+            policy.GATE_UNPARSABLE: [{**usable, "report_parsed": False}, {"outcome": "ran", "exit_code": 0}],
+        }
+        for problem, verdicts in cases.items():
+            for verdict in verdicts:
+                with self.subTest(verdict=verdict):
+                    self.assertEqual(policy.gate_report_problem(verdict), problem)
 
     def test_only_a_fail_blocks(self) -> None:
         report = self.report({"check_id": "SUM-1", "status": "warn"}, {"check_id": "INP-1", "status": "not_evaluable"},

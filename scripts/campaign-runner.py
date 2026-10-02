@@ -17,10 +17,19 @@ THE ORDER OF USE
         --by NAME --statement "the person's words" --covers 1,3,4,5,split
         only after the person approved that digest in the conversation; the approval id is theirs
     python scripts/campaign-runner.py run --campaign ID [--until-idle] [--max-units N] [--prefetch N]
-    python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|release-held|revoke --campaign ID ...
+    python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|release-held|recheck-held|revoke --campaign ID ...
         release-held --unit KEY deletes, under boundary 5, the raw data an ended unit holds against the rules
         once Interactive's deletion accepts them (the runner also looks again at every start and every few
-        hours); retry runs the unit again from its Class decision.
+        hours); retry runs the unit again from its Class decision. recheck-held [--unit KEY] runs the
+        before-production gate again now for every unit (or the one) held because the gate gave no usable
+        report; the runner also runs it again at every start and every few hours.
+
+A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, a failure or a gate hold
+stops one unit's analysis, and the runner goes on with the others. A pin change, a short disk and a
+repository outage pause the whole campaign, each lifting by itself once its cause has gone; so does a
+backend that does not answer, looked at again hourly. Besides an operator's own pause, only a contract
+Interactive broke (a tool, a reply or a record the runner cannot read, which every unit would meet) waits
+for an operator's resume.
 
 THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
 of the approved manifest, naming each library as "library:<file name>" and never by location:
@@ -408,6 +417,18 @@ def command_request(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def command_recheck_held(args: argparse.Namespace) -> int:
+    """A recheck_held request for the named unit, or for every unit the gate gave no usable report for."""
+    with _open(args) as book:
+        units = [args.unit] if args.unit else [unit["unit_key"] for unit in book.units(("gate_held",))]
+        requests = [book.add_request("recheck_held", unit, args.reason, args.by or "", _now()) for unit in units]
+    if not requests:
+        print("No unit is held for a gate report.")
+    for request_id, unit in zip(requests, units):
+        print(f"Request {request_id} (recheck_held {unit}) recorded; the runner runs the gate again at its next step.")
+    return EXIT_OK
+
+
 def command_revoke(args: argparse.Namespace) -> int:
     from campaign import ports
 
@@ -527,6 +548,14 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--reason", required=True)
         command.add_argument("--by", default="")
         command.set_defaults(handler=command_request, action=action)
+
+    recheck = commands.add_parser(
+        "recheck-held", help="run the before-production gate again for the units held because it gave no usable report")
+    recheck.add_argument("--campaign", required=True)
+    recheck.add_argument("--unit", help="one held unit; every held unit when left out")
+    recheck.add_argument("--reason", default="operator recheck of the before-production gate")
+    recheck.add_argument("--by", default="")
+    recheck.set_defaults(handler=command_recheck_held)
 
     revoke = commands.add_parser("revoke", help="revoke the campaign's approval")
     revoke.add_argument("--campaign", required=True)

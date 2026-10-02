@@ -10,6 +10,8 @@ limit; a short disk pauses. Nothing here downloads a byte or starts a Console.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
+import io
 import json
 import sqlite3
 import sys
@@ -908,18 +910,21 @@ class PartialDisk(fakes.FakeDisk):
 
 
 class EndStepErrorTests(Base):
+    """An error in a step of a unit's end. Interactive's deletion and the Catalog's run record raise it here: a
+    gate that raises after the run is no error, its missing report only recorded (2026-10-02)."""
+
     def test_an_error_ending_a_unit_is_retried_later_without_counting(self) -> None:
         world = self.world(("u1", "u2"))
         world.scripts["u1"] = fakes.UnitScript(downloads=["fail", "fail", "fail"])
         broken = {"now": True}
-        original = world.gate.run
+        original = world.interactive.discard
 
-        def gate(workspace, point, report_path):
-            if Path(workspace).name == "u1" and point == "final" and broken["now"]:
-                raise OSError("the report could not be written")
-            return original(workspace, point, report_path)
+        def discard(**arguments):
+            if arguments["unit_id"] == "u1" and broken["now"]:
+                raise OSError("the raw tree is held by another process")
+            return original(**arguments)
 
-        world.gate.run = gate
+        world.interactive.discard = discard
         with world.open() as book:
             world.runner(book).run(max_iterations=400)
             unit = book.unit("u1")
@@ -938,15 +943,15 @@ class EndStepErrorTests(Base):
         world = self.world(("u1",))
         world.scripts["u1"] = fakes.UnitScript(disposition="exclude")
         left = {"errors": 4}
-        original = world.gate.run
+        original = world.interactive.discard
 
-        def gate(workspace, point, report_path):
-            if point == "final" and left["errors"] > 0:
+        def discard(**arguments):
+            if left["errors"] > 0:
                 left["errors"] -= 1
                 raise OSError("transient")
-            return original(workspace, point, report_path)
+            return original(**arguments)
 
-        world.gate.run = gate
+        world.interactive.discard = discard
         book = world.open()
         self.addCleanup(book.close)
         runner = world.runner(book)
@@ -961,15 +966,16 @@ class EndStepErrorTests(Base):
     def test_a_unit_with_outputs_is_never_failed_by_an_error_at_its_end(self) -> None:
         world = self.world(("u1",))
         left = {"errors": 5}
-        original = world.gate.run
+        original = world.catalog.record_run
 
-        def gate(workspace, point, report_path):
-            if point == "final" and left["errors"] > 0:
+        def record_run(**values):
+            # The unit's end completes its last run's record with the final gate's verdict.
+            if "gate_verdict" in values and left["errors"] > 0:
                 left["errors"] -= 1
                 raise PermissionError("the file is held by another process")
-            return original(workspace, point, report_path)
+            return original(**values)
 
-        world.gate.run = gate
+        world.catalog.record_run = record_run
         book = self.finish(world, max_iterations=4000)
         unit = book.unit("u1")
         self.assertEqual((unit["state"], unit["terminal_reason"], unit["failures"]), ("done", "outputs_produced", 0))
@@ -1160,6 +1166,175 @@ class BeforeProductionGateTests(Base):
                 self.assertEqual(verdict["run_policy_source"], "gate")
                 self.assertEqual(bool(book.events("run_policy_mismatch")), mismatch)
 
+    def test_the_checks_placed_on_2026_10_02_fail_the_unit_and_spl1_does_not(self) -> None:
+        for check, blocks in (("ID-1", True), ("PRE-2", True), ("CONV-1", True), ("SPL-1", False)):
+            with self.subTest(check=check):
+                world = self.world(("u1", "u2"))
+                world.gate.fails[("u1", "before_production")] = [check]
+                book = self.finish(world)
+                unit = book.unit("u1")
+                if blocks:
+                    self.assertEqual((unit["state"], unit["failures"], unit["raw_disposition"]), ("failed", 3, "discarded"))
+                    self.assertEqual(self.production_starts(world, "u1"), 0)
+                else:
+                    self.assertEqual((unit["state"], unit["failures"]), ("done", 0))
+                    self.assertEqual(self.production_starts(world, "u1"), 1)
+                self.assertEqual(book.unit("u2")["state"], "done", "the stop is the unit's, never the runner's")
+
+    def test_a_blocking_check_left_unevaluated_where_required_fails_the_unit_as_a_fail_does(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.gate.unevaluated[("u1", "before_production")] = ["SUM-1"]
+        world.gate.unevaluated[("u2", "before_production")] = ["PKH-1"]
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["raw_disposition"]), ("failed", 3, "discarded"))
+        self.assertEqual(self.production_starts(world, "u1"), 0)
+        verdicts = [row for row in book.gate_verdicts("u1") if row["point"] == "before_production"]
+        self.assertEqual({row["blocking_unevaluated_ids_json"] for row in verdicts}, {'["SUM-1"]'})
+        self.assertEqual({row["blocking_fail_ids_json"] for row in verdicts}, {"[]"})
+        counted = [json.loads(row["detail_json"]) for row in book.attempts("u1") if row["counted"]]
+        self.assertEqual([item["blocking_unevaluated_ids"] for item in counted], [["SUM-1"]] * 3)
+        record = json.loads((Path(unit["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
+        self.assertIn(["SUM-1"], [item["blocking_unevaluated_ids"] for item in record["gate_verdicts"]])
+        self.assertEqual((book.unit("u2")["state"], book.unit("u2")["failures"]), ("done", 0),
+                         "a record_only check left unevaluated stops nothing")
+
+
+class GateHoldTests(Base):
+    """Before production, a gate that gives no usable report holds the unit (the user's rule of 2026-10-02): it
+    is not run, its raw data are kept, it is not counted as a retry or a failure, it is warned about in the
+    ledger and the status export, and the other units go on. A recheck runs the gate again."""
+
+    ENDINGS = {"timeout": policy.GATE_TIMEOUT, "error": policy.GATE_ERROR, "exit_3": policy.GATE_UNUSABLE,
+               "unparsable": policy.GATE_UNPARSABLE, "raise": policy.GATE_NOT_RUN}
+
+    def held(self, ending: str = "timeout", units=("u1", "u2")):
+        world = self.world(units)
+        world.gate.no_report[("u1", "before_production")] = ending
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        runner.run(until_idle=True, max_iterations=2000)
+        return world, book, runner
+
+    def assert_held(self, world: fakes.World, book: ledger.Ledger, problem: str) -> None:
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["resume_state"]), ("gate_held", "diagnosed"))
+        self.assertEqual((unit["failures"], unit["interruptions"]), (0, 0), "neither a retry nor a failure")
+        self.assertEqual(unit["raw_disposition"], "present")
+        self.assertTrue((Path(unit["workspace"]) / "raw").is_dir(), "the raw data are kept")
+        self.assertEqual(world.interactive.console_starts.count(("u1", "run")), 0, "the unit is not run")
+        self.assertFalse([row for row in book.attempts("u1") if row["counted"]])
+        self.assertFalse([arguments for name, arguments in world.interactive.calls
+                          if name in ("discard", "cleanup") and "u1" in str(arguments)])
+        events = [json.loads(row["detail_json"]) for row in book.events("gate_held") if row["unit_key"] == "u1"]
+        self.assertTrue(events and events[-1]["no_report"] == problem, events)
+        self.assertIn("held", events[-1]["warning"])
+        document, tsv = machine.export_status(book)
+        row = next(item for item in document["units"] if item["unit_key"] == "u1")
+        self.assertEqual(len(row["warnings"]), 1)
+        self.assertIn(f"no report: {problem}", row["warnings"][0])
+        line = next(line for line in tsv.splitlines() if line.split("\t")[0] == "u1")
+        self.assertIn("raw data are kept", line.split("\t")[machine.TSV_COLUMNS.index("warnings")])
+        self.assertEqual(document["summary"]["gate_held"]["unit_keys"], ["u1"])
+        self.assertEqual(book.unit("u2")["state"], "done", "the other units go on")
+
+    def test_every_gate_ending_without_a_usable_report_holds_the_unit(self) -> None:
+        for ending, problem in self.ENDINGS.items():
+            with self.subTest(ending=ending):
+                world, book, _runner = self.held(ending)
+                self.assert_held(world, book, problem)
+                attempt = next(row for row in book.attempts("u1") if row["step"] == "prepare_run")
+                self.assertEqual((attempt["outcome"], attempt["counted"]), ("fault", 0))
+                self.assertFalse(book.runner()["paused"], "the campaign is not paused")
+
+    def test_a_gate_the_runner_never_started_holds_the_unit(self) -> None:
+        """_gate giving no verdict at all for before_production, as for a gate point the policy left out."""
+        world = self.world(("u1", "u2"))
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        original = runner._gate
+
+        def gate(unit, point):
+            return None if (unit["unit_key"], point) == ("u1", "before_production") else original(unit, point)
+
+        runner._gate = gate
+        runner.run(until_idle=True, max_iterations=2000)
+        self.assert_held(world, book, policy.GATE_NOT_RUN)
+
+    def test_a_held_unit_is_rechecked_when_the_runner_starts_again(self) -> None:
+        world, book, _runner = self.held()
+        world.gate.no_report.clear()
+        runner = world.runner(book)  # the next start
+        runner.run(until_idle=True, max_iterations=2000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["raw_disposition"]), ("done", 0, "released"))
+        starts = [json.loads(row["detail_json"]).get("gate_recheck") for row in book.transitions("u1")]
+        self.assertIn("runner_start", starts)
+        verdicts = [row["outcome"] for row in book.gate_verdicts("u1") if row["point"] == "before_production"]
+        self.assertEqual(verdicts, ["timeout", "ran"])
+        self.assertEqual(machine.summary(book)["gate_held"]["units"], 0)
+
+    def test_a_held_unit_is_rechecked_every_few_hours_and_held_again_while_no_report_comes(self) -> None:
+        world, book, runner = self.held()
+        runs = world.gate.runs.count(("u1", "before_production"))
+        runner.run(until_idle=True, max_iterations=50)
+        self.assertEqual(world.gate.runs.count(("u1", "before_production")), runs, "nothing is rechecked before it is due")
+        world.clock.sleep(runner.policy.held_recheck_seconds + 1)
+        runner.run(until_idle=True, max_iterations=2000)
+        self.assertEqual(world.gate.runs.count(("u1", "before_production")), runs + 1)
+        self.assert_held(world, book, policy.GATE_TIMEOUT)
+        world.gate.no_report.clear()
+        world.clock.sleep(runner.policy.held_recheck_seconds + 1)
+        runner.run(until_idle=True, max_iterations=2000)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
+
+    def test_an_operator_recheck_runs_the_gate_again_now(self) -> None:
+        world, book, runner = self.held()
+        world.gate.no_report.clear()
+        book.add_request("recheck_held", "u2", "not held", "Test Person", runner.stamp())
+        book.add_request("recheck_held", "u1", "the gate is mended", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=2000)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
+        handled = [row[0] for row in book.connection.execute("SELECT handled_detail FROM request ORDER BY request_id")]
+        self.assertEqual(handled, ["nothing held at the gate: the unit is done", "gate recheck brought forward"])
+
+    def test_the_recheck_held_command_asks_for_every_held_unit(self) -> None:
+        world = self.world(("u1", "u2", "u3"))
+        world.gate.no_report.update({("u1", "before_production"): "timeout", ("u2", "before_production"): "exit_3"})
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        runner.run(until_idle=True, max_iterations=2000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["gate_held", "gate_held", "done"])
+        spec = importlib.util.spec_from_file_location("campaign_runner_cli", TESTS.parent / "scripts" / "campaign-runner.py")
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            code = cli.main(["--workspace-root", str(world.workspace_root), "recheck-held", "--campaign", "test-campaign"])
+        self.assertEqual(code, 0)
+        self.assertIn("recheck_held u2", printed.getvalue())
+        self.assertEqual([(row["action"], row["unit_key"]) for row in book.pending_requests()],
+                         [("recheck_held", "u1"), ("recheck_held", "u2")])
+        world.gate.no_report.clear()
+        runner.run(until_idle=True, max_iterations=2000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2", "u3")], ["done"] * 3)
+
+    def test_a_missing_report_after_the_run_is_only_recorded(self) -> None:
+        world = self.world(("u1",))
+        world.gate.no_report.update(pre_cleanup="timeout", final="raise")
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"], unit["failures"]), ("done", "outputs_produced", 0))
+        self.assertEqual(unit["raw_disposition"], "released", "the deletion rule holds whatever the gate says")
+        self.assertIsNone(unit["gate_exit_pre"])
+        events = [json.loads(row["detail_json"]) for row in book.events("gate_no_report")]
+        self.assertEqual([(item["point"], item["no_report"]) for item in events],
+                         [("pre_cleanup", policy.GATE_TIMEOUT), ("final", policy.GATE_NOT_RUN)])
+        self.assertEqual([row["point"] for row in book.gate_verdicts("u1")], ["before_production", "pre_cleanup", "final"])
+        self.assertFalse(book.events("gate_held"))
+
 
 class AppliedDispositionTests(Base):
     """Interactive 0.5.17: only a disposition applied under the approval is acted on."""
@@ -1290,14 +1465,14 @@ class RequestTests(Base):
         world = self.world(("u1",))
         world.scripts["u1"] = fakes.UnitScript(downloads=["fail", "fail", "fail"])
         broken = {"now": True}
-        original = world.gate.run
+        original = world.interactive.discard
 
-        def gate(workspace, point, report_path):
-            if point == "final" and broken["now"]:
-                raise OSError("the report could not be written")
-            return original(workspace, point, report_path)
+        def discard(**arguments):
+            if broken["now"]:
+                raise OSError("the raw tree is held by another process")
+            return original(**arguments)
 
-        world.gate.run = gate
+        world.interactive.discard = discard
         book = world.open()
         self.addCleanup(book.close)
         runner = world.runner(book)
@@ -1370,6 +1545,48 @@ class GatePortTests(unittest.TestCase):
             self.assertEqual((verdict["blocking_fail_ids"], verdict["run_policy_source"]), (["CNT-1"], "runner_default"))
             self.assertEqual(verdict["stage_reached"], "B10")
             self.assertTrue(report.is_file())
+
+    def test_a_required_blocking_check_left_unevaluated_is_read_from_the_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "gate.py"
+            script.write_text(
+                "import json, sys\n"
+                "print(json.dumps({'checks': ["
+                "{'check_id': 'SUM-1', 'stage': 'before-production', 'status': 'not_evaluable', 'required': True, 'run_policy': 'blocks_run'},"
+                " {'check_id': 'INP-1', 'stage': 'before-production', 'status': 'not_evaluable', 'required': False, 'run_policy': 'blocks_run'},"
+                " {'check_id': 'PKH-1', 'stage': 'before-production', 'status': 'not_evaluable', 'required': True, 'run_policy': 'record_only'}],"
+                " 'strict_failures': ['SUM-1', 'PKH-1'], 'run_blocked_by': ['SUM-1']}))\n"
+                "sys.exit(4)\n",
+                encoding="utf-8",
+            )
+            gate = ports.GatePort(python=sys.executable, script=script, timeout=60, gate_commit="c" * 40)
+            verdict = gate.run(directory, "before_production", Path(directory) / "reports" / "01-before_production.json")
+        self.assertIsNone(policy.gate_report_problem(verdict))
+        self.assertEqual((verdict["blocking_fail_ids"], verdict["blocking_unevaluated_ids"]), ([], ["SUM-1"]))
+
+    def test_a_gate_that_gave_no_report_is_said_so(self) -> None:
+        """The endings of a gate that leave the runner no report: the user's rule holds the unit on each before
+        production (2026-10-02). The ledger keeps only the exit codes the gate defines; the others are said."""
+        endings = {
+            "exit 3, nothing printed": ("import sys\nsys.stderr.write('not a directory: x')\nsys.exit(3)\n",
+                                        policy.GATE_UNUSABLE, "not a directory"),
+            "a crash": ("raise SystemExit('Traceback: boom')\n", policy.GATE_ERROR, "The gate exited 1"),
+            "not JSON": ("print('[PASS] ID-1')\n", policy.GATE_UNPARSABLE, "not a report"),
+            "JSON that is no report": ("print('[1, 2]')\nraise SystemExit(2)\n", policy.GATE_UNPARSABLE, "not a report"),
+        }
+        for name, (source, problem, said) in endings.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                script = Path(directory) / "gate.py"
+                script.write_text(source, encoding="utf-8")
+                gate = ports.GatePort(python=sys.executable, script=script, timeout=60, gate_commit="c" * 40)
+                verdict = gate.run(directory, "before_production", Path(directory) / "reports" / "01.json")
+                self.assertFalse(verdict["report_parsed"])
+                self.assertEqual(policy.gate_report_problem(verdict), problem, verdict)
+                self.assertIn(said, verdict["detail"])
+                self.assertIn(verdict.get("exit_code"), (None, 0, 2, 3, 4), "the ledger's CHECK takes it")
+        gate = ports.GatePort(python=str(Path(tempfile.gettempdir()) / "no-such-python.exe"), timeout=60, gate_commit="c" * 40)
+        verdict = gate.run(tempfile.gettempdir(), "before_production", Path(tempfile.gettempdir()) / "unused.json")
+        self.assertEqual(policy.gate_report_problem(verdict), policy.GATE_NOT_RUN, "a gate the runner could not start")
 
 
 if __name__ == "__main__":

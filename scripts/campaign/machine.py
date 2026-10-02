@@ -25,8 +25,13 @@ THE RULES are the user's, as policy.py writes them down: a failed unit is retrie
 data are deleted; raw data are deleted once the outputs are produced and the mzTab-M validates, with the
 gate verdict recorded beside the deletion, whatever it is; skipped and excluded units' raw data are
 deleted too; a short disk pauses the campaign; a before-production FAIL stops the unit's run only for a
-check that breaks results (blocks_run), and the unit then counts as failed, while any other FAIL is
-recorded and the unit runs. Every production attempt is recorded in the Catalog as it ends. Raw data
+check that breaks results (blocks_run), as does such a check left not evaluable where it is required,
+and the unit then counts as failed, while any other FAIL is recorded and the unit runs; a
+before-production gate that gives no usable report holds the unit (gate_held), unrun and uncounted with
+its raw data kept, until a recheck gives one, while the other units go on. "Stop" is per unit, never the
+runner's: what pauses the whole campaign is what every unit would meet alike (a pin change, a short disk,
+a repository outage, a backend that does not answer, a contract Interactive broke). Every production
+attempt is recorded in the Catalog as it ends. Raw data
 the rules delete and Interactive would not are "held", counted apart (summary), never reported as kept
 or deleted, and looked at again when the runner starts, every few hours and at an operator's
 release-held, until Interactive's own deletion takes them. The runner never records a person's reading
@@ -71,7 +76,13 @@ TSV_COLUMNS = (
     "unit_key", "catalog_unit_id", "repository", "accession", "role", "parent_unit_key", "state",
     "terminal_reason", "report_terms", "outputs_produced", "gate_exit_pre", "gate_exit_final",
     "raw_disposition", "failures", "interruptions", "run_job_id", "minimum_peak_height", "threshold_step",
-    "workspace",
+    "workspace", "warnings",
+)
+# What the status export says of a unit in gate_held (the user's rule of 2026-10-02).
+GATE_HELD_WARNING = (
+    "held: the before-production gate gave no usable report, so the unit has not run, its raw data are kept "
+    "and nothing is counted against it. The gate is run again at the runner's next start, every few hours "
+    "and at an operator's recheck-held"
 )
 
 
@@ -222,6 +233,9 @@ class Runner:
         # When this process last looked at the raw data held against the rules: never yet, so a runner that
         # starts (on an Interactive that may now delete them) looks first.
         self._held_checked_at: datetime | None = None
+        # Whether this process has brought forward the recheck of every unit held for a gate report: a runner
+        # that starts runs the gate again for each of them first (_gate_held_recheck).
+        self._gate_held_rechecked = False
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -312,11 +326,13 @@ class Runner:
 
     def idle(self) -> bool:
         """Every unit has ended, or waits on a disk that could never hold it, or on space that nothing left
-        in the campaign gives back: only units deferred for disk and the pending units held back behind
-        them remain, and none of them can be taken now. The disk pause says why; run --until-idle returns
-        (releasing the Catalog lock), and the campaign goes on once someone frees space and runs it again."""
+        in the campaign gives back, or for a gate report whose recheck is not due: only units deferred for
+        disk, the pending units held back behind them and units held for a gate report remain, and none of
+        them can be taken now. The disk pause and the gate_held warning say why; run --until-idle returns
+        (releasing the Catalog lock), and the campaign goes on once someone frees space and runs it again,
+        or the runner starts again and runs the gate again for the held units."""
         for unit in self.ledger.units():
-            if unit["state"] in ledger_module.TERMINAL_STATES or unit["state"] in ("deferred_disk", "pending"):
+            if unit["state"] in ledger_module.TERMINAL_STATES or unit["state"] in ("deferred_disk", "pending", "gate_held"):
                 continue
             return False
         return self._next_candidate() is None
@@ -324,7 +340,7 @@ class Runner:
     def _sleep_seconds(self) -> float:
         wait = float(self.policy.poll_seconds)
         now = self.now()
-        for unit in self.ledger.units(("waiting_retry",)):
+        for unit in self.ledger.units(("waiting_retry", "gate_held")):
             due = policy.parse_iso(unit["next_attempt_at"])
             # A retry already due waits for room in the hand, which the next poll looks for anyway.
             if due is not None and due > now:
@@ -351,6 +367,7 @@ class Runner:
         if self._paused() in BLOCKING_PAUSES:
             return progressed
         progressed |= self._held_recheck()
+        progressed |= self._gate_held_recheck()
         for unit in self.ledger.units(("split_parent",)):
             progressed |= self._guard(unit)
         for unit in self._in_hand():
@@ -403,7 +420,8 @@ class Runner:
                 candidate = not held_back
             elif state == "queued":
                 candidate = True
-            elif state == "waiting_retry":
+            elif state in ("waiting_retry", "gate_held"):
+                # A unit held for a gate report already has its raw data, as a retry does: no disk holds it back.
                 due = policy.parse_iso(unit["next_attempt_at"])
                 candidate = due is None or due <= now
             elif state == "deferred_disk":
@@ -721,12 +739,22 @@ class Runner:
                 else:
                     raw, why = self._release_held(unit)
                     detail = f"released ({raw}): {why}" if raw in ("released", "discarded") else f"still held: {why}"
+            elif request["action"] == "recheck_held":
+                # The before-production gate, run again now for a unit held for want of its report.
+                if state == "gate_held":
+                    self._bring_gate_recheck_forward(unit, {"request_id": request["request_id"], "gate_recheck": "operator"})
+                    detail = "gate recheck brought forward"
+                else:
+                    detail = f"nothing held at the gate: the unit is {state}"
             else:
                 if state == "waiting_retry":
                     self._move(unit, "waiting_retry", resume_state=unit["resume_state"], next_attempt_at=self.stamp(),
                                pending_terminal=unit.get("pending_terminal"), terminal_detail=unit.get("terminal_detail"),
                                detail={"request_id": request["request_id"]})
                     detail = "retry brought forward"
+                elif state == "gate_held":
+                    self._bring_gate_recheck_forward(unit, {"request_id": request["request_id"], "gate_recheck": "operator"})
+                    detail = "gate recheck brought forward"
                 elif state == "deferred_disk":
                     self._move(unit, unit["resume_state"] or "handoff_ready", detail={"request_id": request["request_id"]})
                     detail = "disk deferral lifted"
@@ -1625,9 +1653,10 @@ class Runner:
         """The production plan, written without running; then the before-production gate.
 
         A FAIL there stops the run only for a check that breaks results (the user's rule of 2026-10-01):
-        policy.BLOCKS_RUN_CHECKS, and any check the gate's report states blocks_run. Such a unit counts as
-        failed, so it is retried twice and then its raw data go. Any other FAIL, a WARN, a check left not
-        evaluable and a gate that could not run are recorded, and the unit runs.
+        policy.BLOCKS_RUN_CHECKS, and any check the gate's report states blocks_run; and so does such a check
+        left not evaluable where it is required (2026-10-02). Such a unit counts as failed, so it is retried
+        twice and then its raw data go. Any other FAIL, a WARN and any other check left not evaluable are
+        recorded, and the unit runs. A gate that gives no usable report holds the unit (_gate_hold).
         """
         answers = self.answers(unit, unit["minimum_peak_height"])
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_run", self.stamp(), tool="msdial_prepare_guided_analysis")
@@ -1636,24 +1665,76 @@ class Runner:
             self._fail(unit, step="prepare_run", result=result, retry_state="diagnosed", attempt_id=attempt)
             return True
         verdict = self._gate(unit, "before_production")
-        mismatches = list((verdict or {}).get("run_policy_mismatches") or [])
+        problem = policy.gate_report_problem(verdict)
+        if problem is not None:
+            return self._gate_hold(unit, attempt, verdict, problem)
+        mismatches = list(verdict.get("run_policy_mismatches") or [])
         if mismatches:
             # The gate's run_policy and this reader disagree: read the way that blocks, and said so.
             self._event("run_policy_mismatch", {"point": "before_production", "mismatches": mismatches}, unit["unit_key"])
-        blocking = list((verdict or {}).get("blocking_fail_ids") or [])
-        if blocking:
+        blocking = list(verdict.get("blocking_fail_ids") or [])
+        unevaluated = list(verdict.get("blocking_unevaluated_ids") or [])
+        if blocking or unevaluated:
             self._fail(
                 unit, step="before_production_gate", attempt_id=attempt, retry_state="diagnosed",
                 result={"ok": False, "reason": "gate_blocks_run", "blocking_fail_ids": blocking,
-                        "run_policy_source": verdict.get("run_policy_source")},
+                        "blocking_unevaluated_ids": unevaluated, "run_policy_source": verdict.get("run_policy_source")},
                 gate=("before_production", verdict),
             )
             return True
+        self._move(unit, "prepared", close_attempt=(attempt, "ok", False, {}), gate=("before_production", verdict))
+        return True
+
+    def _gate_hold(self, unit: dict[str, Any], attempt: int, verdict: dict[str, Any] | None, problem: str) -> bool:
+        """The before-production gate gave no usable report (policy.gate_report_problem): the unit is held.
+
+        The user's rule of 2026-10-02. Without a report the runner cannot tell whether a check that stops the
+        run FAILed, so the unit does not run; nor is the gate's silence the unit's failure, so nothing is
+        counted against it and its raw data are kept, where a counted failure would end, after its retries,
+        in their deletion. It leaves the hand, so the other units go on, with a warning in the ledger (the
+        transition, the attempt and a gate_held event) and in the status export. The gate is run again at
+        the runner's next start, held_recheck_seconds after this try, and at an operator's recheck-held."""
+        due = policy.iso(self.now() + timedelta(seconds=float(self.policy.held_recheck_seconds)))
+        said = {"point": "before_production", "no_report": problem, "outcome": (verdict or {}).get("outcome"),
+                "exit_code": (verdict or {}).get("exit_code"), "detail": (verdict or {}).get("detail")}
         self._move(
-            unit, "prepared", close_attempt=(attempt, "ok", False, {}),
+            unit, "gate_held", resume_state="diagnosed", next_attempt_at=due,
+            detail={"gate_held": problem, "recheck_at": due},
+            close_attempt=(attempt, "fault", False, said),
             gate=("before_production", verdict) if verdict else None,
         )
+        self._event("gate_held", {**said, "warning": GATE_HELD_WARNING, "recheck_at": due}, unit["unit_key"])
         return True
+
+    def _state_gate_held(self, unit: dict[str, Any]) -> bool:
+        """Once its recheck is due, a held unit goes back to diagnosed, whose step runs the gate again: a usable
+        report then sends it on as any other, and none holds it again."""
+        due = policy.parse_iso(unit["next_attempt_at"])
+        if due is not None and due > self.now():
+            return False
+        self._move(unit, unit["resume_state"] or "diagnosed", detail={"gate_recheck": True})
+        return True
+
+    def _bring_gate_recheck_forward(self, unit: Mapping[str, Any], detail: Mapping[str, Any]) -> None:
+        self._move(unit, "gate_held", resume_state=unit["resume_state"] or "diagnosed", next_attempt_at=self.stamp(),
+                   detail=dict(detail))
+
+    def _gate_held_recheck(self) -> bool:
+        """When the runner starts, run the gate again for every unit held for want of a report: their recheck
+        is brought forward to now, and each is taken into the hand in its turn. Later rechecks come
+        held_recheck_seconds after each try (_gate_hold), so a hold the next start or a passing fault clears
+        does not wait for an operator."""
+        if self._gate_held_rechecked:
+            return False
+        self._gate_held_rechecked = True
+        now = self.now()
+        moved = False
+        for unit in self.ledger.units(("gate_held",)):
+            due = policy.parse_iso(unit["next_attempt_at"])
+            if due is None or due > now:
+                self._bring_gate_recheck_forward(unit, {"gate_recheck": "runner_start"})
+                moved = True
+        return moved
 
     def _state_prepared(self, unit: dict[str, Any]) -> bool:
         return self._console_start(unit, "run")
@@ -1710,17 +1791,42 @@ class Runner:
         return True
 
     def _gate(self, unit: Mapping[str, Any], point: str) -> dict[str, Any] | None:
+        """The gate's verdict at one point, or None where the policy runs no gate there.
+
+        A gate the runner could not start - no workspace to run it on, or a port that raised - is a verdict
+        too, with no report (policy.gate_report_problem): before production it holds the unit, after the
+        run it is recorded, and in neither case is it the unit's failure."""
         if point not in self.policy.gate_points:
             return None
         workspace = self._workspace(unit)
+        not_started = {"stage": "before-production" if point == "before_production" else "all", "strict": True,
+                       "gate_commit": str((self.pins.get("gate") or {}).get("commit") or ""), "outcome": "error",
+                       "not_started": True, "report_parsed": False}
         if not workspace.is_dir():
-            return None
+            return {**not_started, "detail": "The unit's workspace is not a directory, so the gate was not started."}
         number = len(self.ledger.gate_verdicts(unit["unit_key"])) + 1
         report = self.directory / "gate" / unit["unit_key"] / f"{number:02d}-{point}.json"
-        return dict(self.ports.gate.run(str(workspace), point, report))
+        try:
+            return dict(self.ports.gate.run(str(workspace), point, report))
+        except (ledger_module.LedgerError, sqlite3.Error):
+            raise
+        except Exception as error:  # noqa: BLE001 - a gate that could not run gives no report; it fails no unit
+            return {**not_started, "detail": f"The gate could not be run: {type(error).__name__}: {error}"}
+
+    def _after_run_gate(self, unit: Mapping[str, Any], point: str) -> dict[str, Any] | None:
+        """The gate at a point after the run (pre_cleanup, final). A missing report is only recorded (the
+        user's rule of 2026-10-02): the verdict is kept with what became of it and an event says so, and the
+        unit ends as it was going to end, its raw data going by the deletion rule whatever the gate said."""
+        verdict = self._gate(unit, point)
+        problem = policy.gate_report_problem(verdict) if verdict is not None else None
+        if problem is not None:
+            self._event("gate_no_report", {"point": point, "no_report": problem, "outcome": verdict.get("outcome"),
+                                           "exit_code": verdict.get("exit_code"), "detail": verdict.get("detail")},
+                        unit["unit_key"])
+        return verdict
 
     def _state_published(self, unit: dict[str, Any]) -> bool:
-        verdict = self._gate(unit, "pre_cleanup")
+        verdict = self._after_run_gate(unit, "pre_cleanup")
         exit_code = verdict.get("exit_code") if verdict else None
         self._move(unit, "gated", gate=("pre_cleanup", verdict) if verdict else None, gate_exit_pre=exit_code)
         return True
@@ -1766,7 +1872,7 @@ class Runner:
 
     def _state_releasing(self, unit: dict[str, Any]) -> bool:
         """The final gate, the Catalog's run record and the unit's campaign record; then done."""
-        verdict = self._gate(unit, "final")
+        verdict = self._after_run_gate(unit, "final")
         exit_code = verdict.get("exit_code") if verdict else None
         terms = policy.report_terms(bool(unit["outputs_produced"]), exit_code)
         reason = "completed" if policy.COMPLETED in terms else "outputs_produced"
@@ -1795,7 +1901,7 @@ class Runner:
                 return True
             raw = "held"
         # The gate reads a unit manifest; a unit that never downloaded has none to read.
-        verdict = self._gate(unit, "final") if unit["manifest_path"] and Path(unit["manifest_path"]).is_file() else None
+        verdict = self._after_run_gate(unit, "final") if unit["manifest_path"] and Path(unit["manifest_path"]).is_file() else None
         exit_code = verdict.get("exit_code") if verdict else None
         self._record_run(unit, pending, exit_code)
         self._write_record(unit, pending, reason, raw, detail, final_exit=exit_code)
@@ -2005,6 +2111,7 @@ class Runner:
             {"point": item["point"], "outcome": item["outcome"], "exit_code": item["exit_code"],
              "stage_reached": item["stage_reached"], "fail_ids": json.loads(item["fail_ids_json"]),
              "blocking_fail_ids": json.loads(item["blocking_fail_ids_json"]), "run_policy_source": item["run_policy_source"],
+             "blocking_unevaluated_ids": json.loads(item["blocking_unevaluated_ids_json"]),
              "strict_hold_ids": json.loads(item["strict_hold_ids_json"])}
             for item in self.ledger.gate_verdicts(unit["unit_key"])
         ]
@@ -2054,10 +2161,15 @@ def _write_json(path: Path, value: Any) -> None:
 
 # ---- status, for the operator and for the later verification work ----------------------------------
 
-def unit_status(unit: Mapping[str, Any]) -> dict[str, Any]:
+def unit_status(unit: Mapping[str, Any], gate_hold: str | None = None) -> dict[str, Any]:
+    """One unit's status row. `gate_hold` is why a unit in gate_held is held (policy.gate_report_problem),
+    as its hold recorded it (_gate_hold_reasons)."""
     terms = policy.report_terms(bool(unit["outputs_produced"]), unit["gate_exit_final"])
+    warnings = []
+    if unit["state"] == "gate_held":
+        warnings.append(GATE_HELD_WARNING + (f" (no report: {gate_hold})" if gate_hold else ""))
     return {
-        **{key: unit.get(key) for key in TSV_COLUMNS if key != "report_terms"},
+        **{key: unit.get(key) for key in TSV_COLUMNS if key not in ("report_terms", "warnings")},
         "report_terms": terms,
         "outputs_produced": bool(unit["outputs_produced"]),
         "completed": policy.COMPLETED in terms,
@@ -2065,7 +2177,22 @@ def unit_status(unit: Mapping[str, Any]) -> dict[str, Any]:
         "terminal_detail": unit.get("terminal_detail"),
         "raw_detail": unit.get("raw_detail"),
         "next_attempt_at": unit.get("next_attempt_at"),
+        "warnings": warnings,
     }
+
+
+def _gate_hold_reasons(ledger: ledger_module.Ledger, units: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """For each unit in gate_held, why its last hold was made, read from the transition that made it."""
+    reasons = {}
+    for unit in units:
+        if unit["state"] != "gate_held":
+            continue
+        for row in reversed(ledger.transitions(unit["unit_key"])):
+            held = _loads(row["detail_json"]).get("gate_held")
+            if row["to_state"] == "gate_held" and held:
+                reasons[unit["unit_key"]] = str(held)
+                break
+    return reasons
 
 
 def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
@@ -2078,6 +2205,7 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         raw[unit["raw_disposition"]] = raw.get(unit["raw_disposition"], 0) + 1
     runner = ledger.runner()
     held = [unit for unit in units if unit["raw_disposition"] == "held"]
+    gate_held = [unit for unit in units if unit["state"] == "gate_held"]
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
@@ -2088,6 +2216,9 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         # person reading this.
         "raw_held": {"units": len(held), "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in held),
                      "unit_keys": [unit["unit_key"] for unit in held]},
+        # Not run, for want of a before-production report: a warning, never a failure (2026-10-02).
+        "gate_held": {"units": len(gate_held), "unit_keys": [unit["unit_key"] for unit in gate_held],
+                      "warning": GATE_HELD_WARNING if gate_held else None},
         "paused": {"kind": runner["pause_kind"], "reason": runner["pause_reason"], "at": runner["paused_at"]}
         if runner["paused"] else None,
         "terms": {
@@ -2100,7 +2231,9 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
 def export_status(ledger: ledger_module.Ledger) -> tuple[dict[str, Any], str]:
     """The per-unit status as JSON and as TSV, for the later verification work."""
     campaign = ledger.campaign()
-    rows = [unit_status(unit) for unit in ledger.units()]
+    units = ledger.units()
+    reasons = _gate_hold_reasons(ledger, units)
+    rows = [unit_status(unit, reasons.get(unit["unit_key"])) for unit in units]
     document = {
         "schema": STATUS_SCHEMA,
         "campaign_id": campaign["campaign_id"],

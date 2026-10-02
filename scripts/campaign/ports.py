@@ -816,7 +816,12 @@ class GatePort:
         return [self.python, str(self.script), str(workspace), "--stage", GATE_STAGES[point], "--strict", "--json"]
 
     def run(self, workspace: str, point: str, report_path: Path) -> dict[str, Any]:
-        verdict: dict[str, Any] = {"stage": GATE_STAGES[point], "strict": True, "gate_commit": self.gate_commit}
+        """The verdict of one gate run. report_parsed is true only where the gate's output parsed as its
+        --json report; policy.gate_report_problem reads every other ending (a timeout, a gate that could not
+        be started or crashed, exit 3, output that is not a report) as no usable report, which holds a unit
+        before production and is only recorded after it."""
+        verdict: dict[str, Any] = {"stage": GATE_STAGES[point], "strict": True, "gate_commit": self.gate_commit,
+                                   "report_parsed": False}
         try:
             completed = subprocess.run(
                 self.command(workspace, point), capture_output=True, timeout=self.timeout,
@@ -825,20 +830,27 @@ class GatePort:
         except subprocess.TimeoutExpired:
             return {**verdict, "outcome": "timeout", "detail": f"The gate did not finish within {self.timeout:g} s."}
         except OSError as error:
-            return {**verdict, "outcome": "error", "detail": str(error)}
+            return {**verdict, "outcome": "error", "not_started": True, "detail": str(error)}
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_bytes(completed.stdout)
+        known = completed.returncode in (0, 2, 3, 4)
         verdict.update(
-            outcome="ran" if completed.returncode in (0, 2, 3, 4) else "error",
-            exit_code=completed.returncode if completed.returncode in (0, 2, 3, 4) else None,
+            outcome="ran" if known else "error",
+            exit_code=completed.returncode if known else None,
             report_path=str(report_path),
             report_sha256=hashlib.sha256(completed.stdout).hexdigest(),
         )
+        stderr = completed.stderr.decode("utf-8", errors="replace")[-2000:]
         try:
             report = json.loads(completed.stdout.decode("utf-8"))
-        except ValueError:
-            verdict["detail"] = completed.stderr.decode("utf-8", errors="replace")[-2000:]
+        except (ValueError, RecursionError):
+            report = None
+        if not known or not isinstance(report, Mapping) or not isinstance(report.get("checks"), list):
+            # The ledger keeps only the exit codes the gate defines; any other is said here.
+            said = "" if known else f"The gate exited {completed.returncode}. "
+            verdict["detail"] = (said + stderr).strip() or "The gate's output is not a report."
             return verdict
+        verdict["report_parsed"] = True
         checks = [item for item in report.get("checks") or [] if isinstance(item, Mapping)]
 
         def ids(status: str) -> list[str]:
@@ -850,6 +862,7 @@ class GatePort:
         verdict["strict_hold_ids"] = list(report.get("strict_failures") or [])
         verdict["stage_reached"] = (report.get("progress") or {}).get("stage_reached")
         verdict["blocking_fail_ids"], verdict["run_policy_source"] = policy.run_blocking_failures(report)
+        verdict["blocking_unevaluated_ids"] = policy.run_blocking_unevaluated(report)
         verdict["run_policy_mismatches"] = policy.run_policy_mismatches(report)
         return verdict
 
