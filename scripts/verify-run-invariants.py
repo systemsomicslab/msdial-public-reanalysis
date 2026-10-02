@@ -319,6 +319,243 @@ def check_preflight_claim(report: Report, provenance: dict | None, reason: str) 
     )
 
 
+# Interactive's raw_metadata_extractor.PINNED_BUILDS, the approved (msrawdataworkbench, MsdialWorkbench)
+# commit pairs of the raw-metadata extractor, newest first: a "built" pair is one a campaign may run, a
+# "planned" one was approved and never built. Mirrored rather than imported, because the gate judges what
+# Interactive recorded without running Interactive's code, and in one place only;
+# tests/test_verify_extractor_and_release.py holds it equal to the table at EXTRACTOR_PINS_MIRRORED_FROM.
+EXTRACTOR_PINS_MIRRORED_FROM = "89a97bc"
+EXTRACTOR_RAW_TREE = "msrawdataworkbench"
+EXTRACTOR_COMMON_TREE = "MsdialWorkbench"
+EXTRACTOR_PIN_BUILT = "built"
+EXTRACTOR_PINNED_BUILDS = (
+    {"msrawdataworkbench": "a12293c612a4e29b23d1d584f1c19556d76863f6",
+     "MsdialWorkbench": "f0583493a44e73723f53ae312e33955f62052dd7", "state": "built"},
+    {"msrawdataworkbench": "592b6dbce72177fa14d3e7cd407557b1c64a3046",
+     "MsdialWorkbench": "f0583493a44e73723f53ae312e33955f62052dd7", "state": "built"},
+    {"msrawdataworkbench": "b34c857a5328e8f08c1918b3d890e7dae50b7d6d",
+     "MsdialWorkbench": "c471463a576626650e0886e26bd064cca53a7ae3", "state": "planned"},
+)
+# What inspect_raw_metadata_extractor calls a build whose record no longer describes it: the record
+# names other files than the ones that ran, or source trees with uncommitted changes.
+EXTRACTOR_STALE = "stale_mismatch"
+EXTRACTOR_DIRTY = "dirty_source"
+EXTRACTOR_VERIFIED = "verified"
+PRE2_TITLE = "The raw headers were read by a verified, pinned extractor"
+
+
+def _extractor_pin(raw_commit: object, common_commit: object) -> dict | None:
+    raw, common = str(raw_commit or "").strip().casefold(), str(common_commit or "").strip().casefold()
+    return next((dict(entry) for entry in EXTRACTOR_PINNED_BUILDS
+                 if entry[EXTRACTOR_RAW_TREE] == raw and entry[EXTRACTOR_COMMON_TREE] == common), None)
+
+
+def _campaign_crossings(provenance: dict | None) -> list[dict]:
+    """The campaign approvals the unit crossed a boundary under: its own, or else its raw owner's."""
+    record = provenance if isinstance(provenance, dict) else {}
+    own = record.get("campaign_authorizations")
+    own = [item for item in own if isinstance(item, dict)] if isinstance(own, list) else []
+    if own or not isinstance(record.get("split_from"), dict):
+        return own
+    owner, _ = _raw_owner_manifest(record)
+    crossings = (owner or {}).get("campaign_authorizations")
+    return [item for item in crossings if isinstance(item, dict)] if isinstance(crossings, list) else []
+
+
+def _boundaries(crossings: list[dict]) -> str:
+    """"boundary 4", or "boundaries 3, 4": the boundaries these crossings were made at."""
+    named = list(dict.fromkeys(str(item.get("boundary")) for item in crossings))
+    return ("boundaries " if len(named) > 1 else "boundary ") + ", ".join(named)
+
+
+def _preflight_campaign(provenance: dict | None) -> dict:
+    """Whether a campaign acts on the raw-header preflight's verdicts, and on what record that rests.
+
+    Interactive states it itself, in campaign_disposition.applied, which it sets as it decides the
+    disposition: true when a campaign was in force (an approval passed, or one already recorded for the
+    unit or its split parent), false otherwise. It is also true for a read made before the campaign whose
+    disposition classify_preflight applied once the unit became a campaign unit: the campaign acts on
+    that read all the same. A unit preflighted outside a campaign and adopted by one later carries
+    applied false, and the crossings it gained afterwards say nothing about the read. Only a unit with
+    no disposition - a split parent, which gets none - is judged from its crossings, and then from those
+    validated at or before the preflight started; one whose order against the preflight is not recorded
+    counts, because nothing shows that the read came first.
+    """
+    record = provenance if isinstance(provenance, dict) else {}
+    preflight = record.get("raw_metadata_preflight") if isinstance(record.get("raw_metadata_preflight"), dict) else {}
+    crossings = _campaign_crossings(record)
+    approvals = list(dict.fromkeys(str(item.get("approval_id") or "") for item in crossings))
+    disposition = record.get("campaign_disposition")
+    if isinstance(disposition, dict) and isinstance(disposition.get("applied"), bool):
+        if disposition["applied"]:
+            campaign = disposition.get("campaign") if isinstance(disposition.get("campaign"), dict) else {}
+            approval = str(campaign.get("approval_id") or (approvals[0] if approvals else "")) or "unnamed"
+            return {"under": True, "basis": "disposition_applied", "later": [],
+                    "said": f"Campaign approval {approval} applied the disposition decided from these reads"}
+        return {"under": False, "basis": "disposition_advice", "later": crossings,
+                "said": "Interactive recorded the disposition decided from these reads as advice (applied false), "
+                        "so no campaign was in force when it was decided"}
+    started = _instant(preflight.get("started_at")) if preflight.get("started_at") else None
+    before, unordered, later = [], [], []
+    for item in crossings:
+        validated = _instant(item.get("validated_at")) if item.get("validated_at") else None
+        if started is None or validated is None:
+            unordered.append(item)
+        elif validated <= started:
+            before.append(item)
+        else:
+            later.append(item)
+    if before:
+        return {"under": True, "basis": "crossing_before_preflight", "later": later,
+                "said": f"Campaign approval {before[0].get('approval_id') or 'unnamed'} was recorded for the unit "
+                        f"({_boundaries(before)}) before this preflight started"}
+    if unordered:
+        return {"under": True, "basis": "crossing_unordered", "later": later,
+                "said": f"Campaign approval {unordered[0].get('approval_id') or 'unnamed'} is recorded for the unit "
+                        f"({_boundaries(unordered)}), and nothing records that this preflight came before it"}
+    return {"under": False, "basis": "crossing_after_preflight" if later else "no_campaign", "later": later,
+            "said": "No campaign approval was recorded for the unit when this preflight started"}
+
+
+def _recorded_extractor(provenance: dict | None) -> dict:
+    preflight = (provenance or {}).get("raw_metadata_preflight") if isinstance(provenance, dict) else None
+    extractor = preflight.get("extractor") if isinstance(preflight, dict) else None
+    return extractor if isinstance(extractor, dict) else {}
+
+
+def check_extractor_identity(report: Report, provenance: dict | None, reason: str) -> None:
+    """PRE-2. The build that read the raw headers is one whose source is known.
+
+    The extractor decides a unit's acquisition mode, polarity and separation, and with them whether it
+    runs, splits or is skipped, and a campaign deletes the raw data afterwards. Until Interactive 0.5.17 a
+    preflight recorded the extractor by path, size and modification time, and the binary in use had been
+    built from a working checkout with uncommitted changes: its verdicts named no code. Since then each
+    preflight records the extractor's sha256, its build record's verdict (provenance_status) and the pair
+    of commits the record names, and a campaign runs only a verified build of a pinned pair.
+
+    No sha256 is a legacy record: WARN. A record Interactive itself called stale or dirty names code that
+    did not run: FAIL. A verified build of a pair EXTRACTOR_PINNED_BUILDS lists as built: PASS. Anything
+    else - no build record, or a pair not pinned - is a WARN when the read was made outside a campaign and
+    a FAIL when a campaign acts on it, because Interactive refuses such an extractor to a campaign
+    preflight, so a campaign acting on one's verdicts is outside the rule. Whether a campaign acts on the
+    read is what the unit's disposition recorded when it was decided (_preflight_campaign), not whatever
+    crossings the unit carries now: a unit adopted by a campaign after its preflight did not have it read
+    under one. A pair Interactive recorded as pinned and this mirror does not list is a WARN: the mirror
+    may be behind Interactive, which is not a fact about the unit.
+    """
+    stage = "before-production"
+    if provenance is None:
+        report.add("PRE-2", stage, PRE2_TITLE, NOT_EVALUABLE, reason)
+        return
+    preflight = provenance.get("raw_metadata_preflight")
+    if not isinstance(preflight, dict) or not preflight:
+        # Not required, as for PRE-1: a unit whose acquisition mode the repository already settled never
+        # needed a header read, so no extractor decided anything here.
+        report.add("PRE-2", stage, PRE2_TITLE, NOT_EVALUABLE,
+                   "No raw-header preflight is recorded in the manifest, so no extractor ran.", required=False)
+        return
+    extractor = _recorded_extractor(provenance)
+    sha256 = str(extractor.get("sha256") or "").strip().casefold()
+    status = str(extractor.get("provenance_status") or "").strip()
+    raw_commit = str(extractor.get("msrawdataworkbench_commit") or "").strip()
+    common_commit = str(extractor.get("msdialworkbench_commit") or "").strip()
+    pin = _extractor_pin(raw_commit, common_commit)
+    campaign = _preflight_campaign(provenance)
+    # Checksums and commits only: the path is this machine's, and the gate's report may travel.
+    evidence = {
+        "sha256": sha256, "inventory_sha256": str(extractor.get("inventory_sha256") or ""),
+        "provenance_status": status, "msrawdataworkbench_commit": raw_commit,
+        "msdialworkbench_commit": common_commit, "recorded_pinned": extractor.get("pinned"),
+        "recorded_pin_state": str(extractor.get("pin_state") or ""),
+        "gate_pin_state": pin["state"] if pin else "", "pins_mirrored_from": EXTRACTOR_PINS_MIRRORED_FROM,
+        "under_campaign": campaign["under"], "campaign_basis": campaign["basis"],
+        "boundaries_crossed_after_preflight": [str(item.get("boundary")) for item in campaign["later"]],
+    }
+    if not sha256:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, WARN,
+            ("The preflight records its extractor by path, size and modification time only, as Interactive did "
+             "before 0.5.17" if extractor else "The preflight records no extractor at all")
+            + ", so which build read these headers, and from which source, is not established. Its verdicts are "
+            "not tied to code.", **evidence)
+        return
+    if not _SHA256_TEXT.fullmatch(sha256):
+        report.add("PRE-2", stage, PRE2_TITLE, WARN,
+                   f"The preflight records an extractor checksum that is not a sha256 ({sha256[:24]!r}), so the build "
+                   "that read these headers is not established.", **evidence)
+        return
+    pair = (f"msrawdataworkbench {raw_commit[:9]} with MsdialWorkbench {common_commit[:9]}"
+            if raw_commit and common_commit else "no recorded commits")
+    if status == EXTRACTOR_STALE:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, FAIL,
+            f"The extractor that read these headers (sha256 {sha256[:12]}) was stale when it ran: its build record "
+            f"describes other files than the ones on disk, so {pair} is not the code that decided this unit's "
+            "acquisition mode.", **evidence)
+        return
+    if status == EXTRACTOR_DIRTY:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, FAIL,
+            f"The extractor that read these headers (sha256 {sha256[:12]}) was built from source trees with "
+            f"uncommitted changes, so {pair} does not describe the code that decided this unit's acquisition "
+            "mode.", **evidence)
+        return
+    notes: list[str] = []
+    if isinstance(provenance.get("split_from"), dict):
+        owner, _ = _raw_owner_manifest(provenance)
+        parent_sha = str(_recorded_extractor(owner).get("sha256") or "").strip().casefold()
+        evidence["parent_sha256"] = parent_sha
+        if parent_sha and parent_sha != sha256:
+            notes.append(f"This part's headers were read by extractor {sha256[:12]}, and the split was decided from "
+                         f"its parent's read by {parent_sha[:12]}: the split and the part's verdicts come from two "
+                         "different builds.")
+    disposition = provenance.get("campaign_disposition")
+    decided = disposition.get("extractor") if isinstance(disposition, dict) else None
+    decided_by = str((decided or {}).get("sha256") or "").strip().casefold() if isinstance(decided, dict) else ""
+    if decided_by and decided_by != sha256:
+        evidence["disposition_sha256"] = decided_by
+        notes.append(f"The campaign disposition names extractor {decided_by[:12]}, not the {sha256[:12]} the "
+                     "preflight records.")
+    tail = (" " + " ".join(notes)) if notes else ""
+    built = bool(pin and pin["state"] == EXTRACTOR_PIN_BUILT)
+    if status == EXTRACTOR_VERIFIED and built:
+        current = EXTRACTOR_PINNED_BUILDS[0]
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, WARN if notes else PASS,
+            f"The headers were read by extractor {sha256[:12]}, a verified build of {pair}, a pinned pair"
+            + ("" if pin == current else f" though not the current pin ({current[EXTRACTOR_RAW_TREE][:9]})")
+            + "." + tail, **evidence)
+        return
+    if status == EXTRACTOR_VERIFIED and extractor.get("pinned") is True:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, WARN,
+            f"Interactive recorded extractor {sha256[:12]} as a verified build of the pinned pair {pair}, and the "
+            f"gate's mirror of PINNED_BUILDS (Interactive {EXTRACTOR_PINS_MIRRORED_FROM}) does not list that pair as "
+            "built: the mirror is behind Interactive, or the record is wrong." + tail, **evidence)
+        return
+    if status == EXTRACTOR_VERIFIED:
+        why = f"a verified build of {pair}, a pair " + ("that was planned and never built" if pin else "no pin names")
+    else:
+        why = (f"identified by its checksum alone: its build record was {status or 'not recorded'}, so no source "
+               "revision names it")
+    if campaign["under"]:
+        report.add(
+            "PRE-2", stage, PRE2_TITLE, FAIL,
+            f"The headers were read by extractor {sha256[:12]}, {why}. {campaign['said']}. A campaign acts only on "
+            "the reads of a verified build of a pinned pair, and Interactive refuses any other extractor to a "
+            "campaign preflight, so these verdicts reached the campaign outside the rule." + tail, **evidence)
+        return
+    adopted = ""
+    if campaign["later"]:
+        adopted = (f" {campaign['said']}; the unit crossed {_boundaries(campaign['later'])} under campaign "
+                   f"approval {campaign['later'][0].get('approval_id') or 'unnamed'} after it, and a crossing made "
+                   "after the read does not make it a campaign's read.")
+    report.add(
+        "PRE-2", stage, PRE2_TITLE, WARN,
+        f"The headers were read by extractor {sha256[:12]}, {why}. Outside a campaign that is allowed, but its "
+        "verdicts are not tied to reviewed code." + adopted + tail, **evidence)
+
+
 def _raw_owner_manifest(provenance: dict | None) -> tuple[dict | None, str]:
     """The manifest of the unit that downloaded this unit's raw data.
 
@@ -1677,6 +1914,53 @@ ATTEMPTED_STATUSES = frozenset({
 VALIDATED_STATUSES = frozenset({"mztab_validated", "completed", "cleanup_pending_confirmation", "raw_cleaned"})
 
 
+def _unvalidated(record: dict, output: Path) -> str:
+    """Why the unit's records and output do not show a validated mzTab-M, or "" when they do.
+
+    B7's fact, in order: a validated terminal status, a finalisation, a validation record with no
+    failure, and an mzTab-M in output.
+    """
+    status = str(record.get("status") or "")
+    validation = record.get("mztab_validation")
+    summary = validation.get("summary") if isinstance(validation, dict) else None
+    if status not in VALIDATED_STATUSES:
+        return f"its status {status or 'unrecorded'!r} is not a validated one"
+    if not record.get("finalized_at"):
+        return "its run was never finalised"
+    if not isinstance(validation, dict):
+        return "no mzTab-M validation is recorded"
+    if isinstance(summary, dict) and summary.get("failed"):
+        return f"its mzTab-M validation failed {summary.get('failed')} file(s)"
+    if not any(output.glob("*.mzTab")):
+        return "no mzTab-M is in its output"
+    return ""
+
+
+def _validated_nothing(validation: object) -> str:
+    """Why a validation record that counts no failure still validated no mzTab-M, or "" when it did one.
+
+    Interactive (mztab_validation.validate_mztab_files) counts the files it checked in summary.file_count,
+    and finalisation calls a run validated when there was at least one and none failed; with no file the
+    summary says warning, and a status of failed is a failure whatever the counts say. A record without
+    file_count - none Interactive wrote - is taken at its passed count or its status.
+    """
+    record = validation if isinstance(validation, dict) else {}
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    if "failed" in (str(record.get("status") or ""), str(summary.get("status") or "")):
+        return "its mzTab-M validation's status is failed"
+    checked = summary.get("file_count")
+    if isinstance(checked, int) and not isinstance(checked, bool):
+        return "" if checked > 0 else "its mzTab-M validation checked no file (file_count 0)"
+    if isinstance(record.get("files"), list):
+        return "" if record["files"] else "its mzTab-M validation lists no file it checked"
+    passed = summary.get("passed")
+    if isinstance(passed, int) and not isinstance(passed, bool) and passed > 0:
+        return ""
+    if "passed" in (str(record.get("status") or ""), str(summary.get("status") or "")):
+        return ""
+    return "its mzTab-M validation records no file it checked"
+
+
 def _production_started(output: Path, provenance: dict | None = None) -> bool:
     """Whether a production run was attempted in this workspace.
 
@@ -2048,6 +2332,17 @@ def check_analysis_inputs_are_the_inputs(
     report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names)
 
 
+def _absent_exports(run_manifest: dict | None) -> "tuple[int, list[str]] | None":
+    """(planned, absent): how many exports the run manifest planned, and those of them not on disk.
+
+    EXP-1's fact, which RET-1 shares; None when the manifest records no expected_analysis_exports.
+    """
+    if run_manifest is None or not isinstance(run_manifest.get("expected_analysis_exports"), list):
+        return None
+    expected = [Path(item) for item in run_manifest["expected_analysis_exports"]]
+    return len(expected), [str(path) for path in expected if not path.exists()]
+
+
 def check_expected_exports_present(
     report: Report, run_manifest: dict | None, output: Path, stage: str,
     provenance: dict | None = None,
@@ -2059,29 +2354,29 @@ def check_expected_exports_present(
     """
     if stage == "before-production":
         return
-    if run_manifest is None or not isinstance(run_manifest.get("expected_analysis_exports"), list):
+    exports = _absent_exports(run_manifest)
+    if exports is None:
         report.add("EXP-1", stage, "Every expected export exists", NOT_EVALUABLE,
                    "The run manifest records no expected_analysis_exports.")
         return
+    planned, absent = exports
     if not _production_started(output, provenance):
         report.add("EXP-1", stage, "Every expected export exists", NOT_EVALUABLE, NOT_STARTED,
-                   expected=len(run_manifest["expected_analysis_exports"]))
+                   expected=planned)
         return
-    expected = [Path(item) for item in run_manifest["expected_analysis_exports"]]
-    absent = [str(path) for path in expected if not path.exists()]
     if not absent:
         report.add("EXP-1", stage, "Every expected export exists", PASS,
-                   f"All {len(expected)} expected exports are present.", expected=len(expected))
+                   f"All {planned} expected exports are present.", expected=planned)
         return
     failure = _recorded_failure(provenance)
     report.add(
         "EXP-1", stage, "Every expected export exists", FAIL,
-        (f"{failure} after producing {len(expected) - len(absent)} of {len(expected)} planned exports."
+        (f"{failure} after producing {planned - len(absent)} of {planned} planned exports."
          if failure else
          "MS-DIAL reported success without producing every export the run planned. A file it could "
          "not read is skipped silently, and the exit code does not reflect it."
          + _earlier_failures(provenance)),
-        expected=len(expected), absent_count=len(absent), absent=absent[:10],
+        expected=planned, absent_count=len(absent), absent=absent[:10],
     )
 
 
@@ -4442,8 +4737,81 @@ def check_qa_prose_matches_assessment(report: Report, output: Path, stage: str) 
 # storage
 # --------------------------------------------------------------------------------------------
 
-def _tree_bytes(path: Path) -> int:
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+# Interactive's accession-scoped download store (download_store.py): <repository>\<accession>\_dl beside the
+# unit workspaces, holding each object once under o\<id>\obj and its extraction under o\<id>\t. A unit reads
+# NTFS hardlinks to them from its own raw tree, so a unit's name for a file and the store's are one file record.
+STORE_DIRECTORY = "_dl"
+STORE_OBJECT_PARTS = ("obj", "t")
+
+
+def _file_record(details: os.stat_result) -> "tuple[int, int] | None":
+    """The file record a name points to, or None where the filesystem numbers none (st_ino 0)."""
+    return (details.st_dev, details.st_ino) if details.st_ino else None
+
+
+def _stat_quietly(path: Path) -> "os.stat_result | None":
+    """A name's stat, or None for a name that went between the listing and the stat.
+
+    A campaign keeps writing while the gate reads: the store's gc unlinks object trees, a raw deletion
+    removes a unit's, and on Windows a name being deleted refuses access until its last handle closes.
+    A file that is gone is not counted; that is not a reason for the gate to end without a verdict.
+    """
+    try:
+        return path.stat()
+    except (FileNotFoundError, PermissionError):
+        return None
+
+
+class _Occupancy:
+    """Bytes under a unit's raw trees, each file record counted once however many names it has.
+
+    A hardlink is a second name for one record, so summing the sizes of the names counts a linked file
+    twice within a unit and counts the store's bytes as the unit's own. Records with more than one name
+    are kept aside, so that those the accession store also holds can be reported as linked from it.
+    """
+
+    def __init__(self) -> None:
+        self.seen: set = set()
+        self.shared: dict = {}  # file record -> size, for records with other names
+        self.logical_bytes = 0
+        self.names = 0
+
+    def add(self, root: Path) -> int:
+        unique = 0
+        if not root.exists():
+            return 0
+        for item in root.rglob("*"):
+            details = _stat_quietly(item) if item.is_file() else None
+            if details is None:
+                continue
+            self.names += 1
+            self.logical_bytes += details.st_size
+            record = _file_record(details)
+            if record is not None and record in self.seen:
+                continue
+            if record is not None:
+                self.seen.add(record)
+                if details.st_nlink > 1:
+                    self.shared[record] = details.st_size
+            unique += details.st_size
+        return unique
+
+    def linked_from(self, store: Path) -> "tuple[int, int]":
+        """(bytes, files) of the multiply-named records that the store holds too."""
+        if not self.shared or not store.is_dir():
+            return 0, 0
+        held: set = set()
+        for directory in sorted((store / "o").glob("*")):
+            for part in STORE_OBJECT_PARTS:
+                root = directory / part
+                if not root.is_dir():
+                    continue
+                for item in root.rglob("*"):
+                    details = _stat_quietly(item) if item.is_file() else None
+                    record = _file_record(details) if details is not None else None
+                    if record is not None and record in self.shared:
+                        held.add(record)
+        return sum(self.shared[record] for record in held), len(held)
 
 
 def _raw_directory(provenance: dict | None, workspace: Path) -> tuple[Path | None, dict | None, str]:
@@ -4490,24 +4858,41 @@ def check_storage_shape(report: Report, workspace: Path, stage: str,
                    "No raw directory is present; the raw tree may already have been released.",
                    required=False)
         return
-    archive = _tree_bytes(downloads) if downloads.exists() else 0
-    extracted = _tree_bytes(data) if data.exists() else 0
-    conversions = _tree_bytes(converted) if converted.exists() else 0
+    occupancy = _Occupancy()
+    # In this order, so a record named under two of them is counted where it was first found.
+    archive = occupancy.add(downloads)
+    extracted = occupancy.add(data)
+    conversions = occupancy.add(converted)
     total = archive + extracted + conversions
+    store = workspace.parent / STORE_DIRECTORY
+    linked, linked_files = occupancy.linked_from(store)
+    evidence = {
+        "archive_bytes": archive, "extracted_bytes": extracted, "converted_bytes": conversions, "total_bytes": total,
+        "logical_bytes": occupancy.logical_bytes, "file_names": occupancy.names,
+        "hardlinked_records": len(occupancy.shared), "linked_from_store_bytes": linked,
+        "linked_from_store_files": linked_files, "unit_only_bytes": total - linked,
+    }
+    recorded = provenance.get("raw_storage") if isinstance(provenance, dict) else None
+    if isinstance(recorded, dict):
+        evidence["recorded_raw_storage"] = {key: recorded.get(key) for key in (
+            "materialization", "logical_bytes", "bytes_linked_from_store", "bytes_copied") if key in recorded}
+    shared = (f"; {linked / 1e9:.2f} GB of it ({linked_files} file(s)) is linked from the accession store, "
+              "shared with the store's other consumers and freed only when the store collects it"
+              if linked else "")
     if archive and extracted:
         report.add(
             "DSK-1", stage, "Retained storage is accounted for", WARN,
             "The downloaded archive and its extraction are both retained, so the unit occupies "
             f"{total / 1e9:.2f} GB for {max(archive, extracted) / 1e9:.2f} GB of unique data"
-            + (f" and {conversions / 1e9:.2f} GB of mzML converted from mzXML" if conversions else "") + ". A "
+            + (f" and {conversions / 1e9:.2f} GB of mzML converted from mzXML" if conversions else "") + shared + ". A "
             "size approval quoted against the transfer figure understated actual disk use.",
-            archive_bytes=archive, extracted_bytes=extracted, converted_bytes=conversions, total_bytes=total,
+            **evidence,
         )
         return
     report.add("DSK-1", stage, "Retained storage is accounted for", PASS,
                f"The unit occupies {total / 1e9:.2f} GB"
-               + (f", {conversions / 1e9:.2f} GB of it mzML converted from mzXML" if conversions else "") + ".",
-               archive_bytes=archive, extracted_bytes=extracted, converted_bytes=conversions, total_bytes=total)
+               + (f", {conversions / 1e9:.2f} GB of it mzML converted from mzXML" if conversions else "") + shared + ".",
+               **evidence)
 
 
 # --------------------------------------------------------------------------------------------
@@ -5380,23 +5765,223 @@ def check_method_file_reached_the_console(report: Report, output: Path, stage: s
                applied_count=len(applied))
 
 
+# What the user decided about raw data in a campaign (2026-09-30): they are deleted once every MS-DIAL
+# output is present and the mzTab-M validates, whatever the gate's verdict; a unit that failed is retried
+# twice and then deleted; a skipped or excluded unit is deleted too. Interactive deletes a unit's raw tree
+# on one of two authorities only - a person's confirmed=true, or a campaign approval covering boundary 5,
+# whose crossing it writes into campaign_authorizations before anything is deleted - and records the
+# deletion as the status raw_cleaned (after a validated run) or discarded (without one). A split part owns
+# no tree: its parent's is released once every part has ended, recorded as the parent's raw_release.
+DELETE_RETENTION = "delete_after_validated_output"
+RAW_DELETION_BOUNDARY = "5"
+# The parent's record of that release (msdial-split-parent-raw-release.v1): its state, the parts it was
+# decided for, and the authority it was made under.
+SPLIT_RELEASE = "raw_release"
+SPLIT_RELEASE_DELETED = "deleted"
+# The campaign runner's own record of how a unit ended, beside its provenance and output.
+CAMPAIGN_RECORD_FILE = "campaign-record.json"
+CAMPAIGN_RECORD_SCHEMA = "msdial-campaign-unit-record.v1"
+CAMPAIGN_ENDS_WITHOUT_OUTPUT = ("failed", "skipped", "excluded")
+# The store's claim states that keep an object (download_store.LIVE_CLAIM_STATES), and how it names a
+# unit's claim file (download_store._unit_file_name): readable for a Catalog-style id, hashed otherwise.
+STORE_LIVE_CLAIM_STATES = ("pending", "materialized")
+_STORE_READABLE_UNIT = re.compile(r"[a-z0-9][a-z0-9._-]{0,99}")
+_STORE_RESERVED_NAMES = frozenset({"con", "prn", "aux", "nul"} | {f"com{index}" for index in range(1, 10)}
+                                  | {f"lpt{index}" for index in range(1, 10)})
+RET1_TITLE = "The retention decision matches the disk"
+
+
+def _store_claim_file_name(unit_id: str) -> str:
+    if (_STORE_READABLE_UNIT.fullmatch(unit_id) and not unit_id.endswith(".")
+            and unit_id.split(".", 1)[0] not in _STORE_RESERVED_NAMES):
+        return f"{unit_id}.json"
+    return f"_u_{hashlib.sha256(unit_id.encode('utf-8')).hexdigest()[:24]}.json"
+
+
+def _store_claims(store: Path, unit_id: str) -> "list[dict] | None":
+    """The unit's claims in the accession store, one that cannot be read as {"state": "unreadable"};
+    None without a store."""
+    claims = store / "claims"
+    if not unit_id or not claims.is_dir():
+        return None
+    name = _store_claim_file_name(unit_id)
+    found: list[dict] = []
+    for directory in sorted(claims.iterdir()):
+        path = directory / name
+        if not path.is_file():
+            continue
+        record, _ = _read_json(path)
+        if record is None or str(record.get("unit_id") or "") != unit_id:
+            found.append({"state": "unreadable"})
+            continue
+        found.append(record)
+    return found
+
+
+def _claim_opened_after(claim: dict, deleted_at: object) -> bool:
+    """Whether a store claim was opened after the deletion recorded at `deleted_at`: a new consumer's.
+
+    download_store.claim stamps claimed_at whenever it opens a claim, a released one it reopens included,
+    and keeps the claim's earlier life in history; a record without claimed_at is dated by the last
+    release it reopened. A deletion with no recorded time orders nothing.
+    """
+    deleted = _instant(deleted_at) if deleted_at else None
+    if deleted is None:
+        return False
+    opened = _instant(claim.get("claimed_at")) if claim.get("claimed_at") else None
+    if opened is None:
+        released = [_instant(item.get("released_at")) for item in claim.get("history") or []
+                    if isinstance(item, dict) and item.get("released_at")]
+        opened = max((item for item in released if item is not None), default=None)
+    return opened is not None and opened > deleted
+
+
+def _deletion_crossings(*records: "dict | None") -> list[dict]:
+    """The boundary-5 crossings the unit, or the raw owner of its tree, recorded under a campaign approval."""
+    found: list[dict] = []
+    for record in records:
+        crossings = (record or {}).get("campaign_authorizations") if isinstance(record, dict) else None
+        for item in crossings if isinstance(crossings, list) else []:
+            if isinstance(item, dict) and str(item.get("boundary")).strip() == RAW_DELETION_BOUNDARY and item not in found:
+                found.append(item)
+    return found
+
+
+def _campaign_boundaries(*records: "dict | None") -> list[str]:
+    """Every boundary the unit, or the raw owner of its tree, recorded crossing under a campaign approval."""
+    found = {str(item.get("boundary")).strip() for record in records if isinstance(record, dict)
+             for item in (record.get("campaign_authorizations")
+                          if isinstance(record.get("campaign_authorizations"), list) else [])
+             if isinstance(item, dict)}
+    return sorted(found)
+
+
+def _recorded_deletion(provenance: dict, owner: dict) -> "tuple[str, str, str]":
+    """(kind, where, at) of the deletion of the tree the unit reads, as its records state it, or ("", "", "").
+
+    `at` is the time the record gives, "" when it gives none.
+    """
+    for record, whose in ((provenance, "the unit's"), (owner, "the raw owner's")):
+        if whose == "the raw owner's" and record is provenance:
+            break
+        status = str(record.get("status") or "")
+        if status in ("raw_cleaned", "discarded"):
+            at = str(record.get(f"{status}_at") or "")
+            return status, f"{whose} status {status} ({at or 'no time recorded'})", at
+    release = owner.get(SPLIT_RELEASE)
+    if isinstance(release, dict) and str(release.get("state") or "") == SPLIT_RELEASE_DELETED:
+        at = str(release.get("deleted_at") or "")
+        return "split_release", f"the split parent's raw_release ({at or 'no time recorded'})", at
+    return "", "", ""
+
+
+def _release_parts(release: object) -> "list[str] | None":
+    if not isinstance(release, dict) or not isinstance(release.get("parts"), list):
+        return None
+    return [str(item.get("analysis_unit_id") or "") for item in release["parts"] if isinstance(item, dict)]
+
+
+def _mztab_not_validated(provenance: dict, output: Path) -> str:
+    """Why the unit's mzTab-M does not count as validated for deleting its raw data, or "" when it does.
+
+    B7's fact, from a validation that checked at least one file: a record of no failure among no files is
+    not an mzTab-M that validates.
+    """
+    return _unvalidated(provenance, output) or _validated_nothing(provenance.get("mztab_validation"))
+
+
+def _outputs_incomplete(output: Path) -> "tuple[str, list[str]]":
+    """Why the unit's MS-DIAL outputs are not all present, with the exports absent; ("", []) when they are.
+
+    EXP-1's fact, every export the run manifest planned on disk, and B6's, an .mdpeak in output. MS-DIAL
+    skips a file it cannot read without saying so, and finalisation reads only the mzTab-M, so a validated
+    mzTab-M does not by itself say the outputs are complete.
+    """
+    run_manifest, unreadable = _read_json(output / "run-manifest.json")
+    exports = _absent_exports(run_manifest)
+    if exports is None:
+        recorded = ("records no expected_analysis_exports" if run_manifest is not None
+                    else unreadable.split(" ", 1)[-1])
+        return f"its output's run manifest {recorded}, so whether every output is present is not established", []
+    planned, absent = exports
+    if absent:
+        names = ", ".join(Path(item).name for item in absent[:5]) + (", ..." if len(absent) > 5 else "")
+        return f"{len(absent)} of the {planned} exports its run planned are absent ({names})", absent
+    if not _mdpeak_count(output):
+        return "no .mdpeak is in its output", []
+    return "", []
+
+
+def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, str]":
+    """What the campaign's deletion rule lets this unit's raw data go for: (kind, detail), or ("", "").
+
+    Validated outputs, which are a validated mzTab-M and every MS-DIAL output present (the user's rule;
+    _mztab_not_validated and _outputs_incomplete), a recorded failure (after its retries: how many is the
+    runner's decision, and a failure record is what is required of it), or a skip or exclusion the
+    campaign disposition decided. A unit whose outputs are incomplete has in effect failed, so it is
+    judged by the rest.
+    The gate's own verdicts do not enter: the user decided that deletion follows the outputs, whatever
+    the gate says of them.
+    """
+    status = str(provenance.get("status") or "")
+    output = workspace / "output"
+    if not (_mztab_not_validated(provenance, output) or _outputs_incomplete(output)[0]):
+        return "validated", ("its run was finalised, its mzTab-M validated and is in its output, and every export "
+                             "its run planned is there")
+    failures = _run_failures(provenance)
+    if failures:
+        last = failures[-1]
+        return "failed", (f"{len(failures)} run failure(s) are recorded, the last "
+                          f"{str(last.get('reason') or 'with no reason')[:120]!r}")
+    if status == "download_failed" or provenance.get("download_failed_at") or isinstance(provenance.get("download_failure"), dict):
+        return "failed", "its download is recorded as failed"
+    if isinstance(provenance.get("stale_lease_discarded"), dict):
+        return "failed", "its lease's process stopped before it recorded its inputs or its failure"
+    disposition = provenance.get("campaign_disposition")
+    if isinstance(disposition, dict) and disposition.get("applied") is True \
+            and disposition.get("disposition") in ("skip", "exclude"):
+        kind = "skipped" if disposition["disposition"] == "skip" else "excluded"
+        reasons = [str(item) for item in disposition.get("reasons") or []][:3]
+        return kind, f"its campaign disposition {kind} it ({', '.join(reasons) or 'no reason recorded'})"
+    record, _ = _read_json(workspace / CAMPAIGN_RECORD_FILE)
+    if record is not None and record.get("schema") == CAMPAIGN_RECORD_SCHEMA \
+            and str(record.get("state") or "") in CAMPAIGN_ENDS_WITHOUT_OUTPUT:
+        return str(record["state"]), (f"the campaign runner ended it as {record['state']} "
+                                      f"({record.get('terminal_reason') or 'no reason recorded'})")
+    return "", ""
+
+
 def check_retention_policy_was_acted_on(
     report: Report, provenance: dict | None, reason: str, workspace: Path
 ) -> None:
-    """RET-1. The retention decision and the disk agree.
+    """RET-1. The retention decision and the disk agree, and a deletion had the authority it needed.
 
     The policy is chosen once, at download, by the person who approved the download, and written
     into the unit's manifest. Whether the raw tree is still there is a fact about the filesystem.
     Nothing compared them, so a unit could carry a complete audit record asserting a retention
     decision it never carried out, in either direction.
+
+    A deletion recorded while the tree is still on disk is refused, and so is a tree gone that the
+    unit's records show raw data in, with neither a recorded deletion nor a campaign approval covering
+    boundary 5 to account for it. A deletion under a campaign approval is correct once the outputs are
+    validated, or for a unit that failed, was skipped or was excluded, and refused for any other unit:
+    those are the only cases the user's rule deletes. Validated is the user's "every MS-DIAL output
+    present and the mzTab-M validated": the fact B7 reaches on, an mzTab-M in output as well as the
+    manifest's record, from a validation that checked at least one file, with every export EXP-1 holds
+    the run to and B6's .mdpeak on disk. RET-1 never calls a deletion justified by outputs the progress
+    walk or EXP-1 says are not there, and a cleanup after validated output (raw_cleaned) that lacks them
+    is refused. A split part whose parent's release does not list it is a WARN: its tree went without its
+    own state being part of the decision. So is a deletion with no recorded authority in a unit that
+    carries campaign crossings: the gate cannot tell a person's confirmation from a campaign component
+    that deleted without recording its approval.
     """
     stage = "before-publish"
     if provenance is None:
-        report.add("RET-1", stage, "The retention decision matches the disk", NOT_EVALUABLE, reason)
+        report.add("RET-1", stage, RET1_TITLE, NOT_EVALUABLE, reason)
         return
     raw, owner, unknown = _raw_directory(provenance, workspace)
     if raw is None or owner is None:
-        report.add("RET-1", stage, "The retention decision matches the disk", NOT_EVALUABLE,
+        report.add("RET-1", stage, RET1_TITLE, NOT_EVALUABLE,
                    f"This unit reads its raw tree from another unit, and {unknown}.")
         return
     # The owner's policy decides the owner's tree; a part's copy of it was taken at split time.
@@ -5404,7 +5989,7 @@ def check_retention_policy_was_acted_on(
     present = raw.is_dir() and any(raw.iterdir())
     if policy is None:
         report.add(
-            "RET-1", stage, "The retention decision matches the disk", FAIL,
+            "RET-1", stage, RET1_TITLE, FAIL,
             "The manifest records no raw_retention_policy. The deletion preview reads this field, "
             "so a person confirming an irreversible deletion would be shown a blank where the "
             "intent should be.", raw_present=present,
@@ -5412,36 +5997,165 @@ def check_retention_policy_was_acted_on(
         return
     policy = str(policy)
     status = str(provenance.get("status") or "")
-    if policy == "keep":
-        verdict = PASS if present else WARN
-        report.add("RET-1", stage, "The retention decision matches the disk", verdict,
-                   f"Policy is {policy!r} and the raw tree is {'present' if present else 'gone'}.",
+    if policy not in ("keep", DELETE_RETENTION):
+        report.add("RET-1", stage, RET1_TITLE, FAIL,
+                   f"The manifest records a retention policy of {policy!r}, which is neither 'keep' "
+                   "nor 'delete_after_validated_output'. It cannot have been acted on.",
                    policy=policy, raw_present=present)
         return
-    if policy == "delete_after_validated_output":
-        if present and status in VALIDATED_STATUSES - {"raw_cleaned"}:
-            report.add("RET-1", stage, "The retention decision matches the disk", WARN,
-                       "Policy is delete_after_validated_output, the output is validated, and the "
-                       "raw tree is still present. Deletion needs its own confirmation and has "
-                       "not been given one.", policy=policy, raw_present=present, status=status)
-            return
-        owner_status = str(owner.get("status") or "")
-        if not present and owner_status != "raw_cleaned" and status != "raw_cleaned":
-            # The Interactive has one deletion path, and it records raw_cleaned. A tree gone without
-            # it went without the confirmation that deletion needs.
-            report.add("RET-1", stage, "The retention decision matches the disk", WARN,
-                       "Policy is delete_after_validated_output and the raw tree is gone, but no "
-                       f"confirmed cleanup is recorded (status {owner_status or status!r}).",
-                       policy=policy, raw_present=present, status=status)
-            return
-        report.add("RET-1", stage, "The retention decision matches the disk", PASS,
-                   f"Policy is {policy!r}; raw tree {'present' if present else 'released'}, "
-                   f"status {status!r}.", policy=policy, raw_present=present, status=status)
+
+    part = isinstance(provenance.get("split_from"), dict)
+    unit_id = str((provenance.get("project") or {}).get("analysis_unit_id") or "")
+    owner_id = str((owner.get("project") or {}).get("analysis_unit_id") or "") if part else unit_id
+    deletion, deleted_where, deleted_at = _recorded_deletion(provenance, owner)
+    crossings = _deletion_crossings(provenance, owner if part else None)
+    release = owner.get(SPLIT_RELEASE)
+    store_claims = _store_claims(workspace.parent / STORE_DIRECTORY, owner_id)
+    evidence = {
+        "policy": policy, "raw_present": present, "status": status, "recorded_deletion": deletion,
+        "deletion_approvals": sorted({str(item.get("approval_id") or "") for item in crossings}),
+        "store_claims": None if store_claims is None else dict(Counter(
+            str(item.get("state") or "unrecorded") for item in store_claims)),
+    }
+    notes: list[str] = []
+    # A release that names its parts and leaves this one out went without this part's state.
+    listed = _release_parts(release)
+    if listed is not None:
+        expected = [unit_id] if part else [
+            str(item.get("analysis_unit_id") or "") for item in provenance.get("split_into") or []
+            if isinstance(item, dict)]
+        missing = [item for item in expected if item and item not in listed]
+        evidence["release_parts"] = listed
+        if missing:
+            notes.append(f"The split parent's raw_release ({release.get('state') or 'no state'}) does not list "
+                         f"{', '.join(missing)}, so the release was decided without that part's state.")
+
+    def verdict(status_value: str, detail: str) -> None:
+        report.add("RET-1", stage, RET1_TITLE, WARN if status_value == PASS and notes else status_value,
+                   detail + ("" if not notes else " " + " ".join(notes)), **evidence)
+
+    if present and deletion:
+        verdict(FAIL, f"The raw tree is still on disk, and {deleted_where} records it as deleted. The record "
+                      "says a deletion happened that the filesystem contradicts, so whatever relies on it - the "
+                      "store's collection, a disk budget, the unit's own end state - is wrong.")
         return
-    report.add("RET-1", stage, "The retention decision matches the disk", FAIL,
-               f"The manifest records a retention policy of {policy!r}, which is neither 'keep' "
-               "nor 'delete_after_validated_output'. It cannot have been acted on.",
-               policy=policy, raw_present=present)
+    if present:
+        if crossings:
+            verdict(WARN, f"A deletion was authorized under campaign approval {evidence['deletion_approvals'][0]} "
+                          "(boundary 5), and the raw tree is still on disk: the deletion did not complete.")
+            return
+        if isinstance(release, dict) and str(release.get("state") or "") != SPLIT_RELEASE_DELETED:
+            verdict(WARN, f"The split parent's raw_release is {release.get('state') or 'without a state'!r} and "
+                          "the raw tree is still on disk: the release has not completed.")
+            return
+        if policy == DELETE_RETENTION and status in VALIDATED_STATUSES - {"raw_cleaned"}:
+            incomplete = _outputs_incomplete(workspace / "output")[0]
+            if incomplete and not _mztab_not_validated(provenance, workspace / "output"):
+                verdict(WARN, f"Policy is delete_after_validated_output, the mzTab-M is validated, and {incomplete}: "
+                              "the raw tree is still present, and the deletion is not yet due. A unit whose outputs "
+                              "are incomplete has in effect failed, and its raw data go after its retries.")
+                return
+            verdict(WARN, "Policy is delete_after_validated_output, the output is validated, and the raw tree is "
+                          "still present. The deletion is due; it needs a person's confirmation or a campaign "
+                          "approval covering boundary 5, and neither has been acted on yet.")
+            return
+        verdict(PASS, "Policy is 'keep' and the raw tree is present." if policy == "keep"
+                else f"Policy is {policy!r}; raw tree present, status {status!r}.")
+        return
+
+    # The tree is gone.
+    if not deletion:
+        if crossings:
+            verdict(WARN, f"The raw tree is gone under campaign approval {evidence['deletion_approvals'][0]} "
+                          "(boundary 5), and no deletion is recorded: the deletion's completion was not written.")
+            return
+        downloaded = bool(owner.get("downloads")) or bool(owner.get("input_candidates")) \
+            or bool(provenance.get("input_candidates"))
+        if downloaded:
+            verdict(FAIL, "The raw tree is gone, the unit's records show raw data were downloaded into it, and "
+                          "neither a recorded deletion (raw_cleaned, discarded or a split parent's release) nor a "
+                          "campaign approval covering boundary 5 accounts for it: the raw data were deleted without "
+                          "an authorization or a confirmation.")
+            return
+        if policy == "keep":
+            verdict(WARN, f"Policy is {policy!r} and the raw tree is gone.")
+            return
+        verdict(WARN, "Policy is delete_after_validated_output and the raw tree is gone, but no confirmed cleanup "
+                      f"is recorded (status {str(owner.get('status') or '') or status!r}).")
+        return
+
+    keeping = [str(item.get("approval_id") or "") for item in crossings
+               if str(item.get("raw_retention_policy") or "") != DELETE_RETENTION]
+    if keeping:
+        verdict(FAIL, f"The raw tree was deleted ({deleted_where}) under campaign approval {keeping[0]}, which "
+                      "keeps raw data: no approval that keeps raw data covers a deletion.")
+        return
+    boundaries = _campaign_boundaries(provenance, owner if part else None)
+    if crossings:
+        authority = f"campaign approval {evidence['deletion_approvals'][0]} (boundary 5)"
+    elif deletion == "split_release" and release.get("authorized_by"):
+        authority = f"the release's recorded authority ({str(release.get('authorized_by'))[:120]})"
+    elif boundaries:
+        # A campaign unit whose deletion carries no crossing: a person's confirmed=true records no crossing
+        # either, so the records cannot say which it was.
+        authority = "a confirmed=true call whose authority is not recorded"
+        notes.append(f"The unit carries campaign crossings for boundar{'y' if len(boundaries) == 1 else 'ies'} "
+                     f"{', '.join(boundaries)} and none for boundary 5, so its deletion was not recorded under the "
+                     "campaign's approval: a person's confirmation is assumed, and a campaign component that deleted "
+                     "without recording its approval would look the same.")
+    else:
+        # Interactive writes raw_cleaned and discarded only on confirmed=true or a boundary-5 crossing, and
+        # outside a campaign confirmed=true is a person's; who gave it is not recorded.
+        authority = "confirmed=true, a person's confirmation outside a campaign (who gave it is not recorded)"
+    # Why the outputs do not count as validated: the mzTab-M, or else the outputs beside it.
+    unvalidated, incomplete, absent = "", "", []
+    if deletion == "split_release" and not part:
+        parts = _release_parts(release) or []
+        kind, why = ("released", f"its release lists {len(parts)} part(s)") if parts else ("", "")
+    else:
+        kind, why = _deletion_justification(provenance, workspace)
+        if kind != "validated":
+            unvalidated = _mztab_not_validated(provenance, workspace / "output")
+            incomplete, absent = ("", []) if unvalidated else _outputs_incomplete(workspace / "output")
+    evidence.update(authority=authority, justification=kind)
+    if deletion == "raw_cleaned" and kind != "validated":
+        evidence["unvalidated_because"] = unvalidated or incomplete
+        if absent:
+            evidence.update(absent_export_count=len(absent), absent_exports=absent[:10])
+        verdict(FAIL, f"The raw tree was deleted as a cleanup after validated output ({deleted_where}), and "
+                      + (f"{unvalidated}: the cleanup rests on a validated mzTab-M that neither the unit's records "
+                         "nor its output show." if unvalidated else
+                         f"{incomplete}: the cleanup rests on outputs that are not all there. A unit whose outputs "
+                         "are incomplete has in effect failed, and the campaign deletes a failed unit's raw data "
+                         "only after its retries."))
+        return
+    if not kind:
+        neither = ("neither validated outputs" + (f" ({unvalidated or incomplete})" if unvalidated or incomplete else "")
+                   + " nor a failure, a skip or an exclusion")
+        if crossings:
+            verdict(WARN, f"The raw tree was deleted ({deleted_where}) under {authority}, and the unit records "
+                          f"{neither}. The campaign deletes raw data for none but those, so either the unit's failure "
+                          "record was never written or the deletion broke the rule.")
+            return
+        verdict(WARN, f"The raw tree was deleted ({deleted_where}) on {authority}, and the unit records {neither}, "
+                      "so why is not on record"
+                      + (f" beyond {str(provenance.get('discard_reason'))[:160]!r}" if provenance.get("discard_reason") else "")
+                      + ".")
+        return
+    if policy == "keep":
+        verdict(WARN, f"Policy is 'keep' and the raw tree was deleted ({deleted_where}) on {authority}: the "
+                      "deletion was authorized, and it is not what the retention decision recorded.")
+        return
+    # A claim opened after the deletion is a new consumer's, such as a re-run's pre-claim, which reopens the
+    # released claim; only one opened before it is left over from the tree that went.
+    live = [item for item in store_claims or [] if item.get("state") in STORE_LIVE_CLAIM_STATES]
+    reopened = sum(1 for item in live if _claim_opened_after(item, deleted_at))
+    if reopened:
+        evidence["store_claims_opened_after_deletion"] = reopened
+    if len(live) > reopened:
+        notes.append(f"{len(live) - reopened} of the unit's claims in the accession store are still live, so the store "
+                     "keeps the objects this tree linked to until they are released.")
+    verdict(PASS, f"The raw tree was deleted ({deleted_where}) under {authority}: {why}.")
 
 
 def check_binary_identity_is_recorded(
@@ -6126,6 +6840,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_split_part_partitions_its_parent(report, provenance, provenance_reason)
         check_execution_allowed(report, provenance, provenance_reason)
         check_preflight_claim(report, provenance, provenance_reason)
+        check_extractor_identity(report, provenance, provenance_reason)
         check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_checksum_coverage(report, provenance, provenance_reason)
         check_converted_inputs_are_their_conversions(report, provenance, provenance_reason, csv_rows, csv_reason)
@@ -6195,7 +6910,7 @@ COMPLETION_STAGES = (
      "the raw owner's manifest lists its downloads, and every input is on disk or the raw tree was released "
      "by the confirmed cleanup (status raw_cleaned)",
      ("SUM-1", "CONV-1")),
-    ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1")),
+    ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1", "PRE-2")),
     ("B3", "class_settled",
      "a ratified Class proposal, or where the Catalog abstains a ratified abstention (accepted, confirmed or approved)",
      ("CLS-3",)),
@@ -6228,12 +6943,6 @@ def completion_progress(workspace: Path, provenance: dict | None, output: Path) 
     candidates = [Path(str(item)) for item in record.get("input_candidates") or []]
     diagnostics = [item for item in record.get("peak_height_diagnostics") or [] if isinstance(item, dict)]
     diagnostic_directory = str((diagnostics[-1] if diagnostics else {}).get("diagnostic_run_directory") or "")
-    validation = record.get("mztab_validation")
-    validation_failed = (
-        isinstance(validation, dict)
-        and isinstance(validation.get("summary"), dict)
-        and bool(validation["summary"].get("failed"))
-    )
     raw_path, raw_owner, _unknown = _raw_directory(record, workspace)
     status = str(record.get("status") or "")
     # Released only by the confirmed cleanup, the one deletion path, which records raw_cleaned.
@@ -6253,9 +6962,7 @@ def completion_progress(workspace: Path, provenance: dict | None, output: Path) 
         # The .mdpeak files are the run's own output; whether the Console also wrote its key record
         # is MTH-1's to judge.
         "B6": _mdpeak_count(output) > 0,
-        "B7": str(record.get("status") or "") in VALIDATED_STATUSES
-        and bool(record.get("finalized_at")) and isinstance(validation, dict) and not validation_failed
-        and any(output.glob("*.mzTab")),
+        "B7": not _unvalidated(record, output),
         "B8": any(output.glob("*.qa.tsv")),
         "B9": all((output / name).is_file() for name in (
             "MS_DIAL_publication_report.json", "MS_DIAL_Materials_and_Methods.txt",
