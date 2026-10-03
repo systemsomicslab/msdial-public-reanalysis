@@ -26,10 +26,15 @@ And the gate rule, decided on 2026-10-01 and completed on 2026-10-02:
 - "Stop" is per unit: a gate verdict, a failure or a hold stops that unit's analysis, never the runner. A
   pin change, a short disk and a repository outage pause the whole campaign, and each lifts by itself.
 
-The runner's reading of that last rule, which the user's words do not spell out: a backend that does not
-answer, which every unit would meet alike, pauses the campaign too and lifts by itself at the fault
-recheck; and a reply or a record of Interactive's that the runner cannot read for one unit (CONTRACT)
-holds that unit, as a missing gate report does, and pauses nothing.
+And two defaults the runner proposed and the user did not object to on 2026-10-03 ("案AでOK"):
+
+- An Interactive backend that does not answer is the fourth pause of the whole campaign (CAMPAIGN_PAUSES),
+  and lifts by itself at the fault recheck. Not answering is a refused connection (backend_unavailable),
+  and a connection that times out, is reset or breaks off mid-reply (BACKEND_SILENT_ERRORS): neither is
+  the unit's failure.
+- A reply or a record of Interactive's that the runner cannot read for one unit (CONTRACT), a reply that
+  does not parse among them (UNREADABLE_REPLY_ERRORS), holds that unit, as a missing gate report does, and
+  pauses nothing; a recheck makes the step again.
 
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
@@ -310,6 +315,48 @@ OK, FAILED, BUSY, FAULT, REFUSED, CONTRACT = "ok", "failed", "busy", "fault", "r
 # unit or deletes its raw data. "Stop" is per unit (2026-10-02), so the unit is held (contract_held) and the
 # other units go on, and a deletion refused so leaves that unit's raw data held.
 CONTRACT_REASONS = frozenset({"unsupported", "malformed", "raw_metadata_extractor_refused"})
+# A backend that does not answer (2026-10-03): the exception a call to it ended on, as Interactive's wrapper
+# reports one past its own mapping (reason os_error) or the port reports one that escaped it (exception). A
+# timeout, a reset or a reply broken off is the backend's silence, never the unit's failure.
+BACKEND_SILENT_ERRORS = frozenset({
+    "TimeoutError", "timeout", "ConnectionResetError", "ConnectionAbortedError", "ConnectionRefusedError",
+    "BrokenPipeError", "RemoteDisconnected", "IncompleteRead",
+})
+# A reply, or a record of Interactive's, that does not parse (2026-10-03: an unreadable reply holds the unit).
+UNREADABLE_REPLY_ERRORS = frozenset({"JSONDecodeError", "UnicodeDecodeError"})
+# The four pauses of the whole campaign: what every unit would meet alike. Each lifts by itself once its
+# cause has gone (2026-10-02 for the first three, 2026-10-03 for the backend).
+CAMPAIGN_PAUSES = {
+    "pin": "a pin change",
+    "disk": "a short disk",
+    "outage": "a repository outage",
+    "backend": "an Interactive backend that does not answer",
+}
+_PAUSE_LIFTS = {
+    "pin": "by itself, once the pinned identities match the approved manifest again",
+    "disk": "by itself, once no unit waits for space",
+    "outage": "by itself, at the fault recheck (fault_recheck_seconds), when a download is tried again",
+    "backend": "by itself, at the fault recheck (fault_recheck_seconds), once the backend answers",
+    "fault": "by itself, at the fault recheck (fault_recheck_seconds), once the backend answers",
+    "operator": "at an operator's resume",
+    "contract": "at an operator's resume",
+}
+_PAUSE_NAMES = {
+    **CAMPAIGN_PAUSES,
+    "operator": "an operator's pause",
+    "contract": "a contract pause a runner before 2026-10-02 left in the ledger",
+    "fault": "a backend that did not answer or a repository outage, as a runner before 2026-10-03 recorded it",
+}
+
+
+def pause_name(kind: str | None) -> str | None:
+    """What a pause kind is, in the words of the status export."""
+    return None if kind is None else _PAUSE_NAMES.get(str(kind), str(kind))
+
+
+def pause_lifts(kind: str | None) -> str | None:
+    """How a pause of this kind lifts."""
+    return None if kind is None else _PAUSE_LIFTS.get(str(kind), "at an operator's resume")
 
 
 def classify_result(result: Any) -> str:
@@ -321,13 +368,14 @@ def classify_result(result: Any) -> str:
     if result.get("ok") is not False:
         return OK
     reason = str(result.get("reason") or "")
+    error_type = str(result.get("error_type") or "")
     if reason == "campaign_authorization_refused":
         return REFUSED
     if reason in {"unit_busy", "manifest_busy"}:
         return BUSY
-    if reason == "backend_unavailable":
+    if reason == "backend_unavailable" or (reason in {"os_error", "exception"} and error_type in BACKEND_SILENT_ERRORS):
         return FAULT
-    if reason in CONTRACT_REASONS:
+    if reason in CONTRACT_REASONS or (reason in {"validation_error", "exception"} and error_type in UNREADABLE_REPLY_ERRORS):
         return CONTRACT
     return FAILED
 

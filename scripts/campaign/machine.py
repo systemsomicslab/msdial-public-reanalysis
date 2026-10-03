@@ -65,7 +65,7 @@ IDLE = ("pending",) + ledger_module.WAITING_STATES
 # Pauses under which nothing new starts; jobs already running are still watched to their end. This runner
 # makes no "contract" pause (it holds the unit instead, contract_held); one an earlier runner left in the
 # ledger still blocks until an operator resumes.
-BLOCKING_PAUSES = ("operator", "contract", "pin", "fault")
+BLOCKING_PAUSES = ("operator", "contract", "pin") + ledger_module.FAULT_PAUSES
 # Units held for a recheck that comes by itself (and at an operator's recheck-held), counted nothing.
 HELD_STATES = ledger_module.HELD_STATES
 # A unit's end once its outputs exist, and the discard that ends one without them. A step here that raises
@@ -371,11 +371,11 @@ class Runner:
         if pause == "pin" and not self._pin_differences():
             self.ledger.resume(self.stamp(), kinds=["pin"], detail={"pins": "match the approved manifest again"})
             pause = None
-        elif pause == "fault":
+        elif pause in ledger_module.FAULT_PAUSES:
             paused_at = policy.parse_iso(self.ledger.runner().get("paused_at"))
             if paused_at is None or (self.now() - paused_at).total_seconds() >= self.policy.fault_recheck_seconds:
                 if self._backend_ok():
-                    self.ledger.resume(self.stamp(), kinds=["fault"], detail={"recheck": "retrying the step"})
+                    self.ledger.resume(self.stamp(), kinds=list(ledger_module.FAULT_PAUSES), detail={"recheck": "retrying the step"})
                     pause = None
         elif pause == "disk" and not self._waiting_for_disk():
             self.ledger.resume(self.stamp(), kinds=["disk"], detail={"disk": "no unit waits for space any more"})
@@ -576,19 +576,22 @@ class Runner:
             )
             return
         if kind == policy.CONTRACT:
-            # A reply of another shape, a tool or parameter Interactive lacks, an extractor it refuses: no fault
-            # of the unit's, and "stop" is per unit, so the unit is held and the others go on.
-            self._contract_hold(unit, step=step, problem=str(detail.get("reason") or "contract"), detail=detail,
-                                resume_state=retry_state, attempt_id=attempt_id, console_run=console_run, gate=gate)
+            # A reply of another shape or one that does not parse (2026-10-03), a tool or parameter Interactive
+            # lacks, an extractor it refuses: no fault of the unit's, and "stop" is per unit, so the unit is held
+            # and the others go on.
+            unreadable = str(detail.get("error_type") or "") in policy.UNREADABLE_REPLY_ERRORS
+            self._contract_hold(unit, step=step, problem="unreadable_reply" if unreadable else str(detail.get("reason") or "contract"),
+                                detail=detail, resume_state=retry_state, attempt_id=attempt_id, console_run=console_run, gate=gate)
             return
         if kind == policy.FAULT:
-            # A backend that does not answer, which every unit would meet alike: nothing counts, the unit stays
-            # where it is, and the step is made again when the pause lifts by itself at the fault recheck.
+            # A backend that does not answer, which every unit would meet alike: the fourth pause of the whole
+            # campaign (2026-10-03). Nothing counts, the unit stays where it is, and the step is made again when
+            # the pause lifts by itself at the fault recheck.
             if attempt_id is not None:
                 self.ledger.close_attempt(attempt_id, "fault", self.stamp(), detail=detail)
             if console_run is not None:
                 self.ledger.end_console_run(console_run[0], "not_started", self.stamp())
-            self._pause(kind, f"{step} for unit {unit['unit_key']}: {detail.get('reason')}: {detail.get('detail') or ''}".rstrip(": "))
+            self._pause("backend", f"{step} for unit {unit['unit_key']}: {detail.get('reason')}: {detail.get('detail') or ''}".rstrip(": "))
             return
         decision = policy.after_failure(int(unit["failures"]), self.now(), self.policy)
         if decision.state == "waiting_retry":
@@ -1018,7 +1021,7 @@ class Runner:
                        else {"new_attempt": {"step": "download", "outcome": "fault", "counted": False, "detail": detail}}),
                 )
                 self._pause(
-                    "fault",
+                    "outage",
                     f"Downloads from {unit['repository']} failed on the network for {len(groups)} different download "
                     f"groups in a row (last unit {unit['unit_key']}): a repository outage, not unit failures. At the "
                     "fault recheck a unit of another download group is tried first; this one waits, uncounted.",
@@ -1112,7 +1115,7 @@ class Runner:
         job = self.ports.interactive.job(job_id)
         if job.get("ok") is False:
             if policy.classify_result(job) == policy.FAULT:
-                self._pause("fault", f"The campaign backend did not answer for download job {job_id}.")
+                self._pause("backend", f"The campaign backend did not answer for download job {job_id}.")
                 return False
             return self._download_lost(unit)
         status = str(job.get("status") or "")
@@ -1618,7 +1621,7 @@ class Runner:
         job = self.ports.interactive.job(job_id)
         if job.get("ok") is False:
             if policy.classify_result(job) == policy.FAULT:
-                self._pause("fault", f"The campaign backend did not answer for diagnostic job {job_id}.")
+                self._pause("backend", f"The campaign backend did not answer for diagnostic job {job_id}.")
                 return False
             estimate = self._estimate(unit)
             if estimate is not None:
@@ -1762,7 +1765,7 @@ class Runner:
         self._move(
             unit, "contract_held", resume_state=resume_state, next_attempt_at=due,
             detail={"contract_held": problem, "step": step, "recheck_at": due},
-            end_console_run=(console_run[0], "not_started") if console_run is not None else None, gate=gate, **record,
+            end_console_run=console_run, gate=gate, **record,
         )
         self._event("contract_held", {**said, "warning": CONTRACT_HELD_WARNING, "recheck_at": due}, unit["unit_key"])
         return True
@@ -1819,7 +1822,7 @@ class Runner:
         job = self.ports.interactive.job(job_id)
         if job.get("ok") is False:
             if policy.classify_result(job) == policy.FAULT:
-                self._pause("fault", f"The campaign backend did not answer for run job {job_id}.")
+                self._pause("backend", f"The campaign backend did not answer for run job {job_id}.")
                 return False
             manifest = self._manifest(unit) or {}
             if policy.outputs_produced(manifest) and (manifest.get("finalized_run") or {}).get("job_id") == job_id:
@@ -2294,8 +2297,13 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         # never a pause of the campaign ("stop" is per unit, 2026-10-02).
         "contract_held": {"units": len(contract_held), "unit_keys": [unit["unit_key"] for unit in contract_held],
                           "warning": CONTRACT_HELD_WARNING if contract_held else None},
-        "paused": {"kind": runner["pause_kind"], "reason": runner["pause_reason"], "at": runner["paused_at"]}
+        # The pause in force, named: one of the four pauses of the whole campaign, each lifting by itself, or
+        # an operator's own (or a contract pause an earlier runner left), which waits for an operator's resume.
+        "paused": {"kind": runner["pause_kind"], "name": policy.pause_name(runner["pause_kind"]),
+                   "lifts": policy.pause_lifts(runner["pause_kind"]), "reason": runner["pause_reason"],
+                   "at": runner["paused_at"]}
         if runner["paused"] else None,
+        "campaign_pauses": {kind: {"name": name, "lifts": policy.pause_lifts(kind)} for kind, name in policy.CAMPAIGN_PAUSES.items()},
         "terms": {
             policy.OUTPUTS_PRODUCED: "every MS-DIAL output present and the mzTab-M validated",
             policy.COMPLETED: "outputs produced, and the final gate --strict exited 0",
