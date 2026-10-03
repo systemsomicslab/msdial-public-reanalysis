@@ -54,7 +54,9 @@ For a repository range:
    ion mobility alone (the Catalog's `ion_mobility_evidence` state `enabled`).
    A mixed unit, ion-mobility data beside data without it (MTBKS219 and
    MTBKS220: Bruker BAF beside TDF), passes to the raw-header check, whose
-   per-file reading and split exclude the ion-mobility files or parts.
+   per-file reading and split exclude the ion-mobility files or parts, and so
+   does a unit whose Catalog record the plan cannot read (its manifest reading
+   is `not_read`): the plan never excludes for ion mobility on its own row.
    mzML is an input, and so is a vendor folder (Waters `.raw`, Agilent or Bruker
    `.d`): one folder is one input and one CSV row, and its files are only
    downloaded. Outside a campaign, mzXML and mzData are `requires_conversion`:
@@ -345,14 +347,17 @@ stops the runner, which goes on with the other units. A reply or a record of
 Interactive's that the runner cannot read or act on for one unit, a reply
 that does not parse among them, holds that unit in `contract_held` the same
 way, and a cleanup or discard Interactive cannot make as called leaves that
-unit's raw data held; neither pauses the campaign. A pin change, a short
-disk, a repository outage and an Interactive backend that does not answer (a
-call refused, timed out, reset or broken off) pause the whole campaign
-instead: the four pauses the status export names, each lifting by itself.
-The hold and the backend pause are the runner's defaults, which the user did
-not object to on 2026-10-03. Read which checks failed, and which
-were left unevaluated, from the `checks` of the `--json` report, never from
-the exit code. It is 2 for any FAIL, in either list, and a FAIL outranks a
+unit's raw data held; neither pauses the campaign. A job's poll whose reply
+cannot be read is never taken for a lost job: the unit waits while the job's
+Console or download runs and is then held at that poll, so its Console is
+not started again. A pin change, a short disk, a repository outage and an
+Interactive backend that does not answer (a call refused, timed out, reset or
+broken off, the diagnostic's estimate as much as a job's poll) pause the
+whole campaign instead: the four pauses the status export names, each
+lifting by itself. The hold and the backend pause are the runner's defaults,
+which the user did not object to on 2026-10-03. Read which checks failed, and
+which were left unevaluated, from the `checks` of the `--json` report, never
+from the exit code. It is 2 for any FAIL, in either list, and a FAIL outranks a
 strict refusal, so it is 2, not 4, however many required checks were left
 unevaluated beside a `record_only` FAIL; the report lists those in
 `strict_failures`, and `run_blocked_by` names every check that stops the run.

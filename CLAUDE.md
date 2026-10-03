@@ -173,7 +173,10 @@ location.
   folders beside TDF folders, with rows naming a timsTOF. Such a unit passes
   to the raw-header check, where Interactive's per-file reading and split
   exclude the ion-mobility files or parts with their reason, and the rest of
-  the unit runs. So does a unit whose own evidence says nothing.
+  the unit runs. So does a unit whose own evidence says nothing, and so does a
+  unit whose Catalog record the plan cannot read: the plan's own row of a unit
+  holds neither its rows nor its inputs, so the unit is never excluded for ion
+  mobility on that row, and the manifest says its reading was not made.
 
 ## Evidence and decisions
 
@@ -393,7 +396,8 @@ its cause has gone, the last two at the runner's hourly recheck. The user's
 decision of 2026-10-02 names the first three, and the backend pause is the
 runner's default, which the user did not object to on 2026-10-03. A backend
 does not answer when a call to it is refused, times out, or is reset or broken
-off mid-reply, and none of these counts against the unit.
+off mid-reply, whichever call it is, a job's poll or the diagnostic's estimate
+among them, and none of these counts against the unit.
 Nothing one unit does pauses the campaign. A reply or a record of Interactive's
 that the runner cannot read or act on for one unit holds that unit as
 `contract_held`, as the no-report rule holds a unit whose gate gave no report:
@@ -403,9 +407,13 @@ nothing applied, one another extractor made, an extractor Interactive refuses
 or does not find, and a reply of another shape. The unit goes no further,
 keeps its raw data, is counted neither as a retry nor as a failure, is warned
 about in the ledger and the status export, and is rechecked as a `gate_held`
-unit is. A cleanup or discard that Interactive cannot make as called leaves
-that unit's raw data held, looked at again at each start and every few hours,
-and the unit ends as it was going to.
+unit is. A job's poll whose reply cannot be read is never taken for a lost
+job: the unit waits while the job's Console or download still runs, keeping
+the Console slot, and is then held at that poll, so no Console is started on
+it again until a recheck reads how the job ended. A cleanup or discard that
+Interactive cannot make as called leaves that unit's raw data held, looked at
+again at each start and every few hours, and the unit ends as it was going
+to.
 
 The gate lifts none of Interactive's own refusals: a unit Interactive refuses
 to start does not run, whatever the gate said.

@@ -40,7 +40,11 @@ counts as ion mobility only on its own evidence, a mixed unit passing to the raw
 an Interactive backend that does not answer is the fourth pause and a reply the runner cannot read holds
 the unit, the two defaults the user did not object to; and an mzXML whose scans mix the opposite polarity
 with scans of none is excluded while the rest of its unit runs. The trial manifest records that decision
-with the user's answer verbatim.
+with the user's answer verbatim. As the review of ba035ca made the runner and the plan hold to it, the
+contract also says that the backend pause covers every call, the diagnostic's estimate as much as a job's
+poll; that an unreadable poll is never taken for a lost job, the unit waiting for its Console and then held
+at that poll; and that a unit whose Catalog record the plan cannot read is never excluded for ion mobility
+on the plan's own row.
 """
 
 from __future__ import annotations
@@ -130,9 +134,13 @@ _DECIDED_CASES = {
         "A pin change, a short disk, a repository outage and an Interactive backend that does not answer",
         "the four pauses the status export names", "lifts by itself", "did not object to on 2026-10-03",
         "times out", "none of these counts against the unit",
+        # Whichever call goes unanswered: the review of ba035ca found the estimate counted against the unit.
+        "a job's poll or the diagnostic's estimate",
         # One unit's record holds that unit, a reply that does not parse among them; it pauses nothing.
         "Nothing one unit does pauses the campaign", "`contract_held`", "a reply that does not parse",
         "counted neither as a retry nor as a failure", "leaves that unit's raw data held",
+        # An unreadable poll is not a lost job, which started a second production Console on the unit.
+        "never taken for a lost job", "keeping the Console slot", "held at that poll",
     )),
     "mzXML without a polarity": (_SCOPE_SECTION, "- **mzXML without a polarity.**", (
         "exactly one polarity", "`technical_settings.ion_mode`", "imputed from that", "as an inference",
@@ -143,6 +151,8 @@ _DECIDED_CASES = {
         "2026-10-03", "option A", "only on its own evidence", "study-level text", "is not such evidence",
         "MTBKS217", "`ion_mobility_evidence` state `enabled`", "A mixed unit", "MTBKS219 and MTBKS220",
         "is not excluded at plan time", "passes to the raw-header check", "split",
+        # A record the plan cannot read is no evidence: its own row holds neither rows nor inputs.
+        "whose Catalog record the plan cannot read", "never excluded for ion mobility on that row",
     )),
     "mzXML with scans of both polarities": (_SCOPE_SECTION, "- **mzXML with scans of both polarities.**", (
         "did not object to on 2026-10-03", "declares one polarity", "opposite polarity", "record none",
