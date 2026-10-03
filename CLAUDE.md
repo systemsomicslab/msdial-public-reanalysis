@@ -126,7 +126,8 @@ location.
   whose mzXML records no polarity (the attribute is optional, and may be
   `any`) is given one by a campaign's conversion only when the unit's Catalog
   handoff declares exactly one polarity, Positive or Negative, in
-  `technical_settings.ion_mode`. The polarity is then imputed from that
+  `technical_settings.ion_mode`, and the file records no scan of the opposite
+  polarity (the next item). The polarity is then imputed from that
   declared ion mode, and the conversion records the imputation as an
   inference, with the number of spectra it gave a polarity to; CONV-1 holds
   it to the declared ion mode. In any other unit nothing is imputed. The scan
@@ -135,6 +136,14 @@ location.
   the conversion. CONV-1 is a `blocks_run` check (Gate verdicts in a
   campaign), so the unit does not run, and it is a failed unit under the
   deletion rule.
+- **mzXML with scans of both polarities.** The runner's default, which the
+  user did not object to on 2026-10-03. In a unit whose handoff declares one
+  polarity, an mzXML whose scans mix the opposite polarity with scans that
+  record none is excluded with its reason recorded, and the rest of the unit
+  runs, as a file whose conversion fails is. Its scans without a polarity are
+  not given the declared one: the file itself records the other polarity, so
+  nothing says which of the two they were. Interactive's conversion makes the
+  exclusion and records its reason.
 - One project type, ion mode, acquisition mode, chromatography regime, and ion
   mobility regime per MS-DIAL run.
 - GC-MS, SRM/MRM, SIM, DI-MS, imaging MS, product-ion-only
@@ -143,7 +152,28 @@ location.
   modes outside this campaign; that broader capability does not expand this scope.
 - LC-IM-MS is excluded from this campaign, which is LC-MS only. Ion-mobility
   data (Bruker TDF/timsTOF, Waters and Agilent ion mobility) are excluded with
-  the reason recorded, whether the repository or the raw headers show it.
+  the reason recorded, whether the unit's own repository evidence or the raw
+  headers show it.
+- **Ion mobility from unit-level evidence.** The user decided it on 2026-10-03
+  (option A). A unit counts as ion mobility only on its own evidence: its rows
+  or assay fields, such as an instrument that names a timsTOF, Synapt HDMS,
+  Vion IMS, Agilent 6560 or Cyclic IMS, or an explicit ion-mobility parameter,
+  and the formats of its own containers as the Catalog reads them. A mention in
+  the study-level text, a title, abstract or description that many units
+  share, is not such evidence. MTBKS217, a Waters Xevo G2 QTOF whose stored ion
+  mobility is Enabled only because the shared MS-DIAL 4 lipidome-atlas abstract
+  mentions it, is therefore planned, as are MTBKS218, MTBKS221 and the other
+  declared MetaboBank units flagged the same way. The plan excludes a unit
+  only where its own evidence is ion mobility and nothing else: the Catalog's
+  `ion_mobility_evidence` state `enabled`, or, without that helper, an
+  instrument or a row's instrument field naming an ion-mobility instrument
+  with no Bruker BAF or TSF container among the unit's inputs. A mixed unit,
+  whose ion-mobility evidence sits beside containers that hold no mobility
+  data, is not excluded at plan time: MTBKS219 and MTBKS220 list Bruker BAF
+  folders beside TDF folders, with rows naming a timsTOF. Such a unit passes
+  to the raw-header check, where Interactive's per-file reading and split
+  exclude the ion-mobility files or parts with their reason, and the rest of
+  the unit runs. So does a unit whose own evidence says nothing.
 
 ## Evidence and decisions
 
@@ -207,6 +237,10 @@ list, or anything the manifest does not state. Interactive holds a step to the
 record's own unit list, and compares the manifest with the digest only when the
 record names the manifest's path, so the runner writes the manifest's units
 into the record and names the manifest's path in it (`campaign_manifest_path`).
+A pilot is such a manifest of named units (`scripts/campaign-runner.py plan
+--units`), drawn from both pools, each held to its own pool's rules and
+recorded with it. The user started one on 2026-10-03, 15 units with their raw
+data kept, so its approval covers boundaries 1, 3 and 4 and the split, never 5.
 
 Interactive checks the record at each boundary it guards and writes the
 crossing into the unit's manifest. The Catalog does not read the record: it
@@ -352,18 +386,21 @@ recorded, and the raw data go by the deletion rule whatever the gate says.
 
 **A stop is per unit.** A FAIL, a check left unevaluated or a hold stops that
 unit's analysis, never the runner, which goes on with the other units. A pin
-change, a short disk and a repository outage pause the whole campaign
-instead, and each pause lifts by itself once its cause has gone. So does a
-campaign backend that does not answer, which every unit would meet alike: the
-runner looks at it again hourly. The user's decision of 2026-10-02 names the
-first three pauses; the backend pause is the runner's reading of the same
-rule. Nothing one unit does pauses the campaign. A reply or a record of
-Interactive's that the runner cannot read or act on for one unit holds that
-unit as `contract_held`. The user's words do not name this case, and the
-runner treats it as the no-report rule treats a gate with no report. It
-covers a missing or malformed `campaign_disposition`, one that nothing
-applied, one another extractor made, an extractor Interactive refuses or
-does not find, and a reply of another shape. The unit goes no further,
+change, a short disk, a repository outage and an Interactive backend that does
+not answer pause the whole campaign instead: the four pauses the status export
+names, each what every unit would meet alike. Each pause lifts by itself once
+its cause has gone, the last two at the runner's hourly recheck. The user's
+decision of 2026-10-02 names the first three, and the backend pause is the
+runner's default, which the user did not object to on 2026-10-03. A backend
+does not answer when a call to it is refused, times out, or is reset or broken
+off mid-reply, and none of these counts against the unit.
+Nothing one unit does pauses the campaign. A reply or a record of Interactive's
+that the runner cannot read or act on for one unit holds that unit as
+`contract_held`, as the no-report rule holds a unit whose gate gave no report:
+the second default the user did not object to on 2026-10-03. It covers a reply
+that does not parse, a missing or malformed `campaign_disposition`, one that
+nothing applied, one another extractor made, an extractor Interactive refuses
+or does not find, and a reply of another shape. The unit goes no further,
 keeps its raw data, is counted neither as a retry nor as a failure, is warned
 about in the ledger and the status export, and is rechecked as a `gate_held`
 unit is. A cleanup or discard that Interactive cannot make as called leaves

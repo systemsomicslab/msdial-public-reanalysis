@@ -29,11 +29,18 @@ it is required stops the run; a gate that gives no usable report holds the unit,
 with its raw data kept, and after the run is only recorded; an mzXML without a polarity is given its
 unit's one declared ion mode, and CONV-1 stops the unit where there is none; and a stop is the unit's,
 never the runner's. The contract states what the runner does under that last rule: a held unit keeps
-run --until-idle going for its rechecks; a reply of Interactive's the runner cannot read for one unit
-holds that unit (contract_held), as a missing report does, and pauses nothing; and only what every unit
-meets alike pauses the campaign, each pause lifting by itself, the backend pause named as the runner's
-reading beside the three the user named. Every passage that describes the confirmed=true discard
-fallback names the policy field that carries the user's approval of it.
+run --until-idle going for its rechecks; a reply of Interactive's the runner cannot read for one unit, a
+reply that does not parse among them, holds that unit (contract_held), as a missing report does, and
+pauses nothing; and only what every unit meets alike pauses the campaign, in the four pauses the runner
+names, each lifting by itself. Every passage that describes the confirmed=true discard fallback names the
+policy field that carries the user's approval of it.
+
+The decision of 2026-10-03 settled three more cases, and the contract states each as decided: a unit
+counts as ion mobility only on its own evidence, a mixed unit passing to the raw-header check (option A);
+an Interactive backend that does not answer is the fourth pause and a reply the runner cannot read holds
+the unit, the two defaults the user did not object to; and an mzXML whose scans mix the opposite polarity
+with scans of none is excluded while the rest of its unit runs. The trial manifest records that decision
+with the user's answer verbatim.
 """
 
 from __future__ import annotations
@@ -119,18 +126,37 @@ _DECIDED_CASES = {
     )),
     "a stop is per unit": (_GATE_RULE_SECTION, "**A stop is per unit.**", (
         "never the runner", "pause the whole campaign",
-        # Every pause the runner makes, each lifting by itself, and the backend's named as the runner's reading.
-        "A pin change, a short disk and a repository outage", "lifts by itself",
-        "campaign backend that does not answer", "the backend pause is the runner's reading",
-        # One unit's record holds that unit; it pauses nothing.
-        "Nothing one unit does pauses the campaign", "`contract_held`", "counted neither as a retry nor as a failure",
-        "leaves that unit's raw data held",
+        # The four pauses the runner makes, each lifting by itself, the backend's the user's default of 2026-10-03.
+        "A pin change, a short disk, a repository outage and an Interactive backend that does not answer",
+        "the four pauses the status export names", "lifts by itself", "did not object to on 2026-10-03",
+        "times out", "none of these counts against the unit",
+        # One unit's record holds that unit, a reply that does not parse among them; it pauses nothing.
+        "Nothing one unit does pauses the campaign", "`contract_held`", "a reply that does not parse",
+        "counted neither as a retry nor as a failure", "leaves that unit's raw data held",
     )),
     "mzXML without a polarity": (_SCOPE_SECTION, "- **mzXML without a polarity.**", (
         "exactly one polarity", "`technical_settings.ion_mode`", "imputed from that", "as an inference",
-        "nothing is imputed", "CONV-1 FAILs", "`blocks_run` check",
+        "nothing is imputed", "CONV-1 FAILs", "`blocks_run` check", "no scan of the opposite polarity",
+    )),
+    # Settled on 2026-10-03.
+    "ion mobility from unit-level evidence": (_SCOPE_SECTION, "- **Ion mobility from unit-level evidence.**", (
+        "2026-10-03", "option A", "only on its own evidence", "study-level text", "is not such evidence",
+        "MTBKS217", "`ion_mobility_evidence` state `enabled`", "A mixed unit", "MTBKS219 and MTBKS220",
+        "is not excluded at plan time", "passes to the raw-header check", "split",
+    )),
+    "mzXML with scans of both polarities": (_SCOPE_SECTION, "- **mzXML with scans of both polarities.**", (
+        "did not object to on 2026-10-03", "declares one polarity", "opposite polarity", "record none",
+        "excluded with its reason recorded", "the rest of the unit runs", "not given the declared one",
     )),
 }
+# What the trial manifest's 2026-10-03 decision says, and the user's answer verbatim.
+_DECISION_2026_10_03_SAYS = (
+    "option A", "unit-level evidence", "is not such evidence", "MTBKS217", "MTBKS219 and MTBKS220",
+    "15 named analysis units, raw data kept", "a fourth pause of the whole campaign",
+    "cannot read holds the unit", "mix the opposite polarity with scans of no polarity is excluded",
+    "\u6848A\u3067OK\u3001\u307e\u305f\u30d1\u30a4\u30ed\u30c3\u30c8\u958b\u59cb\u3082"
+    "\u30b9\u30bf\u30fc\u30c8\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+)
 # What the trial manifest's 2026-10-02 decision says of the same cases, and the user's answer verbatim.
 _DECISION_SAYS = (
     "not_evaluable where it is required", "no report", "holds the unit", "technical_settings.ion_mode",
@@ -333,7 +359,8 @@ def _blocks(text: str) -> list[str]:
 
 
 def _case_problems(contract: str) -> list[str]:
-    """Where the contract does not state a case the user settled on 2026-10-02 as decided; empty if nowhere."""
+    """Where the contract does not state a case the user settled (2026-10-02, 2026-10-03) as decided; empty if
+    nowhere."""
     problems = []
     for case, (heading, lead, phrases) in _DECIDED_CASES.items():
         passages = [block for block in _blocks(_section(contract, heading)) if block.startswith(lead)]
@@ -587,6 +614,26 @@ class ContractGateChecksTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, decision)
 
+    def test_the_2026_10_03_decision_is_recorded_in_the_users_words(self) -> None:
+        entries = [entry for entry in _trial_decisions() if str(entry.get("at", "")).startswith("2026-10-03")]
+        self.assertEqual(1, len(entries))
+        decision = str(entries[0]["decision"])
+        for phrase in _DECISION_2026_10_03_SAYS:
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, decision)
+        self.assertFalse(any(f"({name})" in decision for name in _GATE_LISTS), "it moves no check between the lists")
+
+    def test_a_unit_flagged_by_its_studys_text_alone_is_not_stated_as_excluded(self) -> None:
+        """Before 2026-10-03 the contract excluded ion-mobility data "whether the repository or the raw headers
+        show it", and the plan read the repository's column, set from text many units share."""
+        heading, _lead, _phrases = _DECIDED_CASES["ion mobility from unit-level evidence"]
+        section = _section(self.contract, heading)
+        earlier = section.replace("is not such evidence", "is evidence too")
+        self.assertNotEqual(section, earlier)
+        problems = _case_problems(self.contract.replace(section, earlier))
+        self.assertTrue(any(item.startswith("ion mobility from unit-level evidence:") for item in problems), problems)
+        self.assertNotIn("whether the repository or the raw headers show it", " ".join(section.split()))
+
     def test_every_description_of_the_discard_fallback_names_its_policy_field(self) -> None:
         found = {}
         for document in DOCUMENTS:
@@ -636,6 +683,19 @@ class StopIsPerUnitTests(unittest.TestCase):
         for state in ledger.HELD_STATES:
             with self.subTest(state=state):
                 self.assertIn(f"`{state}`", section)
+
+    def test_the_runners_four_campaign_pauses_are_the_ones_named(self) -> None:
+        """The pauses the contract names are the runner's own (policy.CAMPAIGN_PAUSES), each by its name."""
+        sys.path.insert(0, str(_ROOT / "scripts"))
+        try:
+            from campaign import policy
+        finally:
+            sys.path.remove(str(_ROOT / "scripts"))
+        self.assertEqual({"pin", "disk", "outage", "backend"}, set(policy.CAMPAIGN_PAUSES))
+        for kind, name in policy.CAMPAIGN_PAUSES.items():
+            with self.subTest(kind=kind):
+                words = name.split(" ", 1)[1]  # "a pin change" is "A pin change, ..." in the passage
+                self.assertIn(words, self.passage)
 
     def test_no_pause_waits_for_an_operator(self) -> None:
         """Before 2026-10-02 one unit's broken record paused the campaign until an operator resumed it."""

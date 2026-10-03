@@ -45,7 +45,16 @@ For a repository range:
    as DDA, SWATH or AIF, never DIA: the Console silently turns any value it
    cannot parse into DDA. An AIF file whose collision-energy target list is
    empty gets a recorded warning and still runs. Ion-mobility data are
-   excluded, with the reason recorded (LC-MS only).
+   excluded, with the reason recorded (LC-MS only), and a unit counts as ion
+   mobility only on its own evidence (option A, 2026-10-03; `CLAUDE.md`,
+   Supported production scope): its rows or assay fields, such as an
+   instrument naming a timsTOF, Synapt, Vion, 6560 or Cyclic IMS, or an
+   ion-mobility parameter, never a mention in the study's shared title,
+   abstract or description. The plan excludes only a unit whose own evidence is
+   ion mobility alone (the Catalog's `ion_mobility_evidence` state `enabled`).
+   A mixed unit, ion-mobility data beside data without it (MTBKS219 and
+   MTBKS220: Bruker BAF beside TDF), passes to the raw-header check, whose
+   per-file reading and split exclude the ion-mobility files or parts.
    mzML is an input, and so is a vendor folder (Waters `.raw`, Agilent or Bruker
    `.d`): one folder is one input and one CSV row, and its files are only
    downloaded. Outside a campaign, mzXML and mzData are `requires_conversion`:
@@ -61,7 +70,10 @@ For a repository range:
    conversion is recorded as that input's
    provenance; until the unit's manifest records it, the mzXML stays
    `requires_conversion`, and a file whose conversion fails is excluded with
-   its reason while the rest of the unit runs. mzData stays
+   its reason while the rest of the unit runs. So is an mzXML whose scans mix
+   the opposite polarity with scans of no polarity, in a unit that declares one
+   polarity: nothing is imputed to it (the runner's default, which the user did
+   not object to on 2026-10-03). mzData stays
    `requires_conversion` and excludes the unit: there is no reader and no
    converter for it. Interactive main (0.5.19) takes neither a folder nor a
    converted mzXML yet: it refuses a folder input with the production Console,
@@ -330,12 +342,15 @@ every few hours, so a held unit keeps `run --until-idle` from returning, and
 that holds the campaign, or says that none does and one must be started.
 After the run a missing report is only recorded. A stop is per unit and never
 stops the runner, which goes on with the other units. A reply or a record of
-Interactive's that the runner cannot read or act on for one unit holds that
-unit in `contract_held` the same way, and a cleanup or discard Interactive
-cannot make as called leaves that unit's raw data held; neither pauses the
-campaign. A pin change, a short disk, a repository outage and a campaign
-backend that does not answer pause the whole campaign instead, and each
-pause lifts by itself. Read which checks failed, and which
+Interactive's that the runner cannot read or act on for one unit, a reply
+that does not parse among them, holds that unit in `contract_held` the same
+way, and a cleanup or discard Interactive cannot make as called leaves that
+unit's raw data held; neither pauses the campaign. A pin change, a short
+disk, a repository outage and an Interactive backend that does not answer (a
+call refused, timed out, reset or broken off) pause the whole campaign
+instead: the four pauses the status export names, each lifting by itself.
+The hold and the backend pause are the runner's defaults, which the user did
+not object to on 2026-10-03. Read which checks failed, and which
 were left unevaluated, from the `checks` of the `--json` report, never from
 the exit code. It is 2 for any FAIL, in either list, and a FAIL outranks a
 strict refusal, so it is 2, not 4, however many required checks were left
