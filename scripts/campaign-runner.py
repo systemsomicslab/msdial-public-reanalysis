@@ -30,11 +30,13 @@ THE ORDER OF USE
 A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, a failure or a hold stops
 one unit's analysis, and the runner goes on with the others. A unit is held, unrun and uncounted with its
 raw data kept, when the before-production gate gives no usable report (gate_held), or when Interactive
-gives a reply or a record for it that the runner cannot read or act on (contract_held); a deletion
-Interactive cannot make as called leaves that unit's raw data held. What pauses the whole campaign is what
-every unit would meet alike: a pin change, a short disk, a repository outage, and a backend that does not
-answer (looked at again hourly). Each lifts by itself once its cause has gone. Only an operator's own pause
-waits for an operator's resume, as does a "contract" pause a runner before 2026-10-02 left in the ledger.
+gives a reply or a record for it that the runner cannot read or act on, a reply that does not parse among
+them (contract_held, the user's default of 2026-10-03); a deletion Interactive cannot make as called leaves
+that unit's raw data held. What pauses the whole campaign is what every unit would meet alike, the four
+pauses the status export names: a pin change, a short disk, a repository outage, and an Interactive backend
+that does not answer (a refused, timed-out or broken connection; the user's default of 2026-10-03), the last
+two looked at again hourly. Each lifts by itself once its cause has gone. Only an operator's own pause waits
+for an operator's resume, as does a "contract" pause a runner before 2026-10-02 left in the ledger.
 
 RUN --UNTIL-IDLE returns once every unit has ended or waits for disk. A held unit is not idle: the runner
 stays, polling, and makes the held unit's step again every few hours, so a unit that stays held keeps it
@@ -421,8 +423,11 @@ def command_pause(args: argparse.Namespace) -> int:
 
 
 def command_resume(args: argparse.Namespace) -> int:
+    from campaign import ledger
+
     with _open(args) as book:
-        resumed = book.resume(_now(), kinds=["operator", "contract", "disk", "fault"], detail={"by": "operator", "reason": args.reason})
+        resumed = book.resume(_now(), kinds=["operator", "contract", "disk", *ledger.FAULT_PAUSES],
+                              detail={"by": "operator", "reason": args.reason})
     print("Resumed." if resumed else "Nothing to resume (a pin pause lifts only when the pins match again).")
     return EXIT_OK
 

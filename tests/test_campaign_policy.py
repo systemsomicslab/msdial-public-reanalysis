@@ -98,6 +98,35 @@ class RetryTests(unittest.TestCase):
                 self.assertEqual(policy.classify_result({"ok": False, "reason": reason}), policy.CONTRACT,
                                  "the campaign's refusal, which would recur for every unit")
 
+    def test_a_backend_that_does_not_answer_and_a_reply_that_does_not_parse(self) -> None:
+        """The user's defaults of 2026-10-03: a backend that does not answer pauses the campaign (fault), however
+        the call ended, and a reply that does not parse holds the unit (contract). Neither counts against it."""
+        for reason, error_type in (("os_error", "TimeoutError"), ("os_error", "ConnectionResetError"),
+                                   ("exception", "RemoteDisconnected"), ("exception", "IncompleteRead"),
+                                   ("os_error", "ConnectionAbortedError")):
+            with self.subTest(reason=reason, error_type=error_type):
+                self.assertEqual(policy.classify_result({"ok": False, "reason": reason, "error_type": error_type}), policy.FAULT)
+        for reason, error_type in (("validation_error", "JSONDecodeError"), ("exception", "JSONDecodeError"),
+                                   ("validation_error", "UnicodeDecodeError")):
+            with self.subTest(reason=reason, error_type=error_type):
+                self.assertEqual(policy.classify_result({"ok": False, "reason": reason, "error_type": error_type}), policy.CONTRACT)
+        # A file held by another process, or the backend's own answer of a failure, is still the unit's.
+        for result in ({"ok": False, "reason": "os_error", "error_type": "PermissionError"},
+                       {"ok": False, "reason": "server_error", "error_type": "MsdialRequestError"},
+                       {"ok": False, "reason": "failed", "error_type": "TimeoutError"},
+                       {"ok": False, "reason": "validation_error", "error_type": "ValueError"}):
+            with self.subTest(result=result):
+                self.assertEqual(policy.classify_result(result), policy.FAILED)
+
+    def test_the_four_pauses_of_the_whole_campaign_are_named(self) -> None:
+        self.assertEqual(set(policy.CAMPAIGN_PAUSES), {"pin", "disk", "outage", "backend"})
+        self.assertEqual(policy.pause_name("backend"), "an Interactive backend that does not answer")
+        for kind in policy.CAMPAIGN_PAUSES:
+            with self.subTest(kind=kind):
+                self.assertTrue(policy.pause_lifts(kind).startswith("by itself"))
+        self.assertEqual(policy.pause_lifts("operator"), "at an operator's resume")
+        self.assertIsNone(policy.pause_name(None))
+
     def test_the_policy_refuses_what_would_break_the_rules(self) -> None:
         with self.assertRaises(ValueError):
             policy.CampaignPolicy.from_dict({"gate_points": ["final"]})

@@ -31,7 +31,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
 # 2 (2026-10-02): the gate_held and contract_held states, the recheck_held request and the gate verdict's
-# blocking unevaluated checks. A ledger of schema 1 is brought to 2 when it is opened (Ledger._migrate).
+# blocking unevaluated checks; and (2026-10-03) the backend and outage pauses and a pilot's pool. A ledger of
+# schema 1 is brought to 2 when it is opened (Ledger._migrate); its campaign row is already written, so its
+# pool's CHECK is left as it is.
 SCHEMA_VERSION = 2
 
 ACTIVE_STATES = (
@@ -67,9 +69,13 @@ ATTEMPT_OUTCOMES = (
 )
 # contract: what a runner before 2026-10-02 paused for when Interactive broke the contract it reads for one
 # unit. The runner now holds that unit (contract_held) and makes no such pause; one an earlier runner left in
-# a ledger is lifted by an operator's resume. fault: a backend that does not answer, or a repository outage,
-# looked at again by itself after fault_recheck_seconds.
-PAUSE_KINDS = ("operator", "contract", "pin", "fault", "disk")
+# a ledger is lifted by an operator's resume. pin, backend, outage and disk are the four pauses of the whole
+# campaign (2026-10-02 and 2026-10-03), each lifting by itself: backend, an Interactive backend that does not
+# answer, and outage, a repository outage, are looked at again after fault_recheck_seconds. fault: either of
+# those two as a runner before 2026-10-03 recorded it, lifted at the same recheck.
+PAUSE_KINDS = ("operator", "contract", "pin", "backend", "outage", "fault", "disk")
+# The pauses the fault recheck lifts.
+FAULT_PAUSES = ("backend", "outage", "fault")
 # A pause never gives way to a lesser one: a disk that runs short while the operator has paused the
 # campaign must not lift the operator's pause by replacing it.
 PAUSE_RANK = {kind: len(PAUSE_KINDS) - index for index, kind in enumerate(PAUSE_KINDS)}
@@ -440,8 +446,8 @@ class Ledger:
             raise LedgerError(f"Ledger schema {row['value']} is not {SCHEMA_VERSION}.")
 
     # The tables whose CHECK constraints name a list schema 2 widened: unit and transition the states
-    # (gate_held, contract_held), request the actions (recheck_held).
-    _REBUILT_FOR_2 = ("unit", "transition", "request")
+    # (gate_held, contract_held), request the actions (recheck_held), runner the pauses (backend, outage).
+    _REBUILT_FOR_2 = ("unit", "transition", "request", "runner")
 
     def _migrate(self) -> None:
         """Bring a schema 1 ledger to schema 2, in one transaction, keeping every row it holds.

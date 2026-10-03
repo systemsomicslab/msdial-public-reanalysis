@@ -1063,6 +1063,41 @@ class FaultTests(Base):
             runner.run(until_idle=True, max_iterations=4000)
             self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
 
+    def test_a_backend_that_does_not_answer_is_the_fourth_pause_and_lifts_by_itself(self) -> None:
+        """The user's default of 2026-10-03: an Interactive backend that does not answer pauses the whole campaign,
+        named as such in the status export, and the pause lifts by itself at the fault recheck. A poll that times
+        out is that silence, never the unit's failure or a job given up for lost."""
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(ticks=40)
+        silent = {"now": False}
+        original = world.interactive.job
+        world.interactive.job = lambda job_id: (
+            {"ok": False, "reason": "os_error", "error_type": "TimeoutError", "detail": "timed out"}
+            if silent["now"] else original(job_id)
+        )
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] in machine.IN_FLIGHT)
+        silent["now"] = True
+        self.step_until(world, book, runner, lambda: bool(book.runner()["paused"]))
+        self.assertEqual(book.runner()["pause_kind"], "backend")
+        summary = machine.export_status(book)[0]["summary"]
+        self.assertEqual(summary["paused"]["name"], "an Interactive backend that does not answer")
+        self.assertTrue(summary["paused"]["lifts"].startswith("by itself, at the fault recheck"))
+        self.assertEqual(sorted(summary["campaign_pauses"]), ["backend", "disk", "outage", "pin"])
+        self.assertEqual([row for row in book.attempts() if row["counted"]], [])
+        world.clock.sleep(1800)
+        runner.iterate()
+        self.assertEqual(book.runner()["pause_kind"], "backend", "it waits for the recheck")
+        silent["now"] = False
+        runner.run(until_idle=True, max_iterations=4000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+        self.assertEqual([(book.unit(key)["failures"], book.unit(key)["interruptions"]) for key in ("u1", "u2")], [(0, 0)] * 2)
+        resumed = [json.loads(row["detail_json"]) for row in book.events("resumed")]
+        self.assertEqual([item["was"]["pause_kind"] for item in resumed], ["backend"])
+        self.assertIsNone(machine.summary(book)["paused"])
+
 
 class OutageTests(Base):
     def test_a_repository_outage_pauses_the_campaign_instead_of_failing_its_units(self) -> None:
@@ -1072,7 +1107,7 @@ class OutageTests(Base):
         with world.open() as book:
             world.runner(book).run(max_iterations=3000)
             self.assertEqual([key for key in units if book.unit(key)["state"] == "failed"], [])
-            self.assertEqual(book.runner()["pause_kind"], "fault")
+            self.assertEqual(book.runner()["pause_kind"], "outage")
             counted = sum(1 for row in book.attempts() if row["counted"])
             self.assertEqual(counted, 2, "only the failures before the outage was recognised count")
             faults = [row for row in book.attempts() if row["outcome"] == "fault"]
@@ -1154,7 +1189,7 @@ class OutageTests(Base):
         with world.open() as book:
             world.runner(book).run(max_iterations=2000)
             self.assertEqual([key for key in units if book.unit(key)["state"] == "failed"], [])
-            self.assertEqual(book.runner()["pause_kind"], "fault")
+            self.assertEqual(book.runner()["pause_kind"], "outage")
             fault = next(row for row in book.attempts() if row["outcome"] == "fault")
             self.assertEqual(json.loads(fault["detail_json"])["failure"]["error_type"], "DownloadInterrupted")
 
@@ -1613,6 +1648,29 @@ class ContractHoldTests(Base):
         self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
         handled = [row[0] for row in book.connection.execute("SELECT handled_detail FROM request ORDER BY request_id")]
         self.assertEqual(handled, ["contract recheck brought forward"])
+
+    def test_a_reply_that_does_not_parse_holds_the_unit(self) -> None:
+        """The user's default of 2026-10-03: an Interactive reply the runner cannot read holds the unit, as a gate
+        that gives no report does. Read as a failure before, it was retried twice and the unit's raw data went."""
+        world = self.world(("u1", "u2"))
+        original = world.interactive.prepare_metadata
+        broken = {"now": True}
+
+        def prepare_metadata(**arguments):
+            if broken["now"] and world.interactive._unit_of_manifest(arguments["manifest_path"]) == "u1":
+                return {"ok": False, "reason": "validation_error", "error_type": "JSONDecodeError",
+                        "detail": "Expecting value: line 1 column 1 (char 0)"}
+            return original(**arguments)
+
+        world.interactive.prepare_metadata = prepare_metadata
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u2")["state"] == "done")
+        self.assert_contract_held(world, book, "u1", "unreadable_reply", resume_state="preflighted")
+        broken["now"] = False
+        runner.run(until_idle=True, max_iterations=4000)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
 
     def test_an_extractor_interactive_does_not_find_holds_the_unit_unless_its_pin_changed(self) -> None:
         for pin_changed in (False, True):

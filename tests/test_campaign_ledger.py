@@ -191,7 +191,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_a_lesser_pause_does_not_replace_a_greater_one(self) -> None:
         self.book.pause("operator", "the operator's reason", NOW)
-        for kind in ("disk", "fault", "pin", "contract"):
+        for kind in ("disk", "fault", "outage", "backend", "pin", "contract"):
             self.book.pause(kind, "a unit's reason", NOW)
         self.assertEqual(self.book.runner()["pause_kind"], "operator", "a short disk does not lift the operator's pause")
         self.assertTrue(self.book.resume(NOW, kinds=["operator"]))
@@ -199,6 +199,15 @@ class LedgerTests(unittest.TestCase):
         self.book.pause("contract", "no disposition", NOW)
         self.assertEqual(self.book.runner()["pause_kind"], "contract")
         self.assertEqual(ledger.PAUSE_RANK["operator"], max(ledger.PAUSE_RANK.values()))
+        self.assertTrue(self.book.resume(NOW, kinds=["contract"]))
+        # The two pauses the fault recheck lifts: a backend that does not answer is above a repository outage,
+        # whose downloads it cannot be told from while it does not answer.
+        self.book.pause("outage", "metabolights", NOW)
+        self.book.pause("backend", "did not answer", NOW)
+        self.assertEqual(self.book.runner()["pause_kind"], "backend")
+        self.book.pause("outage", "metabolights again", NOW)
+        self.assertEqual(self.book.runner()["pause_kind"], "backend")
+        self.assertTrue(self.book.resume(NOW, kinds=list(ledger.FAULT_PAUSES)))
 
     def test_unknown_columns_are_refused(self) -> None:
         with self.assertRaises(ledger.LedgerError):
@@ -230,8 +239,10 @@ SCHEMA_1_TABLES = (
 
 def schema_1() -> str:
     """The ledger's schema as merged in msdial-public-reanalysis#27: without gate_held, contract_held,
-    recheck_held and the gate verdict's blocking unevaluated checks."""
+    recheck_held, the gate verdict's blocking unevaluated checks, the backend and outage pauses and a pilot's
+    pool."""
     text = ledger.SCHEMA.replace(", 'gate_held'", "").replace(", 'contract_held'", "").replace(", 'recheck_held'", "")
+    text = text.replace(", 'backend', 'outage'", "").replace(", 'pilot'", "")
     dropped = ("blocking_unevaluated_ids_json", "The blocks_run checks left not evaluable", "Last, where schema 1")
     return "".join(line for line in text.splitlines(keepends=True) if not any(mark in line for mark in dropped))
 
@@ -267,8 +278,11 @@ class MigrationTests(unittest.TestCase):
     def test_the_old_schema_refuses_what_schema_2_adds(self) -> None:
         self.assertNotIn("gate_held", schema_1())
         self.assertNotIn("contract_held", schema_1())
+        self.assertNotIn("'backend'", schema_1())
         connection = sqlite3.connect(str(self.old))
         try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+                connection.execute("UPDATE runner SET paused = 1, pause_kind = 'backend', pause_reason = 'x' WHERE id = 1")
             with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
                 connection.execute("UPDATE unit SET state = 'gate_held', resume_state = 'diagnosed' WHERE unit_key = 'u1'")
             with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
@@ -305,6 +319,8 @@ class MigrationTests(unittest.TestCase):
             book.add_request("recheck_held", "u1", "run the gate again", "Test Person", NOW)
             book.transition("u2", "contract_held", NOW, resume_state="downloaded", next_attempt_at=NOW,
                             detail={"contract_held": "no_disposition"})
+            book.pause("backend", "the campaign backend did not answer", NOW)  # the runner table is schema 2's
+            self.assertEqual(book.runner()["pause_kind"], "backend")
         with ledger.Ledger(self.old) as again:
             self.assertEqual(again.unit("u1")["state"], "gate_held", "a migrated ledger opens as schema 2")
             self.assertEqual(again.unit("u2")["state"], "contract_held")
