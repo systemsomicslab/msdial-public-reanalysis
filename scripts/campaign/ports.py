@@ -901,12 +901,26 @@ class SystemClock:
 
 # ---- the campaign backend ----------------------------------------------------------------------------
 
+def backend_creation_flags() -> int:
+    """The Windows creation flags of the campaign backend: a console of its own, with no window.
+
+    Not DETACHED_PROCESS. A process without a console makes Windows build a new console for every
+    console program it starts, and Windows ignores CREATE_NO_WINDOW beside DETACHED_PROCESS. Each git
+    call behind /api/config then took about 3 s instead of 0.03 s, so the backend missed the 60 s start
+    window (2026-10-03). It would also have opened a window for each Console run. A windowless console
+    is inherited by git, the Console, 7-Zip and the extractor. The backend still outlives the runner,
+    and its own process group keeps the runner's Ctrl+C from reaching it.
+    """
+    return subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+
+
 class BackendSupervisor:
     """The standalone Interactive backend the campaign's jobs run in, on a port of its own.
 
     A port and a job registry of its own (MSDIAL_INTERACTIVE_JOBS_FILE) keep an interactive Claude
-    session from overwriting the campaign's job records or restarting its backend. It is started
-    detached, so a runner that stops leaves its Console running: the runner reattaches to the job when
+    session from overwriting the campaign's job records or restarting its backend. It is started in a
+    process group and a windowless console of its own (backend_creation_flags), so a runner that stops
+    leaves its Console running: the runner reattaches to the job when
     it comes back, instead of orphaning a run hours from its end.
 
     The backend's own output stream is discarded unless log_directory is given (run --backend-log). It
@@ -974,7 +988,7 @@ class BackendSupervisor:
             log = open(os.devnull, "ab")
         flags = 0
         if os.name == "nt":
-            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            flags = backend_creation_flags()
         try:
             process = subprocess.Popen(
                 self.command(), cwd=str(self.interactive_root), env=self.environment(), stdout=log,
