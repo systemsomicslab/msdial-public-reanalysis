@@ -15,6 +15,27 @@ full-repository reanalysis, and this module is their one written form:
   extractor; Interactive's own per-chunk limits are authoritative.
 - No per-unit size limit. A disk that is short pauses the campaign; it never ends a unit.
 
+And the gate rule, decided on 2026-10-01 and completed on 2026-10-02:
+
+- Before production, a FAIL stops a unit's MS-DIAL run for ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1,
+  PRE-2 and CONV-1 (BLOCKS_RUN_CHECKS), and so does one of them left not evaluable where it is required
+  (strict_failures). The unit then counts as failed. Any other FAIL is recorded and the unit runs.
+- A before-production gate that gives no report the runner can use (gate_report_problem) holds the unit:
+  it does not run, its raw data are kept, nothing is counted against it, and the other units go on. A
+  recheck runs the gate again. After the run a missing report is only recorded.
+- "Stop" is per unit: a gate verdict, a failure or a hold stops that unit's analysis, never the runner. A
+  pin change, a short disk and a repository outage pause the whole campaign, and each lifts by itself.
+
+And two defaults the runner proposed and the user did not object to on 2026-10-03 ("案AでOK"):
+
+- An Interactive backend that does not answer is the fourth pause of the whole campaign (CAMPAIGN_PAUSES),
+  and lifts by itself at the fault recheck. Not answering is a refused connection (backend_unavailable),
+  and a connection that times out, is reset or breaks off mid-reply (BACKEND_SILENT_ERRORS): neither is
+  the unit's failure.
+- A reply or a record of Interactive's that the runner cannot read for one unit (CONTRACT), a reply that
+  does not parse among them (UNREADABLE_REPLY_ERRORS), holds that unit, as a missing gate report does, and
+  pauses nothing; a recheck makes the step again.
+
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
 msdial-campaign-disposition.v1); read_disposition only reads and checks it. A second mapping of
@@ -54,22 +75,26 @@ _FOURIER_INSTRUMENT = re.compile(
     r"solarix|apex|fourier",
     re.IGNORECASE,
 )
-# The before-production checks whose FAIL stops a unit's MS-DIAL run (the user's rule of 2026-10-01): the
-# ones that break results. A FAIL of any other check (CLS-1/2/3, ORD-1, PKH-1 and the rest) is recorded and
-# the unit runs. A gate whose checks carry a run_policy can name more blocking checks; it cannot take one of
-# these off the list (run_blocking_failures).
+# The before-production checks whose FAIL stops a unit's MS-DIAL run: the ones that break results, which the
+# user's rule of 2026-10-01 named (the first five) and the user's placing of 2026-10-02 completed (ID-1,
+# PRE-2 and CONV-1). One of them left not evaluable where it is required stops the run too (2026-10-02,
+# run_blocking_unevaluated). A FAIL of any other check (CLS-1/2/3, ORD-1, PKH-1, SPL-1) is recorded and the
+# unit runs. A gate whose checks carry a run_policy can name more blocking checks; it cannot take one of
+# these off the list (run_blocking_failures). The gate's RUN_POLICY states the same eight
+# (tests/test_verify_run_policy.py holds the two lists equal).
 BLOCKS_RUN = "blocks_run"
 RECORD_ONLY = "record_only"
-BLOCKS_RUN_CHECKS = ("ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1")
+BLOCKS_RUN_CHECKS = ("ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1")
 
 
 class DispositionError(ValueError):
     """A campaign_disposition that does not have the shared contract's shape.
 
     Interactive writes the record and this runner reads it, in two repositories merged independently. A
-    record the runner cannot read is a contract mismatch between the two, which is a campaign fault: it
-    would recur for every unit, so the campaign pauses instead of failing each unit and deleting its raw
-    data.
+    record the runner cannot read is a contract mismatch between the two, never the unit's failure, which
+    would delete its raw data for the runner's fault. "Stop" is per unit (2026-10-02), so the unit is held
+    (contract_held), uncounted and with its raw data kept, until a recheck finds a record it can read, and
+    the other units go on.
     """
 
 
@@ -210,11 +235,14 @@ class CampaignPolicy:
     prefetch: int = 0
     poll_seconds: float = 30.0
     busy_retry_seconds: float = 120.0
-    # A campaign fault (a backend that will not answer, a contract Interactive broke) is looked at again
-    # after this long, and the step retried; it pauses again if the fault is still there.
+    # A campaign fault (a backend that will not answer, a repository outage) is looked at again after this
+    # long, and the step retried; it pauses again if the fault is still there.
     fault_recheck_seconds: float = 3600.0
     # Raw data held against the rules (a deletion Interactive refused) are looked at again when the runner
-    # starts and after this long, and deleted once Interactive's deletion accepts them.
+    # starts and after this long, and deleted once Interactive's deletion accepts them. A unit held because
+    # the before-production gate gave no usable report (gate_held), or because Interactive's reply or record
+    # for it could not be read (contract_held), has its step made again when the runner starts and this long
+    # after each try.
     held_recheck_seconds: float = 6 * 3600.0
     # Stall detection, never an outer limit (review contradiction 10). 0 means no limit.
     console_idle_timeout_seconds: float = 6 * 3600.0
@@ -270,6 +298,10 @@ class CampaignPolicy:
         if "pre_cleanup" not in self.gate_points:
             # The verdict recorded with every raw deletion is this one.
             raise ValueError("gate_points must include pre_cleanup.")
+        if "before_production" not in self.gate_points:
+            # A unit runs only on a before-production report (the user's rule of 2026-10-02): without the
+            # point, every unit would be held for want of one.
+            raise ValueError("gate_points must include before_production.")
 
 
 # ---- results -----------------------------------------------------------------------------------------
@@ -278,29 +310,72 @@ class CampaignPolicy:
 # for a failure it caught (mcp_server._structured_validation_errors); the ports wrap anything that
 # escapes that as reason "exception".
 OK, FAILED, BUSY, FAULT, REFUSED, CONTRACT = "ok", "failed", "busy", "fault", "refused", "contract"
-# Refusals that are the campaign's, not the unit's, and that time does not mend: a tool or parameter this
-# Interactive does not have, a reply of another shape, and (0.5.17) an extractor that is not a verified,
-# pinned build. Each would recur for every unit, so the campaign pauses for an operator instead of failing
-# units one by one and deleting their raw data.
+# Refusals that are no fault of the unit's: a tool or parameter this Interactive does not have, a reply of
+# another shape, and (0.5.17) an extractor that is not a verified, pinned build. None is counted against the
+# unit or deletes its raw data. "Stop" is per unit (2026-10-02), so the unit is held (contract_held) and the
+# other units go on, and a deletion refused so leaves that unit's raw data held.
 CONTRACT_REASONS = frozenset({"unsupported", "malformed", "raw_metadata_extractor_refused"})
+# A backend that does not answer (2026-10-03): the exception a call to it ended on, as Interactive's wrapper
+# reports one past its own mapping (reason os_error) or the port reports one that escaped it (exception). A
+# timeout, a reset or a reply broken off is the backend's silence, never the unit's failure.
+BACKEND_SILENT_ERRORS = frozenset({
+    "TimeoutError", "timeout", "ConnectionResetError", "ConnectionAbortedError", "ConnectionRefusedError",
+    "BrokenPipeError", "RemoteDisconnected", "IncompleteRead",
+})
+# A reply, or a record of Interactive's, that does not parse (2026-10-03: an unreadable reply holds the unit).
+UNREADABLE_REPLY_ERRORS = frozenset({"JSONDecodeError", "UnicodeDecodeError"})
+# The four pauses of the whole campaign: what every unit would meet alike. Each lifts by itself once its
+# cause has gone (2026-10-02 for the first three, 2026-10-03 for the backend).
+CAMPAIGN_PAUSES = {
+    "pin": "a pin change",
+    "disk": "a short disk",
+    "outage": "a repository outage",
+    "backend": "an Interactive backend that does not answer",
+}
+_PAUSE_LIFTS = {
+    "pin": "by itself, once the pinned identities match the approved manifest again",
+    "disk": "by itself, once no unit waits for space",
+    "outage": "by itself, at the fault recheck (fault_recheck_seconds), when a download is tried again",
+    "backend": "by itself, at the fault recheck (fault_recheck_seconds), once the backend answers",
+    "fault": "by itself, at the fault recheck (fault_recheck_seconds), once the backend answers",
+    "operator": "at an operator's resume",
+    "contract": "at an operator's resume",
+}
+_PAUSE_NAMES = {
+    **CAMPAIGN_PAUSES,
+    "operator": "an operator's pause",
+    "contract": "a contract pause a runner before 2026-10-02 left in the ledger",
+    "fault": "a backend that did not answer or a repository outage, as a runner before 2026-10-03 recorded it",
+}
+
+
+def pause_name(kind: str | None) -> str | None:
+    """What a pause kind is, in the words of the status export."""
+    return None if kind is None else _PAUSE_NAMES.get(str(kind), str(kind))
+
+
+def pause_lifts(kind: str | None) -> str | None:
+    """How a pause of this kind lifts."""
+    return None if kind is None else _PAUSE_LIFTS.get(str(kind), "at an operator's resume")
 
 
 def classify_result(result: Any) -> str:
     """ok, failed (counts against the unit), busy (wait, counts nothing), fault (pause the campaign and look
-    again later), contract (pause the campaign for an operator) or refused (the campaign approval does not
-    cover it)."""
+    again later), contract (hold the unit, counting nothing, for a recheck) or refused (the campaign approval
+    does not cover it)."""
     if not isinstance(result, Mapping):
         return FAILED
     if result.get("ok") is not False:
         return OK
     reason = str(result.get("reason") or "")
+    error_type = str(result.get("error_type") or "")
     if reason == "campaign_authorization_refused":
         return REFUSED
     if reason in {"unit_busy", "manifest_busy"}:
         return BUSY
-    if reason == "backend_unavailable":
+    if reason == "backend_unavailable" or (reason in {"os_error", "exception"} and error_type in BACKEND_SILENT_ERRORS):
         return FAULT
-    if reason in CONTRACT_REASONS:
+    if reason in CONTRACT_REASONS or (reason in {"validation_error", "exception"} and error_type in UNREADABLE_REPLY_ERRORS):
         return CONTRACT
     return FAILED
 
@@ -669,6 +744,19 @@ def _blocked_by(report: Mapping[str, Any]) -> list[str] | None:
     return [name for name in names if name]
 
 
+def _blocking_rule(check: str, stated: Mapping[str, Any]) -> bool:
+    """Whether a before-production check is one whose FAIL stops the run: one of the user's, or one the
+    gate states a rule for that is not record_only (a rule in a word this reader does not know included)."""
+    return check in BLOCKS_RUN_CHECKS or (check in stated and stated.get(check) != RECORD_ONLY)
+
+
+def _before_production(report: Mapping[str, Any], status: str) -> list[Mapping[str, Any]]:
+    """The report's before-production checks of this status, compared without case."""
+    return [item for item in report.get("checks") or []
+            if isinstance(item, Mapping) and not _later_stage(item)
+            and str(item.get("status") or "").casefold() == status]
+
+
 def run_blocking_failures(report: Mapping[str, Any]) -> tuple[list[str], str]:
     """The FAILed checks of a gate --json report that stop a unit's run, and where that rule came from.
 
@@ -677,24 +765,81 @@ def run_blocking_failures(report: Mapping[str, Any]) -> tuple[list[str], str]:
     this reader does not know, blocks too - and never take from it: a record_only it states for one of the
     user's checks is a mismatch (run_policy_mismatches), and the check blocks. Reading it the other way
     round failed open: once any check stated a policy, the fixed list was dropped for every check, and a
-    misspelt rule blocked nothing. The gate's own run_blocked_by, the FAILs it reads as blocks_run, adds to
-    it as well. The source is "gate" when the report stated a run_policy, read with the fixed list, and
-    "runner_default" when it stated none. Statuses are the gate's own lowercase words ("fail"), compared
-    without case. Only a FAIL of a before-production check blocks: a check left not evaluable or a WARN is
-    recorded, and the unit runs, and a check of a later stage has no run left to stop.
+    misspelt rule blocked nothing. The gate's own run_blocked_by adds to it as well, less the checks it
+    names that the report shows not evaluable, which run_blocking_unevaluated returns. The source is "gate"
+    when the report stated a run_policy, read with the fixed list, and "runner_default" when it stated none.
+    Statuses are the gate's own lowercase words ("fail"), compared without case. Only a FAIL of a
+    before-production check is returned here: a WARN is recorded, and the unit runs, and a check of a
+    later stage has no run left to stop.
     """
     stated, problems = _run_policy_statements(report)
-    blocking: set[str] = set()
-    for item in report.get("checks") or []:
-        if not isinstance(item, Mapping) or str(item.get("status") or "").casefold() != "fail" or _later_stage(item):
-            continue
-        check = str(item.get("check_id") or "")
-        rule = stated.get(check)
-        if check in BLOCKS_RUN_CHECKS or (check in stated and rule != RECORD_ONLY):
-            blocking.add(check)
-    blocking.update(_blocked_by(report) or [])
+    blocking = {str(item.get("check_id") or "") for item in _before_production(report, "fail")}
+    blocking = {check for check in blocking if _blocking_rule(check, stated)}
+    unevaluated = {str(item.get("check_id") or "") for item in _before_production(report, "not_evaluable")}
+    blocking.update(name for name in _blocked_by(report) or [] if name not in unevaluated)
     stating = stated or problems or report.get("run_blocked_by") is not None
     return sorted(blocking), ("gate" if stating else "runner_default")
+
+
+def run_blocking_unevaluated(report: Mapping[str, Any]) -> list[str]:
+    """The checks of a gate --json report that stop a unit's run although they did not FAIL: before-production
+    checks whose FAIL would stop it (_blocking_rule), left not evaluable where they are required.
+
+    The user's decision of 2026-10-02: such a check stops the run exactly as its FAIL does, for without what
+    the stage owed it the check that would show the results broken has not been made. A required one is what
+    --strict counts and the report lists in strict_failures; the check's own "required" says so, and where a
+    check does not state it, strict_failures decides. A check not evaluable where it is not required never
+    stops the run (INP-1 for a unit that declares no analysis inputs is normal), nor does a record_only one.
+    A check the gate's run_blocked_by names and the report shows not evaluable is returned too."""
+    stated, _problems = _run_policy_statements(report)
+    strict = report.get("strict_failures")
+    strict = {name for name in strict if isinstance(name, str)} if isinstance(strict, list) else set()
+    found: set[str] = set()
+    unevaluated: set[str] = set()
+    for item in _before_production(report, "not_evaluable"):
+        check = str(item.get("check_id") or "")
+        unevaluated.add(check)
+        required = item.get("required")
+        owed = required is True or (not isinstance(required, bool) and check in strict)
+        if owed and _blocking_rule(check, stated):
+            found.add(check)
+    found.update(name for name in _blocked_by(report) or [] if name in unevaluated)
+    return sorted(found)
+
+
+# Why a gate verdict carries no report the runner can read (gate_report_problem).
+GATE_NOT_RUN = "not_run"            # the runner could not start it: no workspace, or an exception
+GATE_TIMEOUT = "timeout"            # it gave no answer within gate_timeout_seconds
+GATE_ERROR = "error"                # it could not be started, or crashed: an exit code outside {0, 2, 3, 4}
+GATE_UNUSABLE = "unusable_workspace"  # exit 3: the workspace is unusable, and the gate wrote no report
+GATE_UNPARSABLE = "unparsable"      # its output is not a gate report
+
+
+def gate_report_problem(verdict: Mapping[str, Any] | None) -> str | None:
+    """Why a gate verdict gives no usable report, or None where it gives one.
+
+    THE USER'S RULE (2026-10-02). Before production, a gate that gives no usable report holds the unit: it
+    does not run, its raw data are kept, nothing is counted against it, and the other units go on. Without a
+    report the runner cannot tell whether a check that stops the run FAILed, so it cannot apply the rule; nor
+    is the gate's silence the unit's failure, so the unit is not retried towards the deletion of its raw
+    data. After the run a missing report is only recorded. A usable report is one that ran, exited 0, 2 or
+    4, and parsed as a gate report (GatePort sets report_parsed); anything else is one of the reasons
+    above. None, the verdict of a gate that was never started, is GATE_NOT_RUN."""
+    if verdict is None:
+        return GATE_NOT_RUN
+    outcome = verdict.get("outcome")
+    if outcome == "timeout":
+        return GATE_TIMEOUT
+    if outcome != "ran":
+        return GATE_NOT_RUN if verdict.get("not_started") else GATE_ERROR
+    exit_code = verdict.get("exit_code")
+    if exit_code == 3:
+        return GATE_UNUSABLE
+    if isinstance(exit_code, bool) or exit_code not in (0, 2, 4):
+        return GATE_ERROR
+    if verdict.get("report_parsed") is not True:
+        return GATE_UNPARSABLE
+    return None
 
 
 def run_policy_mismatches(report: Mapping[str, Any]) -> list[str]:

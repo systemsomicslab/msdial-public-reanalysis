@@ -137,18 +137,20 @@ safety from a tool reporting no blockers.
 Each before-production check carries a `run_policy` in `--json`. It is
 `blocks_run` where its FAIL stops a campaign unit's MS-DIAL run, so the unit
 counts as failed, and `record_only` where the FAIL is recorded and the unit
-runs. The user's rule of 2026-10-01 decides it: a FAIL stops the run only for
-the checks that break the MS-DIAL results, ELIG-1, ACQ-1, SUM-1, CNT-1 and
-INP-1. CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1 record, as the user named them. Of
-the checks the rule does not name, ID-1, SPL-1 and PRE-1 record because their
-FAIL leaves what MS-DIAL computes as it is, and PRE-2 and CONV-1 record because
-the rule stops a run only for the five, as the campaign contract reads it until
-the user places them, although some of their FAILs reach the results. Each
-check's docstring gives its reason under "RUN POLICY", and moving a check is
-one entry of `RUN_POLICY`. Checks of the later stages state no `run_policy`.
-`run_blocked_by` lists the FAILs that stop the run; a `blocks_run` check left
-not evaluable is not a FAIL, and `strict_failures` names it if it was owed. The
-campaign runner reads these fields.
+runs. The user decided it: a FAIL stops the run only for the checks that break
+the MS-DIAL results (2026-10-01), and every before-production check is placed
+(2026-10-02). ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1 are
+`blocks_run`. CLS-1, CLS-2, CLS-3, ORD-1, PKH-1 and SPL-1 are `record_only`,
+and so is PRE-1, which never FAILs. A `blocks_run` check left not evaluable on
+an artifact its stage owed, which `strict_failures` names, stops the run as its
+FAIL does; one not evaluable where the stage owed nothing, such as INP-1 for a
+unit that declares no analysis inputs, never does. Each check's docstring gives
+its reason under "RUN POLICY", and moving a check is one entry of `RUN_POLICY`.
+Checks of the later stages state no `run_policy`. `run_blocked_by` lists the
+checks that stop the run, FAILed or unevaluated where owed. The campaign runner
+reads these fields, and holds a unit unrun, its raw data kept and nothing
+counted against it, while the gate gives it no report it can read before
+production (`scripts/campaign/machine.py`).
 
 The report also prints a `PROGRESS` line: the furthest stage, B1-B10, whose
 artifacts exist. It is derived from the artifacts on disk and from fields the

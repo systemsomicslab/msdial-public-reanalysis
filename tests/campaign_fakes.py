@@ -587,35 +587,59 @@ class FakeCatalog:
 class FakeGate:
     """The gate, as GatePort reads its --json report. `fails` names the checks a point FAILs, by point or by
     (unit, point) (by default
-    SUM-1 at an exit 2 of pre_cleanup and final, and none before production); `run_policy` is each check's
-    run_policy when the gate states one, and while it is empty the report states none."""
+    SUM-1 at an exit 2 of pre_cleanup and final, and none before production); `unevaluated` names, the same
+    way, the checks it leaves not evaluable where they are required; `run_policy` is each check's run_policy
+    when the gate states one, and while it is empty the report states none. `no_report`, by point or by
+    (unit, point), ends a run as GatePort reads a gate that gave no usable report: "timeout", "error" (a
+    crash, an exit code the gate does not define), "exit_3", "unparsable", or "raise" (the port raises)."""
 
     def __init__(self) -> None:
         self.exits = {"before_production": 0, "pre_cleanup": 4, "final": 4}
-        self.fails: dict[str, list[str]] = {}
+        self.fails: dict[Any, list[str]] = {}
+        self.unevaluated: dict[Any, list[str]] = {}
         self.run_policy: dict[str, str] = {}
+        self.no_report: dict[Any, str] = {}
         self.runs: list[tuple[str, str]] = []
         self.detail = ""
 
     def run(self, workspace: str, point: str, report_path: Path) -> dict[str, Any]:
-        self.runs.append((Path(workspace).name, point))
+        unit = Path(workspace).name
+        self.runs.append((unit, point))
+        verdict = {"stage": ports.GATE_STAGES[point], "strict": True, "gate_commit": "fake", "report_parsed": False}
+        ending = self.no_report.get((unit, point), self.no_report.get(point, ""))
+        if ending == "raise":
+            raise OSError("the gate's interpreter could not be started")
+        if ending == "timeout":
+            return {**verdict, "outcome": "timeout", "detail": "The gate did not finish within 1200 s."}
+        if ending in ("error", "exit_3", "unparsable"):
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_bytes(b"" if ending == "exit_3" else b"Traceback (most recent call last):\n")
+            exit_code = {"error": None, "exit_3": 3, "unparsable": 2}[ending]
+            return {**verdict, "outcome": "error" if exit_code is None else "ran", "exit_code": exit_code,
+                    "report_path": str(report_path), "detail": f"fake gate: {ending}"}
         exit_code = self.exits[point]
         default = ["SUM-1"] if exit_code == 2 and point != "before_production" else []
-        fails = self.fails.get((Path(workspace).name, point), self.fails.get(point, default))
-        report = {"checks": [{"check_id": check, "status": "fail",
-                              **({"run_policy": self.run_policy[check]} if check in self.run_policy else {})}
-                             for check in fails]}
+        fails = self.fails.get((unit, point), self.fails.get(point, default))
+        unevaluated = self.unevaluated.get((unit, point), self.unevaluated.get(point, []))
+
+        def stated(check: str) -> dict[str, str]:
+            return {"run_policy": self.run_policy[check]} if check in self.run_policy else {}
+
+        report = {"checks": [{"check_id": check, "status": "fail", **stated(check)} for check in fails]
+                  + [{"check_id": check, "status": "not_evaluable", "required": True, **stated(check)} for check in unevaluated]}
         if self.run_policy:
             report["checks"] += [{"check_id": check, "status": "pass", "run_policy": rule}
-                                 for check, rule in self.run_policy.items() if check not in fails]
+                                 for check, rule in self.run_policy.items() if check not in fails and check not in unevaluated]
+        report["strict_failures"] = list(unevaluated) + (["READ-1"] if exit_code == 4 else [])
         report_path.parent.mkdir(parents=True, exist_ok=True)
         data = json.dumps({"point": point, "exit": exit_code, **report}).encode()
         report_path.write_bytes(data)
         blocking, source = policy.run_blocking_failures(report)
-        return {"stage": ports.GATE_STAGES[point], "strict": True, "gate_commit": "fake", "outcome": "ran",
+        return {**verdict, "outcome": "ran", "report_parsed": True,
                 "exit_code": exit_code, "fail_ids": sorted(fails), "blocking_fail_ids": blocking, "run_policy_source": source,
+                "blocking_unevaluated_ids": policy.run_blocking_unevaluated(report),
                 "run_policy_mismatches": policy.run_policy_mismatches(report),
-                "strict_hold_ids": ["READ-1"] if exit_code == 4 else [], "stage_reached": "B10",
+                "strict_hold_ids": report["strict_failures"], "stage_reached": "B10",
                 "report_path": str(report_path), "report_sha256": hashlib.sha256(data).hexdigest(),
                 **({"detail": self.detail} if self.detail else {})}
 

@@ -30,7 +30,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
-SCHEMA_VERSION = 1
+# 2 (2026-10-02): the gate_held and contract_held states, the recheck_held request and the gate verdict's
+# blocking unevaluated checks; and (2026-10-03) the backend and outage pauses and a pilot's pool. A ledger of
+# schema 1 is brought to 2 when it is opened (Ledger._migrate); its campaign row is already written, so its
+# pool's CHECK is left as it is.
+SCHEMA_VERSION = 2
 
 ACTIVE_STATES = (
     "pending", "class_settled", "handoff_ready",
@@ -40,7 +44,16 @@ ACTIVE_STATES = (
     "published", "gated", "releasing", "discarding",
 )
 # queued: a split part waiting its turn, so the parts of one split enter the pipeline one at a time.
-WAITING_STATES = ("waiting_retry", "deferred_disk", "queued")
+# gate_held: a unit the before-production gate gave no usable report for (the user's rule of 2026-10-02). It
+# has not run, keeps its raw data and is counted nothing, and waits for the gate to be run again: at the
+# runner's next start, held_recheck_seconds after each try, or at an operator's recheck-held.
+# contract_held: a unit Interactive gave a reply or a record for that the runner cannot read or act on (no
+# campaign_disposition, a malformed one, one another extractor made, a reply of another shape). "Stop" is
+# per unit (2026-10-02), so it is held as gate_held is, never the campaign paused for it, and the step it
+# was held at is made again at the same rechecks.
+WAITING_STATES = ("waiting_retry", "deferred_disk", "queued", "gate_held", "contract_held")
+# The waiting states a recheck releases, by itself or at an operator's recheck-held.
+HELD_STATES = ("gate_held", "contract_held")
 TERMINAL_STATES = (
     "done", "skipped", "excluded", "failed", "split_done", "stopped_no_approval", "stopped_policy_drift",
 )
@@ -54,12 +67,20 @@ RAW_DISPOSITIONS = ("none", "present", "released", "discarded", "kept", "held", 
 ATTEMPT_OUTCOMES = (
     "ok", "failed", "timeout", "cancelled", "interrupted", "stalled", "refused", "busy", "blocked", "fault",
 )
-# contract: Interactive broke the contract the runner reads (no disposition, a malformed one, one decided by
-# another extractor). Time does not mend it, so only an operator lifts it.
-PAUSE_KINDS = ("operator", "contract", "pin", "fault", "disk")
+# contract: what a runner before 2026-10-02 paused for when Interactive broke the contract it reads for one
+# unit. The runner now holds that unit (contract_held) and makes no such pause; one an earlier runner left in
+# a ledger is lifted by an operator's resume. pin, backend, outage and disk are the four pauses of the whole
+# campaign (2026-10-02 and 2026-10-03), each lifting by itself: backend, an Interactive backend that does not
+# answer, and outage, a repository outage, are looked at again after fault_recheck_seconds. fault: either of
+# those two as a runner before 2026-10-03 recorded it, lifted at the same recheck.
+PAUSE_KINDS = ("operator", "contract", "pin", "backend", "outage", "fault", "disk")
+# The pauses the fault recheck lifts.
+FAULT_PAUSES = ("backend", "outage", "fault")
 # A pause never gives way to a lesser one: a disk that runs short while the operator has paused the
 # campaign must not lift the operator's pause by replacing it.
 PAUSE_RANK = {kind: len(PAUSE_KINDS) - index for index, kind in enumerate(PAUSE_KINDS)}
+# recheck_held: make the step a held unit (HELD_STATES) was held at again now: for gate_held, the gate.
+REQUEST_ACTIONS = ("skip", "retry", "release_held", "recheck_held")
 
 
 def _in(values: Iterable[str]) -> str:
@@ -72,7 +93,7 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS campaign(
     campaign_id TEXT PRIMARY KEY CHECK(length(trim(campaign_id)) > 0),
     created_at TEXT NOT NULL,
-    pool TEXT NOT NULL CHECK(pool IN ('declared', 'acquisition_unknown')),
+    pool TEXT NOT NULL CHECK(pool IN ('declared', 'acquisition_unknown', 'pilot')),
     manifest_path TEXT NOT NULL,
     manifest_digest TEXT NOT NULL
         CHECK(manifest_digest GLOB 'sha256:[0-9a-f]*' AND length(manifest_digest) = 71),
@@ -282,6 +303,9 @@ CREATE TABLE IF NOT EXISTS gate_verdict(
     report_sha256 TEXT,
     gate_commit TEXT NOT NULL,
     detail TEXT,
+    -- The blocks_run checks left not evaluable where they are required, which stop the run as a FAIL does
+    -- (2026-10-02). Last, where schema 1's ledger gains it (_migrate).
+    blocking_unevaluated_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blocking_unevaluated_ids_json)),
     CHECK(outcome <> 'ran' OR exit_code IS NOT NULL)
 );
 
@@ -324,7 +348,7 @@ CREATE TABLE IF NOT EXISTS campaign_event(
 CREATE TABLE IF NOT EXISTS request(
     request_id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
-    action TEXT NOT NULL CHECK(action IN ('skip', 'retry', 'release_held')),
+    action TEXT NOT NULL CHECK(action IN {_in(REQUEST_ACTIONS)}),
     unit_key TEXT NOT NULL REFERENCES unit(unit_key),
     reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
     requested_by TEXT NOT NULL DEFAULT '',
@@ -357,6 +381,18 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+def _statements(script: str) -> list[str]:
+    """A script's statements, each whole: a trigger's body holds semicolons of its own."""
+    statements, current = [], ""
+    for line in script.splitlines(keepends=True):
+        current += line
+        if sqlite3.complete_statement(current):
+            if current.strip():
+                statements.append(current.strip())
+            current = ""
+    return statements
+
+
 class Ledger:
     """One campaign's ledger. Not shared between threads: the heartbeat opens its own connection.
 
@@ -380,7 +416,13 @@ class Ledger:
         self.connection.execute("PRAGMA busy_timeout = 30000")
         self.commit_hook = commit_hook
         self.commits = 0
-        self._initialise()
+        try:
+            self._initialise()
+        except BaseException:
+            # A ledger that cannot be opened (a schema this code does not read, a migration that stopped)
+            # keeps no handle on its file.
+            self.connection.close()
+            raise
 
     def close(self) -> None:
         self.connection.close()
@@ -398,8 +440,48 @@ class Ledger:
             self.connection.execute(
                 "INSERT INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
             )
+        elif int(row["value"]) == 1:
+            self._migrate()
         elif int(row["value"]) != SCHEMA_VERSION:
             raise LedgerError(f"Ledger schema {row['value']} is not {SCHEMA_VERSION}.")
+
+    # The tables whose CHECK constraints name a list schema 2 widened: unit and transition the states
+    # (gate_held, contract_held), request the actions (recheck_held), runner the pauses (backend, outage).
+    _REBUILT_FOR_2 = ("unit", "transition", "request", "runner")
+
+    def _migrate(self) -> None:
+        """Bring a schema 1 ledger to schema 2, in one transaction, keeping every row it holds.
+
+        SQLite cannot widen a CHECK constraint in place, so each table whose CHECK names a widened list is
+        made anew from SCHEMA, filled from the old one, and put in its place: the procedure SQLite documents
+        for a change ALTER TABLE cannot make, with foreign keys off while it runs and checked before it
+        commits. Dropping a table drops its triggers and indexes (the append-only and approval triggers of
+        transition among them), so every trigger and index of SCHEMA is made again in the same transaction.
+        The gate verdict's new column is added in place. A crash leaves schema 1 as it was."""
+        statements = _statements(SCHEMA)
+        db = self.connection
+        db.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self.transaction():
+                for table in self._REBUILT_FOR_2:
+                    created = next(item for item in statements if item.startswith(f"CREATE TABLE IF NOT EXISTS {table}("))
+                    db.execute(created.replace(f"CREATE TABLE IF NOT EXISTS {table}(", f"CREATE TABLE {table}_2(", 1))
+                    db.execute(f"INSERT INTO {table}_2 SELECT * FROM {table}")
+                    db.execute(f"DROP TABLE {table}")
+                    db.execute(f"ALTER TABLE {table}_2 RENAME TO {table}")
+                db.execute(
+                    "ALTER TABLE gate_verdict ADD COLUMN blocking_unevaluated_ids_json TEXT NOT NULL DEFAULT '[]' "
+                    "CHECK(json_valid(blocking_unevaluated_ids_json))"
+                )
+                for statement in statements:
+                    if statement.startswith(("CREATE TRIGGER", "CREATE INDEX")):
+                        db.execute(statement)
+                broken = db.execute("PRAGMA foreign_key_check").fetchall()
+                if broken:
+                    raise LedgerError(f"The schema 1 ledger's references do not resolve: {[tuple(row) for row in broken][:5]}.")
+                db.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),))
+        finally:
+            db.execute("PRAGMA foreign_keys = ON")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -777,8 +859,8 @@ class Ledger:
         db.execute(
             "INSERT INTO gate_verdict(unit_key, at, point, stage_arg, strict, outcome, exit_code, stage_reached, "
             "fail_ids_json, warn_ids_json, strict_hold_ids_json, blocking_fail_ids_json, run_policy_source, "
-            "report_path, report_sha256, gate_commit, detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "report_path, report_sha256, gate_commit, detail, blocking_unevaluated_ids_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 unit_key, now, point, verdict.get("stage", "all"), int(bool(verdict.get("strict", True))),
                 verdict["outcome"], verdict.get("exit_code"), verdict.get("stage_reached"),
@@ -786,6 +868,7 @@ class Ledger:
                 _json(verdict.get("strict_hold_ids") or []), _json(verdict.get("blocking_fail_ids") or []),
                 verdict.get("run_policy_source"), verdict.get("report_path"),
                 verdict.get("report_sha256"), verdict.get("gate_commit") or "", verdict.get("detail"),
+                _json(verdict.get("blocking_unevaluated_ids") or []),
             ),
         )
 

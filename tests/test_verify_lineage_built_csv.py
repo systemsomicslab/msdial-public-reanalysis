@@ -1024,7 +1024,11 @@ class ExcludedInputsInChecksumTests(unittest.TestCase):
                 self.assertEqual({"declared_checksum_unverified": 1}, checksum.evidence["uncovered_reasons"])
                 for check_id in ("INP-1", "CNT-1"):
                     self.assertEqual(verifier.NOT_EVALUABLE, _check(report, check_id).status, check_id)
-                self.assertEqual(["SUM-1"], report.run_blocked_by)
+                fails = [check_id for check_id in report.run_blocked_by if _check(report, check_id).status == verifier.FAIL]
+                self.assertEqual(["SUM-1"], fails)
+                # Since 2026-10-02 the blocks_run checks left unevaluated on the CSV they were owed stop the run
+                # beside it.
+                self.assertEqual({"SUM-1", "CONV-1", "INP-1", "CNT-1"}, set(report.run_blocked_by))
 
     def test_without_a_csv_a_verified_excluded_input_is_held_and_passes(self) -> None:
         """Held, not excused: its own verified checksum vouches for it, as for any input."""

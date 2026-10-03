@@ -11,16 +11,37 @@ THE ORDER OF USE
         --profile <profile.json> [--resources <campaign-resources.local.json>] [--catalog <db>] \\
         [--replan-from <an earlier campaign whose approval is revoked> ...]
         read-only on the Catalog and the analysis root; writes campaign-manifest.json and prints its digest.
+        A pilot names its units instead of a pool: --units <file or comma list> plans exactly those units,
+        from both pools, each held to its own pool's rules (selection_basis), in one manifest (pool "pilot").
         The extractor defaults to the newest built pin of Interactive's PINNED_BUILDS beside the Interactive
         checkout; a manifest is approvable only with a verified, pinned extractor and clean checkouts.
     python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
         --by NAME --statement "the person's words" --covers 1,3,4,5,split
         only after the person approved that digest in the conversation; the approval id is theirs
     python scripts/campaign-runner.py run --campaign ID [--until-idle] [--max-units N] [--prefetch N]
-    python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|release-held|revoke --campaign ID ...
+    python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|release-held|recheck-held|revoke --campaign ID ...
         release-held --unit KEY deletes, under boundary 5, the raw data an ended unit holds against the rules
         once Interactive's deletion accepts them (the runner also looks again at every start and every few
-        hours); retry runs the unit again from its Class decision.
+        hours); retry runs the unit again from its Class decision. recheck-held [--unit KEY] makes the step
+        every held unit (or the one) was held at again now: for a unit the before-production gate gave no
+        usable report for, the gate. The runner also makes it again at every start and every few hours.
+        Every request is acted on by the runner that holds the campaign; with none running, by the next run.
+
+A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, a failure or a hold stops
+one unit's analysis, and the runner goes on with the others. A unit is held, unrun and uncounted with its
+raw data kept, when the before-production gate gives no usable report (gate_held), or when Interactive
+gives a reply or a record for it that the runner cannot read or act on, a reply that does not parse among
+them (contract_held, the user's default of 2026-10-03), a job poll's among them once the job's Console or
+download no longer runs; a deletion Interactive cannot make as called leaves that unit's raw data held. What
+pauses the whole campaign is what every unit would meet alike, the four pauses the status export names: a
+pin change, a short disk, a repository outage, and an Interactive backend that does not answer (a refused,
+timed-out or broken connection, to any call, the diagnostic's estimate included; the user's default of
+2026-10-03), the last two looked at again hourly. Each lifts by itself once its cause has gone. Only an operator's own pause waits
+for an operator's resume, as does a "contract" pause a runner before 2026-10-02 left in the ledger.
+
+RUN --UNTIL-IDLE returns once every unit has ended or waits for disk. A held unit is not idle: the runner
+stays, polling, and makes the held unit's step again every few hours, so a unit that stays held keeps it
+running until a recheck gives what was missing or an operator skips the unit.
 
 THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
 of the approved manifest, naming each library as "library:<file name>" and never by location:
@@ -95,8 +116,13 @@ def command_plan(args: argparse.Namespace) -> int:
     from campaign import plan, policy, ports
 
     catalog_path = Path(args.catalog) if args.catalog else _default_catalog()
-    directory = Path(args.out) if args.out else _campaign_directory(args.workspace_root, args.campaign)
-    manifest_path = directory / "campaign-manifest.json"
+    out = Path(args.out) if args.out else None
+    if out is not None and out.suffix.casefold() == ".json":
+        # A dry run named as a file: the manifest is that file, and its summary sits beside it.
+        directory, manifest_path = out.parent, out
+    else:
+        directory = out or _campaign_directory(args.workspace_root, args.campaign)
+        manifest_path = directory / "campaign-manifest.json"
     if (directory / "ledger.sqlite").exists():
         print(f"Campaign {args.campaign} is already approved; its manifest is not replaced.", file=sys.stderr)
         return EXIT_REFUSED
@@ -122,6 +148,7 @@ def command_plan(args: argparse.Namespace) -> int:
     }
     try:
         replan = plan.replan_states(Path(args.workspace_root), args.replan_from) if args.replan_from else None
+        unit_ids = plan.read_unit_list(args.units) if args.units else None
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
         return EXIT_REFUSED
@@ -133,7 +160,7 @@ def command_plan(args: argparse.Namespace) -> int:
             profile=profile, campaign_policy=campaign_policy,
             class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, args.purpose),
             catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
-            replan=replan,
+            replan=replan, unit_ids=unit_ids,
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
@@ -141,12 +168,15 @@ def command_plan(args: argparse.Namespace) -> int:
     finally:
         catalog.close()
     digest = plan.write_manifest(manifest_path, manifest)
-    ports.write_json_atomic(directory / "campaign-manifest.summary.json", {
+    # What an approval would cover: boundary 5 only where the retention deletes (a pilot that keeps raw data
+    # is approved without it).
+    covers = ["1", "3", "4", "split"] + (["5"] if args.retention == "delete_after_validated_output" else [])
+    problems = plan.approval_problems(manifest, covers)
+    ports.write_json_atomic(manifest_path.with_name(manifest_path.stem + ".summary.json"), {
         "manifest_path": str(manifest_path), "manifest_digest": digest, "totals": manifest["totals"],
-        "approval_problems": plan.approval_problems(manifest, ["1", "3", "4", "5", "split"]),
+        "approval_problems": problems, "approval_covers": covers,
     })
     print(plan.summary_text(manifest, digest))
-    problems = plan.approval_problems(manifest, ["1", "3", "4", "5", "split"])
     if problems:
         print("Not approvable as it stands: " + "; ".join(problems), file=sys.stderr)
     return EXIT_OK
@@ -394,17 +424,61 @@ def command_pause(args: argparse.Namespace) -> int:
 
 
 def command_resume(args: argparse.Namespace) -> int:
+    from campaign import ledger
+
     with _open(args) as book:
-        resumed = book.resume(_now(), kinds=["operator", "contract", "disk", "fault"], detail={"by": "operator", "reason": args.reason})
+        resumed = book.resume(_now(), kinds=["operator", "contract", "disk", *ledger.FAULT_PAUSES],
+                              detail={"by": "operator", "reason": args.reason})
     print("Resumed." if resumed else "Nothing to resume (a pin pause lifts only when the pins match again).")
     return EXIT_OK
+
+
+def _runner_note(book: Any) -> str:
+    """Who acts on a request: the runner that holds the campaign now, or none until one is started.
+
+    A request is a row in the ledger, read only by a runner's loop: recorded while no runner runs, it waits."""
+    from campaign import policy, ports
+
+    campaign = book.campaign()
+    record = book.runner()
+    stale = policy.CampaignPolicy.from_dict(campaign["policy"]).runner_lock_stale_seconds
+    now = datetime.now(timezone.utc)
+    alive = False
+    if record.get("pid"):
+        try:
+            alive = ports.runner_alive(record, now, stale)
+        except ImportError:
+            # Without Interactive's process probe, the heartbeat alone says whether a runner holds the campaign.
+            heartbeat = policy.parse_iso(record.get("heartbeat_at"))
+            alive = heartbeat is not None and (now - heartbeat).total_seconds() <= stale
+    if alive:
+        return f"runner pid {record['pid']} on {record.get('host')} acts on it at its next step"
+    return (f"no runner is running, so nothing acts on it until one is started "
+            f"(campaign-runner.py run --campaign {campaign['campaign_id']})")
 
 
 def command_request(args: argparse.Namespace) -> int:
     action = getattr(args, "action", None) or args.command
     with _open(args) as book:
         request_id = book.add_request(action, args.unit, args.reason, args.by or "", _now())
-    print(f"Request {request_id} ({action} {args.unit}) recorded; the runner acts on it at its next step.")
+        note = _runner_note(book)
+    print(f"Request {request_id} ({action} {args.unit}) recorded; {note}.")
+    return EXIT_OK
+
+
+def command_recheck_held(args: argparse.Namespace) -> int:
+    """A recheck_held request for the named unit, or for every held unit: held because the gate gave no
+    usable report (gate_held) or because Interactive's reply or record could not be read (contract_held)."""
+    from campaign import ledger
+
+    with _open(args) as book:
+        units = [args.unit] if args.unit else [unit["unit_key"] for unit in book.units(ledger.HELD_STATES)]
+        requests = [book.add_request("recheck_held", unit, args.reason, args.by or "", _now()) for unit in units]
+        note = _runner_note(book)
+    if not requests:
+        print("No unit is held for a recheck.")
+    for request_id, unit in zip(requests, units):
+        print(f"Request {request_id} (recheck_held {unit}) recorded; {note}.")
     return EXIT_OK
 
 
@@ -442,6 +516,8 @@ def command_schedule(args: argparse.Namespace) -> int:
     print("# ONLOGON runs the task when the user logs on, with no password stored. For ONSTART, before anyone")
     print("# logs on, the task needs the account's password: add /RP and type it at schtasks' own prompt.")
     print(f'# In Task Scheduler, set the task to restart on failure and "Do not start a new instance" if one runs.')
+    print("# run --until-idle ends once every unit has ended or waits for disk. While a unit is held it keeps running,")
+    print("# to make the held unit's step again every few hours; a request (recheck-held, skip) waits for a runner.")
     print("# Keep the machine awake while the campaign runs (AC power), for example:")
     print("powercfg /change standby-timeout-ac 0")
     print("powercfg /change hibernate-timeout-ac 0")
@@ -459,7 +535,10 @@ def parser() -> argparse.ArgumentParser:
 
     plan = commands.add_parser("plan", help="build the campaign manifest, read-only on the Catalog")
     plan.add_argument("--campaign", required=True)
-    plan.add_argument("--pool", required=True, choices=("declared", "acquisition_unknown"))
+    selection = plan.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--pool", choices=("declared", "acquisition_unknown"))
+    selection.add_argument("--units", help="a pilot: plan exactly these analysis units, from both pools, each held to "
+                                           "its own pool's rules; a file (a JSON list, or one id per line) or a comma list")
     plan.add_argument("--purpose", required=True, help="the analysis_purpose, in the person's words")
     plan.add_argument("--retention", required=True, choices=("keep", "delete_after_validated_output"))
     plan.add_argument("--catalog", help="the Catalog database (default: the Catalog's own)")
@@ -468,7 +547,8 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--resources", help="the git-ignored map of library file names to locations")
     plan.add_argument("--profile", help=f"the shared answers ({'msdial-campaign-profile.v1'})")
     plan.add_argument("--policy", help="campaign policy overrides (JSON)")
-    plan.add_argument("--out", help="write the manifest here instead of the campaign directory (a dry run)")
+    plan.add_argument("--out", help="a dry run: write the manifest into this folder instead of the campaign directory, "
+                                     "or to this file where the name ends in .json")
     plan.add_argument("--replan-from", action="append", default=[], metavar="CAMPAIGN",
                       help="an earlier campaign, its approval revoked, whose units that did not end done are planned again")
     plan.set_defaults(handler=command_plan)
@@ -492,7 +572,9 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--port", type=int, default=DEFAULT_PORT)
         command.add_argument("--no-backend", action="store_true", help="use a backend already listening on --port")
         if name == "run":
-            command.add_argument("--until-idle", action="store_true")
+            command.add_argument("--until-idle", action="store_true",
+                                 help="return once every unit has ended or waits for disk; a held unit keeps the runner "
+                                      "going to recheck it every few hours")
             command.add_argument("--max-units", type=int)
             command.add_argument("--prefetch", type=int)
             command.add_argument("--allow-dirty", action="store_true")
@@ -527,6 +609,14 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--reason", required=True)
         command.add_argument("--by", default="")
         command.set_defaults(handler=command_request, action=action)
+
+    recheck = commands.add_parser(
+        "recheck-held", help="make the step of the held units again now: the gate, for a unit it gave no usable report for")
+    recheck.add_argument("--campaign", required=True)
+    recheck.add_argument("--unit", help="one held unit; every held unit when left out")
+    recheck.add_argument("--reason", default="operator recheck of a held unit")
+    recheck.add_argument("--by", default="")
+    recheck.set_defaults(handler=command_recheck_held)
 
     revoke = commands.add_parser("revoke", help="revoke the campaign's approval")
     revoke.add_argument("--campaign", required=True)
