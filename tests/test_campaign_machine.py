@@ -27,6 +27,14 @@ from campaign import ledger, machine, policy, ports  # noqa: E402
 
 GB = 1000**3
 TB = 1000**4
+# A reply of Interactive's that does not parse, as its wrapper reports one: it holds the unit (2026-10-03).
+UNREADABLE = {"ok": False, "reason": "validation_error", "error_type": "JSONDecodeError",
+              "detail": "Expecting value: line 1 column 1 (char 0)"}
+# Two ways a backend does not answer, as Interactive's wrapper reports them: they pause the campaign (2026-10-03).
+SILENCES = {
+    "timeout": {"ok": False, "reason": "os_error", "error_type": "TimeoutError", "detail": "timed out"},
+    "refused": {"ok": False, "reason": "backend_unavailable", "detail": "Could not connect"},
+}
 
 
 class Base(unittest.TestCase):
@@ -1098,6 +1106,76 @@ class FaultTests(Base):
         self.assertEqual([item["was"]["pause_kind"] for item in resumed], ["backend"])
         self.assertIsNone(machine.summary(book)["paused"])
 
+    def test_an_estimate_the_backend_does_not_answer_is_the_pause_not_the_units_failure(self) -> None:
+        """The estimate after a completed diagnostic is a call to the backend like any other: one that times out or
+        is refused pauses the campaign and counts nothing (the user's default of 2026-10-03), nothing more is asked
+        of the backend until the fault recheck, and the same diagnostic's estimate is asked for again then. Read as
+        estimate_unavailable before, it was counted, and after three the unit failed and its raw data went."""
+        for name, silence in SILENCES.items():
+            with self.subTest(silence=name):
+                world = self.world(("u1", "u2"))
+                original = world.interactive.estimate
+                silent = {"now": True}
+                asked = []
+
+                def estimate(world=world, original=original, silent=silent, asked=asked, silence=silence, **arguments):
+                    if world.interactive._unit_of_manifest(arguments["manifest_path"]) == "u1":
+                        asked.append(arguments["step"])
+                        if silent["now"]:
+                            return dict(silence)
+                    return original(**arguments)
+
+                world.interactive.estimate = estimate
+                book = world.open()
+                self.addCleanup(book.close)
+                runner = world.runner(book)
+                self.step_until(world, book, runner, lambda: bool(book.runner()["paused"]) or book.unit("u1")["failures"] > 0)
+                unit = book.unit("u1")
+                self.assertEqual((unit["state"], unit["failures"], unit["interruptions"]), ("diagnosing", 0, 0))
+                self.assertEqual(book.runner()["pause_kind"], "backend")
+                self.assertEqual([row for row in book.attempts() if row["counted"]], [])
+                self.assertEqual([row["outcome"] for row in book.console_runs("u1")], ["completed"], "the diagnostic ended")
+                self.assertIsNone(book.slot())
+                for _ in range(40):  # twenty minutes of the pause, short of the hourly recheck
+                    runner.iterate()
+                    world.clock.sleep(30)
+                self.assertEqual(len(asked), 1, "the estimate waits for the recheck")
+                silent["now"] = False
+                runner.run(until_idle=True, max_iterations=4000)
+                self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+                self.assertEqual((book.unit("u1")["failures"], book.unit("u1")["interruptions"]), (0, 0))
+                self.assertEqual(world.interactive.console_starts.count(("u1", "diagnostic")), 1, "the same diagnostic")
+                resumed = [json.loads(row["detail_json"]) for row in book.events("resumed")]
+                self.assertEqual([item["was"]["pause_kind"] for item in resumed], ["backend"])
+
+    def test_an_estimate_the_backend_does_not_answer_for_a_job_it_forgot_is_the_pause_not_an_interruption(self) -> None:
+        """The backend no longer knows the diagnostic's job, so its output is asked for the estimate, and that call
+        times out: the campaign pauses. Read as a lost job before, the diagnostic was run again as interrupted."""
+        world = self.world(("u1", "u2"))
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "diagnosing")
+        world.clock.sleep(300)
+        world.interactive.settle()
+        diagnostic = book.unit("u1")["diagnostic_job_id"]
+        self.assertEqual(world.interactive.jobs[diagnostic]["status"], "completed")
+        original_job, original_estimate = world.interactive.job, world.interactive.estimate
+        silent = {"now": True}
+        world.interactive.job = lambda job_id: (
+            {"ok": False, "reason": "job_not_found", "http_status": 404} if job_id == diagnostic else original_job(job_id))
+        world.interactive.estimate = lambda **arguments: (
+            dict(SILENCES["timeout"]) if silent["now"] and arguments["job_id"] == diagnostic else original_estimate(**arguments))
+        self.step_until(world, book, runner, lambda: bool(book.runner()["paused"]) or book.unit("u1")["interruptions"] > 0)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["interruptions"]), ("diagnosing", 0, 0))
+        self.assertEqual(book.runner()["pause_kind"], "backend")
+        silent["now"] = False
+        runner.run(until_idle=True, max_iterations=4000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+        self.assertEqual((book.unit("u1")["failures"], book.unit("u1")["interruptions"]), (0, 0))
+        self.assertEqual(world.interactive.console_starts.count(("u1", "diagnostic")), 1, "the forgotten job's own estimate")
+
 
 class OutageTests(Base):
     def test_a_repository_outage_pauses_the_campaign_instead_of_failing_its_units(self) -> None:
@@ -1722,6 +1800,127 @@ class ContractHoldTests(Base):
         sources = [json.loads(row["detail_json"]).get("contract_recheck") for row in book.transitions("u1")]
         self.assertIn("runner_start", sources)
         self.assertEqual(machine.summary(book)["contract_held"]["units"], 0)
+
+    # ---- the user's default of 2026-10-03 for the estimate and the job polls ----------------------------------
+
+    def test_an_estimate_reply_that_does_not_parse_holds_the_unit_at_its_diagnostic(self) -> None:
+        """Read as estimate_unavailable before, it was counted, retried twice and the unit's raw data went. Held at
+        diagnosing, the recheck asks the same diagnostic for its estimate rather than running another."""
+        world = self.world(("u1", "u2"))
+        original = world.interactive.estimate
+        broken = {"now": True}
+
+        def estimate(**arguments):
+            if broken["now"] and world.interactive._unit_of_manifest(arguments["manifest_path"]) == "u1":
+                return dict(UNREADABLE)
+            return original(**arguments)
+
+        world.interactive.estimate = estimate
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u2")["state"] == "done")
+        self.assert_contract_held(world, book, "u1", "unreadable_reply", resume_state="diagnosing")
+        self.assertEqual([row["outcome"] for row in book.console_runs("u1")], ["completed"])
+        broken["now"] = False
+        runner.run(until_idle=True, max_iterations=4000)
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
+        self.assertEqual(world.interactive.console_starts.count(("u1", "diagnostic")), 1)
+
+    def test_a_run_poll_reply_that_does_not_parse_is_never_read_as_an_interruption(self) -> None:
+        """The run job's poll does not parse while its Console runs: the unit waits for the Console, keeping the
+        slot, and then reads the manifest, which says the run finalized. Read as a lost job before, the run that
+        ended meanwhile was taken for interrupted and a second production Console was started on the unit."""
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(ticks=40)
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "running")
+        original = world.interactive.job
+        run_job = book.unit("u1")["run_job_id"]
+        world.interactive.job = lambda job_id: dict(UNREADABLE) if job_id == run_job else original(job_id)
+        for _ in range(20):  # ten minutes of a twenty-minute run
+            runner.iterate()
+            world.clock.sleep(30)
+        self.assertEqual(book.unit("u1")["state"], "running", "the Console is waited for")
+        self.assertEqual(book.slot()["unit_key"], "u1", "keeping the Console slot")
+        runner.run(until_idle=True, max_iterations=3000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+        self.assertEqual(world.interactive.console_starts.count(("u1", "run")), 1)
+        self.assertEqual((book.unit("u1")["failures"], book.unit("u1")["interruptions"]), (0, 0))
+        self.assertEqual(world.interactive.overlapping_starts, [])
+        said = [json.loads(row["detail_json"]) for row in book.events("poll_unreadable") if row["unit_key"] == "u1"]
+        self.assertEqual([(item["job_id"], item["contract"]) for item in said], [(run_job, "unreadable_reply")])
+
+    def test_a_run_poll_reply_that_does_not_parse_holds_the_unit_once_its_console_has_ended(self) -> None:
+        """The Console ended without a finalized run and the poll still does not parse: nothing says how the run
+        ended, so the unit is held at running, its Console run ended as unknown and no attempt recorded. The
+        recheck reads the job's own end, here a failure, which counts as any failed run does."""
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(ticks=4, runs=["fail", "ok"])
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "running")
+        original = world.interactive.job
+        run_job = book.unit("u1")["run_job_id"]
+        broken = {"now": True}
+        world.interactive.job = lambda job_id: dict(UNREADABLE) if broken["now"] and job_id == run_job else original(job_id)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] != "running")
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["resume_state"]), ("contract_held", "running"))
+        self.assertEqual((unit["failures"], unit["interruptions"]), (0, 0))
+        self.assertEqual(unit["run_job_id"], run_job, "the recheck polls the same job")
+        self.assertEqual([row["outcome"] for row in book.console_runs("u1") if row["kind"] == "production"], ["unknown"])
+        self.assertIsNone(book.slot())
+        self.assertNotIn(f"u1:{run_job}", world.catalog.runs, "how the run ended is not known yet")
+        events = [json.loads(row["detail_json"]) for row in book.events("contract_held") if row["unit_key"] == "u1"]
+        self.assertEqual([(item["step"], item["contract"]) for item in events], [("running_poll", "unreadable_reply")])
+        self.assertFalse(book.runner()["paused"])
+        broken["now"] = False
+        runner.run(until_idle=True, max_iterations=4000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["interruptions"]), ("done", 1, 0))
+        self.assertEqual(world.catalog.runs[f"u1:{run_job}"]["status"], "failed")
+        steps = [(row["step"], row["outcome"], row["counted"]) for row in book.attempts("u1")]
+        held = steps.index(("running_poll", "fault", 0))
+        self.assertEqual(steps[held + 1], ("run", "failed", 1))
+        self.assertEqual(world.interactive.console_starts.count(("u1", "run")), 2)
+
+    def test_a_download_poll_reply_that_does_not_parse_holds_the_unit_once_its_lease_is_gone(self) -> None:
+        """While the lease lives the unit waits for it; once a backend restart leaves the manifest saying
+        downloading with no lease, a reply that could not be read says nothing of the job, so the unit is held at
+        downloading. Read as a lost job before, it was interrupted and fetched again."""
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(ticks=40)
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "downloading")
+        original = world.interactive.job
+        download = book.unit("u1")["download_job_id"]
+        broken = {"now": True}
+        world.interactive.job = lambda job_id: dict(UNREADABLE) if broken["now"] and job_id == download else original(job_id)
+        for _ in range(10):
+            runner.iterate()
+            world.clock.sleep(30)
+        self.assertEqual(book.unit("u1")["state"], "downloading", "the live lease is waited for")
+        world.interactive.restart()
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] != "downloading")
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["resume_state"]), ("contract_held", "downloading"))
+        self.assertEqual((unit["failures"], unit["interruptions"]), (0, 0))
+        self.assertEqual(world.interactive.download_starts, ["u1"], "nothing is fetched again")
+        events = [json.loads(row["detail_json"]) for row in book.events("contract_held") if row["unit_key"] == "u1"]
+        self.assertEqual([(item["step"], item["contract"]) for item in events], [("downloading_poll", "unreadable_reply")])
+        self.step_until(world, book, runner, lambda: book.unit("u2")["state"] == "done")
+        broken["now"] = False
+        runner.run(until_idle=True, max_iterations=4000)
+        unit = book.unit("u1")
+        # The recheck reads the job's own end: the restart interrupted it, which is retried without counting.
+        self.assertEqual((unit["state"], unit["failures"], unit["interruptions"]), ("done", 0, 1))
+        self.assertEqual(world.interactive.download_starts.count("u1"), 2)
 
 
 class SharedDownloadTests(Base):

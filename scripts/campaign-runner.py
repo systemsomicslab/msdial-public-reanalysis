@@ -31,11 +31,12 @@ A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, 
 one unit's analysis, and the runner goes on with the others. A unit is held, unrun and uncounted with its
 raw data kept, when the before-production gate gives no usable report (gate_held), or when Interactive
 gives a reply or a record for it that the runner cannot read or act on, a reply that does not parse among
-them (contract_held, the user's default of 2026-10-03); a deletion Interactive cannot make as called leaves
-that unit's raw data held. What pauses the whole campaign is what every unit would meet alike, the four
-pauses the status export names: a pin change, a short disk, a repository outage, and an Interactive backend
-that does not answer (a refused, timed-out or broken connection; the user's default of 2026-10-03), the last
-two looked at again hourly. Each lifts by itself once its cause has gone. Only an operator's own pause waits
+them (contract_held, the user's default of 2026-10-03), a job poll's among them once the job's Console or
+download no longer runs; a deletion Interactive cannot make as called leaves that unit's raw data held. What
+pauses the whole campaign is what every unit would meet alike, the four pauses the status export names: a
+pin change, a short disk, a repository outage, and an Interactive backend that does not answer (a refused,
+timed-out or broken connection, to any call, the diagnostic's estimate included; the user's default of
+2026-10-03), the last two looked at again hourly. Each lifts by itself once its cause has gone. Only an operator's own pause waits
 for an operator's resume, as does a "contract" pause a runner before 2026-10-02 left in the ledger.
 
 RUN --UNTIL-IDLE returns once every unit has ended or waits for disk. A held unit is not idle: the runner
