@@ -655,5 +655,16 @@ class PlanContractTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), policy.canonical_json({"a": [1, "é"], "b": 1}))
 
 
+@unittest.skipUnless(os.name == "nt", "Windows creation flags")
+class BackendLaunchTests(unittest.TestCase):
+    def test_the_backend_has_a_windowless_console_its_children_inherit(self) -> None:
+        import subprocess
+
+        flags = ports.backend_creation_flags()
+        self.assertFalse(flags & subprocess.DETACHED_PROCESS)
+        self.assertTrue(flags & subprocess.CREATE_NO_WINDOW)
+        self.assertTrue(flags & subprocess.CREATE_NEW_PROCESS_GROUP)
+
+
 if __name__ == "__main__":
     unittest.main()
