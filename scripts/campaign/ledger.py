@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS campaign(
     campaign_id TEXT PRIMARY KEY CHECK(length(trim(campaign_id)) > 0),
     created_at TEXT NOT NULL,
-    pool TEXT NOT NULL CHECK(pool IN ('declared', 'acquisition_unknown')),
+    pool TEXT NOT NULL CHECK(pool IN ('declared', 'acquisition_unknown', 'pilot')),
     manifest_path TEXT NOT NULL,
     manifest_digest TEXT NOT NULL
         CHECK(manifest_digest GLOB 'sha256:[0-9a-f]*' AND length(manifest_digest) = 71),

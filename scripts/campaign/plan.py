@@ -6,6 +6,12 @@ acquisition-unknown pool is its own manifest, and its own approval: the same rul
 mode left Unknown by the repository, which the raw headers settle after download (Interactive's
 campaign_disposition says whether each unit then runs).
 
+A PILOT IS ONE MANIFEST OF NAMED UNITS (plan --units). It plans exactly the analysis units it is given,
+from both pools, and holds each to the rules of the pool it is in: selection_basis says which, for every
+planned unit and every exclusion. A named unit in neither pool is listed as not_in_pool, and a name the
+Catalog does not know refuses the plan. The pilot the user started on 2026-10-03 is 15 units, raw data
+kept.
+
 WHAT IS LEFT OUT, AND WHY, IS PART OF WHAT IS APPROVED. Every selected unit the plan will not run is
 listed with its reason:
 
@@ -36,7 +42,8 @@ listed with its reason:
 - mzdata_only: every analysis file is mzData, which MS-DIAL cannot read and nothing here converts
   (mzXML is converted by Interactive and runs);
 - no_download_object: files are listed, but none carries a URL;
-- class_undecided: the Catalog neither proposed a Class nor recorded an abstention.
+- class_undecided: the Catalog neither proposed a Class nor recorded an abstention;
+- not_in_pool (a pilot only): a named unit that neither pool's rules select.
 
 THE BYTES are the Catalog's download_plan (Catalog 0.6.0): distinct objects, each fetched once, with
 size_known false for an object the repository listed without a size. Such a unit's bytes are a lower
@@ -57,7 +64,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import policy
 
@@ -65,6 +72,8 @@ MANIFEST_SCHEMA = "msdial-campaign-manifest.v1"
 PROFILE_SCHEMA = "msdial-campaign-profile.v1"
 AUTHORIZATION_SCHEMA = "msdial-campaign-authorization.v1"
 POOLS = ("declared", "acquisition_unknown")
+# A manifest of named units from both pools (plan --units), each held to its own pool's rules.
+PILOT = "pilot"
 _POOL_WHERE = {
     "declared": (
         "u.separation = 'LC-MS' AND u.acquisition_mode IN ('DDA', 'DIA', 'AIF', 'SWATH') "
@@ -79,10 +88,12 @@ SELECTION_RULES = {
     "declared": "separation LC-MS; acquisition DDA, DIA, AIF or SWATH; untargeted not false; one polarity",
     "acquisition_unknown": "separation LC-MS; acquisition Unknown (read from the raw headers); untargeted not false; one polarity",
 }
+SELECTION_RULES[PILOT] = "the analysis units named with --units, each held to the rules of the pool it is in"
 EXCLUSION_REASONS = (
     "no_files", "ion_mobility", "preexisting_workspace", "campaign_workspace", "mzdata_only", "no_download_object",
     "class_undecided",
 )
+PILOT_EXCLUSION_REASONS = ("not_in_pool",) + EXCLUSION_REASONS
 # What an accession-level workspace of an earlier run keeps in the accession folder itself (Interactive's
 # layout before analysis units: <accession>\\raw, provenance and output).
 ACCESSION_WORKSPACE_PARTS = ("raw", "provenance", "output")
@@ -130,31 +141,96 @@ def digest_of(data: bytes) -> str:
 
 # ---- selection and exclusions --------------------------------------------------------------------------
 
-def select_units(connection: sqlite3.Connection, pool: str) -> list[dict[str, Any]]:
-    """Every unit of the pool, with what the exclusions read. Read-only."""
+_UNIT_COLUMNS = (
+    "unit_id", "repository", "accession", "instrument", "ion_mode", "acquisition_mode", "ion_mobility", "untargeted",
+    "target_omics", "chromatography", "separation", "file_count",
+)
+_UNIT_SELECT = (
+    "SELECT u.unit_id, s.repository, s.accession, u.instrument, u.ion_mode, u.acquisition_mode, "
+    "u.ion_mobility, u.untargeted, u.target_omics, u.chromatography, u.separation, "
+    "(SELECT COUNT(*) FROM raw_file r WHERE r.unit_id = u.unit_id) AS file_count "
+    "FROM analysis_unit u JOIN study s ON s.study_id = u.study_id"
+)
+
+
+def _only(unit_ids: Sequence[str] | None) -> tuple[str, tuple[str, ...]]:
+    if unit_ids is None:
+        return "", ()
+    names = tuple(str(item) for item in unit_ids)
+    return f" AND u.unit_id IN ({', '.join('?' for _ in names) or 'NULL'})", names
+
+
+def select_units(
+    connection: sqlite3.Connection, pool: str, unit_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Every unit of the pool, or those of `unit_ids` the pool's rules select, with what the exclusions read
+    and the pool they were selected under. Read-only."""
     if pool not in _POOL_WHERE:
         raise PlanError(f"Unknown pool {pool!r}; choose one of {', '.join(POOLS)}.")
+    only, names = _only(unit_ids)
     rows = connection.execute(
-        "SELECT u.unit_id, s.repository, s.accession, u.instrument, u.ion_mode, u.acquisition_mode, "
-        "u.ion_mobility, u.untargeted, u.target_omics, u.chromatography, "
-        "(SELECT COUNT(*) FROM raw_file r WHERE r.unit_id = u.unit_id) AS file_count "
-        f"FROM analysis_unit u JOIN study s ON s.study_id = u.study_id WHERE {_POOL_WHERE[pool]} "
-        "ORDER BY s.repository, s.accession, u.unit_id"
+        f"{_UNIT_SELECT} WHERE {_POOL_WHERE[pool]}{only} ORDER BY s.repository, s.accession, u.unit_id", names,
     ).fetchall()
-    units = [dict(zip(("unit_id", "repository", "accession", "instrument", "ion_mode", "acquisition_mode",
-                       "ion_mobility", "untargeted", "target_omics", "chromatography", "file_count"), row))
-             for row in rows]
+    units = [{**dict(zip(_UNIT_COLUMNS, tuple(row))), "pool": pool} for row in rows]
     suffixes: dict[str, list[str]] = {}
     for unit_id, path in connection.execute(
         f"SELECT r.unit_id, r.path FROM raw_file r JOIN analysis_unit u ON u.unit_id = r.unit_id "
-        f"JOIN study s ON s.study_id = u.study_id WHERE {_POOL_WHERE[pool]} "
+        f"JOIN study s ON s.study_id = u.study_id WHERE {_POOL_WHERE[pool]}{only} "
         f"AND r.role IN ({', '.join('?' for _ in ANALYSIS_ROLES)})",
-        ANALYSIS_ROLES,
+        names + ANALYSIS_ROLES,
     ):
         suffixes.setdefault(str(unit_id), []).append(str(path).casefold().rstrip("/\\"))
     for unit in units:
         unit["analysis_paths"] = suffixes.get(unit["unit_id"], [])
     return units
+
+
+def select_named_units(connection: sqlite3.Connection, unit_ids: Sequence[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """A pilot's units: (those a pool selects, each under its pool's rules; those in neither pool).
+
+    Raises PlanError for a name the Catalog does not know, so a mistyped id refuses the plan instead of
+    shrinking it. Read-only."""
+    requested = list(dict.fromkeys(str(item).strip() for item in unit_ids if str(item).strip()))
+    if not requested:
+        raise PlanError("--units names no analysis unit.")
+    selected = [unit for pool in POOLS for unit in select_units(connection, pool, requested)]
+    found = {unit["unit_id"] for unit in selected}
+    missing = [name for name in requested if name not in found]
+    only, names = _only(missing)
+    outside = [
+        {**dict(zip(_UNIT_COLUMNS, tuple(row))), "pool": None, "analysis_paths": []}
+        for row in connection.execute(f"{_UNIT_SELECT} WHERE 1 = 1{only} ORDER BY s.repository, s.accession, u.unit_id", names)
+    ] if missing else []
+    unknown = sorted(set(missing) - {unit["unit_id"] for unit in outside})
+    if unknown:
+        raise PlanError(f"The Catalog has no analysis unit {', '.join(unknown[:10])}{' ...' if len(unknown) > 10 else ''}.")
+    return selected, outside
+
+
+def read_unit_list(value: str) -> list[str]:
+    """The units of `plan --units`: a file that holds a JSON list of ids (or an object whose "units" or
+    "unit_ids" is one), a file of ids separated by commas, blanks or lines ('#' starts a comment), or a
+    comma-separated list on the command line."""
+    text = str(value or "").strip()
+    path = Path(text)
+    if text and path.is_file():
+        content = path.read_text(encoding="utf-8-sig")
+        try:
+            parsed = json.loads(content)
+        except ValueError:
+            tokens = re.split(r"[\s,]+", "\n".join(line.split("#", 1)[0] for line in content.splitlines()))
+        else:
+            if isinstance(parsed, Mapping):
+                parsed = parsed.get("units", parsed.get("unit_ids"))
+            if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+                raise PlanError(f"{path.name} is JSON but not a list of analysis unit ids.")
+            tokens = parsed
+    else:
+        tokens = text.split(",")
+    names = list(dict.fromkeys(token.strip() for token in tokens if token.strip()))
+    if not names:
+        raise PlanError("--units names no analysis unit.")
+    return names
 
 
 def campaign_of(workspace: Path) -> str | None:
@@ -439,7 +515,7 @@ def profile_problems(profile: Mapping[str, Any] | None, library_names: Iterable[
 def build_manifest(
     catalog: Any,
     *,
-    pool: str,
+    pool: str | None = None,
     campaign_id: str,
     analysis_purpose: str,
     workspace_root: Path,
@@ -452,13 +528,17 @@ def build_manifest(
     now: datetime | None = None,
     progress: Callable[[str], None] | None = None,
     replan: Mapping[str, Mapping[str, str]] | None = None,
+    unit_ids: Sequence[str] | None = None,
     ion_mobility_evidence: Any = DETECT,
 ) -> dict[str, Any]:
-    """The manifest for one pool. `catalog` is a read-only Catalog; nothing is written anywhere.
+    """The manifest for one pool, or for a pilot of named units (`unit_ids`, pool "pilot"). `catalog` is a
+    read-only Catalog; nothing is written anywhere.
 
     `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
     `ion_mobility_evidence` is the Catalog's helper, None for the fallback rule, or DETECT to look it up.
     """
+    if (unit_ids is None) == (pool is None or pool == PILOT):
+        raise PlanError("Plan one pool, or a pilot of named units (--units), not both and not neither.")
     if not str(campaign_id or "").strip() or not re.fullmatch(r"[A-Za-z0-9._-]+", str(campaign_id)):
         raise PlanError("A campaign id is letters, digits, '.', '_' and '-'.")
     if not str(analysis_purpose or "").strip():
@@ -471,9 +551,20 @@ def build_manifest(
         # proposals the runner will be given (review contradiction 16).
         raise PlanError(f"Catalog {catalog_version} predates 0.6.0; its Class digests would not hold.")
     say = progress or (lambda _message: None)
-    selected = select_units(catalog.connection, pool)
-    say(f"{len(selected)} units selected for the {pool} pool")
     excluded: list[dict[str, Any]] = []
+    if unit_ids is not None:
+        pool = PILOT
+        selected, outside = select_named_units(catalog.connection, unit_ids)
+        requested = list(dict.fromkeys(str(item).strip() for item in unit_ids if str(item).strip()))
+        for unit in outside:
+            excluded.append(_exclusion(unit, ["not_in_pool"], detail=(
+                f"separation {unit['separation']}, acquisition {unit['acquisition_mode']}, ion mode {unit['ion_mode']}, "
+                f"untargeted {unit['untargeted']}: neither pool's rules select it"
+            )))
+        say(f"{len(selected)} of the {len(requested)} named units are in a pool")
+    else:
+        selected, outside, requested = select_units(catalog.connection, pool), [], []
+        say(f"{len(selected)} units selected for the {pool} pool")
     evidence = catalog_ion_mobility_evidence() if ion_mobility_evidence is DETECT else ion_mobility_evidence
     candidates: list[dict[str, Any]] = []
     mobility: dict[str, dict[str, Any]] = {}
@@ -531,7 +622,7 @@ def build_manifest(
             "repository": unit["repository"],
             "accession": unit["accession"],
             "order_index": order_index,
-            "selection_basis": pool,
+            "selection_basis": unit["pool"],
             "group_id": planned["group_id"],
             "object_count": planned["object_count"],
             "known_bytes": planned["known_bytes"],
@@ -569,7 +660,7 @@ def build_manifest(
         })
     included_ids = {unit["unit_id"] for unit in units}
     objects = [item for item in download["objects"] if set(item.get("selected_consumer_unit_ids") or []) & included_ids]
-    totals = _totals(selected, excluded, units, used_groups, objects)
+    totals = _totals(selected + outside, excluded, units, used_groups, objects)
     legacy = sorted({
         f"{unit['repository']}/{unit['accession']}" for unit in units
         if legacy_accession_workspace(workspace_root, unit["repository"], unit["accession"])
@@ -585,10 +676,12 @@ def build_manifest(
         "raw_retention_policy": raw_retention_policy,
         "catalog": {"database": catalog_database, "version": catalog_version},
         "selection": {
-            "pool": pool, "rule": SELECTION_RULES[pool], "exclusion_reasons": list(EXCLUSION_REASONS),
+            "pool": pool, "rule": SELECTION_RULES[pool],
+            "exclusion_reasons": list(PILOT_EXCLUSION_REASONS if pool == PILOT else EXCLUSION_REASONS),
             # Which reading of ion mobility excluded units: the Catalog's ion_mobility_evidence, or the
             # fallback rule without it (option A, 2026-10-03).
             "ion_mobility_evidence": "fallback" if evidence is None else "catalog",
+            **({"units": requested, "pools": {name: SELECTION_RULES[name] for name in POOLS}} if pool == PILOT else {}),
         },
         "policy": campaign_policy.as_dict(),
         "profile": dict(profile) if profile is not None else None,
@@ -607,7 +700,7 @@ def build_manifest(
 def _exclusion(unit: Mapping[str, Any], reasons: list[str], detail: str = "") -> dict[str, Any]:
     record = {
         "unit_id": unit["unit_id"], "repository": unit["repository"], "accession": unit["accession"],
-        "reason": reasons[0], "reasons": reasons,
+        "reason": reasons[0], "reasons": reasons, "selection_basis": unit.get("pool"),
     }
     if detail:
         record["detail"] = detail
@@ -623,8 +716,10 @@ def _totals(
         by_reason[item["reason"]] = by_reason.get(item["reason"], 0) + 1
     unknown = [item for item in objects if not item["size_known"]]
     kinds: dict[str, int] = {}
+    pools: dict[str, int] = {}
     for unit in units:
         kinds[unit["class_kind"]] = kinds.get(unit["class_kind"], 0) + 1
+        pools[unit["selection_basis"]] = pools.get(unit["selection_basis"], 0) + 1
     return {
         "selected_units": len(selected),
         "excluded_units": len(excluded),
@@ -642,6 +737,7 @@ def _totals(
         "units_with_archives": sum(1 for unit in units if unit["has_archive"]),
         "per_unit_known_bytes": sum(unit["known_bytes"] for unit in units),
         "class_kinds": dict(sorted(kinds.items())),
+        "planned_by_pool": dict(sorted(pools.items())),
     }
 
 
@@ -763,6 +859,9 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
         f"Campaign {manifest['campaign_id']} ({manifest['pool']} pool): {SELECTION_RULES[manifest['pool']]}",
         f"  selected {totals['selected_units']}, excluded {totals['excluded_units']}, planned {totals['planned_units']}",
     ]
+    if manifest["pool"] == PILOT:
+        lines.append("  planned by pool: " + (", ".join(
+            f"{name} {count}" for name, count in (totals.get("planned_by_pool") or {}).items()) or "none"))
     for reason, count in totals["excluded_by_reason"].items():
         lines.append(f"    excluded {reason}: {count}")
     evidence = (manifest.get("selection") or {}).get("ion_mobility_evidence")

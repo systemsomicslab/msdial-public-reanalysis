@@ -11,6 +11,8 @@ THE ORDER OF USE
         --profile <profile.json> [--resources <campaign-resources.local.json>] [--catalog <db>] \\
         [--replan-from <an earlier campaign whose approval is revoked> ...]
         read-only on the Catalog and the analysis root; writes campaign-manifest.json and prints its digest.
+        A pilot names its units instead of a pool: --units <file or comma list> plans exactly those units,
+        from both pools, each held to its own pool's rules (selection_basis), in one manifest (pool "pilot").
         The extractor defaults to the newest built pin of Interactive's PINNED_BUILDS beside the Interactive
         checkout; a manifest is approvable only with a verified, pinned extractor and clean checkouts.
     python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
@@ -111,8 +113,13 @@ def command_plan(args: argparse.Namespace) -> int:
     from campaign import plan, policy, ports
 
     catalog_path = Path(args.catalog) if args.catalog else _default_catalog()
-    directory = Path(args.out) if args.out else _campaign_directory(args.workspace_root, args.campaign)
-    manifest_path = directory / "campaign-manifest.json"
+    out = Path(args.out) if args.out else None
+    if out is not None and out.suffix.casefold() == ".json":
+        # A dry run named as a file: the manifest is that file, and its summary sits beside it.
+        directory, manifest_path = out.parent, out
+    else:
+        directory = out or _campaign_directory(args.workspace_root, args.campaign)
+        manifest_path = directory / "campaign-manifest.json"
     if (directory / "ledger.sqlite").exists():
         print(f"Campaign {args.campaign} is already approved; its manifest is not replaced.", file=sys.stderr)
         return EXIT_REFUSED
@@ -138,6 +145,7 @@ def command_plan(args: argparse.Namespace) -> int:
     }
     try:
         replan = plan.replan_states(Path(args.workspace_root), args.replan_from) if args.replan_from else None
+        unit_ids = plan.read_unit_list(args.units) if args.units else None
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
         return EXIT_REFUSED
@@ -149,7 +157,7 @@ def command_plan(args: argparse.Namespace) -> int:
             profile=profile, campaign_policy=campaign_policy,
             class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, args.purpose),
             catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
-            replan=replan,
+            replan=replan, unit_ids=unit_ids,
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
@@ -157,12 +165,15 @@ def command_plan(args: argparse.Namespace) -> int:
     finally:
         catalog.close()
     digest = plan.write_manifest(manifest_path, manifest)
-    ports.write_json_atomic(directory / "campaign-manifest.summary.json", {
+    # What an approval would cover: boundary 5 only where the retention deletes (a pilot that keeps raw data
+    # is approved without it).
+    covers = ["1", "3", "4", "split"] + (["5"] if args.retention == "delete_after_validated_output" else [])
+    problems = plan.approval_problems(manifest, covers)
+    ports.write_json_atomic(manifest_path.with_name(manifest_path.stem + ".summary.json"), {
         "manifest_path": str(manifest_path), "manifest_digest": digest, "totals": manifest["totals"],
-        "approval_problems": plan.approval_problems(manifest, ["1", "3", "4", "5", "split"]),
+        "approval_problems": problems, "approval_covers": covers,
     })
     print(plan.summary_text(manifest, digest))
-    problems = plan.approval_problems(manifest, ["1", "3", "4", "5", "split"])
     if problems:
         print("Not approvable as it stands: " + "; ".join(problems), file=sys.stderr)
     return EXIT_OK
@@ -518,7 +529,10 @@ def parser() -> argparse.ArgumentParser:
 
     plan = commands.add_parser("plan", help="build the campaign manifest, read-only on the Catalog")
     plan.add_argument("--campaign", required=True)
-    plan.add_argument("--pool", required=True, choices=("declared", "acquisition_unknown"))
+    selection = plan.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--pool", choices=("declared", "acquisition_unknown"))
+    selection.add_argument("--units", help="a pilot: plan exactly these analysis units, from both pools, each held to "
+                                           "its own pool's rules; a file (a JSON list, or one id per line) or a comma list")
     plan.add_argument("--purpose", required=True, help="the analysis_purpose, in the person's words")
     plan.add_argument("--retention", required=True, choices=("keep", "delete_after_validated_output"))
     plan.add_argument("--catalog", help="the Catalog database (default: the Catalog's own)")
@@ -527,7 +541,8 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--resources", help="the git-ignored map of library file names to locations")
     plan.add_argument("--profile", help=f"the shared answers ({'msdial-campaign-profile.v1'})")
     plan.add_argument("--policy", help="campaign policy overrides (JSON)")
-    plan.add_argument("--out", help="write the manifest here instead of the campaign directory (a dry run)")
+    plan.add_argument("--out", help="a dry run: write the manifest into this folder instead of the campaign directory, "
+                                     "or to this file where the name ends in .json")
     plan.add_argument("--replan-from", action="append", default=[], metavar="CAMPAIGN",
                       help="an earlier campaign, its approval revoked, whose units that did not end done are planned again")
     plan.set_defaults(handler=command_plan)

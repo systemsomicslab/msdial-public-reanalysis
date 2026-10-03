@@ -392,6 +392,53 @@ class PlanTests(unittest.TestCase):
         with mock.patch.object(plan, "ION_MOBILITY_EVIDENCE_MODULES", ("no_such_module_here",)):
             self.assertIsNone(plan.catalog_ion_mobility_evidence())
 
+    # ---- a pilot: named units from both pools (2026-10-03) ---------------------------------------------------
+
+    def test_a_pilot_plans_exactly_the_named_units_each_under_its_pools_rules(self) -> None:
+        manifest = self.manifest(None, unit_ids=["uK", "uA", "uF", "uJ", "uA"], ion_mobility_evidence=None)
+        self.assertEqual(manifest["pool"], plan.PILOT)
+        self.assertEqual(manifest["selection"]["units"], ["uK", "uA", "uF", "uJ"])
+        self.assertEqual(set(manifest["selection"]["pools"]), set(plan.POOLS))
+        self.assertEqual(manifest["selection"]["exclusion_reasons"][0], "not_in_pool")
+        basis = {unit["unit_id"]: unit["selection_basis"] for unit in manifest["units"]}
+        self.assertEqual(basis, {"uA": "declared", "uK": "acquisition_unknown"})
+        exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+        self.assertEqual((exclusions["uF"]["reason"], exclusions["uF"]["selection_basis"]), ("ion_mobility", "declared"))
+        self.assertEqual((exclusions["uJ"]["reason"], exclusions["uJ"]["selection_basis"]), ("not_in_pool", None))
+        self.assertIn("separation GC-MS", exclusions["uJ"]["detail"])
+        totals = manifest["totals"]
+        self.assertEqual((totals["selected_units"], totals["planned_units"], totals["excluded_units"]), (4, 2, 2))
+        self.assertEqual(totals["planned_by_pool"], {"acquisition_unknown": 1, "declared": 1})
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        self.assertIn("(pilot pool): the analysis units named with --units", text)
+        self.assertIn("planned by pool: acquisition_unknown 1, declared 1", text)
+        self.assertIn("excluded not_in_pool: 1", text)
+
+    def test_a_pilot_refuses_a_unit_the_catalog_does_not_know_and_a_pool_beside_it(self) -> None:
+        with self.assertRaisesRegex(plan.PlanError, "no analysis unit uNOPE"):
+            self.manifest(None, unit_ids=["uA", "uNOPE"])
+        with self.assertRaises(plan.PlanError):
+            self.manifest("declared", unit_ids=["uA"])
+        with self.assertRaises(plan.PlanError):
+            self.manifest(None)
+
+    def test_the_units_of_a_pilot_are_read_from_a_list_or_a_file(self) -> None:
+        listed = self.root / "pilot_units.json"
+        listed.write_text(json.dumps(["uA", "uK"]), encoding="utf-8")
+        lines = self.root / "pilot_units.txt"
+        lines.write_text("# the pilot\nuA\nuK, uA\n", encoding="utf-8")
+        for value in (str(listed), str(lines), "uA, uK", "uA,uK,"):
+            with self.subTest(value=value):
+                self.assertEqual(plan.read_unit_list(value), ["uA", "uK"])
+        wrapped = self.root / "pilot.json"
+        wrapped.write_text(json.dumps({"units": ["uK"]}), encoding="utf-8")
+        self.assertEqual(plan.read_unit_list(str(wrapped)), ["uK"])
+        wrapped.write_text(json.dumps({"units": [1, 2]}), encoding="utf-8")
+        with self.assertRaises(plan.PlanError):
+            plan.read_unit_list(str(wrapped))
+        with self.assertRaises(plan.PlanError):
+            plan.read_unit_list(" , ")
+
     def test_the_class_digest_is_the_catalogs_own_decision(self) -> None:
         manifest = self.manifest("declared")
         catalog = ports.read_only_catalog(self.database)
@@ -519,6 +566,60 @@ class PlanTests(unittest.TestCase):
         code, out, _err = self.cli("retry", "--campaign", "c1", "--unit", "uA", "--reason", "why")
         self.assertEqual(code, 0)
         self.assertIn("no runner is running, so nothing acts on it until one is started", out)
+
+    def test_a_pilot_is_planned_and_approved_from_the_command_line(self) -> None:
+        """plan --units needs no --pool, writes one manifest of both pools' units, and its approval makes a
+        ledger whose campaign is the pilot."""
+        tools = self.root / "tools"
+        tools.mkdir()
+        (tools / "MSDIALCUI.exe").write_bytes(b"MZ console")
+        (tools / "P.msp").write_text("NAME: x\n", encoding="utf-8")
+        resources = self.root / "campaign-resources.local.json"
+        resources.write_text(json.dumps({"schema": ports.RESOURCES_SCHEMA, "libraries": {"P.msp": str(tools / "P.msp")}}),
+                             encoding="utf-8")
+        profile = self.root / "profile.json"
+        profile.write_text(json.dumps({"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"},
+                                       "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}}}}),
+                           encoding="utf-8")
+        units = self.root / "pilot_units.json"
+        units.write_text(json.dumps(["uA", "uK", "uF"]), encoding="utf-8")
+        with self.assertRaises(SystemExit, msg="a pool or a pilot's units, one of them"):
+            self.cli("plan", "--campaign", "p0", "--purpose", "annotation", "--retention", "keep")
+        with self.assertRaises(SystemExit):
+            self.cli("plan", "--campaign", "p0", "--pool", "declared", "--units", "uA", "--purpose", "a", "--retention", "keep")
+        self.assertEqual(self.cli("plan", "--campaign", "p0", "--units", "uA,uNOPE", "--purpose", "a", "--retention", "keep",
+                                  "--catalog", str(self.database))[0], runner_cli.EXIT_REFUSED, "a name the Catalog does not know")
+        # A dry run may name the manifest's file; its summary sits beside it, and no campaign directory is made.
+        dry = self.root / "dry" / "pilot-manifest.json"
+        code, out, err = self.cli("plan", "--campaign", "p0", "--units", "uA,uK", "--purpose", "a", "--retention", "keep",
+                                  "--catalog", str(self.database), "--out", str(dry))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(dry.read_text(encoding="utf-8"))["pool"], "pilot")
+        summary = json.loads((self.root / "dry" / "pilot-manifest.summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["approval_covers"], ["1", "3", "4", "split"], "raw data kept: boundary 5 is not covered")
+        self.assertNotIn("boundary 5", " ".join(summary["approval_problems"]))
+        self.assertFalse((self.workspace_root / "_campaigns" / "p0").exists())
+        extractor = {**APPROVABLE_PINS["extractor"], "path": str(tools / "RawMetadataConsoleApp.exe")}
+        with mock.patch.object(ports.PinReader, "extractor", lambda _self: dict(extractor)), \
+                mock.patch.object(ports.PinReader, "code", lambda _self: json.loads(json.dumps(CODE_PINS))):
+            code, out, err = self.cli(
+                "plan", "--campaign", "pilot-1", "--units", str(units), "--purpose", "annotation", "--retention", "keep",
+                "--catalog", str(self.database), "--console", str(tools / "MSDIALCUI.exe"), "--resources", str(resources),
+                "--profile", str(profile),
+            )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Not approvable", err)
+        self.assertIn("planned by pool: acquisition_unknown 1, declared 1", out)
+        directory = self.workspace_root / "_campaigns" / "pilot-1"
+        manifest = json.loads((directory / "campaign-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((manifest["pool"], manifest["selection"]["units"]), ("pilot", ["uA", "uK", "uF"]))
+        digest = "sha256:" + hashlib.sha256((directory / "campaign-manifest.json").read_bytes()).hexdigest()
+        code, _out, err = self.cli("approve", "--campaign", "pilot-1", "--digest", digest, "--approval-id", "P1",
+                                   "--by", "Test Person", "--statement", "Start the pilot.", "--covers", "1,3,4,split")
+        self.assertEqual(code, 0, err)
+        with ledger.Ledger(directory / "ledger.sqlite") as book:
+            self.assertEqual(book.campaign()["pool"], "pilot")
+            self.assertEqual(sorted(unit["unit_key"] for unit in book.units()), ["uA", "uK"])
 
     def test_each_operator_request_is_recorded_under_its_action(self) -> None:
         for command, action in (("skip", "skip"), ("retry", "retry"), ("release-held", "release_held")):
