@@ -392,6 +392,58 @@ class PlanTests(unittest.TestCase):
         with mock.patch.object(plan, "ION_MOBILITY_EVIDENCE_MODULES", ("no_such_module_here",)):
             self.assertIsNone(plan.catalog_ion_mobility_evidence())
 
+    def test_a_unit_whose_catalog_record_cannot_be_read_is_not_excluded_for_ion_mobility_on_its_row(self) -> None:
+        """The plan's own row holds neither a unit's sample rows nor its inputs. Read alone, as the plan used to read
+        it where Catalog.get_unit raised, MTBKS219's timsTOF beside its BAF folders was ion mobility alone, and the
+        approvable manifest said none of its inputs was a BAF container, unread. Not read, the unit is not excluded
+        for it, with or without the Catalog's helper, and the manifest and its summary say so. Its Class decision
+        reads the same record: where that fails as well, the unit is excluded as class_undecided, with the error."""
+        self.add_ion_mobility_units()
+        add_unit(self.database, "uY", "MTBKS219", mobility="Enabled", instrument="Bruker timsTOF Pro",
+                 rows={"Parameter Value[Instrument]": "timsTOF Pro"},
+                 folders=(("raw/off_1.d", "analysis.baf"), ("raw/on_1.d", "analysis.tdf")))
+        from msdial_repository_catalog.storage import Catalog
+
+        real = Catalog.get_unit
+        for helper in (False, True):
+            with self.subTest(helper=helper):
+                reads = {"uY": 0, "uT": 0}
+
+                def get_unit(catalog, unit_id, *args, reads=reads, **kwargs):
+                    if unit_id in reads:
+                        reads[unit_id] += 1
+                        # uY's record is read for ion mobility only once; uT's never.
+                        if unit_id == "uT" or reads[unit_id] == 1:
+                            raise sqlite3.OperationalError("database is locked")
+                    return real(catalog, unit_id, *args, **kwargs)
+
+                asked = []
+
+                def evidence(unit):
+                    asked.append(unit["unit_id"])
+                    return {"state": "enabled" if unit["unit_id"] == "uY" else "mixed", "sources": ["row_instrument"]}
+
+                with mock.patch.object(Catalog, "get_unit", get_unit):
+                    manifest = self.manifest("declared", ion_mobility_evidence=evidence if helper else None)
+                units = {unit["unit_id"]: unit for unit in manifest["units"]}
+                exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+                self.assertIn("uY", units, f"excluded: {exclusions.get('uY')}")
+                reading = units["uY"]["ion_mobility_reading"]
+                self.assertEqual((reading["evidence"], reading["state"]), ("not_read", "unknown"))
+                self.assertIn("(OperationalError: database is locked)", reading["detail"])
+                self.assertNotIn("none of its inputs", reading["detail"])
+                self.assertNotIn("uY", asked, "the helper is never given the plan's row")
+                self.assertEqual(units["uX"]["ion_mobility_reading"]["evidence"], "catalog" if helper else "fallback")
+                self.assertEqual(exclusions["uT"]["reason"], "class_undecided")
+                self.assertIn("database is locked", exclusions["uT"]["detail"])
+                text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+                self.assertIn("ion mobility not read for 1 planned units whose Catalog record could not be read, "
+                              "so not excluded for it (uY)", text)
+        self.assertEqual(plan.exclusion_reasons({"file_count": 1, "analysis_paths": [], "repository": "metabobank",
+                                                 "accession": "MTBKS219", "unit_id": "uY",
+                                                 "instrument": "Bruker timsTOF Pro"}, self.workspace_root), [],
+                         "without a reading of the unit's record, no exclusion for ion mobility")
+
     # ---- a pilot: named units from both pools (2026-10-03) ---------------------------------------------------
 
     def test_a_pilot_plans_exactly_the_named_units_each_under_its_pools_rules(self) -> None:

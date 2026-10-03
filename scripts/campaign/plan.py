@@ -399,14 +399,24 @@ def _fallback_ion_mobility(record: Mapping[str, Any]) -> dict[str, Any]:
     return {"excluded": False, "signal": False, "state": "unknown", "detail": ""}
 
 
+def unread_ion_mobility(problem: str) -> dict[str, Any]:
+    """The reading of a unit whose Catalog record could not be read (Catalog.get_unit raised): never excluded for
+    ion mobility. The plan's own row holds neither the unit's sample rows nor its inputs, so read alone it would
+    take a timsTOF named beside Bruker BAF folders (MTBKS219, MTBKS220) for ion mobility alone, which option A
+    forbids at plan time. The unit passes to Interactive's header check, and the manifest says why (`signal`)."""
+    return {"excluded": False, "evidence": "not_read", "state": "unknown", "signal": True,
+            "detail": f"not read: the Catalog's record of the unit could not be read ({_clip(problem, 160)}), so it is "
+                      "not excluded for ion mobility on the plan's own row; Interactive's header check decides each file"}
+
+
 def ion_mobility_reading(record: Mapping[str, Any], evidence: Callable[[Mapping[str, Any]], Any] | None) -> dict[str, Any]:
     """Whether the unit is excluded for ion mobility, read from its own evidence (option A, 2026-10-03).
 
-    `record` is the Catalog's unit (Catalog.get_unit), or the plan's row for it where that could not be
-    read. With the Catalog's ion_mobility_evidence, only its state "enabled" from unit-level sources
-    excludes; an answer the plan cannot read falls back to the rule without it, and says so. Returns
-    {"excluded", "evidence" ("catalog" or "fallback"), "state", "signal" (anything named ion mobility at
-    all), "detail"}."""
+    `record` is the Catalog's unit (Catalog.get_unit); where that could not be read the plan takes
+    unread_ion_mobility() instead, never its own row. With the Catalog's ion_mobility_evidence, only its state
+    "enabled" from unit-level sources excludes; an answer the plan cannot read falls back to the rule without
+    it, and says so. Returns {"excluded", "evidence" ("catalog", "fallback" or, from unread_ion_mobility,
+    "not_read"), "state", "signal" (anything named ion mobility at all, or nothing read), "detail"}."""
     if evidence is not None:
         try:
             read = _read_evidence(evidence(record))
@@ -443,12 +453,12 @@ def exclusion_reasons(
 ) -> list[str]:
     """Every static reason this unit will not run, in EXCLUSION_REASONS order.
 
-    `ion_mobility` is ion_mobility_reading() of the unit's Catalog record; without it, the fallback rule is
-    applied to what the plan's row holds (the unit's instrument, no rows and no inputs)."""
+    `ion_mobility` is ion_mobility_reading() of the unit's Catalog record; without it the unit is not excluded
+    for ion mobility, since the plan's row holds neither its sample rows nor its inputs (unread_ion_mobility)."""
     reasons = []
     if not unit["file_count"]:
         reasons.append("no_files")
-    if (ion_mobility if ion_mobility is not None else ion_mobility_reading(unit, None))["excluded"]:
+    if ion_mobility is not None and ion_mobility["excluded"]:
         reasons.append("ion_mobility")
     workspace, _detail = workspace_exclusion(unit, workspace_root, replan)
     if workspace:
@@ -571,9 +581,10 @@ def build_manifest(
     for unit in selected:
         try:
             record: Mapping[str, Any] = catalog.get_unit(unit["unit_id"])
-        except Exception:  # noqa: BLE001 - read from the plan's own row instead, as the fallback rule allows
-            record = unit
-        mobility[unit["unit_id"]] = ion_mobility_reading(record, evidence)
+        except Exception as error:  # noqa: BLE001 - not read, so not excluded for it; the manifest says so
+            mobility[unit["unit_id"]] = unread_ion_mobility(f"{type(error).__name__}: {error}")
+        else:
+            mobility[unit["unit_id"]] = ion_mobility_reading(record, evidence)
         reasons = exclusion_reasons(unit, workspace_root, replan, ion_mobility=mobility[unit["unit_id"]])
         if reasons:
             _reason, found = workspace_exclusion(unit, workspace_root, replan)
@@ -869,6 +880,11 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
         lines.append("  ion mobility read from " + (
             "the Catalog's ion_mobility_evidence" if evidence == "catalog"
             else "the unit's instrument, its rows' instrument fields and its inputs' container formats (no Catalog helper)"))
+    unread = [unit["unit_id"] for unit in manifest.get("units") or []
+              if (unit.get("ion_mobility_reading") or {}).get("evidence") == "not_read"]
+    if unread:
+        lines.append(f"  ion mobility not read for {len(unread)} planned units whose Catalog record could not be read, "
+                     f"so not excluded for it ({', '.join(unread[:5])}{', ...' if len(unread) > 5 else ''})")
     lower = " at least" if totals["units_of_unknown_size"] else ""
     lines.append(f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}")
     if (manifest.get("pins", {}).get("interactive") or {}).get("lease_uses_store") is True:

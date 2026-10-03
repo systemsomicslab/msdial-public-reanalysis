@@ -30,10 +30,12 @@ and the unit then counts as failed, while any other FAIL is recorded and the uni
 before-production gate that gives no usable report holds the unit (gate_held), unrun and uncounted with
 its raw data kept, until a recheck gives one, while the other units go on. "Stop" is per unit, never the
 runner's: what pauses the whole campaign is what every unit would meet alike (a pin change, a short disk,
-a repository outage, a backend that does not answer), and each such pause lifts by itself. A reply or a
-record of Interactive's that the runner cannot read or act on for one unit holds that unit (contract_held)
-as a missing report does, and a deletion Interactive cannot make as called leaves the unit's raw data
-held. A held unit keeps the runner going, as a retry does: run --until-idle returns only once no unit waits
+a repository outage, a backend that does not answer, whichever call it does not answer, a job's poll or
+the diagnostic's estimate), and each such pause lifts by itself. A reply or a record of Interactive's that
+the runner cannot read or act on for one unit holds that unit (contract_held) as a missing report does: a
+job poll whose reply cannot be read is never taken for a lost job, so the unit waits while the job's
+Console or lease runs and is then held at that poll. A deletion Interactive cannot make as called leaves
+the unit's raw data held. A held unit keeps the runner going, as a retry does: run --until-idle returns only once no unit waits
 for a recheck, so the rechecks every few hours happen. Every production attempt is recorded in the Catalog
 as it ends. Raw data
 the rules delete and Interactive would not are "held", counted apart (summary), never reported as kept
@@ -188,6 +190,14 @@ def started_download_job(manifest: Mapping[str, Any] | None, since: datetime, kn
     return job if job and started and started >= since and job not in set(known) else ""
 
 
+def contract_problem(result: Mapping[str, Any]) -> str:
+    """What a unit held for a CONTRACT result is held for: unreadable_reply for a reply that does not parse (the
+    user's default of 2026-10-03), else the result's own reason."""
+    if str(result.get("error_type") or "") in policy.UNREADABLE_REPLY_ERRORS:
+        return "unreadable_reply"
+    return str(result.get("reason") or "contract")
+
+
 def _group(unit: Mapping[str, Any]) -> str:
     """The unit's download group: the units that share download objects."""
     return str(unit.get("download_group_id") or unit["unit_key"])
@@ -244,6 +254,8 @@ class Runner:
         # only after busy_retry_seconds (a kill can wait ten seconds for the process), and recorded once.
         self._orphan_kills: dict[str, datetime] = {}
         self._orphans_recorded: set[tuple[str, bool]] = set()
+        # Jobs whose poll had a reply this process could not read, said once each (_note_unreadable_poll).
+        self._unreadable_polls: set[str] = set()
         # When this process last looked at the raw data held against the rules: never yet, so a runner that
         # starts (on an Interactive that may now delete them) looks first.
         self._held_checked_at: datetime | None = None
@@ -579,18 +591,18 @@ class Runner:
             # A reply of another shape or one that does not parse (2026-10-03), a tool or parameter Interactive
             # lacks, an extractor it refuses: no fault of the unit's, and "stop" is per unit, so the unit is held
             # and the others go on.
-            unreadable = str(detail.get("error_type") or "") in policy.UNREADABLE_REPLY_ERRORS
-            self._contract_hold(unit, step=step, problem="unreadable_reply" if unreadable else str(detail.get("reason") or "contract"),
-                                detail=detail, resume_state=retry_state, attempt_id=attempt_id, console_run=console_run, gate=gate)
+            self._contract_hold(unit, step=step, problem=contract_problem(detail), detail=detail, resume_state=retry_state,
+                                attempt_id=attempt_id, console_run=console_run, gate=gate)
             return
         if kind == policy.FAULT:
             # A backend that does not answer, which every unit would meet alike: the fourth pause of the whole
             # campaign (2026-10-03). Nothing counts, the unit stays where it is, and the step is made again when
-            # the pause lifts by itself at the fault recheck.
+            # the pause lifts by itself at the fault recheck. A Console run passed here ends as the caller says it
+            # did: not started for a start, completed for a diagnostic whose estimate went unanswered.
             if attempt_id is not None:
                 self.ledger.close_attempt(attempt_id, "fault", self.stamp(), detail=detail)
             if console_run is not None:
-                self.ledger.end_console_run(console_run[0], "not_started", self.stamp())
+                self.ledger.end_console_run(console_run[0], console_run[1], self.stamp())
             self._pause("backend", f"{step} for unit {unit['unit_key']}: {detail.get('reason')}: {detail.get('detail') or ''}".rstrip(": "))
             return
         decision = policy.after_failure(int(unit["failures"]), self.now(), self.policy)
@@ -1114,10 +1126,13 @@ class Runner:
         job_id = unit["download_job_id"]
         job = self.ports.interactive.job(job_id)
         if job.get("ok") is False:
-            if policy.classify_result(job) == policy.FAULT:
+            kind = policy.classify_result(job)
+            if kind == policy.FAULT:
                 self._pause("backend", f"The campaign backend did not answer for download job {job_id}.")
                 return False
-            return self._download_lost(unit)
+            if kind == policy.CONTRACT:
+                self._note_unreadable_poll(unit, job)
+            return self._download_lost(unit, unreadable=job if kind == policy.CONTRACT else None)
         status = str(job.get("status") or "")
         if status == WAITING_FOR_SHARED:
             self._resend_cancel(job_id)
@@ -1214,16 +1229,24 @@ class Runner:
         return self._download_failed(unit, result={"ok": False, "reason": outcome, **detail}, outcome=outcome,
                                      job_id=unit["download_job_id"])
 
-    def _download_lost(self, unit: dict[str, Any]) -> bool:
-        """The backend no longer knows the job: the unit manifest says what became of the lease."""
+    def _download_lost(self, unit: dict[str, Any], unreadable: Mapping[str, Any] | None = None) -> bool:
+        """The backend no longer knows the job, or (`unreadable`) its reply to the poll cannot be read: the unit
+        manifest says what became of the lease. A lease still alive is waited for. Where the manifest says how
+        the download ended, that is its end; where a lost job would be read as interrupted, a reply that could
+        not be read holds the unit instead (_unreadable_hold), since it says nothing of the job."""
         manifest = self._manifest(unit)
-        detail = {"job_id": unit["download_job_id"], "job": "not in the backend's registry"}
+        detail = {"job_id": unit["download_job_id"],
+                  "job": "its poll's reply could not be read" if unreadable is not None else "not in the backend's registry"}
         if manifest is None:
+            if unreadable is not None:
+                return self._unreadable_hold(unit, unreadable)
             self._interrupted(unit, step="download", retry_state="handoff_ready", detail=detail)
             return True
         status = str(manifest.get("status") or "")
         if status == "downloading":
             if self.ports.interactive.lease_state(manifest) == "gone":
+                if unreadable is not None:
+                    return self._unreadable_hold(unit, unreadable)
                 self._interrupted(unit, step="download", retry_state="handoff_ready", detail={**detail, "lease": "gone"})
                 return True
             return False
@@ -1232,6 +1255,8 @@ class Runner:
             reason = self._cancel_reason(unit["download_job_id"] or "")
             return self._download_ended(unit, "failed", reason, {**detail, "failure": failure})
         if status in UNFINISHED_LEASE:
+            if unreadable is not None:
+                return self._unreadable_hold(unit, unreadable)
             self._interrupted(unit, step="download", retry_state="handoff_ready", detail={**detail, "status": status})
             return True
         return self._downloaded(unit, str(unit["manifest_path"]))
@@ -1570,15 +1595,47 @@ class Runner:
                    outcome=outcome, console_run=(run[0], outcome) if run else None, job_id=job_id)
         return True
 
-    def _console_lost(self, unit: dict[str, Any], *, step: str, retry_state: str) -> bool:
-        """The backend no longer knows the job: an orphaned Console is waited for or stopped first."""
+    def _console_lost(
+        self, unit: dict[str, Any], *, step: str, retry_state: str, unreadable: Mapping[str, Any] | None = None
+    ) -> bool:
+        """The backend no longer knows the job, or (`unreadable`) its reply to the poll cannot be read: an orphaned
+        Console is waited for or stopped first. A lost job is then read as interrupted; a reply that could not be
+        read says nothing of the job, so it holds the unit instead (_unreadable_hold), and nothing is started
+        again until a recheck reads how the job ended."""
         if self._orphan_console(unit) is not None:
             return False
+        if unreadable is not None:
+            return self._unreadable_hold(unit, unreadable, console_run=self._open_console_end(unit, "unknown"))
         job_id = unit[JOB_COLUMN[unit["state"]]]
         run = self._open_console_end(unit, "interrupted")
         self._production_ended(unit, "interrupted")
         self._interrupted(unit, step=step, retry_state=retry_state, detail={"job_id": job_id, "job": "lost"}, console_run=run)
         return True
+
+    def _note_unreadable_poll(self, unit: Mapping[str, Any], reply: Mapping[str, Any]) -> None:
+        """Say once, per job, that its poll's reply could not be read: until the unit is held for it, it waits for
+        the job's Console or lease, and the ledger shows why."""
+        job_id = str(unit[JOB_COLUMN[unit["state"]]] or "")
+        if job_id in self._unreadable_polls:
+            return
+        self._unreadable_polls.add(job_id)
+        self._event("poll_unreadable", {"job_id": job_id, "state": unit["state"], "contract": contract_problem(reply),
+                                        "reason": reply.get("reason"), "error_type": reply.get("error_type"),
+                                        "detail": reply.get("detail")}, unit["unit_key"])
+
+    def _unreadable_hold(
+        self, unit: dict[str, Any], reply: Mapping[str, Any], console_run: tuple[int, str] | None = None
+    ) -> bool:
+        """Hold a unit whose job poll had a reply the runner cannot read, once neither its Console nor its lease
+        runs any more (the user's default of 2026-10-03: an unreadable reply holds the unit, as a missing gate
+        report does). It is not read as the job's end, so nothing is interrupted, counted or started again: the
+        unit is held at the poll's own state, and the recheck polls the same job, whose reply then says how it
+        ended."""
+        state = unit["state"]
+        job_id = unit[JOB_COLUMN[state]]
+        self._unreadable_polls.discard(str(job_id or ""))
+        return self._contract_hold(unit, step=f"{state}_poll", problem=contract_problem(reply),
+                                   detail={**dict(reply), "job_id": job_id}, resume_state=state, console_run=console_run)
 
     def _job_live(self, job_id: str) -> bool:
         """Whether the backend runs this job now."""
@@ -1617,36 +1674,82 @@ class Runner:
         return interactive.live_attempt(unit.get("manifest_path") or "")
 
     def _state_diagnosing(self, unit: dict[str, Any]) -> bool:
+        """The diagnostic's poll, then its estimate. Neither call going unanswered is the unit's failure (the user's
+        defaults of 2026-10-03): a backend that does not answer pauses the campaign, and a reply the runner cannot
+        read holds the unit (_estimate_unanswered, _console_lost). While the campaign is paused for the backend, a
+        diagnostic that has ended waits for the fault recheck before its estimate is asked for again."""
         job_id = unit["diagnostic_job_id"]
         job = self.ports.interactive.job(job_id)
         if job.get("ok") is False:
-            if policy.classify_result(job) == policy.FAULT:
+            kind = policy.classify_result(job)
+            if kind == policy.FAULT:
                 self._pause("backend", f"The campaign backend did not answer for diagnostic job {job_id}.")
                 return False
+            if kind == policy.CONTRACT:
+                self._note_unreadable_poll(unit, job)
+                if self._orphan_console(unit) is not None:
+                    return False
+            if self._paused() == "backend":
+                return False
+            # The job is not known, or its reply not read: the diagnostic's output may still give the estimate.
             estimate = self._estimate(unit)
-            if estimate is not None:
+            if estimate is not None and estimate.get("ok") is not False:
                 return self._diagnosed(unit, estimate)
-            return self._console_lost(unit, step="diagnostic", retry_state="metadata_prepared")
+            if estimate is not None and policy.classify_result(estimate) in (policy.FAULT, policy.CONTRACT, policy.BUSY):
+                if self._orphan_console(unit) is not None:
+                    return False
+                return self._estimate_unanswered(unit, estimate, completed=False)
+            return self._console_lost(unit, step="diagnostic", retry_state="metadata_prepared",
+                                      unreadable=job if kind == policy.CONTRACT else None)
         status = str(job.get("status") or "")
         if status in ("queued", "running"):
             self._resend_cancel(job_id)
             return False
         if status != "completed":
             return self._console_ended(unit, job, step="diagnostic", retry_state="metadata_prepared")
+        if self._paused() == "backend":
+            return False
         estimate = self._estimate(unit)
         if estimate is None:
             run = self._open_console_end(unit, "completed")
             self._fail(unit, step="estimate", result={"ok": False, "reason": "estimate_unavailable"},
                        retry_state="metadata_prepared", console_run=run)
             return True
+        if estimate.get("ok") is False:
+            return self._estimate_unanswered(unit, estimate, completed=True)
         return self._diagnosed(unit, estimate)
 
+    def _estimate_unanswered(self, unit: dict[str, Any], reply: Mapping[str, Any], *, completed: bool) -> bool:
+        """The estimate call ended without an estimate (ok:false), after a diagnostic that completed or whose job
+        is no longer known.
+
+        A backend that does not answer (FAULT: a refused connection, a timeout, a reset) pauses the whole
+        campaign and counts nothing: the unit stays diagnosing, a completed diagnostic's Console run ends as
+        completed, and the estimate is asked for again once the fault recheck lifts the pause. A reply the runner
+        cannot read (CONTRACT) holds the unit at diagnosing, and a busy one has it wait there, so the recheck asks
+        the same diagnostic for its estimate rather than running another. Any other refusal is the estimate's
+        failure, counted, and the diagnostic is run again, as an estimate that is not ready is."""
+        kind = policy.classify_result(reply)
+        if kind == policy.FAULT:
+            run = self._open_console_end(unit, "completed") if completed else None
+            self._fail(unit, step="estimate", result=reply, retry_state="diagnosing", console_run=run)
+            return False
+        run = self._open_console_end(unit, "completed" if completed else "interrupted")
+        self._fail(unit, step="estimate", result=reply, console_run=run,
+                   retry_state="metadata_prepared" if kind == policy.FAILED else "diagnosing")
+        return True
+
     def _estimate(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
-        """The stepped threshold from the diagnostic, with the campaign's step rule applied."""
+        """The stepped threshold from the diagnostic, with the campaign's step rule applied: {"estimate",
+        "representative", "threshold_step"}. None where Interactive answered that no estimate is ready; its
+        ok:false reply where a call did not give one, for the caller to classify (a backend that does not answer
+        is not the unit's failure)."""
         arguments = {"job_id": unit["diagnostic_job_id"], "manifest_path": unit["manifest_path"],
                      "minimum": self.policy.peak_count_min, "maximum": self.policy.peak_count_max}
         first = self.ports.interactive.estimate(**arguments, step=0)
-        if first.get("ok") is False or not first.get("ready"):
+        if first.get("ok") is False:
+            return dict(first)
+        if not first.get("ready"):
             return None
         representative = dict(first.get("representative") or {})
         step = policy.threshold_step(
@@ -1656,7 +1759,9 @@ class Runner:
         estimate = dict(first.get("estimate") or {})
         if int(estimate.get("threshold_step") or 0) != step:
             second = self.ports.interactive.estimate(**arguments, step=step)
-            if second.get("ok") is False or not second.get("ready"):
+            if second.get("ok") is False:
+                return dict(second)
+            if not second.get("ready"):
                 return None
             estimate = dict(second.get("estimate") or {})
         return {"estimate": estimate, "representative": representative, "threshold_step": step}
@@ -1821,13 +1926,21 @@ class Runner:
         job_id = unit["run_job_id"]
         job = self.ports.interactive.job(job_id)
         if job.get("ok") is False:
-            if policy.classify_result(job) == policy.FAULT:
+            kind = policy.classify_result(job)
+            if kind == policy.FAULT:
                 self._pause("backend", f"The campaign backend did not answer for run job {job_id}.")
                 return False
+            if kind == policy.CONTRACT:
+                # The reply cannot be read: the Console is waited for first, keeping the slot, and only then is the
+                # manifest read, so a run that ends meanwhile is found finalized there rather than started again.
+                self._note_unreadable_poll(unit, job)
+                if self._orphan_console(unit) is not None:
+                    return False
             manifest = self._manifest(unit) or {}
             if policy.outputs_produced(manifest) and (manifest.get("finalized_run") or {}).get("job_id") == job_id:
                 return self._run_done(unit)
-            return self._console_lost(unit, step="run", retry_state="prepared")
+            return self._console_lost(unit, step="run", retry_state="prepared",
+                                      unreadable=job if kind == policy.CONTRACT else None)
         status = str(job.get("status") or "")
         if status in ("queued", "running"):
             self._resend_cancel(job_id)
