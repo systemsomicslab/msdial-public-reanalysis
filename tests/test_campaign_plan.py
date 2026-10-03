@@ -43,7 +43,7 @@ UNITS = [
     ("uC", "ST000002", "LC-MS", "SWATH", "Positive", "Unknown", "SCIEX 6600", None,
      [("C.wiff", "shared_raw_archive", 0, "https://x/ST000002.zip"), ("C2.wiff", "raw", 2 * GB, "https://x/C2.wiff")]),
     ("uD", "ST000004", "LC-MS", "DDA", "Positive", "Unknown", "Waters Xevo", None, []),
-    ("uE", "MTBLS5", "LC-MS", "DDA", "Positive", "Enabled", "Agilent 6546", None, [("E.d", "raw", GB, "https://x/E.d.zip")]),
+    ("uE", "MTBLS5", "LC-MS", "DDA", "Positive", "Enabled", "Agilent 6560 Ion Mobility Q-TOF", None, [("E.d", "raw", GB, "https://x/E.d.zip")]),
     ("uF", "MTBLS6", "LC-MS", "DDA", "Positive", "Unknown", "Bruker timsTOF Pro", None, [("F.d", "raw", GB, "https://x/F.zip")]),
     ("uG", "MTBLSPRE", "LC-MS", "DDA", "Positive", "Unknown", "Agilent", None, [("G.mzML", "raw", GB, "https://x/G.mzML")]),
     ("uH", "MTBLS8", "LC-MS", "DDA", "Negative", "Unknown", "Agilent", None, [("H.mzData", "raw", GB, "https://x/H.mzData")]),
@@ -53,6 +53,39 @@ UNITS = [
     ("uL", "MTBLS12", "LC-MS", "DDA", "Both", "Unknown", "Agilent", None, [("L.mzML", "raw", GB, "https://x/L.mzML")]),
     ("uM", "MTBLS13", "LC-MS", "DDA", "Positive", "Unknown", "Agilent", None, [("M.mzML", "raw", GB, "")]),
 ]
+
+
+def add_unit(
+    path: Path, unit: str, accession: str, *, acquisition: str = "DIA", ion_mode: str = "Negative",
+    mobility: str = "Unknown", instrument: str = "", separation: str = "LC-MS", rows: dict | None = None,
+    folders: tuple = (), study_text: str = "",
+) -> None:
+    """One more unit for a test: `rows` are the attributes every sample row carries, and each folder is a vendor
+    container (path, the member that tells its format), one sample each, as MetaboBank lists them."""
+    connection = sqlite3.connect(path)
+    with connection:
+        study = f"study-{accession}"
+        connection.execute(
+            "INSERT OR IGNORE INTO study(study_id, repository, accession, source_hash, title, description) "
+            "VALUES (?, 'metabobank', ?, 'h', 'A lipidome atlas', ?)", (study, accession, study_text))
+        connection.execute(
+            "INSERT INTO analysis_unit(unit_id, study_id, source_subrecord_id, separation, acquisition_mode, ion_mode, "
+            "ion_mobility, instrument, signature, target_omics) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Lipidomics')",
+            (unit, study, unit, separation, acquisition, ion_mode, mobility, instrument, unit))
+        for index, (folder, member) in enumerate(folders):
+            sample = f"pk-{unit}-{index}"
+            connection.execute("INSERT INTO sample(sample_pk, unit_id, sample_id, raw_file) VALUES (?, ?, ?, ?)",
+                               (sample, unit, f"{unit}-S{index}", folder + "/"))
+            for field, value in (rows or {}).items():
+                connection.execute(
+                    "INSERT INTO sample_attribute(attribute_id, sample_pk, field_name, normalized_field, raw_value) "
+                    "VALUES (?, ?, ?, ?, ?)", (f"{sample}-{field}", sample, field, field.casefold(), value))
+            for name in (member, "analysis.sqlite"):
+                connection.execute(
+                    "INSERT INTO raw_file(file_id, unit_id, path, role, size_bytes, download_url, sample_id) "
+                    "VALUES (?, ?, ?, 'raw', ?, ?, '')",
+                    (f"f-{unit}-{index}-{name}", unit, f"{folder}/{name}", GB, f"https://x/{unit}/{folder}/{name}"))
+    connection.close()
 
 
 def build_catalog(path: Path) -> None:
@@ -119,15 +152,15 @@ class PlanTests(unittest.TestCase):
         legacy.mkdir(parents=True)
         (legacy / "run-manifest.json").write_text("{}", encoding="utf-8")
 
-    def manifest(self, pool: str, replan: dict | None = None) -> dict:
+    def manifest(self, pool: str | None, replan: dict | None = None, **values) -> dict:
         catalog = ports.read_only_catalog(self.database)
         try:
             return plan.build_manifest(
-                catalog, pool=pool, campaign_id=f"test-{pool}", analysis_purpose="annotation", workspace_root=self.workspace_root,
-                raw_retention_policy="delete_after_validated_output", pins={"catalog": {"version": "0.6.1"}, "libraries": []},
-                profile=None, campaign_policy=policy.CampaignPolicy(),
+                catalog, pool=pool, campaign_id=f"test-{pool or 'pilot'}", analysis_purpose="annotation",
+                workspace_root=self.workspace_root, raw_retention_policy="delete_after_validated_output",
+                pins={"catalog": {"version": "0.6.1"}, "libraries": []}, profile=None, campaign_policy=policy.CampaignPolicy(),
                 class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, "annotation"),
-                catalog_database=str(self.database), replan=replan,
+                catalog_database=str(self.database), replan=replan, **values,
             )
         finally:
             catalog.close()
@@ -248,6 +281,116 @@ class PlanTests(unittest.TestCase):
         manifest = self.manifest("acquisition_unknown")
         self.assertEqual([unit["unit_id"] for unit in manifest["units"]], ["uK"], "mzXML is converted and runs")
         self.assertEqual(manifest["units"][0]["selection_basis"], "acquisition_unknown")
+
+    # ---- ion mobility, from the unit's own evidence (option A, 2026-10-03) ------------------------------------
+
+    def add_ion_mobility_units(self) -> None:
+        """The user's cases: MTBKS217, a Xevo G2 QTOF flagged Enabled only by the abstract its study shares;
+        MTBKS220, BAF beside TDF with rows naming a timsTOF; and a unit whose every container is TDF."""
+        add_unit(self.database, "uS", "MTBKS217", mobility="Enabled", instrument="Waters Acquity UPLC system",
+                 rows={"Parameter Value[Instrument]": "Xevo G2 QTOF MS (Waters, Milford, MA, USA)"},
+                 folders=(("raw/s1.raw", "_FUNC001.DAT"),), study_text="The MS-DIAL 4 lipidome atlas, with ion mobility")
+        add_unit(self.database, "uX", "MTBKS220", mobility="Enabled", instrument="Bruker Elute UHPLC system",
+                 rows={"Parameter Value[Instrument]": "hybrid trapped ion mobility-quadrupole time-of-flight (timsTOF Pro)"},
+                 folders=(("raw/off_1.d", "analysis.baf"), ("raw/on_1.d", "analysis.tdf")))
+        add_unit(self.database, "uT", "MTBKS900", instrument="Bruker Elute UHPLC system",
+                 rows={"Parameter Value[Instrument]": "timsTOF Pro 2"}, folders=(("raw/t1.d", "analysis.tdf"),))
+
+    def test_ion_mobility_is_read_from_the_units_own_evidence(self) -> None:
+        """Without the Catalog's helper: excluded only where the unit's instrument or a row's instrument field
+        names an ion-mobility instrument and no input is a container that cannot hold ion mobility."""
+        self.add_ion_mobility_units()
+        manifest = self.manifest("declared", ion_mobility_evidence=None)
+        self.assertEqual(manifest["selection"]["ion_mobility_evidence"], "fallback")
+        units = {unit["unit_id"]: unit for unit in manifest["units"]}
+        exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+        self.assertIn("uS", units, "a mention in the study's text is not the unit's evidence")
+        self.assertEqual(units["uS"]["ion_mobility_reading"]["state"], "unknown")
+        self.assertIn("uX", units, "an ion-mobility instrument beside BAF reaches Interactive's header check")
+        self.assertEqual(units["uX"]["ion_mobility_reading"]["state"], "mixed")
+        self.assertIn("bruker_baf 1, bruker_tdf 1", units["uX"]["ion_mobility_reading"]["detail"])
+        self.assertEqual(exclusions["uT"]["reason"], "ion_mobility", "rows naming a timsTOF, and only TDF")
+        self.assertIn("timsTOF Pro 2", exclusions["uT"]["detail"])
+        self.assertIn("none of its inputs is a Bruker BAF or TSF container", exclusions["uT"]["detail"])
+        for unit in ("uE", "uF"):  # instruments that name a 6560 and a timsTOF
+            self.assertEqual(exclusions[unit]["reason"], "ion_mobility")
+        self.assertNotIn("ion_mobility_reading", units["uA"], "nothing named ion mobility")
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        self.assertIn("ion mobility read from the unit's instrument, its rows' instrument fields", text)
+
+    def test_the_catalogs_ion_mobility_evidence_decides_where_it_is_given(self) -> None:
+        """Only "enabled" from unit-level sources excludes; "mixed", "unknown" and the study's text alone pass,
+        and an answer the plan cannot read is the fallback rule's to decide, said so."""
+        self.add_ion_mobility_units()
+        answers = {
+            "uS": {"state": "enabled", "sources": [{"level": "study", "field": "description", "value": "ion mobility"}]},
+            "uX": {"state": "mixed", "sources": [{"level": "row", "field": "Parameter Value[Instrument]", "value": "timsTOF"}]},
+            "uT": {"state": "enabled", "sources": [{"level": "row", "field": "Parameter Value[Instrument]", "value": "timsTOF Pro 2"}]},
+            "uF": {"state": "unknown", "sources": []},
+            "uE": "enabled",
+        }
+        asked = []
+
+        def evidence(unit):
+            asked.append(unit["unit_id"])
+            return answers.get(unit["unit_id"], {"state": "disabled", "sources": []})
+
+        manifest = self.manifest("declared", ion_mobility_evidence=evidence)
+        self.assertEqual(manifest["selection"]["ion_mobility_evidence"], "catalog")
+        self.assertIn("uS", asked, "the helper is given the Catalog's own unit")
+        units = {unit["unit_id"]: unit for unit in manifest["units"]}
+        exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+        self.assertEqual(sorted(item for item in ("uS", "uX", "uF") if item in units), ["uF", "uS", "uX"])
+        self.assertIn("the study's text only", units["uS"]["ion_mobility_reading"]["detail"])
+        self.assertEqual(units["uX"]["ion_mobility_reading"], {
+            "evidence": "catalog", "state": "mixed",
+            "detail": "the Catalog's ion_mobility_evidence: mixed (row Parameter Value[Instrument]: timsTOF): "
+                      "Interactive's header check decides each file"})
+        self.assertEqual(exclusions["uT"]["reason"], "ion_mobility")
+        self.assertIn("enabled from the unit's own evidence (row Parameter Value[Instrument]: timsTOF Pro 2)", exclusions["uT"]["detail"])
+        # An answer of another shape: the fallback rule decides (uE's instrument names a 6560), and says why.
+        self.assertEqual(exclusions["uE"]["reason"], "ion_mobility")
+        self.assertIn("could not be read (an answer of another shape)", exclusions["uE"]["detail"])
+
+    def test_the_catalogs_answer_names_its_sources(self) -> None:
+        """The Catalog's helper names its sources (row_instrument, assay_parameter, container_format, study_text)
+        and says why: the unit's own are every source but the study's text, a container's format among them."""
+        self.add_ion_mobility_units()
+        add_unit(self.database, "uC9", "MTBKS901", instrument="Bruker Elute UHPLC system", folders=(("raw/c.d", "analysis.tdf"),))
+        answers = {
+            "uS": {"state": "unknown", "source": "study_text", "sources": ["study_text"],
+                   "reason": "only the study's text mentions ion mobility, which is not evidence about this unit"},
+            "uX": {"state": "mixed", "source": "row_instrument", "sources": ["row_instrument", "container_format"],
+                   "reason": "ion-mobility evidence (row_instrument, container_format) beside data without it"},
+            "uT": {"state": "enabled", "source": "row_instrument", "sources": ["row_instrument", "container_format"],
+                   "reason": "the unit's own evidence says ion mobility (row_instrument, container_format)"},
+            "uC9": {"state": "enabled", "source": "container_format", "sources": ["container_format"], "reason": ""},
+            "uF": {"state": "none", "source": "container_format", "sources": ["container_format"],
+                   "reason": "the unit's own evidence says no ion mobility (container_format)"},
+        }
+        manifest = self.manifest("declared", ion_mobility_evidence=lambda unit: answers.get(
+            unit["unit_id"], {"state": "unknown", "source": None, "sources": [], "reason": "nothing says"}))
+        units = {unit["unit_id"]: unit for unit in manifest["units"]}
+        exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+        self.assertEqual({key: exclusions[key]["reason"] for key in ("uT", "uC9")}, {"uT": "ion_mobility", "uC9": "ion_mobility"})
+        self.assertIn("(row_instrument; container_format); the unit's own evidence says ion mobility", exclusions["uT"]["detail"])
+        self.assertEqual({key: units[key]["ion_mobility_reading"]["state"] for key in ("uS", "uX")}, {"uS": "unknown", "uX": "mixed"})
+        self.assertIn("only the study's text mentions ion mobility", units["uS"]["ion_mobility_reading"]["detail"])
+        self.assertIn("uF", units, "the helper's none is taken over the instrument's name")
+        self.assertNotIn("ion_mobility_reading", units["uF"])
+
+    def test_the_catalogs_helper_is_found_by_import(self) -> None:
+        import types
+
+        found = types.ModuleType("msdial_repository_catalog.ion_mobility")
+        found.ion_mobility_evidence = lambda unit: {"state": "disabled", "sources": []}
+        with mock.patch.dict(sys.modules, {"msdial_repository_catalog.ion_mobility": found}):
+            self.assertIs(plan.catalog_ion_mobility_evidence(), found.ion_mobility_evidence)
+            manifest = self.manifest("declared")
+        self.assertEqual(manifest["selection"]["ion_mobility_evidence"], "catalog")
+        self.assertIn("uF", [unit["unit_id"] for unit in manifest["units"]], "the helper's disabled is taken")
+        with mock.patch.object(plan, "ION_MOBILITY_EVIDENCE_MODULES", ("no_such_module_here",)):
+            self.assertIsNone(plan.catalog_ion_mobility_evidence())
 
     def test_the_class_digest_is_the_catalogs_own_decision(self) -> None:
         manifest = self.manifest("declared")

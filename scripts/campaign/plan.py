@@ -10,8 +10,17 @@ WHAT IS LEFT OUT, AND WHY, IS PART OF WHAT IS APPROVED. Every selected unit the 
 listed with its reason:
 
 - no_files: the Catalog lists no raw file for it, so there is nothing to download (111 declared units);
-- ion_mobility: ion mobility Enabled, or a TIMS, Synapt, Vion, 6560 or Cyclic instrument. This campaign
-  is LC-MS only; LC-IM-MS is excluded this time (decided 2026-09-30);
+- ion_mobility: the unit's OWN evidence says ion mobility (option A, decided 2026-10-03). This campaign is
+  LC-MS only; LC-IM-MS is excluded this time (decided 2026-09-30). Where the Catalog provides
+  ion_mobility_evidence(unit), only its state "enabled" from unit-level sources excludes; "mixed",
+  "unknown" and a mention in the study's text alone (a title or abstract many units share) pass to
+  Interactive. Without that helper, a unit is excluded only when its instrument, or a row's instrument
+  field, names a TIMS, Synapt, Vion, 6560 or Cyclic instrument AND none of its inputs is a vendor container
+  that cannot hold ion mobility (Bruker BAF or TSF). A unit whose ion-mobility instrument sits beside
+  such containers (MTBKS219 and MTBKS220: BAF beside TDF, rows naming a timsTOF) reaches Interactive,
+  whose per-file header check and split exclude the ion-mobility files or parts. The Catalog's own
+  ion_mobility column is not read: it says Enabled for MTBKS217, a Waters Xevo G2 QTOF, only because the
+  abstract it shares with other units mentions ion mobility;
 - preexisting_workspace: the unit's own workspace, <workspace_root>\\<repository>\\<accession>\\<unit>, or
   that of one of its split parts (<unit>-<part>), holds an earlier run no campaign made (MTBLS2207's
   a22083b091a0ccd04489 and its -dda and -dia parts; MPST000007's 6f27431da49ec82f3734). The runner never
@@ -42,6 +51,7 @@ libraries are pinned by file name, sha256 and size.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import re
 import sqlite3
@@ -79,6 +89,18 @@ ACCESSION_WORKSPACE_PARTS = ("raw", "provenance", "output")
 # A unit a prior campaign ended in one of these, or has a job running for, is not planned again.
 NOT_REPLANNED = frozenset({"done", "split_done", "downloading", "diagnosing", "running"})
 ION_MOBILITY_INSTRUMENT = re.compile(r"tims|synapt|vion|6560|cyclic", re.IGNORECASE)
+# Vendor containers that cannot hold an ion-mobility separation, as the Catalog names an input's format:
+# Bruker BAF, and TSF (a timsTOF's spectra with TIMS off). Waters .raw and Agilent .d can hold either.
+NON_ION_MOBILITY_FORMATS = frozenset({"bruker_baf", "bruker_tsf"})
+# Where the Catalog's ion_mobility_evidence(unit) lives (Catalog fix/ion-mobility-from-unit-evidence); the plan
+# uses it where it imports, and the fallback rule without it.
+ION_MOBILITY_EVIDENCE_MODULES = ("msdial_repository_catalog.ion_mobility",)
+# A source of that helper's evidence is the unit's own when it names the unit, its rows (row_instrument),
+# its assay (assay_parameter), its samples, its files, inputs or containers (container_format), its
+# instrument or a parameter; study_text, or a source that names nothing, is not.
+_UNIT_LEVELS = ("unit", "row", "assay", "sample", "file", "input", "container", "instrument", "parameter")
+# Look the helper up (the default) rather than be given one or told there is none (None).
+DETECT = object()
 MZDATA_SUFFIXES = (".mzdata", ".mzdata.xml")
 ANALYSIS_ROLES = ("raw", "converted")
 ARCHIVE_KINDS = frozenset({"archive", "bundle"})
@@ -210,14 +232,147 @@ def workspace_exclusion(
     return "campaign_workspace", f"made by campaign {made_by}, where the unit is {state or 'unknown'}"
 
 
+# ---- ion mobility (option A, 2026-10-03) ------------------------------------------------------------------
+
+def catalog_ion_mobility_evidence() -> Callable[[Mapping[str, Any]], Any] | None:
+    """The Catalog's ion_mobility_evidence(unit) where this Catalog has it, else None (the fallback rule)."""
+    for name in ION_MOBILITY_EVIDENCE_MODULES:
+        try:
+            module = importlib.import_module(name)
+        except ImportError:
+            continue
+        helper = getattr(module, "ion_mobility_evidence", None)
+        if callable(helper):
+            return helper
+    return None
+
+
+def _clip(value: Any, limit: int = 100) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _unit_level(source: Any) -> bool:
+    if isinstance(source, Mapping):
+        if isinstance(source.get("unit_level"), bool):
+            return source["unit_level"]
+        level = source.get("level") or source.get("scope") or ""
+    else:
+        level = str(source or "").split(":", 1)[0]
+    level = str(level).strip().casefold()
+    return bool(level) and not level.startswith("study") and level.startswith(_UNIT_LEVELS)
+
+
+def _describe_source(source: Any) -> str:
+    if not isinstance(source, Mapping):
+        return _clip(source)
+    level = source.get("level") or source.get("scope") or ""
+    field = source.get("field") or source.get("source_field") or source.get("name") or ""
+    value = source.get("value") or source.get("text") or source.get("source_value") or ""
+    return _clip(" ".join(str(part) for part in (level, f"{field}:" if field else "", value) if part))
+
+
+def _read_evidence(result: Any) -> dict[str, Any] | None:
+    """The helper's answer as the plan reads it, or None where it cannot be read:
+    {"state": "enabled" | "mixed" | "none" | "unknown", "sources": ["row_instrument", "assay_parameter",
+    "container_format", "study_text", ...], "reason": "..."}; a source may also be {"level": ..., "field": ...,
+    "value": ...}."""
+    if not isinstance(result, Mapping) or not str(result.get("state") or "").strip():
+        return None
+    sources = result.get("sources", result.get("evidence")) or []
+    if isinstance(sources, (str, Mapping)):
+        sources = [sources]
+    if not isinstance(sources, (list, tuple)):
+        return None
+    return {"state": str(result["state"]).strip().casefold(), "sources": list(sources),
+            "unit_sources": [item for item in sources if _unit_level(item)],
+            "reason": str(result.get("reason") or "") if isinstance(result.get("reason"), str) else ""}
+
+
+def _fallback_ion_mobility(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Without the Catalog's helper: excluded only when the unit's instrument, or a row's instrument field,
+    names an ion-mobility instrument and none of its inputs is a container that cannot hold ion mobility."""
+    named: dict[tuple[str, str], int] = {}
+    if ION_MOBILITY_INSTRUMENT.search(str(record.get("instrument") or "")):
+        named[("instrument", str(record["instrument"]))] = 1
+    for sample in record.get("samples") or []:
+        for field, value in (sample.get("attributes") or {}).items():
+            if "instrument" in str(field).casefold() and ION_MOBILITY_INSTRUMENT.search(str(value)):
+                named[(str(field), str(value))] = named.get((str(field), str(value)), 0) + 1
+    formats: dict[str, int] = {}
+    for item in record.get("analysis_inputs") or []:
+        for part in str(item.get("format") or "").split("+"):
+            if part:
+                formats[part] = formats.get(part, 0) + 1
+    beside = any(name in NON_ION_MOBILITY_FORMATS for name in formats)
+    column = str(record.get("ion_mobility") or "")
+    if named:
+        (field, value), rows = next(iter(named.items()))
+        said = f"{field}{f' ({rows} rows)' if rows > 1 else ''} names {_clip(value, 80)!r}"
+        if not beside:
+            return {"excluded": True, "signal": True, "state": "enabled",
+                    "detail": f"{said}, and none of its inputs is a Bruker BAF or TSF container"}
+        containers = ", ".join(f"{name} {count}" for name, count in formats.items())
+        return {"excluded": False, "signal": True, "state": "mixed",
+                "detail": f"{said}, beside inputs that cannot hold ion mobility ({containers}): Interactive's "
+                          "header check and split exclude the ion-mobility files or parts"}
+    if column in ("Enabled", "Mixed"):
+        return {"excluded": False, "signal": True, "state": "unknown",
+                "detail": f"the Catalog's ion_mobility is {column}, but neither the unit's instrument nor a row's "
+                          "instrument field names an ion-mobility instrument"}
+    return {"excluded": False, "signal": False, "state": "unknown", "detail": ""}
+
+
+def ion_mobility_reading(record: Mapping[str, Any], evidence: Callable[[Mapping[str, Any]], Any] | None) -> dict[str, Any]:
+    """Whether the unit is excluded for ion mobility, read from its own evidence (option A, 2026-10-03).
+
+    `record` is the Catalog's unit (Catalog.get_unit), or the plan's row for it where that could not be
+    read. With the Catalog's ion_mobility_evidence, only its state "enabled" from unit-level sources
+    excludes; an answer the plan cannot read falls back to the rule without it, and says so. Returns
+    {"excluded", "evidence" ("catalog" or "fallback"), "state", "signal" (anything named ion mobility at
+    all), "detail"}."""
+    if evidence is not None:
+        try:
+            read = _read_evidence(evidence(record))
+            problem = "" if read is not None else "an answer of another shape"
+        except Exception as error:  # noqa: BLE001 - an answer the plan cannot read is the fallback's to decide
+            read, problem = None, f"{type(error).__name__}: {error}"
+        if read is not None:
+            excluded = read["state"] == "enabled" and bool(read["unit_sources"])
+            shown = read["unit_sources"] if excluded else read["sources"]
+            said = "; ".join(_describe_source(item) for item in shown[:3])
+            if excluded:
+                detail = f"enabled from the unit's own evidence ({said})"
+            elif read["state"] == "enabled":
+                detail = f"enabled from the study's text only ({said}), which is not the unit's evidence"
+            elif read["state"] in ("mixed", "unknown"):
+                detail = f"{read['state']}{f' ({said})' if said else ''}: Interactive's header check decides each file"
+            else:
+                detail = f"{read['state']}{f' ({said})' if said else ''}"
+            if read["reason"]:
+                detail += f"; {_clip(read['reason'], 240)}"
+            signal = excluded or read["state"] in ("enabled", "mixed") or str(record.get("ion_mobility") or "") in ("Enabled", "Mixed")
+            return {"excluded": excluded, "evidence": "catalog", "state": read["state"], "signal": signal,
+                    "detail": f"the Catalog's ion_mobility_evidence: {detail}"}
+        fallback = _fallback_ion_mobility(record)
+        return {**fallback, "evidence": "fallback", "signal": True,
+                "detail": f"the Catalog's ion_mobility_evidence could not be read ({_clip(problem)}); "
+                          f"{fallback['detail'] or 'nothing of the unit names ion mobility'}"}
+    return {**_fallback_ion_mobility(record), "evidence": "fallback"}
+
+
 def exclusion_reasons(
     unit: Mapping[str, Any], workspace_root: Path, replan: Mapping[str, Mapping[str, str]] | None = None,
+    ion_mobility: Mapping[str, Any] | None = None,
 ) -> list[str]:
-    """Every static reason this unit will not run, in EXCLUSION_REASONS order."""
+    """Every static reason this unit will not run, in EXCLUSION_REASONS order.
+
+    `ion_mobility` is ion_mobility_reading() of the unit's Catalog record; without it, the fallback rule is
+    applied to what the plan's row holds (the unit's instrument, no rows and no inputs)."""
     reasons = []
     if not unit["file_count"]:
         reasons.append("no_files")
-    if str(unit["ion_mobility"] or "") == "Enabled" or ION_MOBILITY_INSTRUMENT.search(str(unit["instrument"] or "")):
+    if (ion_mobility if ion_mobility is not None else ion_mobility_reading(unit, None))["excluded"]:
         reasons.append("ion_mobility")
     workspace, _detail = workspace_exclusion(unit, workspace_root, replan)
     if workspace:
@@ -297,10 +452,12 @@ def build_manifest(
     now: datetime | None = None,
     progress: Callable[[str], None] | None = None,
     replan: Mapping[str, Mapping[str, str]] | None = None,
+    ion_mobility_evidence: Any = DETECT,
 ) -> dict[str, Any]:
     """The manifest for one pool. `catalog` is a read-only Catalog; nothing is written anywhere.
 
     `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
+    `ion_mobility_evidence` is the Catalog's helper, None for the fallback rule, or DETECT to look it up.
     """
     if not str(campaign_id or "").strip() or not re.fullmatch(r"[A-Za-z0-9._-]+", str(campaign_id)):
         raise PlanError("A campaign id is letters, digits, '.', '_' and '-'.")
@@ -317,12 +474,20 @@ def build_manifest(
     selected = select_units(catalog.connection, pool)
     say(f"{len(selected)} units selected for the {pool} pool")
     excluded: list[dict[str, Any]] = []
+    evidence = catalog_ion_mobility_evidence() if ion_mobility_evidence is DETECT else ion_mobility_evidence
     candidates: list[dict[str, Any]] = []
+    mobility: dict[str, dict[str, Any]] = {}
     for unit in selected:
-        reasons = exclusion_reasons(unit, workspace_root, replan)
+        try:
+            record: Mapping[str, Any] = catalog.get_unit(unit["unit_id"])
+        except Exception:  # noqa: BLE001 - read from the plan's own row instead, as the fallback rule allows
+            record = unit
+        mobility[unit["unit_id"]] = ion_mobility_reading(record, evidence)
+        reasons = exclusion_reasons(unit, workspace_root, replan, ion_mobility=mobility[unit["unit_id"]])
         if reasons:
             _reason, found = workspace_exclusion(unit, workspace_root, replan)
-            excluded.append(_exclusion(unit, reasons, detail=found))
+            said = [f"ion_mobility: {mobility[unit['unit_id']]['detail']}"] if "ion_mobility" in reasons else []
+            excluded.append(_exclusion(unit, reasons, detail="; ".join(said + ([found] if found else []))))
         else:
             candidates.append(unit)
     decisions: dict[str, dict[str, Any]] = {}
@@ -384,6 +549,10 @@ def build_manifest(
             "class_assignments": int(decision.get("assignment_count") or 0),
             **({"replanned_from": {"campaign_id": prior, "state": (replan or {}).get(prior, {}).get(unit["unit_id"])}}
                if prior else {}),
+            # Something named ion mobility and the unit runs all the same (option A): what, and why it reaches
+            # Interactive, whose header check decides each file.
+            **({"ion_mobility_reading": {key: mobility[unit["unit_id"]][key] for key in ("evidence", "state", "detail")}}
+               if mobility[unit["unit_id"]]["signal"] else {}),
         })
     used_groups = []
     for group in group_order:
@@ -415,7 +584,12 @@ def build_manifest(
         "workspace_root": str(workspace_root),
         "raw_retention_policy": raw_retention_policy,
         "catalog": {"database": catalog_database, "version": catalog_version},
-        "selection": {"pool": pool, "rule": SELECTION_RULES[pool], "exclusion_reasons": list(EXCLUSION_REASONS)},
+        "selection": {
+            "pool": pool, "rule": SELECTION_RULES[pool], "exclusion_reasons": list(EXCLUSION_REASONS),
+            # Which reading of ion mobility excluded units: the Catalog's ion_mobility_evidence, or the
+            # fallback rule without it (option A, 2026-10-03).
+            "ion_mobility_evidence": "fallback" if evidence is None else "catalog",
+        },
         "policy": campaign_policy.as_dict(),
         "profile": dict(profile) if profile is not None else None,
         "pins": dict(pins),
@@ -591,6 +765,11 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     ]
     for reason, count in totals["excluded_by_reason"].items():
         lines.append(f"    excluded {reason}: {count}")
+    evidence = (manifest.get("selection") or {}).get("ion_mobility_evidence")
+    if evidence:
+        lines.append("  ion mobility read from " + (
+            "the Catalog's ion_mobility_evidence" if evidence == "catalog"
+            else "the unit's instrument, its rows' instrument fields and its inputs' container formats (no Catalog helper)"))
     lower = " at least" if totals["units_of_unknown_size"] else ""
     lines.append(f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}")
     if (manifest.get("pins", {}).get("interactive") or {}).get("lease_uses_store") is True:
