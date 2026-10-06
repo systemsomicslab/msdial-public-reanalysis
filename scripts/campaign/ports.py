@@ -1411,6 +1411,10 @@ class BackendSupervisor:
             result["in_job"] = in_job
         if in_job:
             result["warning"] = "it sits in a job object, so it ends when whatever owns that job ends (the Claude app, a scheduled task)"
+            if result.get("launcher_pid"):
+                # Seen on 2026-10-07: a venv's python.exe puts the interpreter it starts in a job of its own.
+                result["warning"] += (f"; its launcher (pid {result['launcher_pid']}, a venv's python.exe or py.exe) holds "
+                                      f"a job of its own, so it also ends when that launcher is ended")
         return result
 
     # ---- starting it ----
