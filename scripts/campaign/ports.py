@@ -32,6 +32,7 @@ test downloads anything or starts a Console.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import inspect
 import json
@@ -904,24 +905,178 @@ class SystemClock:
 def backend_creation_flags() -> int:
     """The Windows creation flags of the campaign backend: a console of its own, with no window.
 
-    Not DETACHED_PROCESS. A process without a console makes Windows build a new console for every
-    console program it starts, and Windows ignores CREATE_NO_WINDOW beside DETACHED_PROCESS. Each git
-    call behind /api/config then took about 3 s instead of 0.03 s, so the backend missed the 60 s start
-    window (2026-10-03). It would also have opened a window for each Console run. A windowless console
-    is inherited by git, the Console, 7-Zip and the extractor. The backend still outlives the runner,
-    and its own process group keeps the runner's Ctrl+C from reaching it.
+    Not DETACHED_PROCESS. A process without a console makes Windows build a new console, with a visible
+    window, for every console program it starts, and Windows ignores CREATE_NO_WINDOW beside
+    DETACHED_PROCESS. Each git call behind /api/config then took about 0.4 s instead of 0.03 s when measured
+    on 2026-10-06 (3 s in a traced copy of the pilot's backend), and /api/config also starts the Console
+    (--version, rtcorrection --help) for every candidate; the pilot's backend missed the 60 s start window
+    on 2026-10-03. A windowless console is inherited by git, the Console, 7-Zip and the extractor, and its
+    own process group keeps the runner's Ctrl+C from reaching it.
     """
     return subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+
+
+# How the runner starts the backend (run --backend-launch). "wmi" has Windows Management Instrumentation create
+# a broker (backend_launch.py) that starts the backend and exits, so the backend is nobody's child and sits
+# outside the runner's job object; "child" starts it as the runner's own child; "auto" tries "wmi" and falls
+# back to "child", recording why.
+BACKEND_LAUNCH_METHODS = ("auto", "wmi", "child")
+BACKEND_BROKER = Path(__file__).resolve().with_name("backend_launch.py")
+
+
+class BackendLaunchError(Exception):
+    """A start that did not happen. may_have_started: the broker may have started a backend that did not report
+    back, so a second start would only collide with it on the port."""
+
+    def __init__(self, message: str, *, may_have_started: bool = False) -> None:
+        super().__init__(message)
+        self.may_have_started = may_have_started
+
+
+def _powershell() -> str:
+    root = os.environ.get("SystemRoot") or r"C:\Windows"
+    candidate = Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return str(candidate) if candidate.is_file() else "powershell.exe"
+
+
+def _powershell_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def wmi_create_process(command_line: str, cwd: str, *, timeout: float = 60.0) -> tuple[int | None, str]:
+    """Create a process through WMI's Win32_Process.Create, called with PowerShell's Invoke-CimMethod.
+
+    The process is created by the WMI provider host, not by the caller: it is not the caller's child and it
+    is in none of the caller's job objects (checked on 2026-10-06: a process created this way from inside
+    the Claude app's job reported IsProcessInJob false). Its window is hidden (Win32_ProcessStartup
+    ShowWindow 0). Returns (process id, "") or (None, why not).
+    """
+    script = "\n".join((
+        "$ErrorActionPreference = 'Stop'",
+        "$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow = [uint16]0}",
+        "$arguments = @{CommandLine = " + _powershell_literal(command_line) + "; CurrentDirectory = "
+        + _powershell_literal(cwd) + "; ProcessStartupInformation = $startup}",
+        "$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $arguments",
+        "Write-Output ('{0} {1}' -f $result.ReturnValue, $result.ProcessId)",
+    ))
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    try:
+        completed = subprocess.run(
+            [_powershell(), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, f"PowerShell could not call Win32_Process.Create: {type(error).__name__}: {error}"
+    words = (completed.stdout or "").strip().split()
+    if completed.returncode != 0 or len(words) < 2:
+        message = " ".join((completed.stderr or completed.stdout or "").split())[:300]
+        return None, f"Win32_Process.Create through PowerShell failed (exit code {completed.returncode}): {message}"
+    if words[-2] != "0":
+        return None, f"Win32_Process.Create returned {words[-2]}"
+    try:
+        return int(words[-1]), ""
+    except ValueError:
+        return None, f"Win32_Process.Create gave no process id: {words[-1]!r}"
+
+
+def _process_alive(pid: Any, created_at: float | None = None) -> bool | None:
+    try:
+        from msdial_app.process_liveness import process_is_alive
+    except ImportError:
+        try:
+            import psutil
+
+            process = psutil.Process(int(pid))
+            if created_at is not None and abs(process.create_time() - float(created_at)) > 1.0:
+                return False
+            return process.is_running()
+        except ImportError:
+            return None
+        except Exception:  # noqa: BLE001 - psutil.NoSuchProcess and friends: the process is gone
+            return False
+    return process_is_alive(pid, created_at)
+
+
+def _process_created_at(pid: int) -> float | None:
+    try:
+        from msdial_app.process_liveness import process_created_at
+    except ImportError:
+        try:
+            import psutil
+
+            return psutil.Process(int(pid)).create_time()
+        except Exception:  # noqa: BLE001 - unreadable
+            return None
+    return process_created_at(pid)
+
+
+def process_in_job(pid: int | None) -> bool | None:
+    """Whether a process sits in a Windows job object (None: not Windows, or not readable). A process in the
+    Claude app's job, or a scheduled task's, ends when that job is closed or terminated."""
+    if os.name != "nt" or not pid:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.IsProcessInJob.restype = wintypes.BOOL
+        kernel32.IsProcessInJob.argtypes = (wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            result = wintypes.BOOL()
+            if not kernel32.IsProcessInJob(handle, None, ctypes.byref(result)):
+                return None
+            return bool(result.value)
+        finally:
+            kernel32.CloseHandle(handle)
+    except (ImportError, OSError, AttributeError):
+        return None
+
+
+def listening_pid(port: int) -> int | None:
+    """The process listening on a local TCP port, if psutil can say."""
+    try:
+        import psutil
+
+        for connection in psutil.net_connections(kind="tcp"):
+            if connection.status == psutil.CONN_LISTEN and connection.laddr and connection.laddr.port == int(port):
+                return connection.pid or None
+    except Exception:  # noqa: BLE001 - ImportError, AccessDenied: not knowable here
+        return None
+    return None
 
 
 class BackendSupervisor:
     """The standalone Interactive backend the campaign's jobs run in, on a port of its own.
 
     A port and a job registry of its own (MSDIAL_INTERACTIVE_JOBS_FILE) keep an interactive Claude
-    session from overwriting the campaign's job records or restarting its backend. It is started in a
-    process group and a windowless console of its own (backend_creation_flags), so a runner that stops
-    leaves its Console running: the runner reattaches to the job when
-    it comes back, instead of orphaning a run hours from its end.
+    session from overwriting the campaign's job records or restarting its backend.
+
+    IT OUTLIVES ITS LAUNCHER (2026-10-06). On Windows it is started through WMI (launch_method "wmi", the
+    default "auto" falls back to "child"): a broker created by Win32_Process.Create starts it and exits, so
+    the backend is not the runner's child and is in none of the runner's job objects. A tree kill of the
+    runner (Task Scheduler's Stop, a tool's timeout) does not reach it, and neither does the end of the job
+    the runner was started in: the Claude app's, which does not allow breakaway and is force-closed when the
+    app updates, or a scheduled task's. A runner that stops leaves its Console running, and the next runner
+    reattaches to the job instead of orphaning a run hours from its end. The backend keeps the windowless
+    console and process group of backend_creation_flags. Its process id, creation time and launch method are
+    written to backend-launch.json beside the job registry and reported in the backend_started event.
+
+    READINESS is /api/agent/status (Interactive's job summary, which carries app_version and probes nothing),
+    polled for start_timeout seconds; /api/config, which starts the Console and git for every Console
+    candidate, is read once it answers, with config_timeout, for the checkout the backend runs from.
+
+    A backend that already answers is reused, and ensure() says how it was started where that is knowable
+    (origin()): by this campaign's runner (the launch record matches its process id and creation time) or
+    not, and whether it sits in a job object. Starts that fail max_start_failures times in a row are not
+    tried again for retry_after seconds, and the refusal names each failure.
 
     The backend's own output stream is discarded unless log_directory is given (run --backend-log). It
     is Interactive's, not the runner's: an uncaught traceback there can quote a file location, and no
@@ -931,8 +1086,12 @@ class BackendSupervisor:
 
     def __init__(
         self, *, python: str, interactive_root: Path, host: str, port: int, jobs_file: Path,
-        workspace_root: str, log_directory: Path | None = None,
+        workspace_root: str, log_directory: Path | None = None, launch_method: str = "auto",
+        start_timeout: float = 300.0, config_timeout: float = 120.0, max_start_failures: int = 3,
+        retry_after: float = 3600.0,
     ) -> None:
+        if launch_method not in BACKEND_LAUNCH_METHODS:
+            raise ValueError(f"launch_method must be one of {', '.join(BACKEND_LAUNCH_METHODS)}")
         self.python = python
         self.interactive_root = Path(interactive_root)
         self.host = host
@@ -940,7 +1099,24 @@ class BackendSupervisor:
         self.jobs_file = Path(jobs_file)
         self.workspace_root = str(workspace_root)
         self.log_directory = Path(log_directory) if log_directory is not None else None
-        self.start_failures = 0
+        self.launch_method = launch_method
+        self.start_timeout = float(start_timeout)
+        self.config_timeout = float(config_timeout)
+        self.max_start_failures = int(max_start_failures)
+        self.retry_after = float(retry_after)
+        self.failures: list[dict[str, str]] = []
+        self._retry_at = 0.0
+        self._pending: dict[str, Any] | None = None
+        self._child: subprocess.Popen | None = None
+        self._reported_origin: tuple[Any, Any] | None = None
+
+    @property
+    def start_failures(self) -> int:
+        return len(self.failures)
+
+    @property
+    def launch_record_path(self) -> Path:
+        return self.jobs_file.parent / "backend-launch.json"
 
     def command(self) -> list[str]:
         return [self.python, str(self.interactive_root / "app.py"), "--host", self.host, "--port", str(self.port), "--no-browser"]
@@ -952,12 +1128,24 @@ class BackendSupervisor:
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         return environment
 
-    def config(self) -> dict[str, Any] | None:
+    def _get(self, path: str, timeout: float) -> dict[str, Any] | None:
         try:
-            with urllib.request.urlopen(f"http://{self.host}:{self.port}/api/config", timeout=5) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(f"http://{self.host}:{self.port}{path}", timeout=timeout) as response:
+                value = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, OSError, ValueError):
             return None
+        return value if isinstance(value, dict) else None
+
+    def status(self) -> dict[str, Any] | None:
+        """Interactive's /api/agent/status: whether a backend answers at all. It summarizes the job registry
+        and starts no program, so it answers within a second of the server's start."""
+        value = self._get("/api/agent/status?limit=0", 5)
+        return value if value is not None and "app_version" in value else None
+
+    def config(self, timeout: float | None = None) -> dict[str, Any] | None:
+        """Interactive's /api/config, which says which checkout the backend runs from. It starts the Console and
+        git for every Console candidate it finds, so it is given config_timeout, not a few seconds."""
+        return self._get("/api/config", self.config_timeout if timeout is None else timeout)
 
     def check(self, config: Mapping[str, Any]) -> list[str]:
         """Why the listener on the campaign port is not this campaign's backend, if it is not."""
@@ -973,44 +1161,231 @@ class BackendSupervisor:
             problems.append(f"it runs from another checkout ({root})")
         return problems
 
-    def ensure(self) -> dict[str, Any]:
-        config = self.config()
-        if config is not None:
-            problems = self.check(config)
-            return {"ok": not problems, "started": False, "detail": "; ".join(problems)}
-        if self.start_failures >= 3:
-            return {"ok": False, "started": False, "detail": "The campaign backend could not be started three times."}
-        self.jobs_file.parent.mkdir(parents=True, exist_ok=True)
-        if self.log_directory is not None:
-            self.log_directory.mkdir(parents=True, exist_ok=True)
-            log: Any = open(self.log_directory / f"backend-{_now().strftime('%Y%m%dT%H%M%SZ')}.log", "ab")
+    # ---- how a backend was started ----
+
+    def _read_launch_record(self) -> dict[str, Any]:
+        try:
+            value = json.loads(self.launch_record_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def origin(self, pid: int | None = None) -> dict[str, Any]:
+        """How the backend listening on the campaign port was started, as far as this machine can tell."""
+        listener = listening_pid(self.port) if pid is None else pid
+        record = self._read_launch_record()
+        result: dict[str, Any] = {"pid": listener}
+        if listener is None:
+            result.update(how="unknown", note="the process listening on the port could not be read")
+            return result
+        created = _process_created_at(listener)
+        recorded = record.get("process_created_at")
+        same = record.get("pid") == listener and (
+            created is None or recorded is None or abs(float(created) - float(recorded)) <= 1.0
+        )
+        if same:
+            result.update(how=record.get("method") or "unknown", by="this campaign's runner",
+                          started_at=record.get("started_at"), process_created_at=recorded)
+            if record.get("wmi_failure"):
+                result["wmi_failure"] = record["wmi_failure"]
         else:
-            log = open(os.devnull, "ab")
-        flags = 0
-        if os.name == "nt":
-            flags = backend_creation_flags()
+            result.update(
+                how="unknown", process_created_at=created,
+                note=("not started by this campaign's runner"
+                      + (f" (its launch record names pid {record.get('pid')})" if record.get("pid") else " (it has no launch record)")
+                      + ": how it was started is not known. A backend started by hand or before 2026-10-06 may have"
+                        " no windowless console, and one started from a Claude session ends with the Claude app."),
+            )
+        in_job = process_in_job(listener)
+        if in_job is not None:
+            result["in_job"] = in_job
+        if in_job:
+            result["warning"] = "it sits in a job object, so it ends when whatever owns that job ends (the Claude app, a scheduled task)"
+        return result
+
+    # ---- starting it ----
+
+    def ensure(self) -> dict[str, Any]:
+        if self.status() is not None:
+            return self._reuse()
+        if self._pending is not None:
+            if self._alive(self._pending) is not False:
+                return self._await(self._pending)
+            self._pending = None
+        now = time.monotonic()
+        if self.start_failures >= self.max_start_failures:
+            if now < self._retry_at:
+                return {"ok": False, "started": False, "start_failures": self.start_failures, "detail": self._refusal(now)}
+            self.failures = []
+        try:
+            record = self._launch()
+        except BackendLaunchError as error:
+            return self._failed(str(error), started=False)
+        return self._await(record)
+
+    def _reuse(self) -> dict[str, Any]:
+        origin = self.origin()
+        result: dict[str, Any] = {"ok": False, "started": False, "pid": origin.get("pid"), "origin": origin}
+        key = (origin.get("pid"), origin.get("how"))
+        if key != self._reported_origin:
+            self._reported_origin = key
+            result["origin_new"] = True
+        config = self.config()
+        if config is None:
+            result["detail"] = (f"A backend answers /api/agent/status on port {self.port}, but its /api/config did not "
+                                f"answer within {self.config_timeout:g} s (--backend-config-timeout).")
+            return result
+        problems = self.check(config)
+        result.update(ok=not problems, detail="; ".join(problems))
+        return result
+
+    def _alive(self, record: Mapping[str, Any]) -> bool | None:
+        child = self._child
+        if record.get("method") == "child" and child is not None and child.pid == record.get("pid"):
+            return child.poll() is None
+        return _process_alive(record.get("pid"), record.get("process_created_at"))
+
+    def _refusal(self, now: float) -> str:
+        reasons = "; ".join(f"{index}. {failure['reason']}" for index, failure in enumerate(self.failures, 1))
+        wait = int(max(0.0, self._retry_at - now))
+        return (f"The campaign backend could not be started {self.start_failures} times in a row ({reasons}). "
+                f"No start is tried for another {wait} s; until then the runner pauses for the backend.")
+
+    def _failed(self, reason: str, *, started: bool, record: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        self.failures.append({"at": _now().isoformat(timespec="seconds"), "reason": reason})
+        result: dict[str, Any] = {"ok": False, "started": started, "start_failures": self.start_failures, "detail": reason}
+        if record is not None:
+            result.update({key: record.get(key) for key in ("pid", "process_created_at", "method") if record.get(key) is not None})
+        if self.start_failures >= self.max_start_failures:
+            self._retry_at = time.monotonic() + self.retry_after
+            result["detail"] = self._refusal(time.monotonic())
+        return result
+
+    def _await(self, record: dict[str, Any]) -> dict[str, Any]:
+        begun = time.monotonic()
+        deadline = begun + self.start_timeout
+        name = f"The backend (pid {record.get('pid')}, started by {record.get('method')})"
+        while time.monotonic() < deadline:
+            if self.status() is not None:
+                listener = listening_pid(self.port)
+                if listener is not None and listener != record.get("pid"):
+                    self._pending = None
+                    return self._failed(f"Port {self.port} is answered by pid {listener}, not by the backend this "
+                                        f"runner started (pid {record.get('pid')}).", started=True, record=record)
+                config = self.config(timeout=max(5.0, min(self.config_timeout, deadline - time.monotonic())))
+                if config is None:
+                    time.sleep(1)
+                    continue
+                self._pending = None
+                problems = self.check(config)
+                if problems:
+                    return self._failed("; ".join(problems), started=True, record=record)
+                self.failures = []
+                self._reported_origin = (record.get("pid"), record.get("method"))
+                result = {"ok": True, "started": True, "detail": "", "seconds": round(time.monotonic() - begun, 1)}
+                result.update({key: record[key] for key in ("pid", "process_created_at", "method", "in_job", "wmi_failure")
+                               if record.get(key) is not None})
+                return result
+            if self._alive(record) is False:
+                self._pending = None
+                return self._failed(f"{name} exited before it answered.", started=True, record=record)
+            time.sleep(1)
+        self._pending = record
+        return self._failed(f"{name} did not answer within {self.start_timeout:g} s (--backend-start-timeout); it is "
+                            f"left running and waited for again at the next check.", started=True, record=record)
+
+    def _log_path(self) -> Path | None:
+        if self.log_directory is None:
+            return None
+        self.log_directory.mkdir(parents=True, exist_ok=True)
+        return self.log_directory / f"backend-{_now().strftime('%Y%m%dT%H%M%SZ')}.log"
+
+    def _launch(self) -> dict[str, Any]:
+        self.jobs_file.parent.mkdir(parents=True, exist_ok=True)
+        method = self.launch_method if os.name == "nt" else "child"
+        wmi_failure = None
+        record: dict[str, Any] | None = None
+        if method in ("auto", "wmi"):
+            try:
+                record = self._launch_wmi()
+            except BackendLaunchError as error:
+                if method == "wmi" or error.may_have_started:
+                    raise
+                wmi_failure = str(error)
+        if record is None:
+            record = self._launch_child()
+            if wmi_failure:
+                record["wmi_failure"] = wmi_failure
+        record.update(started_at=_now().isoformat(timespec="seconds"), port=self.port,
+                      interactive_root=str(self.interactive_root))
+        try:
+            write_json_atomic(self.launch_record_path, record)
+        except OSError:
+            pass
+        return record
+
+    def _launch_child(self) -> dict[str, Any]:
+        log_path = self._log_path()
+        log: Any = open(log_path, "ab") if log_path is not None else open(os.devnull, "ab")
         try:
             process = subprocess.Popen(
                 self.command(), cwd=str(self.interactive_root), env=self.environment(), stdout=log,
-                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True,
+                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                creationflags=backend_creation_flags() if os.name == "nt" else 0, close_fds=True,
             )
         except OSError as error:
-            self.start_failures += 1
-            return {"ok": False, "started": False, "detail": str(error)}
+            raise BackendLaunchError(f"The backend could not be started: {error}") from error
         finally:
             log.close()
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            config = self.config()
-            if config is not None:
-                problems = self.check(config)
-                self.start_failures = 0 if not problems else self.start_failures + 1
-                return {"ok": not problems, "started": True, "pid": process.pid, "detail": "; ".join(problems)}
-            if process.poll() is not None:
-                break
-            time.sleep(1)
-        self.start_failures += 1
-        return {"ok": False, "started": True, "pid": process.pid, "detail": "The backend did not answer within 60 s."}
+        self._child = process
+        record: dict[str, Any] = {"method": "child", "pid": process.pid, "process_created_at": _process_created_at(process.pid)}
+        in_job = process_in_job(process.pid)
+        if in_job is not None:
+            record["in_job"] = in_job
+        return record
+
+    def _launch_wmi(self) -> dict[str, Any]:
+        pythonw = Path(self.python).with_name("pythonw.exe")
+        if not pythonw.is_file():
+            raise BackendLaunchError(f"there is no pythonw.exe beside {Path(self.python).name}, to start the broker without a window")
+        stamp = f"{_now().strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+        spec_path = self.jobs_file.parent / f"backend-launch-{stamp}.spec.json"
+        result_path = self.jobs_file.parent / f"backend-launch-{stamp}.result.json"
+        log_path = self._log_path()
+        # The spec holds the runner's environment; the broker deletes it as soon as it has read it.
+        write_json_atomic(spec_path, {
+            "command": self.command(), "cwd": str(self.interactive_root), "environment": self.environment(),
+            "creationflags": backend_creation_flags(), "log": str(log_path) if log_path is not None else None,
+            "result": str(result_path),
+        })
+        try:
+            broker, why = wmi_create_process(
+                subprocess.list2cmdline([str(pythonw), str(BACKEND_BROKER), str(spec_path)]), str(self.interactive_root),
+            )
+            if broker is None:
+                raise BackendLaunchError(why)
+            deadline = time.monotonic() + 30
+            while not result_path.is_file():
+                if time.monotonic() > deadline:
+                    raise BackendLaunchError(
+                        f"the broker WMI created (pid {broker}) reported nothing within 30 s", may_have_started=True)
+                time.sleep(0.2)
+            reported = json.loads(result_path.read_text(encoding="utf-8"))
+        finally:
+            for path in (spec_path, result_path):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        if reported.get("error") or not reported.get("pid"):
+            raise BackendLaunchError(f"the broker could not start the backend: {reported.get('error')}")
+        record: dict[str, Any] = {"method": "wmi", "pid": int(reported["pid"]), "broker_pid": broker,
+                                  "process_created_at": reported.get("process_created_at")}
+        if record["process_created_at"] is None:
+            record["process_created_at"] = _process_created_at(record["pid"])
+        if reported.get("in_job") is not None:
+            record["in_job"] = bool(reported["in_job"])
+        return record
 
 
 def kill_process_tree(pid: int, created_at: float | None = None) -> bool:

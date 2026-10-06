@@ -831,10 +831,16 @@ class Runner:
         if self.ports.backend is None:
             return True
         result = self.ports.backend.ensure()
+        # The backend's process id, creation time and how it was started (ports.BackendSupervisor): through WMI,
+        # outside the runner's job, or as the runner's child; for a backend found running, what is knowable of it.
         if not result.get("ok"):
-            self._event("backend_unavailable", {"detail": result.get("detail")})
+            self._event("backend_unavailable", {key: result[key] for key in (
+                "detail", "pid", "process_created_at", "method", "start_failures", "origin") if result.get(key) is not None})
         elif result.get("started"):
-            self._event("backend_started", {"pid": result.get("pid")})
+            self._event("backend_started", {key: result[key] for key in (
+                "pid", "process_created_at", "method", "in_job", "seconds", "wmi_failure") if result.get(key) is not None})
+        elif result.get("origin_new"):
+            self._event("backend_reused", {"pid": result.get("pid"), "origin": result.get("origin")})
         return bool(result.get("ok"))
 
     def _observations(self) -> list[float]:
