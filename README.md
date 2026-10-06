@@ -143,7 +143,22 @@ the MS-DIAL results (2026-10-01), and every before-production check is placed
 `blocks_run`. CLS-1, CLS-2, CLS-3, ORD-1, PKH-1 and SPL-1 are `record_only`,
 and so are PRE-1, which never FAILs, and PAIR-1 (2026-10-06), which lists as a
 WARN every input the lease paired with a declared raw file by inference
-(`input_names_paired_by_inference`), so each such pairing is on record. A `blocks_run` check left not evaluable on
+(`input_names_paired_by_inference`), so each such pairing is on record; a split
+part lists only its own inputs' pairings. ACQ-1 follows rule B2 (2026-10-06): a
+row FAILs where it runs as another type than its file's header alone gives
+(`header_console_acquisition_type`), at any confidence, and where an MS1-only
+file was folded into DDA in a unit declared DIA, AIF or SWATH; its one table of
+sanctioned header-to-row mappings is empty. CLS-2 reads what the download
+delivered from the archive member listings and the downloads: an approved
+sample whose file was delivered and left unpaired is a FAIL
+(`delivered_unpaired_samples`), one never delivered a WARN
+(`undelivered_samples`). PKH-1 holds the step floor, never finer than 10 for
+QTOF-type or 100 for Fourier-transform data, whatever family step a diagnostic
+records, and reports the production run's `production_peak_counts` where
+Interactive records them. The campaign ledger (schema 3) records the step an
+estimate used (`threshold_step`), the family step it searched first
+(`coarse_threshold_step`) and the fallback (`step_fallback`,
+`fallback_reason`). A `blocks_run` check left not evaluable on
 an artifact its stage owed, which `strict_failures` names, stops the run as its
 FAIL does; one not evaluable where the stage owed nothing, such as INP-1 for a
 unit that declares no analysis inputs, never does. Each check's docstring gives

@@ -543,6 +543,42 @@ def threshold_step(instrument: str, instrument_family: str = "", thermo_raw_inpu
     return 100
 
 
+def estimate_step(estimate: Mapping[str, Any], requested: int) -> dict[str, Any] | str:
+    """The step an estimate used, read against the instrument-family step the runner asked for (the user's
+    step rule of 2026-10-06): {"threshold_step", "coarse_threshold_step", "step_fallback", "fallback_reason"},
+    or what is wrong with it.
+
+    Interactive 0.5.28 records threshold_step (the step used), coarse_threshold_step (the family step it searched
+    first), step_fallback and fallback_reason; an older one records threshold_step alone, the step it was asked
+    for, with no fallback. The step used is the family step, or with a fallback a tenth of it, never finer.
+    """
+    def number(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return int(result) if result == int(result) else None
+
+    used = number(estimate.get("threshold_step"))
+    coarse = number(estimate.get("coarse_threshold_step", estimate.get("threshold_step")))
+    fallback = estimate.get("step_fallback", False)
+    if used is None or coarse is None:
+        return "the estimate records no threshold step"
+    if fallback not in (True, False):
+        return f"the estimate's step_fallback is {fallback!r}, neither true nor false"
+    if coarse != requested:
+        return f"the estimate searched first at step {coarse}, where the runner asked for {requested}"
+    expected = requested // 10 if fallback else requested
+    if used != expected:
+        return (f"the estimate used step {used}, where {'a fallback from' if fallback else 'no fallback from'} the "
+                f"family step {requested} gives {expected}")
+    reason = estimate.get("fallback_reason")
+    return {"threshold_step": used, "coarse_threshold_step": coarse, "step_fallback": bool(fallback),
+            "fallback_reason": str(reason) if reason else None}
+
+
 # ---- the disk --------------------------------------------------------------------------------------
 
 def observed_factor(observations: Iterable[float], policy: DiskPolicy) -> float | None:

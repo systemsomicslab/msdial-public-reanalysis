@@ -125,6 +125,11 @@ def _loads(text: str | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _flag(value: Any) -> bool | None:
+    """A ledger 0/1 column as a record's true or false, and NULL as null."""
+    return None if value is None else bool(value)
+
+
 def _merge(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
     """base updated by extra, nested objects merged key by key."""
     merged = dict(base)
@@ -1741,9 +1746,16 @@ class Runner:
 
     def _estimate(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
         """The stepped threshold from the diagnostic, with the campaign's step rule applied: {"estimate",
-        "representative", "threshold_step"}. None where Interactive answered that no estimate is ready; its
-        ok:false reply where a call did not give one, for the caller to classify (a backend that does not answer
-        is not the unit's failure)."""
+        "representative", "step"}, the step being policy.estimate_step's record of the step the estimate used,
+        the family step it searched first and whether and why it fell back (the user's rule of 2026-10-06). None
+        where Interactive answered that no estimate is ready; its ok:false reply where a call did not give one,
+        for the caller to classify (a backend that does not answer is not the unit's failure). An estimate
+        whose step the rule does not give is a reply the runner cannot read (reason malformed): the unit is
+        held, not run at a step nobody chose.
+
+        The estimate is asked for again at the policy's family step only where the one it gave searched
+        another first: after a fallback, threshold_step is the finer step, and coarse_threshold_step is the one
+        to compare (Interactive 0.5.28; an older one records threshold_step alone)."""
         arguments = {"job_id": unit["diagnostic_job_id"], "manifest_path": unit["manifest_path"],
                      "minimum": self.policy.peak_count_min, "maximum": self.policy.peak_count_max}
         first = self.ports.interactive.estimate(**arguments, step=0)
@@ -1757,14 +1769,18 @@ class Runner:
             thermo_raw_inputs(self._manifest(unit)),
         )
         estimate = dict(first.get("estimate") or {})
-        if int(estimate.get("threshold_step") or 0) != step:
+        if int(estimate.get("coarse_threshold_step", estimate.get("threshold_step")) or 0) != step:
             second = self.ports.interactive.estimate(**arguments, step=step)
             if second.get("ok") is False:
                 return dict(second)
             if not second.get("ready"):
                 return None
             estimate = dict(second.get("estimate") or {})
-        return {"estimate": estimate, "representative": representative, "threshold_step": step}
+        used = policy.estimate_step(estimate, step)
+        if isinstance(used, str):
+            return {"ok": False, "reason": "malformed", "detail": f"The peak-height estimate's step is not one the "
+                    f"step rule gives: {used}.", "estimate": estimate}
+        return {"estimate": estimate, "representative": representative, "step": used}
 
     def _diagnosed(self, unit: dict[str, Any], estimate: Mapping[str, Any]) -> bool:
         values = estimate["estimate"]
@@ -1772,7 +1788,10 @@ class Runner:
         self._move(
             unit, "diagnosed", minimum_peak_height=float(values.get("minimum_peak_height") or 0),
             diagnostic_peak_count=int(values.get("diagnostic_peak_count") or 0),
-            threshold_step=int(estimate["threshold_step"]),
+            threshold_step=int(estimate["step"]["threshold_step"]),
+            coarse_threshold_step=int(estimate["step"]["coarse_threshold_step"]),
+            step_fallback=int(estimate["step"]["step_fallback"]),
+            fallback_reason=estimate["step"]["fallback_reason"],
             representative_file=str(representative.get("file_name") or representative.get("file_path") or ""),
             order_source=str(representative.get("selection_reason") or ""),
             end_console_run=self._open_console_end(unit, "completed"),
@@ -2263,6 +2282,8 @@ class Runner:
                 "extractor_sha256": str((self.pins.get("extractor") or {}).get("binary_sha256") or ""),
                 "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
                 "minimum_peak_height": unit.get("minimum_peak_height"), "threshold_step": unit.get("threshold_step"),
+                "coarse_threshold_step": unit.get("coarse_threshold_step"), "step_fallback": _flag(unit.get("step_fallback")),
+                "fallback_reason": unit.get("fallback_reason"),
                 "attempt_status": status.replace(" ", "_") if not final else None,
             },
         }
@@ -2323,7 +2344,12 @@ class Runner:
             "jobs": {"download": unit.get("download_job_id"), "diagnostic": unit.get("diagnostic_job_id"),
                      "run": unit.get("run_job_id")},
             "minimum_peak_height": unit.get("minimum_peak_height"),
+            # The step the threshold was taken at, the instrument-family step searched first, and whether and why
+            # it fell back to the finer one (2026-10-06); the last three are null for a unit diagnosed before.
             "threshold_step": unit.get("threshold_step"),
+            "coarse_threshold_step": unit.get("coarse_threshold_step"),
+            "step_fallback": _flag(unit.get("step_fallback")),
+            "fallback_reason": unit.get("fallback_reason"),
             "diagnostic_peak_count": unit.get("diagnostic_peak_count"),
             "pins": {
                 "console_sha256": (self.pins.get("console") or {}).get("binary_sha256"),

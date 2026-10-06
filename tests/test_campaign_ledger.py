@@ -131,7 +131,14 @@ class LedgerTests(unittest.TestCase):
             ("UPDATE unit SET outputs_produced = 1, raw_disposition = 'discarded' WHERE unit_key = 'u1'",
              "validated outputs are never discarded"),
             ("UPDATE unit SET role = 'split_part' WHERE unit_key = 'u1'", "a part names its parent"),
-            ("UPDATE unit SET threshold_step = 250 WHERE unit_key = 'u1'", "the step is 100 or 1000"),
+            ("UPDATE unit SET threshold_step = 250 WHERE unit_key = 'u1'", "the step is 10, 100 or 1000"),
+            ("UPDATE unit SET coarse_threshold_step = 10 WHERE unit_key = 'u1'", "the family step is 100 or 1000"),
+            ("UPDATE unit SET threshold_step = 100, step_fallback = 0 WHERE unit_key = 'u1'",
+             "a fallback or none names the family step"),
+            ("UPDATE unit SET threshold_step = 1, coarse_threshold_step = 100, step_fallback = 1 WHERE unit_key = 'u1'",
+             "a fallback is to a tenth of the family step"),
+            ("UPDATE unit SET threshold_step = 10, coarse_threshold_step = 100, step_fallback = 0 WHERE unit_key = 'u1'",
+             "no fallback is the family step"),
             ("UPDATE unit SET gate_exit_final = 1 WHERE unit_key = 'u1'", "the gate exits 0, 2, 3 or 4"),
         ]
         for statement, why in cases:
@@ -237,18 +244,25 @@ SCHEMA_1_TABLES = (
 )
 
 
+def schema_2() -> str:
+    """The ledger's schema 2 (2026-10-02/03): threshold_step 100 or 1000, and none of the step rule's columns."""
+    text = ledger.SCHEMA.replace("threshold_step IN (10, 100, 1000)", "threshold_step IN (100, 1000)")
+    dropped = ("coarse_threshold_step", "step_fallback", "fallback_reason")
+    return "".join(line for line in text.splitlines(keepends=True) if not any(mark in line for mark in dropped))
+
+
 def schema_1() -> str:
     """The ledger's schema as merged in msdial-public-reanalysis#27: without gate_held, contract_held,
     recheck_held, the gate verdict's blocking unevaluated checks, the backend and outage pauses and a pilot's
     pool."""
-    text = ledger.SCHEMA.replace(", 'gate_held'", "").replace(", 'contract_held'", "").replace(", 'recheck_held'", "")
+    text = schema_2().replace(", 'gate_held'", "").replace(", 'contract_held'", "").replace(", 'recheck_held'", "")
     text = text.replace(", 'backend', 'outage'", "").replace(", 'pilot'", "")
     dropped = ("blocking_unevaluated_ids_json", "The blocks_run checks left not evaluable", "Last, where schema 1")
     return "".join(line for line in text.splitlines(keepends=True) if not any(mark in line for mark in dropped))
 
 
 class MigrationTests(unittest.TestCase):
-    """A ledger of schema 1 is brought to schema 2 when it is opened, with every row it holds."""
+    """A ledger of schema 1 is brought to the current schema when it is opened, with every row it holds."""
 
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
@@ -270,7 +284,10 @@ class MigrationTests(unittest.TestCase):
                     f"INSERT OR REPLACE INTO {table}({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", rows)
             target.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
             target.commit()
-            self.rows = {table: source.execute(f"SELECT * FROM {table}").fetchall() for table in SCHEMA_1_TABLES if table != "meta"}
+            self.columns = {table: ", ".join(row[1] for row in target.execute(f"PRAGMA table_info({table})"))
+                            for table in SCHEMA_1_TABLES}
+            self.rows = {table: source.execute(f"SELECT {self.columns[table]} FROM {table}").fetchall()
+                         for table in SCHEMA_1_TABLES if table != "meta"}
         finally:
             source.close()
             target.close()
@@ -293,10 +310,15 @@ class MigrationTests(unittest.TestCase):
     def test_a_schema_1_ledger_is_migrated_with_every_row(self) -> None:
         with ledger.Ledger(self.old) as book:
             db = book.connection
-            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], "2")
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0],
+                             str(ledger.SCHEMA_VERSION))
             for table, rows in self.rows.items():
                 with self.subTest(table=table):
-                    self.assertEqual([tuple(row) for row in db.execute(f"SELECT * FROM {table}")], [tuple(row) for row in rows])
+                    self.assertEqual([tuple(row) for row in db.execute(f"SELECT {self.columns[table]} FROM {table}")],
+                                     [tuple(row) for row in rows])
+            self.assertEqual({(row[0], row[1], row[2]) for row in db.execute(
+                "SELECT coarse_threshold_step, step_fallback, fallback_reason FROM unit")}, {(None, None, None)},
+                "a unit diagnosed before schema 3 keeps no record of the step it searched first")
             self.assertEqual({row[0] for row in db.execute("SELECT blocking_unevaluated_ids_json FROM gate_verdict")}, {"[]"})
             self.assertEqual(db.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
@@ -322,7 +344,7 @@ class MigrationTests(unittest.TestCase):
             book.pause("backend", "the campaign backend did not answer", NOW)  # the runner table is schema 2's
             self.assertEqual(book.runner()["pause_kind"], "backend")
         with ledger.Ledger(self.old) as again:
-            self.assertEqual(again.unit("u1")["state"], "gate_held", "a migrated ledger opens as schema 2")
+            self.assertEqual(again.unit("u1")["state"], "gate_held", "a migrated ledger opens as the current schema")
             self.assertEqual(again.unit("u2")["state"], "contract_held")
 
     def test_a_migration_that_stops_leaves_schema_1_as_it_was(self) -> None:
@@ -345,6 +367,62 @@ class MigrationTests(unittest.TestCase):
     def world_units(self) -> list[sqlite3.Row]:
         with self.world.open() as book:
             return [book.unit(key) for key in ("u1", "u2")]
+
+
+class SchemaTwoMigrationTests(unittest.TestCase):
+    """A ledger of schema 2, such as pilot-20261003's, is brought to schema 3 when it is opened: threshold_step
+    takes the finer step, and the step rule's columns are added, NULL for the units it already holds."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.world = fakes.World(Path(self.directory.name), ["u1", "u2"])
+        self.world.gate.exits.update(pre_cleanup=0, final=0)
+        self.world.run()
+        self.old = Path(self.directory.name) / "schema-2.sqlite"
+        source = sqlite3.connect(str(self.world.ledger_path))
+        target = sqlite3.connect(str(self.old))
+        try:
+            target.executescript(schema_2())
+            self.columns = {}
+            for table in SCHEMA_1_TABLES:
+                columns = [row[1] for row in target.execute(f"PRAGMA table_info({table})")]
+                self.columns[table] = ", ".join(columns)
+                rows = source.execute(f"SELECT {', '.join(columns)} FROM {table}").fetchall()
+                target.executemany(
+                    f"INSERT OR REPLACE INTO {table}({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", rows)
+            target.execute("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+            target.commit()
+            self.rows = {table: source.execute(f"SELECT {self.columns[table]} FROM {table}").fetchall()
+                         for table in SCHEMA_1_TABLES if table != "meta"}
+        finally:
+            source.close()
+            target.close()
+
+    def test_schema_2_refuses_the_finer_step(self) -> None:
+        connection = sqlite3.connect(str(self.old))
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+                connection.execute("UPDATE unit SET threshold_step = 10 WHERE unit_key = 'u1'")
+        finally:
+            connection.close()
+
+    def test_a_schema_2_ledger_is_migrated_with_every_row(self) -> None:
+        with ledger.Ledger(self.old) as book:
+            db = book.connection
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], "3")
+            for table, rows in self.rows.items():
+                with self.subTest(table=table):
+                    self.assertEqual([tuple(row) for row in db.execute(f"SELECT {self.columns[table]} FROM {table}")],
+                                     [tuple(row) for row in rows])
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                db.execute("UPDATE transition SET to_state = 'done'")
+            self.assertIsNone(book.unit("u1")["coarse_threshold_step"])
+            book.update("u1", NOW, threshold_step=10, coarse_threshold_step=100, step_fallback=1,
+                        fallback_reason="no_coarse_step_in_range")
+            self.assertEqual((book.unit("u1")["threshold_step"], book.unit("u1")["step_fallback"]), (10, 1))
 
 
 if __name__ == "__main__":

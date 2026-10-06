@@ -156,6 +156,58 @@ class HappyPathTests(Base):
         self.assertEqual((book.unit("u1")["threshold_step"], book.unit("u1")["minimum_peak_height"]), (1000, 12000.0))
         self.assertIn(("estimate", {"job_id": book.unit("u1")["diagnostic_job_id"], "step": 1000}), world.interactive.calls)
 
+    def test_the_step_an_estimate_fell_back_to_is_recorded(self) -> None:
+        """Interactive 0.5.28: no multiple of 100 lands in range, and the estimate falls back to step 10. The
+        ledger, campaign-record.json and the catalog's run provenance record the step used, the family step
+        searched first and the fallback; and since the estimate searched the policy's family step first, it is
+        asked for once, not again at the step it already searched."""
+        world = self.world()
+        world.interactive.step_fallback = True
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["threshold_step"], unit["coarse_threshold_step"], unit["step_fallback"],
+                          unit["fallback_reason"], unit["minimum_peak_height"]),
+                         (10, 100, 1, "no_coarse_step_in_range", 120.0))
+        asked = [arguments for name, arguments in world.interactive.calls if name == "estimate"]
+        self.assertEqual([0], [item["step"] for item in asked], "no second request at the step already searched")
+        record = json.loads((Path(unit["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["threshold_step"], record["coarse_threshold_step"], record["step_fallback"],
+                          record["fallback_reason"]), (10, 100, True, "no_coarse_step_in_range"))
+        provenance = next(iter(world.catalog.runs.values()))["provenance"]
+        self.assertEqual((provenance["threshold_step"], provenance["coarse_threshold_step"], provenance["step_fallback"]),
+                         (10, 100, True))
+
+    def test_a_fourier_transform_fallback_is_to_100(self) -> None:
+        world = self.world()
+        world.interactive.step_fallback = True
+        with world.open() as book:
+            book.connection.execute("UPDATE unit SET instrument = 'Thermo Orbitrap Exploris 480'")
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["threshold_step"], unit["coarse_threshold_step"], unit["step_fallback"]), (100, 1000, 1))
+        self.assertIn(("estimate", {"job_id": unit["diagnostic_job_id"], "step": 1000}), world.interactive.calls)
+
+    def test_an_estimate_without_the_step_rule_is_recorded_as_no_fallback(self) -> None:
+        """An Interactive before 0.5.28 records threshold_step alone: the step asked for, with no fallback."""
+        book = self.finish(self.world())
+        unit = book.unit("u1")
+        self.assertEqual((unit["threshold_step"], unit["coarse_threshold_step"], unit["step_fallback"],
+                          unit["fallback_reason"]), (100, 100, 0, None))
+
+    def test_an_estimate_at_a_step_the_rule_does_not_give_holds_the_unit(self) -> None:
+        """A fallback to step 1 is no step the rule gives: the unit is not run at it, and is held for a person."""
+        world = self.world()
+        world.interactive.estimate_patch = {"threshold_step": 1, "coarse_threshold_step": 100, "step_fallback": True}
+        world.run(max_iterations=200)
+        book = world.open()
+        self.addCleanup(book.close)
+        unit = book.unit("u1")
+        self.assertEqual(unit["state"], "contract_held")
+        self.assertIsNone(unit["threshold_step"])
+        self.assertFalse([name for name, _ in world.interactive.calls if name == "run"])
+        said = [row[0] for row in book.connection.execute("SELECT detail_json FROM attempt WHERE unit_key = 'u1'")]
+        self.assertTrue(any("not one the step rule gives" in item for item in said), "the hold's attempt says why")
+
     def test_the_campaign_keeps_raw_data_when_its_retention_says_so(self) -> None:
         world = self.world(retention="keep", covers=("1", "3", "4", "split"))
         book = self.finish(world)

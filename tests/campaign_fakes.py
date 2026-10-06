@@ -150,6 +150,11 @@ class FakeInteractive:
         self.orphan_unkillable = False
         self.kills: list[str] = []
         self.overlapping_starts: list[tuple[str, list[str]]] = []
+        # Interactive 0.5.28's step rule (2026-10-06): no multiple of the family step lands in range, and the
+        # estimate falls back to a tenth of it (threshold_step the step used, coarse_threshold_step the family
+        # step searched first). estimate_patch overrides fields of every estimate.
+        self.step_fallback = False
+        self.estimate_patch: dict[str, Any] = {}
 
     # ---- helpers ----
     def _job_id(self, prefix: str) -> str:
@@ -460,9 +465,14 @@ class FakeInteractive:
         if job is None or job["status"] != "completed":
             return {"ready": False}
         chosen = step or 100
+        estimate = {"minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen}
+        if self.step_fallback:
+            estimate.update(minimum_peak_height=12 * (chosen // 10), threshold_step=chosen // 10,
+                            coarse_threshold_step=chosen, step_fallback=True, fallback_reason="no_coarse_step_in_range")
+        estimate.update(self.estimate_patch)
         return {"ready": True, "representative": {"instrument_family": self.world.instrument_family,
                                                   "file_name": "QC_05.mzML", "selection_reason": "QC-nearest-run-midpoint"},
-                "estimate": {"minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen}}
+                "estimate": estimate}
 
     def prepare_guided(self, *, input_path: str, answers: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("prepare_guided", {"answers": answers}))
