@@ -926,11 +926,13 @@ BACKEND_BROKER = Path(__file__).resolve().with_name("backend_launch.py")
 
 class BackendLaunchError(Exception):
     """A start that did not happen. may_have_started: the broker may have started a backend that did not report
-    back, so a second start would only collide with it on the port."""
+    back, so a second start would only collide with it on the port; record then says what is known of that
+    start (the broker's process id and creation time), for the supervisor to wait for it."""
 
-    def __init__(self, message: str, *, may_have_started: bool = False) -> None:
+    def __init__(self, message: str, *, may_have_started: bool = False, record: Mapping[str, Any] | None = None) -> None:
         super().__init__(message)
         self.may_have_started = may_have_started
+        self.record = dict(record or {})
 
 
 def _powershell() -> str:
@@ -1053,6 +1055,83 @@ def listening_pid(port: int) -> int | None:
     return None
 
 
+def process_descends_from(pid: Any, ancestor: Any, ancestor_created_at: float | None = None, *, depth: int = 4) -> bool | None:
+    """Whether process `pid` is `ancestor` or was started by it, directly or through up to `depth` launchers.
+
+    The backend's command names the runner's Python, and that Python can be a launcher rather than the
+    interpreter: a venv's Scripts\\python.exe and pythonw.exe, and py.exe, start the real interpreter as their
+    child and wait for it. The process the runner (or the broker) started is then the launcher, and the port is
+    held by its child (2026-10-07 review of PR #30: a venv runner rejected its own backend). Each parent is
+    read from the child's recorded parent process id, which Windows keeps after the parent has exited, so a
+    broker that has exited still counts; a parent created after its child is a reused process id, not the
+    parent. None: not knowable here (no psutil, or access denied)."""
+    if not pid or not ancestor:
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    ancestor = int(ancestor)
+    try:
+        process = psutil.Process(int(pid))
+        if process.pid == ancestor:
+            return ancestor_created_at is None or abs(process.create_time() - float(ancestor_created_at)) <= 1.0
+        for _ in range(depth):
+            parent_pid = process.ppid()
+            created = process.create_time()
+            if parent_pid == ancestor:
+                return ancestor_created_at is None or float(ancestor_created_at) <= created + 1.0
+            if not parent_pid:
+                return False
+            try:
+                parent = psutil.Process(parent_pid)
+            except psutil.NoSuchProcess:
+                return False
+            if parent.create_time() > created + 1.0:
+                return False
+            process = parent
+        return False
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, OSError):
+        return None
+
+
+class MemoryStartState:
+    """BackendSupervisor's start state held in memory: for a supervisor with no ledger (tests, a probe)."""
+
+    def __init__(self) -> None:
+        self.value: dict[str, Any] = {}
+
+    def load(self) -> dict[str, Any]:
+        return json.loads(json.dumps(self.value))
+
+    def save(self, value: Mapping[str, Any]) -> None:
+        self.value = json.loads(json.dumps(dict(value)))
+
+
+class LedgerStartState:
+    """BackendSupervisor's start state kept in the campaign ledger (Ledger.backend_start_state): its consecutive
+    start failures, the time before which it starts no backend, and the start it still waits for. The scheduled
+    task starts a new runner after each one that exits, and that runner must honour them (2026-10-07 review of
+    PR #30)."""
+
+    def __init__(self, book: Any) -> None:
+        self.book = book
+
+    def load(self) -> dict[str, Any]:
+        return self.book.backend_start_state()
+
+    def save(self, value: Mapping[str, Any]) -> None:
+        self.book.set_backend_start_state(value)
+
+
+def _iso_epoch(value: float) -> str | None:
+    if not value:
+        return None
+    return datetime.fromtimestamp(float(value), timezone.utc).isoformat(timespec="seconds")
+
+
 class BackendSupervisor:
     """The standalone Interactive backend the campaign's jobs run in, on a port of its own.
 
@@ -1069,14 +1148,31 @@ class BackendSupervisor:
     console and process group of backend_creation_flags. Its process id, creation time and launch method are
     written to backend-launch.json beside the job registry and reported in the backend_started event.
 
+    ITS OWN BACKEND IS KNOWN BY THE PROCESS TREE (2026-10-07). The process the runner or the broker started
+    can be a launcher (a venv's python.exe, py.exe) whose child holds the port. A listener that is the
+    started process, or descends from it (or, where the broker never reported, from the broker), is this
+    runner's backend: its process id and creation time replace the launcher's in the launch record, which
+    keeps the launcher's as launcher_pid. Any other listener is refused, and named.
+
     READINESS is /api/agent/status (Interactive's job summary, which carries app_version and probes nothing),
-    polled for start_timeout seconds; /api/config, which starts the Console and git for every Console
-    candidate, is read once it answers, with config_timeout, for the checkout the backend runs from.
+    polled for start_timeout seconds. /api/config, which starts the Console and git for every Console
+    candidate, is then read for the checkout the backend runs from, with a deadline of its own, config_timeout,
+    counted from the moment the status answered (2026-10-07: it was cut to what was left of the start
+    deadline). A request that timed out is not sent again over it; one that failed at once is retried until
+    the deadline. A backend that answers the status but not /api/config is reported as exactly that.
 
     A backend that already answers is reused, and ensure() says how it was started where that is knowable
-    (origin()): by this campaign's runner (the launch record matches its process id and creation time) or
-    not, and whether it sits in a job object. Starts that fail max_start_failures times in a row are not
-    tried again for retry_after seconds, and the refusal names each failure.
+    (origin()): by this campaign's runner (the launch record matches its process id and creation time, or it
+    descends from the recorded process) or not, and whether it sits in a job object. Starts that fail
+    max_start_failures times in a row are not tried again for retry_after seconds, and the refusal names
+    each failure. A start that has not answered yet is waited for again rather than started twice.
+
+    THAT START STATE LIVES IN THE LEDGER (2026-10-07). The consecutive failures, the time before which no
+    start is tried and the start still waited for are read from `state` (LedgerStartState: a meta row of the
+    campaign ledger) at every ensure() and written back at every change, because the scheduled task starts a
+    new runner process after each one that exits, and run exits when its first ensure() is not usable: in
+    memory they lasted one runner, so the pause never engaged and a slow start was started again. Without a
+    `state` they are kept in memory (MemoryStartState).
 
     The backend's own output stream is discarded unless log_directory is given (run --backend-log). It
     is Interactive's, not the runner's: an uncaught traceback there can quote a file location, and no
@@ -1088,7 +1184,7 @@ class BackendSupervisor:
         self, *, python: str, interactive_root: Path, host: str, port: int, jobs_file: Path,
         workspace_root: str, log_directory: Path | None = None, launch_method: str = "auto",
         start_timeout: float = 300.0, config_timeout: float = 120.0, max_start_failures: int = 3,
-        retry_after: float = 3600.0,
+        retry_after: float = 3600.0, state: Any = None,
     ) -> None:
         if launch_method not in BACKEND_LAUNCH_METHODS:
             raise ValueError(f"launch_method must be one of {', '.join(BACKEND_LAUNCH_METHODS)}")
@@ -1104,11 +1200,14 @@ class BackendSupervisor:
         self.config_timeout = float(config_timeout)
         self.max_start_failures = int(max_start_failures)
         self.retry_after = float(retry_after)
+        self.state = state if state is not None else MemoryStartState()
         self.failures: list[dict[str, str]] = []
+        # Wall-clock seconds (time.time), not monotonic: it is read again by another runner process.
         self._retry_at = 0.0
         self._pending: dict[str, Any] | None = None
         self._child: subprocess.Popen | None = None
         self._reported_origin: tuple[Any, Any] | None = None
+        self.last_get_error: str | None = None
 
     @property
     def start_failures(self) -> int:
@@ -1129,12 +1228,27 @@ class BackendSupervisor:
         return environment
 
     def _get(self, path: str, timeout: float) -> dict[str, Any] | None:
+        """A JSON object from the backend, or None; last_get_error then says why ("timeout" for a request that
+        timed out, which the caller does not send again over the same deadline)."""
+        self.last_get_error = None
         try:
             with urllib.request.urlopen(f"http://{self.host}:{self.port}{path}", timeout=timeout) as response:
                 value = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, OSError, ValueError):
+        except urllib.error.HTTPError as error:
+            self.last_get_error = f"HTTP {error.code}"
             return None
-        return value if isinstance(value, dict) else None
+        except (urllib.error.URLError, OSError) as error:
+            reason = getattr(error, "reason", error)
+            timed_out = isinstance(error, (TimeoutError, socket.timeout)) or isinstance(reason, (TimeoutError, socket.timeout))
+            self.last_get_error = "timeout" if timed_out else f"{type(reason).__name__}: {reason}"
+            return None
+        except ValueError:
+            self.last_get_error = "a reply that is not JSON"
+            return None
+        if not isinstance(value, dict):
+            self.last_get_error = "a reply that is not a JSON object"
+            return None
+        return value
 
     def status(self) -> dict[str, Any] | None:
         """Interactive's /api/agent/status: whether a backend answers at all. It summarizes the job registry
@@ -1146,6 +1260,32 @@ class BackendSupervisor:
         """Interactive's /api/config, which says which checkout the backend runs from. It starts the Console and
         git for every Console candidate it finds, so it is given config_timeout, not a few seconds."""
         return self._get("/api/config", self.config_timeout if timeout is None else timeout)
+
+    def read_config(self) -> tuple[dict[str, Any] | None, str]:
+        """/api/config within a deadline of its own (config_timeout from now): (config, "") or (None, what
+        happened, as a phrase). A request that timed out is not sent again, since the backend goes on with
+        the abandoned one (the Console and git probes would overlap); one that failed at once is retried."""
+        deadline = time.monotonic() + self.config_timeout
+        why = ""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self.last_get_error = None
+            config = self.config(timeout=remaining)
+            if config is not None:
+                return config, ""
+            error = self.last_get_error
+            if error is None or error == "timeout":
+                why = ""
+                break
+            why = error
+            if deadline - time.monotonic() <= 1.0:
+                break
+            time.sleep(1)
+        if why:
+            return None, f"gave no usable answer within {self.config_timeout:g} s (last: {why})"
+        return None, f"did not answer within {self.config_timeout:g} s"
 
     def check(self, config: Mapping[str, Any]) -> list[str]:
         """Why the listener on the campaign port is not this campaign's backend, if it is not."""
@@ -1161,6 +1301,25 @@ class BackendSupervisor:
             problems.append(f"it runs from another checkout ({root})")
         return problems
 
+    # ---- the start state, kept in the ledger ----
+
+    def _load_state(self) -> None:
+        value = self.state.load() or {}
+        self.failures = [dict(item) for item in value.get("failures") or [] if isinstance(item, dict)]
+        try:
+            self._retry_at = float(value.get("retry_at_epoch") or 0.0)
+        except (TypeError, ValueError):
+            self._retry_at = 0.0
+        pending = value.get("pending")
+        self._pending = dict(pending) if isinstance(pending, dict) else None
+
+    def _save_state(self) -> None:
+        self.state.save({
+            "failures": self.failures, "retry_at_epoch": self._retry_at,
+            "retry_at": _iso_epoch(self._retry_at) if self.start_failures >= self.max_start_failures else None,
+            "pending": self._pending,
+        })
+
     # ---- how a backend was started ----
 
     def _read_launch_record(self) -> dict[str, Any]:
@@ -1169,6 +1328,47 @@ class BackendSupervisor:
         except (OSError, ValueError):
             return {}
         return value if isinstance(value, dict) else {}
+
+    def _write_launch_record(self, record: Mapping[str, Any]) -> None:
+        try:
+            write_json_atomic(self.launch_record_path, dict(record))
+        except OSError:
+            pass
+
+    @staticmethod
+    def _owns(record: Mapping[str, Any], listener: int) -> bool | None:
+        """Whether the process listening on the port is the backend this launch record names: that process,
+        or one it started (through a launcher), or, where the broker never reported, one the broker started.
+        None: not knowable here."""
+        if record.get("pid") and listener == record.get("pid"):
+            return True
+        answer: bool | None = False
+        for pid_key, created_key in (("pid", "process_created_at"), ("broker_pid", "broker_created_at")):
+            if not record.get(pid_key):
+                continue
+            found = process_descends_from(listener, record[pid_key], record.get(created_key))
+            if found:
+                return True
+            if found is None:
+                answer = None
+        return answer
+
+    def _adopt_listener(self, record: dict[str, Any], listener: int) -> dict[str, Any]:
+        """The launch record names the process that holds the port: the launcher it was started through, if
+        any, is kept as launcher_pid."""
+        if record.get("pid") == listener:
+            return record
+        adopted = dict(record)
+        if record.get("pid"):
+            adopted["launcher_pid"] = record.get("pid")
+            adopted["launcher_created_at"] = record.get("process_created_at")
+        adopted["pid"] = listener
+        adopted["process_created_at"] = _process_created_at(listener)
+        in_job = process_in_job(listener)
+        if in_job is not None:
+            adopted["in_job"] = in_job
+        self._write_launch_record(adopted)
+        return adopted
 
     def origin(self, pid: int | None = None) -> dict[str, Any]:
         """How the backend listening on the campaign port was started, as far as this machine can tell."""
@@ -1183,9 +1383,15 @@ class BackendSupervisor:
         same = record.get("pid") == listener and (
             created is None or recorded is None or abs(float(created) - float(recorded)) <= 1.0
         )
+        if not same and record and record.get("pid") != listener and self._owns(record, listener):
+            # Started by this runner through a launcher (a record written before 2026-10-07 names the launcher).
+            same, recorded = True, created
+            result["launcher_pid"] = record.get("pid") or record.get("broker_pid")
         if same:
             result.update(how=record.get("method") or "unknown", by="this campaign's runner",
                           started_at=record.get("started_at"), process_created_at=recorded)
+            if record.get("launcher_pid"):
+                result["launcher_pid"] = record["launcher_pid"]
             if record.get("wmi_failure"):
                 result["wmi_failure"] = record["wmi_failure"]
         else:
@@ -1206,22 +1412,45 @@ class BackendSupervisor:
     # ---- starting it ----
 
     def ensure(self) -> dict[str, Any]:
+        self._load_state()
         if self.status() is not None:
             return self._reuse()
         if self._pending is not None:
-            if self._alive(self._pending) is not False:
+            if self._pending_expired(self._pending):
+                self._pending = None
+                self._save_state()
+            elif self._alive(self._pending) is not False:
                 return self._await(self._pending)
-            self._pending = None
-        now = time.monotonic()
+            else:
+                self._pending = None
+                self._save_state()
+        now = time.time()
         if self.start_failures >= self.max_start_failures:
             if now < self._retry_at:
-                return {"ok": False, "started": False, "start_failures": self.start_failures, "detail": self._refusal(now)}
+                return {"ok": False, "started": False, "start_failures": self.start_failures,
+                        "retry_at": _iso_epoch(self._retry_at), "detail": self._refusal(now)}
             self.failures = []
+            self._retry_at = 0.0
+            self._save_state()
         try:
             record = self._launch()
         except BackendLaunchError as error:
+            if error.may_have_started:
+                # The broker may yet start a backend: wait for it, from the ledger, instead of starting another.
+                self._pending = {**error.record, "launched_at_epoch": time.time()}
             return self._failed(str(error), started=False)
         return self._await(record)
+
+    def _pending_expired(self, record: Mapping[str, Any]) -> bool:
+        """A start whose backend's process id is not known (the broker never reported) is waited for only
+        start_timeout seconds from its launch: there is no process to ask whether it still runs."""
+        if record.get("pid"):
+            return False
+        try:
+            launched = float(record.get("launched_at_epoch") or 0.0)
+        except (TypeError, ValueError):
+            launched = 0.0
+        return time.time() - launched >= self.start_timeout
 
     def _reuse(self) -> dict[str, Any]:
         origin = self.origin()
@@ -1230,16 +1459,22 @@ class BackendSupervisor:
         if key != self._reported_origin:
             self._reported_origin = key
             result["origin_new"] = True
-        config = self.config()
+        config, why = self.read_config()
         if config is None:
-            result["detail"] = (f"A backend answers /api/agent/status on port {self.port}, but its /api/config did not "
-                                f"answer within {self.config_timeout:g} s (--backend-config-timeout).")
+            result["detail"] = (f"A backend answers /api/agent/status on port {self.port}, but its /api/config {why} "
+                                f"(--backend-config-timeout).")
             return result
         problems = self.check(config)
         result.update(ok=not problems, detail="; ".join(problems))
+        if not problems and (self.failures or self._pending is not None or self._retry_at):
+            # A usable backend answers: the failures in a row end, and nothing is waited for any more.
+            self.failures, self._retry_at, self._pending = [], 0.0, None
+            self._save_state()
         return result
 
     def _alive(self, record: Mapping[str, Any]) -> bool | None:
+        if not record.get("pid"):
+            return None
         child = self._child
         if record.get("method") == "child" and child is not None and child.pid == record.get("pid"):
             return child.poll() is None
@@ -1249,7 +1484,8 @@ class BackendSupervisor:
         reasons = "; ".join(f"{index}. {failure['reason']}" for index, failure in enumerate(self.failures, 1))
         wait = int(max(0.0, self._retry_at - now))
         return (f"The campaign backend could not be started {self.start_failures} times in a row ({reasons}). "
-                f"No start is tried for another {wait} s; until then the runner pauses for the backend.")
+                f"No start is tried for another {wait} s (until {_iso_epoch(self._retry_at)}); until then the runner "
+                f"pauses for the backend.")
 
     def _failed(self, reason: str, *, started: bool, record: Mapping[str, Any] | None = None) -> dict[str, Any]:
         self.failures.append({"at": _now().isoformat(timespec="seconds"), "reason": reason})
@@ -1257,42 +1493,69 @@ class BackendSupervisor:
         if record is not None:
             result.update({key: record.get(key) for key in ("pid", "process_created_at", "method") if record.get(key) is not None})
         if self.start_failures >= self.max_start_failures:
-            self._retry_at = time.monotonic() + self.retry_after
-            result["detail"] = self._refusal(time.monotonic())
+            now = time.time()
+            self._retry_at = now + self.retry_after
+            result["detail"] = self._refusal(now)
+            result["retry_at"] = _iso_epoch(self._retry_at)
+        self._save_state()
         return result
 
     def _await(self, record: dict[str, Any]) -> dict[str, Any]:
         begun = time.monotonic()
         deadline = begun + self.start_timeout
-        name = f"The backend (pid {record.get('pid')}, started by {record.get('method')})"
+        if not record.get("pid"):
+            # Only the broker is known: wait no longer than start_timeout from its launch.
+            try:
+                launched = float(record.get("launched_at_epoch") or time.time())
+            except (TypeError, ValueError):
+                launched = time.time()
+            deadline = begun + max(0.0, launched + self.start_timeout - time.time())
+        name = (f"The backend (pid {record.get('pid')}, started by {record.get('method')})" if record.get("pid") else
+                f"The backend the broker (pid {record.get('broker_pid')}) may have started")
         while time.monotonic() < deadline:
             if self.status() is not None:
                 listener = listening_pid(self.port)
                 if listener is not None and listener != record.get("pid"):
-                    self._pending = None
-                    return self._failed(f"Port {self.port} is answered by pid {listener}, not by the backend this "
-                                        f"runner started (pid {record.get('pid')}).", started=True, record=record)
-                config = self.config(timeout=max(5.0, min(self.config_timeout, deadline - time.monotonic())))
-                if config is None:
-                    time.sleep(1)
-                    continue
+                    owns = self._owns(record, listener)
+                    if not owns:
+                        self._pending = None
+                        return self._failed(
+                            f"Port {self.port} is answered by pid {listener}, which "
+                            + ("is not the backend this runner started nor a process it started"
+                               if owns is False else "could not be traced to the backend this runner started")
+                            + f" (pid {record.get('pid') or 'unknown'}"
+                            + (f", broker pid {record.get('broker_pid')}" if record.get("broker_pid") else "") + ").",
+                            started=True, record=record)
+                    record = self._adopt_listener(record, listener)
                 self._pending = None
+                self._save_state()
+                config, why = self.read_config()
+                if config is None:
+                    return self._failed(f"{name} answers /api/agent/status, but its /api/config {why} "
+                                        f"(--backend-config-timeout); it is left running, and the next check reads "
+                                        f"/api/config again.", started=True, record=record)
                 problems = self.check(config)
                 if problems:
                     return self._failed("; ".join(problems), started=True, record=record)
-                self.failures = []
+                self.failures, self._retry_at = [], 0.0
+                self._save_state()
                 self._reported_origin = (record.get("pid"), record.get("method"))
                 result = {"ok": True, "started": True, "detail": "", "seconds": round(time.monotonic() - begun, 1)}
-                result.update({key: record[key] for key in ("pid", "process_created_at", "method", "in_job", "wmi_failure")
-                               if record.get(key) is not None})
+                result.update({key: record[key] for key in ("pid", "process_created_at", "launcher_pid", "method", "in_job",
+                                                            "wmi_failure") if record.get(key) is not None})
                 return result
             if self._alive(record) is False:
                 self._pending = None
                 return self._failed(f"{name} exited before it answered.", started=True, record=record)
             time.sleep(1)
+        if not record.get("pid"):
+            self._pending = None
+            return self._failed(f"{name} did not answer within {self.start_timeout:g} s of the broker's launch "
+                                f"(--backend-start-timeout); the next check may start one.", started=True, record=record)
         self._pending = record
         return self._failed(f"{name} did not answer within {self.start_timeout:g} s (--backend-start-timeout); it is "
-                            f"left running and waited for again at the next check.", started=True, record=record)
+                            f"left running and waited for again at the next check, by this runner or the next.",
+                            started=True, record=record)
 
     def _log_path(self) -> Path | None:
         if self.log_directory is None:
@@ -1309,7 +1572,13 @@ class BackendSupervisor:
             try:
                 record = self._launch_wmi()
             except BackendLaunchError as error:
-                if method == "wmi" or error.may_have_started:
+                if error.may_have_started:
+                    # What is known of a start that may have happened, for origin() to recognise its backend.
+                    error.record.update(started_at=_now().isoformat(timespec="seconds"), port=self.port,
+                                        interactive_root=str(self.interactive_root))
+                    self._write_launch_record(error.record)
+                    raise
+                if method == "wmi":
                     raise
                 wmi_failure = str(error)
         if record is None:
@@ -1318,10 +1587,7 @@ class BackendSupervisor:
                 record["wmi_failure"] = wmi_failure
         record.update(started_at=_now().isoformat(timespec="seconds"), port=self.port,
                       interactive_root=str(self.interactive_root))
-        try:
-            write_json_atomic(self.launch_record_path, record)
-        except OSError:
-            pass
+        self._write_launch_record(record)
         return record
 
     def _launch_child(self) -> dict[str, Any]:
@@ -1358,17 +1624,20 @@ class BackendSupervisor:
             "creationflags": backend_creation_flags(), "log": str(log_path) if log_path is not None else None,
             "result": str(result_path),
         })
+        broker_created_at = None
         try:
             broker, why = wmi_create_process(
                 subprocess.list2cmdline([str(pythonw), str(BACKEND_BROKER), str(spec_path)]), str(self.interactive_root),
             )
             if broker is None:
                 raise BackendLaunchError(why)
+            broker_created_at = _process_created_at(broker)
             deadline = time.monotonic() + 30
             while not result_path.is_file():
                 if time.monotonic() > deadline:
                     raise BackendLaunchError(
-                        f"the broker WMI created (pid {broker}) reported nothing within 30 s", may_have_started=True)
+                        f"the broker WMI created (pid {broker}) reported nothing within 30 s", may_have_started=True,
+                        record={"method": "wmi", "pid": None, "broker_pid": broker, "broker_created_at": broker_created_at})
                 time.sleep(0.2)
             reported = json.loads(result_path.read_text(encoding="utf-8"))
         finally:
@@ -1380,6 +1649,7 @@ class BackendSupervisor:
         if reported.get("error") or not reported.get("pid"):
             raise BackendLaunchError(f"the broker could not start the backend: {reported.get('error')}")
         record: dict[str, Any] = {"method": "wmi", "pid": int(reported["pid"]), "broker_pid": broker,
+                                  "broker_created_at": broker_created_at,
                                   "process_created_at": reported.get("process_created_at")}
         if record["process_created_at"] is None:
             record["process_created_at"] = _process_created_at(record["pid"])

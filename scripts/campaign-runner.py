@@ -48,7 +48,13 @@ the runner's child nor in its job: a tree kill of the runner, the end of its tas
 the backend and a running Console alone, and the next runner reattaches. A backend already answering on the
 port is reused, and the runner says how it was started where that is knowable (backend-launch.json beside the
 job registry). Readiness is /api/agent/status within --backend-start-timeout (300 s); /api/config, which starts
-every Console candidate, has --backend-config-timeout (120 s).
+every Console candidate, then has --backend-config-timeout (120 s) of its own. Three failed starts in a row
+pause starting for an hour, and the ledger keeps the failures, the pause and a start still waited for, so the
+next runner the task starts honours them (2026-10-07).
+
+A CAMPAIGN WITH NO WORK LEFT (every unit ended, no request waiting, no ended unit holding raw data the runner
+would look at again) makes run exit at once, before it takes the campaign, locks the Catalog or starts a
+backend, with the schtasks lines that disable or delete the task; the task is the user's to end.
 
 RUN --UNTIL-IDLE returns once every unit has ended or waits for disk. A held unit is not idle: the runner
 stays, polling, and makes the held unit's step again every few hours, so a unit that stays held keeps it
@@ -290,6 +296,8 @@ class Environment:
             launch_method=getattr(args, "backend_launch", "auto"),
             start_timeout=getattr(args, "backend_start_timeout", 300.0),
             config_timeout=getattr(args, "backend_config_timeout", 120.0),
+            # The failures in a row, the pause after them and the start still waited for outlive this runner.
+            state=ports.LedgerStartState(self.ledger),
         )
 
     def ports(self):
@@ -314,10 +322,11 @@ def command_verify_env(args: argparse.Namespace) -> int:
     report["interactive"] = environment.interactive.capabilities()
     if environment.backend is not None:
         running = environment.backend.status() is not None
-        config = environment.backend.config() if running else None
+        config, why = environment.backend.read_config() if running else (None, "")
         report["backend"] = {"running": running,
                              "problems": environment.backend.check(config) if config else
-                             [f"/api/config did not answer within {environment.backend.config_timeout:g} s" if running else "not running"]}
+                             [f"it answers /api/agent/status, but its /api/config {why}" if running else "not running"]}
+        report["backend"]["start_state"] = environment.ledger.backend_start_state()
         if running:
             report["backend"]["origin"] = environment.backend.origin()
     from campaign.ports import LocalDisk
@@ -342,9 +351,50 @@ def command_verify_env(args: argparse.Namespace) -> int:
 
 # ---- run ------------------------------------------------------------------------------------------------
 
+def task_name(campaign: str) -> str:
+    return f"MSDIAL-campaign-{campaign}"
+
+
+def task_end_commands(campaign: str) -> list[str]:
+    """The lines that stop the scheduled task from starting runners on a campaign that has ended: printed,
+    never run (the task is the user's persistent configuration)."""
+    return [f'schtasks /Change /TN "{task_name(campaign)}" /Disable',
+            f'schtasks /Delete /TN "{task_name(campaign)}" /F']
+
+
+def _no_work_left(args: argparse.Namespace) -> bool:
+    """Whether the campaign has no work left (machine.remaining_work), read from its ledger before anything is
+    locked or started. If so, say so, with how to disable or delete the task, and record it once."""
+    from campaign import ledger, machine
+
+    path = _campaign_directory(args.workspace_root, args.campaign) / "ledger.sqlite"
+    if not path.is_file():
+        return False
+    with ledger.Ledger(path) as book:
+        if machine.remaining_work(book):
+            return False
+        last = book.last_event(("runner_started", "no_work_left"))
+        if last is None or last["kind"] != "no_work_left":
+            book.event("no_work_left", _now(), {"task": task_name(args.campaign)})
+    print(f"Campaign {args.campaign} has no work left: every unit has ended, no request waits for a runner, and no "
+          f"ended unit holds raw data the runner would look at again. The runner exits without taking the campaign, "
+          f"locking the Catalog or starting a backend.", file=sys.stderr)
+    print("If a scheduled task starts this runner, disable or delete it (the runner changes no task itself):", file=sys.stderr)
+    for line in task_end_commands(args.campaign):
+        print(f"  {line}", file=sys.stderr)
+    print(f"A request recorded later (retry, recheck-held) then waits for a runner started by hand: "
+          f"campaign-runner.py run --campaign {args.campaign}.", file=sys.stderr)
+    return True
+
+
 def command_run(args: argparse.Namespace) -> int:
     from campaign import ledger, machine, policy, ports
 
+    # Before the runner lock, the Catalog lock and the backend (2026-10-07 review of PR #30): the scheduled task
+    # starts a runner every hour, and each one on a finished campaign used to lock the Catalog and start a
+    # backend that nothing then stopped.
+    if _no_work_left(args):
+        return EXIT_OK
     try:
         environment = Environment(args)
     except (OSError, ValueError) as error:
@@ -385,11 +435,16 @@ def command_run(args: argparse.Namespace) -> int:
         if environment.backend is not None:
             started = environment.backend.ensure()
             if not started.get("ok"):
+                # In the ledger, not only on the console: the failures in a row and the pause after them are
+                # read again by the next runner (ports.LedgerStartState), and this says why.
+                book.event("backend_unavailable", _now(), {key: started[key] for key in (
+                    "detail", "pid", "process_created_at", "method", "start_failures", "retry_at", "origin")
+                    if started.get(key) is not None})
                 print(f"The campaign backend is not usable: {started.get('detail')}", file=sys.stderr)
                 return EXIT_ENVIRONMENT
             book.event("backend_started" if started.get("started") else "backend_reused", _now(),
-                       {key: started[key] for key in ("pid", "process_created_at", "method", "in_job", "seconds",
-                                                      "wmi_failure", "origin") if started.get(key) is not None})
+                       {key: started[key] for key in ("pid", "process_created_at", "launcher_pid", "method", "in_job",
+                                                      "seconds", "wmi_failure", "origin") if started.get(key) is not None})
             if started.get("started"):
                 print(f"Started the campaign backend: pid {started.get('pid')}, through {started.get('method')}, "
                       f"answering after {started.get('seconds')} s.", file=sys.stderr)
@@ -553,7 +608,13 @@ def schedule_task_xml(*, python: str | Path, script: str | Path, campaign: str, 
       restart-on-failure does not start it again.
     - MultipleInstancesPolicy IgnoreNew: one runner. The campaign lock refuses a second one as well.
     - RestartOnFailure every 5 minutes, 3 times; and an hourly trigger besides the logon trigger, so a runner
-      that ended for any reason is started again within the hour. A runner started on an idle campaign ends at once.
+      that ended for any reason is started again within the hour. The hourly trigger stays (2026-10-07): run
+      exits with code 3 when the backend cannot be started or a pause after repeated failures is in force,
+      and whether Task Scheduler counts a non-zero exit code as a failure to restart for is not established
+      here; without the hourly start such a campaign would wait for the next logon. What the hourly start
+      costs is bounded instead: a runner whose campaign has no work left exits before it takes the campaign,
+      locks the Catalog or starts a backend (machine.remaining_work), and says how to disable or delete the
+      task; the pause after repeated backend failures is kept in the ledger, so an hourly runner honours it.
     - Battery and idle conditions off, StartWhenAvailable on.
     The runner is pythonw.exe (no window) and writes its output to --log-file. The paths and the roots are the
     ones given here, so the task does not depend on the environment variables of the session that printed it.
@@ -632,7 +693,7 @@ def schedule_task_xml(*, python: str | Path, script: str | Path, campaign: str, 
 
 def schedule_task_command(campaign: str, xml_path: str | Path) -> str:
     """The schtasks line that registers the campaign's task from its XML definition."""
-    return f'schtasks /Create /TN "MSDIAL-campaign-{campaign}" /XML "{xml_path}" /F'
+    return f'schtasks /Create /TN "{task_name(campaign)}" /XML "{xml_path}" /F'
 
 
 def command_schedule(args: argparse.Namespace) -> int:
@@ -652,7 +713,7 @@ def command_schedule(args: argparse.Namespace) -> int:
         xml_path = "<the file you saved the definition above to, as UTF-16>"
         print(definition)
         print("# (schedule-command --xml-out FILE writes the definition as UTF-16 instead of printing it.)")
-    task = f"MSDIAL-campaign-{args.campaign}"
+    task = task_name(args.campaign)
     print("# Persistent system configuration: the user decides and runs these. The runner runs none of them.")
     print("# LAUNCH THE RUNNER THROUGH THIS TASK, NOT FROM A CLAUDE SESSION. A process started from Claude Code or the")
     print("# Claude desktop app (Start-Process included) sits in the app's job object, which allows no breakaway, and")
@@ -670,6 +731,13 @@ def command_schedule(args: argparse.Namespace) -> int:
     print(f'schtasks /Run /TN "{task}"')
     print("# run --until-idle ends once every unit has ended or waits for disk. While a unit is held it keeps running,")
     print("# to make the held unit's step again every few hours; a request (recheck-held, skip) waits for a runner.")
+    print("# A backend that cannot be started 3 times in a row is not started again for an hour; the ledger keeps that")
+    print("# pause, so the hourly start honours it. A runner on a campaign with no work left (every unit ended, no request")
+    print("# waiting, no held raw data to look at again) exits before it locks the Catalog or starts a backend, and the")
+    print("# task goes on starting it every hour until you end the task. When the campaign has ended, disable or delete it:")
+    for line in task_end_commands(args.campaign):
+        print(line)
+    print("# The backend the last runner started is not stopped by either; stop it yourself once no job runs in it.")
     print("# Keep the machine awake while the campaign runs (AC power), for example:")
     print("powercfg /change standby-timeout-ac 0")
     print("powercfg /change hibernate-timeout-ac 0")

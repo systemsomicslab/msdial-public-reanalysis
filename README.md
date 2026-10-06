@@ -207,7 +207,25 @@ console of its own with no window, which git, the Console, 7-Zip and the
 extractor inherit. `run --backend-launch child` starts it as the runner's child,
 the way it was started before 2026-10-06. A backend already answering on the
 campaign port is reused, and the runner says how it was started where that is
-knowable (`backend-launch.json` beside the campaign's job registry).
+knowable (`backend-launch.json` beside the campaign's job registry). The runner
+knows its own backend by the process tree: when its Python is a launcher (a
+venv's `python.exe`, `py.exe`), the process holding the port is the launcher's
+child, and the launch record names it, with the launcher as `launcher_pid`.
+
+Three failed backend starts in a row pause starting for an hour. The failures,
+the pause and a start still waited for are kept in the campaign ledger, so a
+runner the task starts after another one exited honours them. Once the backend
+answers its status, `/api/config` has `--backend-config-timeout` of its own, and
+a backend that answers the status but not `/api/config` is reported as that.
+
+When the campaign has no work left (every unit has ended, no request waits for
+a runner, and no ended unit holds raw data the runner would look at again),
+`run` exits at once, before it takes the campaign, locks the Catalog or starts a
+backend, and prints how to end the task. The task keeps starting it every hour
+until you do: disable it with `schtasks /Change /TN "MSDIAL-campaign-ID"
+/Disable` or delete it with `schtasks /Delete /TN "MSDIAL-campaign-ID" /F`. The
+runner changes no task itself. Neither command stops the backend the last runner
+started; stop it yourself once no job runs in it.
 
 ## Codex pre-audit
 

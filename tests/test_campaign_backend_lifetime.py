@@ -13,6 +13,9 @@ broker and the real WMI call.
 
 from __future__ import annotations
 
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import socket
@@ -314,14 +317,87 @@ class BackendLifetimeTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", target.read_text(encoding="utf-16"))
 
-    def _supervisor(self, port: int) -> ports.BackendSupervisor:
+    def test_a_runner_whose_python_is_a_launcher_knows_its_own_backend_by_the_process_tree(self) -> None:
+        """Review of 2026-10-07, finding 1: a venv's python.exe starts the real interpreter as its child, which
+        holds the port. The runner refused that backend as another process's, exited with code 3, and the next
+        runner called it of unknown origin."""
+        port = 8794
+        self.assertTrue(_port_free(port))
+        venv = self.directory / "venv"
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True, timeout=180,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+        python = venv / "Scripts" / "python.exe"
+        supervisor = self._supervisor(port, python=python)
+        result = supervisor.ensure()
+        listener = ports.listening_pid(port)
+        for pid in (result.get("pid"), result.get("launcher_pid"), listener):
+            if pid:
+                self.started.append(int(pid))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["started"], result["method"]), (True, "wmi"))
+        self.assertEqual(result["pid"], listener, "the backend is the process that holds the port")
+        self.assertTrue(result.get("launcher_pid"), "the venv launcher is recorded")
+        self.assertNotEqual(result["launcher_pid"], listener)
+        self.assertIs(ports.process_descends_from(listener, result["launcher_pid"]), True)
+        record = json.loads(supervisor.launch_record_path.read_text())
+        self.assertEqual((record["pid"], record["launcher_pid"]), (listener, result["launcher_pid"]))
+        self.assertEqual(supervisor.state.load()["failures"], [])
+
+        # A second runner reuses it as this campaign's own.
+        reused = self._supervisor(port, python=python).ensure()
+        self.assertTrue(reused["ok"], reused)
+        self.assertEqual((reused["origin"]["pid"], reused["origin"]["how"], reused["origin"]["by"]),
+                         (listener, "wmi", "this campaign's runner"))
+        # A launch record written before 2026-10-07 names the launcher: still this campaign's runner's.
+        record.update(pid=record.pop("launcher_pid"), process_created_at=record.pop("launcher_created_at"))
+        supervisor.launch_record_path.write_text(json.dumps(record))
+        origin = self._supervisor(port, python=python).origin()
+        self.assertEqual((origin["how"], origin.get("by"), origin.get("launcher_pid")),
+                         ("wmi", "this campaign's runner", record["pid"]))
+
+        _kill_tree(result["launcher_pid"])
+        _kill_tree(listener)
+        deadline = time.monotonic() + 20
+        while not _port_free(port) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        self.assertTrue(_port_free(port))
+
+    def _supervisor(self, port: int, python: Path | str | None = None) -> ports.BackendSupervisor:
         class Supervisor(ports.BackendSupervisor):
             def check(self, config):
                 return [] if config.get("app_version") == "fake-1.0" else ["not the stand-in"]
 
-        return Supervisor(python=sys.executable, interactive_root=self.fake.root, host="127.0.0.1", port=port,
+        return Supervisor(python=str(python or sys.executable), interactive_root=self.fake.root, host="127.0.0.1", port=port,
                           jobs_file=self.fake.jobs_file, workspace_root=str(self.directory), launch_method="wmi",
                           start_timeout=60, config_timeout=30)
+
+
+@unittest.skipUnless(importlib.util.find_spec("psutil"), "psutil reads parent process ids")
+class ProcessTreeTests(unittest.TestCase):
+    def test_a_process_descends_from_its_parent_and_grandparent_and_not_the_other_way(self) -> None:
+        script = textwrap.dedent('''
+            import subprocess, sys
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            print(child.pid, flush=True)
+            child.wait()
+        ''')
+        parent = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+        try:
+            child = int(parent.stdout.readline())
+            created = ports._process_created_at(parent.pid)
+            self.assertIs(ports.process_descends_from(child, parent.pid), True)
+            self.assertIs(ports.process_descends_from(child, parent.pid, created), True)
+            self.assertIs(ports.process_descends_from(child, os.getpid()), True, "through one launcher")
+            self.assertIs(ports.process_descends_from(child, os.getpid(), depth=0), False)
+            self.assertIs(ports.process_descends_from(parent.pid, child), False)
+            self.assertIs(ports.process_descends_from(child, parent.pid, created + 3600), False,
+                          "a recorded process created after the listener is a reused process id")
+            self.assertIs(ports.process_descends_from(child, child), True)
+        finally:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(parent.pid)], capture_output=True) if os.name == "nt" \
+                else parent.kill()
+            parent.wait(timeout=30)
+            parent.stdout.close()
 
 
 class StartPolicyTests(unittest.TestCase):
@@ -346,7 +422,8 @@ class StartPolicyTests(unittest.TestCase):
 
             with mock.patch.object(supervisor, "status", return_value=None), \
                     mock.patch.object(supervisor, "_launch", side_effect=launch), \
-                    mock.patch.object(ports.time, "monotonic", side_effect=lambda: clock["now"]):
+                    mock.patch.object(ports.time, "monotonic", side_effect=lambda: clock["now"]), \
+                    mock.patch.object(ports.time, "time", side_effect=lambda: clock["now"]):
                 for _ in range(3):
                     result = supervisor.ensure()
                 self.assertEqual(result["start_failures"], 3)
@@ -432,6 +509,298 @@ class StartPolicyTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.assertEqual(module.BACKEND_LAUNCH_METHODS, ports.BACKEND_LAUNCH_METHODS)
 
+    # ---- /api/config's own deadline (review of 2026-10-07, finding 4) ----
+
+    def _clock(self) -> tuple[dict, contextlib.ExitStack]:
+        """A clock that time.sleep advances, for monotonic and wall-clock time alike."""
+        clock = {"now": 1_000_000.0}
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(ports.time, "monotonic", side_effect=lambda: clock["now"]))
+        stack.enter_context(mock.patch.object(ports.time, "time", side_effect=lambda: clock["now"]))
+        stack.enter_context(mock.patch.object(ports.time, "sleep", side_effect=lambda s: clock.__setitem__("now", clock["now"] + s)))
+        return clock, stack
+
+    def test_config_gets_its_whole_deadline_after_a_status_that_answered_late(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor = self.supervisor(directory, start_timeout=300, config_timeout=120)
+            clock, stack = self._clock()
+            begun = clock["now"]
+            timeouts = []
+            record = {"method": "wmi", "pid": 4242, "process_created_at": 1.0}
+
+            def config(timeout=None):
+                timeouts.append(timeout)
+                return {"root": directory}
+
+            with stack, mock.patch.object(supervisor, "status",
+                                          side_effect=lambda: {"app_version": "x"} if clock["now"] - begun >= 295 else None), \
+                    mock.patch.object(supervisor, "_launch", return_value=record), \
+                    mock.patch.object(supervisor, "_alive", return_value=True), \
+                    mock.patch.object(ports, "listening_pid", return_value=4242), \
+                    mock.patch.object(supervisor, "config", side_effect=config):
+                result = supervisor.ensure()
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(timeouts, [120], "not cut to the few seconds left of the start deadline")
+
+    def test_a_backend_that_answers_status_but_not_config_is_reported_as_that_and_asked_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor = self.supervisor(directory, start_timeout=300, config_timeout=120)
+            clock, stack = self._clock()
+            calls = []
+
+            def config(timeout=None):
+                calls.append(timeout)
+                clock["now"] += timeout
+                supervisor.last_get_error = "timeout"
+                return None
+
+            with stack, mock.patch.object(supervisor, "status", return_value=None), \
+                    mock.patch.object(supervisor, "_launch", return_value={"method": "wmi", "pid": 4242}), \
+                    mock.patch.object(supervisor, "_alive", return_value=True), \
+                    mock.patch.object(ports, "listening_pid", return_value=4242), \
+                    mock.patch.object(supervisor, "config", side_effect=config):
+                supervisor.status.side_effect = [None, {"app_version": "x"}]
+                result = supervisor.ensure()
+            self.assertFalse(result["ok"])
+            self.assertEqual(calls, [120], "a request that timed out is not sent again over it")
+            self.assertIn("answers /api/agent/status, but its /api/config did not answer within 120 s", result["detail"])
+            self.assertNotIn("did not answer within 300 s", result["detail"])
+            self.assertIsNone(supervisor.state.load()["pending"], "it answers: nothing is waited for as a start")
+
+    def test_a_config_that_fails_at_once_is_asked_again_within_its_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor = self.supervisor(directory, config_timeout=120)
+            clock, stack = self._clock()
+            answers = [None, {"root": directory}]
+
+            def config(timeout=None):
+                value = answers.pop(0)
+                supervisor.last_get_error = None if value else "HTTP 503"
+                return value
+
+            with stack, mock.patch.object(supervisor, "config", side_effect=config):
+                config_value, why = supervisor.read_config()
+            self.assertEqual((config_value, why), ({"root": directory}, ""))
+            with stack, mock.patch.object(supervisor, "config", side_effect=lambda timeout=None: (
+                    setattr(supervisor, "last_get_error", "HTTP 503"), None)[1]):
+                config_value, why = supervisor.read_config()
+            self.assertIsNone(config_value)
+            self.assertIn("gave no usable answer within 120 s (last: HTTP 503)", why)
+
+
+class PersistedStartStateTests(unittest.TestCase):
+    """Review of 2026-10-07, finding 3: the pause after three failures and the start still waited for lived in one
+    runner's memory, and the scheduled task starts a new runner after each one that exits. They are in the ledger."""
+
+    def setUp(self) -> None:
+        from campaign import ledger
+
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "ledger.sqlite"
+        self.books = []
+        self.ledger = ledger
+        self.clock = {"now": 2_000_000.0}
+        self.stack = contextlib.ExitStack()
+        self.stack.enter_context(mock.patch.object(ports.time, "monotonic", side_effect=lambda: self.clock["now"]))
+        self.stack.enter_context(mock.patch.object(ports.time, "time", side_effect=lambda: self.clock["now"]))
+        self.stack.enter_context(mock.patch.object(
+            ports.time, "sleep", side_effect=lambda s: self.clock.__setitem__("now", self.clock["now"] + s)))
+
+    def tearDown(self) -> None:
+        self.stack.close()
+        for book in self.books:
+            book.close()
+        self.directory.cleanup()
+
+    def runner(self, **options) -> ports.BackendSupervisor:
+        """A supervisor as a new runner process builds it: its own ledger connection, nothing in memory."""
+        book = self.ledger.Ledger(self.path, durable=False)
+        self.books.append(book)
+        supervisor = ports.BackendSupervisor(
+            python=sys.executable, interactive_root=Path(self.directory.name), host="127.0.0.1", port=8799,
+            jobs_file=Path(self.directory.name) / "backend" / "agent-jobs.json", workspace_root=self.directory.name,
+            state=ports.LedgerStartState(book), **options)
+        supervisor.check = lambda config: []  # type: ignore[method-assign]
+        return supervisor
+
+    def test_the_pause_after_three_failed_starts_holds_for_the_next_runners(self) -> None:
+        launches = []
+
+        def launch():
+            launches.append(1)
+            raise ports.BackendLaunchError(f"start {len(launches)} failed")
+
+        for _ in range(3):
+            supervisor = self.runner(start_timeout=0, retry_after=3600)
+            with mock.patch.object(supervisor, "status", return_value=None), \
+                    mock.patch.object(supervisor, "_launch", side_effect=launch):
+                result = supervisor.ensure()
+            self.clock["now"] += 300  # the task restarts the runner
+        self.assertEqual(result["start_failures"], 3)
+        self.assertIn("retry_at", result)
+        later = self.runner(start_timeout=0, retry_after=3600)
+        with mock.patch.object(later, "status", return_value=None), \
+                mock.patch.object(later, "_launch", side_effect=launch):
+            refused = later.ensure()
+        self.assertEqual(len(launches), 3, "a runner started inside the pause starts no backend")
+        self.assertFalse(refused["ok"])
+        for reason in ("start 1 failed", "start 2 failed", "start 3 failed"):
+            self.assertIn(reason, refused["detail"])
+        state = self.ledger.Ledger(self.path, durable=False)
+        self.books.append(state)
+        self.assertEqual(state.backend_start_state()["retry_at"], refused["retry_at"])
+        self.clock["now"] += 3600
+        after = self.runner(start_timeout=0, retry_after=3600)
+        with mock.patch.object(after, "status", return_value=None), \
+                mock.patch.object(after, "_launch", side_effect=launch):
+            after.ensure()
+        self.assertEqual(len(launches), 4, "the pause ends")
+        self.assertEqual(after.start_failures, 1)
+
+    def test_a_slow_start_is_waited_for_by_the_next_runner_not_started_again(self) -> None:
+        record = {"method": "wmi", "pid": 4242, "process_created_at": 1.0}
+        first = self.runner(start_timeout=0)
+        with mock.patch.object(first, "status", return_value=None), \
+                mock.patch.object(first, "_launch", return_value=dict(record)):
+            self.assertIn("waited for again", first.ensure()["detail"])
+        second = self.runner(start_timeout=30)
+        answers = iter([None, None, {"app_version": "x"}])
+        with mock.patch.object(second, "status", side_effect=lambda: next(answers)), \
+                mock.patch.object(second, "_launch") as launch, \
+                mock.patch.object(ports, "_process_alive", return_value=True), \
+                mock.patch.object(ports, "listening_pid", return_value=4242), \
+                mock.patch.object(second, "config", return_value={"root": "x"}):
+            result = second.ensure()
+        launch.assert_not_called()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["pid"], 4242)
+        self.assertEqual((second.state.load()["pending"], second.state.load()["failures"]), (None, []))
+
+    def test_a_pending_start_whose_process_is_gone_is_started_again(self) -> None:
+        first = self.runner(start_timeout=0)
+        with mock.patch.object(first, "status", return_value=None), \
+                mock.patch.object(first, "_launch", return_value={"method": "wmi", "pid": 4242, "process_created_at": 1.0}):
+            first.ensure()
+        second = self.runner(start_timeout=0)
+        with mock.patch.object(second, "status", return_value=None), \
+                mock.patch.object(ports, "_process_alive", return_value=False), \
+                mock.patch.object(second, "_launch", return_value={"method": "wmi", "pid": 5151}) as launch:
+            second.ensure()
+        launch.assert_called_once()
+
+    def test_a_broker_that_did_not_report_is_waited_for_its_start_window_and_not_started_over(self) -> None:
+        """Review finding 3, case (c): the broker reported nothing within 30 s. It may have started a backend, so
+        the next check (here, the next runner) waits for it until start_timeout from the launch, then may start."""
+        error = ports.BackendLaunchError("the broker reported nothing within 30 s", may_have_started=True,
+                                         record={"method": "wmi", "pid": None, "broker_pid": 777})
+        first = self.runner(start_timeout=600)
+        with mock.patch.object(first, "status", return_value=None), \
+                mock.patch.object(first, "_launch", side_effect=error):
+            first.ensure()
+        pending = first.state.load()["pending"]
+        self.assertEqual((pending["broker_pid"], pending["pid"]), (777, None))
+        self.clock["now"] += 60
+        second = self.runner(start_timeout=600)
+        with mock.patch.object(second, "status", return_value=None), \
+                mock.patch.object(second, "_launch") as launch:
+            waited = second.ensure()
+        launch.assert_not_called()
+        self.assertIn("within 600 s of the broker's launch", waited["detail"])
+        third = self.runner(start_timeout=600)
+        with mock.patch.object(third, "status", return_value=None), \
+                mock.patch.object(third, "_launch", side_effect=ports.BackendLaunchError("no")) as launch:
+            third.ensure()
+        launch.assert_called_once()
+
+    def test_a_broker_backend_that_answers_late_is_adopted_by_the_process_tree(self) -> None:
+        error = ports.BackendLaunchError("no report", may_have_started=True,
+                                         record={"method": "wmi", "pid": None, "broker_pid": 777})
+        first = self.runner(start_timeout=600)
+        with mock.patch.object(first, "status", return_value=None), \
+                mock.patch.object(first, "_launch", side_effect=error):
+            first.ensure()
+        second = self.runner(start_timeout=600)
+        answers = iter([None, {"app_version": "x"}])
+        with mock.patch.object(second, "status", side_effect=lambda: next(answers)), \
+                mock.patch.object(second, "_launch") as launch, \
+                mock.patch.object(ports, "listening_pid", return_value=9090), \
+                mock.patch.object(ports, "process_descends_from", side_effect=lambda pid, ancestor, *a, **k: ancestor == 777), \
+                mock.patch.object(ports, "_process_created_at", return_value=5.0), \
+                mock.patch.object(ports, "process_in_job", return_value=False), \
+                mock.patch.object(second, "config", return_value={"root": "x"}):
+            result = second.ensure()
+        launch.assert_not_called()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["pid"], 9090)
+        self.assertEqual(json.loads(second.launch_record_path.read_text())["pid"], 9090)
+
+    def test_a_listener_outside_the_runners_process_tree_is_refused_and_named(self) -> None:
+        supervisor = self.runner(start_timeout=30)
+        answers = iter([None, {"app_version": "x"}])
+        with mock.patch.object(supervisor, "status", side_effect=lambda: next(answers)), \
+                mock.patch.object(supervisor, "_launch", return_value={"method": "wmi", "pid": 4242, "broker_pid": 777}), \
+                mock.patch.object(ports, "listening_pid", return_value=9090), \
+                mock.patch.object(ports, "process_descends_from", return_value=False):
+            result = supervisor.ensure()
+        self.assertFalse(result["ok"])
+        self.assertIn("answered by pid 9090, which is not the backend this runner started nor a process it started",
+                      result["detail"])
+
+
+class FinishedCampaignTests(unittest.TestCase):
+    """Review of 2026-10-07, finding 2: the hourly task kept starting runners on a finished campaign, each of which
+    locked the Catalog and started a backend. run now exits before either, and says how to end the task."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.world = campaign_fakes.World(Path(self.directory.name), ["u1"])
+        self.world.run(max_iterations=4000)
+        spec = importlib.util.spec_from_file_location("campaign_runner_cli", SCRIPTS / "campaign-runner.py")
+        self.cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.cli)
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def run_cli(self) -> tuple[int, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = self.cli.main(["--workspace-root", str(self.world.workspace_root), "run", "--campaign", "test-campaign",
+                                  "--until-idle"])
+        return code, err.getvalue()
+
+    def test_a_runner_on_a_finished_campaign_exits_before_any_lock_or_backend(self) -> None:
+        with self.world.open() as book:
+            self.assertEqual(book.unit("u1")["state"], "done")
+            started_before = len(book.events("runner_started"))
+        with mock.patch.object(self.cli, "Environment", side_effect=AssertionError("built an environment")):
+            code, text = self.run_cli()
+            again, _ = self.run_cli()
+        self.assertEqual((code, again), (0, 0))
+        self.assertIn('schtasks /Change /TN "MSDIAL-campaign-test-campaign" /Disable', text)
+        self.assertIn('schtasks /Delete /TN "MSDIAL-campaign-test-campaign" /F', text)
+        self.assertIn("no work left", text)
+        with self.world.open() as book:
+            self.assertEqual(len(book.events("runner_started")), started_before, "the campaign was not taken")
+            self.assertEqual(len(book.events("no_work_left")), 1, "said once, not every hour")
+            self.assertIsNone(book.runner()["pid"])
+
+    def test_work_left_is_a_waiting_request_or_held_raw_data_the_runner_looks_at_again(self) -> None:
+        from campaign import machine
+
+        with self.world.open() as book:
+            self.assertEqual(machine.remaining_work(book), [])
+            book.update("u1", "2026-10-07T00:00:00+00:00", raw_disposition="held")
+            self.assertEqual(machine.remaining_work(book), ["1 ended unit(s) hold raw data the runner looks at again"])
+        with mock.patch.object(self.cli, "Environment", side_effect=ValueError("got past the check")):
+            code, text = self.run_cli()
+        self.assertEqual(code, 3)
+        self.assertIn("got past the check", text)
+        with self.world.open() as book:
+            book.update("u1", "2026-10-07T00:00:00+00:00", raw_disposition="released")
+            book.add_request("retry", "u1", "once more", "operator", "2026-10-07T00:00:00+00:00")
+            self.assertEqual(machine.remaining_work(book), ["1 operator request(s) wait for a runner"])
+
 
 class ScheduleDefinitionTests(unittest.TestCase):
     def definition(self) -> ElementTree.Element:
@@ -481,6 +850,9 @@ class ScheduleDefinitionTests(unittest.TestCase):
             self.assertIn(f'schtasks /Create /TN "MSDIAL-campaign-c1" /XML "{target.resolve()}" /F', text)
             self.assertIn("NOT FROM A CLAUDE SESSION", text)
             self.assertIn("ExecutionTimeLimit PT0S", text)
+            # How to end the task once the campaign has ended: printed, never run.
+            self.assertIn('schtasks /Change /TN "MSDIAL-campaign-c1" /Disable', text)
+            self.assertIn('schtasks /Delete /TN "MSDIAL-campaign-c1" /F', text)
             self.assertTrue(target.read_bytes().startswith(b"\xff\xfe"), "UTF-16 with a byte-order mark")
             self.assertIn("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", target.read_text(encoding="utf-16"))
 
