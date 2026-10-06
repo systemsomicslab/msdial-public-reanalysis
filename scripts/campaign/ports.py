@@ -1385,8 +1385,12 @@ class BackendSupervisor:
         )
         if not same and record and record.get("pid") != listener and self._owns(record, listener):
             # Started by this runner through a launcher (a record written before 2026-10-07 names the launcher).
+            # Or by the broker of a start that never reported (no backend process id recorded).
             same, recorded = True, created
-            result["launcher_pid"] = record.get("pid") or record.get("broker_pid")
+            if record.get("pid"):
+                result["launcher_pid"] = record["pid"]
+            else:
+                result["broker_pid"] = record.get("broker_pid")
         if same:
             result.update(how=record.get("method") or "unknown", by="this campaign's runner",
                           started_at=record.get("started_at"), process_created_at=recorded)

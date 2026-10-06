@@ -734,6 +734,21 @@ class PersistedStartStateTests(unittest.TestCase):
         self.assertEqual(result["pid"], 9090)
         self.assertEqual(json.loads(second.launch_record_path.read_text())["pid"], 9090)
 
+    def test_origin_recognises_the_backend_of_a_broker_that_never_reported(self) -> None:
+        supervisor = self.runner()
+        supervisor.launch_record_path.parent.mkdir(parents=True, exist_ok=True)
+        supervisor.launch_record_path.write_text(json.dumps({"method": "wmi", "pid": None, "broker_pid": 777}))
+        with mock.patch.object(ports, "process_descends_from", side_effect=lambda pid, ancestor, *a, **k: ancestor == 777), \
+                mock.patch.object(ports, "_process_created_at", return_value=5.0), \
+                mock.patch.object(ports, "process_in_job", return_value=None):
+            origin = supervisor.origin(pid=9090)
+            self.assertEqual((origin["how"], origin["by"], origin["broker_pid"]), ("wmi", "this campaign's runner", 777))
+            self.assertNotIn("launcher_pid", origin)
+        with mock.patch.object(ports, "process_descends_from", return_value=False), \
+                mock.patch.object(ports, "_process_created_at", return_value=5.0), \
+                mock.patch.object(ports, "process_in_job", return_value=None):
+            self.assertEqual(supervisor.origin(pid=9090)["how"], "unknown")
+
     def test_a_listener_outside_the_runners_process_tree_is_refused_and_named(self) -> None:
         supervisor = self.runner(start_timeout=30)
         answers = iter([None, {"app_version": "x"}])
