@@ -17,16 +17,27 @@ PAIR-1. Every lineage row whose name_pairing says it was paired by inference (pr
 leading_identifier_token) is listed as a WARN with its declared and member names, under the warning code
 input_names_paired_by_inference, so each one is on record in the gate report.
 
+The review of gate PR #31 (2026-10-07) found that CLS-2 called files the download delivered but the lease left
+unpaired "never delivered" (ST004304's QC-D5-C-.mzML; ST001264's Youn_sa1..28.raw), that PAIR-1 on a split
+part listed its sibling's pairings, and that PKH-1 let a step finer than 10 pass when the diagnostic recorded
+10 as its family step. CLS-2 now reads what was delivered from the archive member listings and the downloads,
+and a delivered, unpaired sample is a FAIL under delivered_unpaired_samples; PAIR-1 keeps to a part's own
+inputs; PKH-1 holds the absolute floor (10 QTOF-type, 100 FT) and reports the production run's peak counts
+where Interactive records them. ACQ-1 follows rule B2 (header first, 2026-10-06, msdial-interactive-app#62).
+
 The fixture is test_verify_lineage_built_csv's FolderBranchUnit, a unit as Interactive's folder branch
 prepares it.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
@@ -130,7 +141,8 @@ class ThresholdStepFallbackTests(unittest.TestCase):
                                        coarse_threshold_step=100, step_fallback=True, fallback_reason="r"))
 
         self.assertEqual(verifier.FAIL, check.status, check.detail)
-        self.assertIn("nothing finer", check.evidence["step_rule_broken"][0])
+        self.assertTrue(any("nothing finer" in item for item in check.evidence["step_rule_broken"]),
+                        check.evidence["step_rule_broken"])
         self.assertEqual(verifier.RECORD_ONLY, check.run_policy)
 
     def test_a_finer_step_with_no_fallback_recorded_is_refused(self) -> None:
@@ -239,8 +251,9 @@ class UndeliveredSampleTests(unittest.TestCase):
     ST001264 = {1: "021518_387057_CSHp_BioRec1.raw", 2: "021518_387057_CSHp_BioRec2.raw",
                 3: "021518_387057_CSHp_BioRec3.raw"}
 
-    def test_st001264_runs_3_of_31_and_the_28_undelivered_warn(self) -> None:
-        """Finding 1 of the review of msdial-interactive-app#58: 28 study rows reach no input."""
+    def test_rows_nothing_delivered_could_be_warn_as_undelivered(self) -> None:
+        """28 study rows reach no input, and the delivery holds nothing else: the three files delivered are the
+        three paired. (The real ST001264 archive holds 28 more members; see DeliveredButUnpairedTests.)"""
         with tempfile.TemporaryDirectory() as temporary:
             unit = _paired_unit(temporary, 31, self.ST001264)
             rows = unit.prepare()
@@ -418,6 +431,418 @@ class InferredPairingTests(unittest.TestCase):
         self.assertEqual(verifier.NOT_EVALUABLE, check.status, check.detail)
         self.assertFalse(check.required)
         self.assertNotIn("PAIR-1", [item.check_id for item in report.strict_failures])
+
+
+def _archive(unit: FolderBranchUnit, members: "list[str]", *, shared: int = 1, corrupt: bool = False) -> None:
+    """An archive download and the extraction record Interactive's archives.py writes for it: a member listing
+    (archive-members-<sha>.tsv, its sha256 recorded), every member extracted."""
+    archive = unit.root / "_dl" / "obj" / "bundle.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(b"PK")
+    unit.manifest["downloads"].append({"path": str(archive), "size_bytes": 2,
+                                       "archive": {"format": "zip", "name_format": "zip", "signature": "zip"}})
+    lines = ["\t".join(verifier.ARCHIVE_LISTING_COLUMNS)]
+    lines += [f"{member}\tfile\t100\t00000000\t2026-01-01 00:00:00\t1\tbundle.zip\t{member}\textracted"
+              for member in members]
+    lines.append("notes.txt\tfile\t5\t00000000\t2026-01-01 00:00:00\t1\tbundle.zip\tnotes.txt\textracted")
+    data = ("\n".join(lines) + "\n").encode("utf-8")
+    listing = unit.root / "provenance" / "archive-members-abcdef012345.tsv"
+    listing.write_bytes(data)
+    unit.manifest["archive_extractions"] = [{
+        "archive_name": "bundle.zip", "archive_sha256": "0" * 64,
+        "members_tsv": {"path": str(listing), "rows": len(lines) - 1,
+                        "sha256": "f" * 64 if corrupt else hashlib.sha256(data).hexdigest()}}]
+    unit.manifest["project"]["download_scope"] = {"bundle_shared_unit_count": shared}
+
+
+class DeliveredButUnpairedTests(unittest.TestCase):
+    """CLS-2: a sample whose file the download delivered and the lease did not pair is a mapping failure (FAIL,
+    delivered_unpaired_samples); one the delivery holds nothing for stays undelivered (WARN)."""
+
+    ST001264 = UndeliveredSampleTests.ST001264
+
+    def test_st004304_a_member_named_loosely_after_the_sample_is_delivered_and_unpaired(self) -> None:
+        """ST004304: the archive holds QC-D5-C-.mzML, marked extracted; the lease paired nothing with QC-D5-C."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("QC-D5-A.mzML", "QC-D5-A")
+            unit.manifest["project"]["sample_metadata"].append({"sample_id": "QC-D5-C", "raw_file": "QC-D5-C.mzML"})
+            unit.manifest["project"]["class_proposal"]["assignments"].append({"sample_id": "QC-D5-C", "class_label": "A"})
+            _archive(unit, ["QC-D5-A.mzML", "QC-D5-C-.mzML"])
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual({"QC-D5-C": ["QC-D5-C-.mzML"]}, check.evidence["delivered_unpaired_samples"])
+        self.assertEqual(1, check.evidence["delivered_unpaired_count"])
+        self.assertEqual(["QC-D5-C-.mzML"], check.evidence["unpaired_delivered_files"])
+        self.assertNotIn("undelivered_samples", check.evidence)
+        self.assertNotIn("missing", check.evidence)
+        self.assertIn("QC-D5-C as QC-D5-C-.mzML", check.detail)
+        self.assertIn("a name-pairing failure, not a missing download", check.detail)
+        self.assertIn("the run covers 1 of the 2 approved samples", check.detail)
+        self.assertEqual(verifier.RECORD_ONLY, check.run_policy)
+
+    def test_st001264_the_28_rows_beside_28_unpaired_members_are_delivered_and_unpaired(self) -> None:
+        """ST001264: the archive holds BioRec1-3 behind a prefix, which the lease paired, and Youn_sa1..28.raw,
+        which carry no row's name. Which member is which row is not the gate's to say; that they are there is."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = _paired_unit(temporary, 31, self.ST001264)
+            _archive(unit, [*self.ST001264.values(),
+                            *(f"021518_387057_CSHp_Youn_sa{number}.raw" for number in range(1, 29))])
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual(28, check.evidence["delivered_unpaired_count"])
+        self.assertEqual([], check.evidence["delivered_unpaired_samples"]["Sample1"])
+        self.assertEqual(28, check.evidence["unpaired_delivered_file_count"])
+        self.assertIn("021518_387057_CSHp_Youn_sa1.raw", check.evidence["unpaired_delivered_files"])
+        self.assertNotIn("undelivered_samples", check.evidence)
+        self.assertEqual(31, check.evidence["delivered_files"])
+
+    def test_a_download_shared_with_other_units_leaves_unnamed_members_to_them(self) -> None:
+        """Unpaired members of a bundle other units share may be theirs: a sample none is named after stays
+        undelivered, and one a member is named after is still unpaired."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("a.mzML", "a")
+            for sample in ("z", "y"):
+                unit.manifest["project"]["sample_metadata"].append({"sample_id": sample, "raw_file": f"{sample}.mzML"})
+                unit.manifest["project"]["class_proposal"]["assignments"].append({"sample_id": sample, "class_label": "A"})
+            _archive(unit, ["a.mzML", "y_.mzML", "other_unit_1.mzML"], shared=2)
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual({"y": ["y_.mzML"]}, check.evidence["delivered_unpaired_samples"])
+        self.assertEqual({"z": ["z.mzML"]}, check.evidence["undelivered_samples"])
+        self.assertTrue(check.evidence["download_shared_with_other_units"])
+
+    def test_an_archive_that_holds_nothing_else_leaves_the_sample_undelivered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("a.mzML", "a")
+            unit.manifest["project"]["sample_metadata"].append({"sample_id": "z", "raw_file": "z.mzML"})
+            unit.manifest["project"]["class_proposal"]["assignments"].append({"sample_id": "z", "class_label": "A"})
+            _archive(unit, ["a.mzML"])
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual({"z": ["z.mzML"]}, check.evidence["undelivered_samples"])
+        self.assertEqual([], check.evidence["unpaired_delivered_files"], "notes.txt is no input")
+        self.assertNotIn("delivered_unpaired_samples", check.evidence)
+
+    def test_a_member_inside_a_vendor_folder_is_that_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("a.mzML", "a")
+            unit.manifest["project"]["sample_metadata"].append({"sample_id": "Z", "raw_file": "Z.d"})
+            unit.manifest["project"]["class_proposal"]["assignments"].append({"sample_id": "Z", "class_label": "A"})
+            _archive(unit, ["a.mzML", "data/Z.d/AcqData/MSScan.bin", "data/Z.d/AcqData/MSPeak.bin"])
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual({"Z": ["Z.d"]}, check.evidence["delivered_unpaired_samples"])
+        self.assertEqual(["Z.d"], check.evidence["unpaired_delivered_files"])
+
+    def test_a_delivery_that_cannot_be_read_establishes_nothing(self) -> None:
+        """An archive whose member listing changed since its sha256 was recorded: neither delivered nor
+        undelivered is known, and the sample is missing, as before the lineage."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("a.mzML", "a")
+            unit.manifest["project"]["sample_metadata"].append({"sample_id": "z", "raw_file": "z.mzML"})
+            unit.manifest["project"]["class_proposal"]["assignments"].append({"sample_id": "z", "class_label": "A"})
+            _archive(unit, ["a.mzML"], corrupt=True)
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual(["z"], check.evidence["missing"])
+        self.assertIn("has changed since its sha256 was recorded", check.evidence["delivery_not_established"])
+        self.assertNotIn("undelivered_samples", check.evidence)
+
+    def test_the_csv_record_is_not_what_decides_delivery(self) -> None:
+        """samples_without_input is the CSV writer's own account, and says nothing of what was delivered."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("QC-D5-A.mzML", "QC-D5-A")
+            unit.manifest["project"]["sample_metadata"].append({"sample_id": "QC-D5-C", "raw_file": "QC-D5-C.mzML"})
+            unit.manifest["project"]["class_proposal"]["assignments"].append({"sample_id": "QC-D5-C", "class_label": "A"})
+            _archive(unit, ["QC-D5-A.mzML", "QC-D5-C-.mzML"])
+            unit.prepare()
+            unit.manifest["analysis_csv"]["samples_without_input"] = []
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("QC-D5-C", check.evidence["delivered_unpaired_samples"])
+
+
+class StepFloorTests(unittest.TestCase):
+    """PKH-1 holds the absolute floor (10 QTOF-type, 100 FT), not the family step a diagnostic records."""
+
+    def _pkh1(self, *diagnostics: dict, instrument: str = "", production: "list[dict] | None" = None):
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.file("a.mzML", "a")
+            unit.manifest["peak_height_diagnostics"] = list(diagnostics)
+            if instrument:
+                unit.manifest["project"]["repository_metadata"] = {
+                    "catalog_handoff": {"technical_settings": {"instrument": instrument}}}
+            if production is not None:
+                unit.manifest["production_peak_counts"] = production
+            _method(unit, diagnostics[-1]["minimum_peak_height"])
+            return _check(unit.gate(), "PKH-1")
+
+    def test_a_family_step_of_10_falling_back_to_1_is_refused(self) -> None:
+        """The review's probe: an estimate asked for at step 10 records 10 as its family step and falls back
+        to 1 (threshold 2, the noise floor). It passed, being the recorded family step divided by ten."""
+        check = self._pkh1(_diagnostic(2, count=21578, estimated=4123, step=1, within=True,
+                                       coarse_threshold_step=10, step_fallback=True,
+                                       fallback_reason="no_coarse_step_in_range"))
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        broken = " | ".join(check.evidence["step_rule_broken"])
+        self.assertIn("finer than the floor of 10 for QTOF-type data", broken)
+        self.assertIn("neither 100 (QTOF-type) nor 1,000 (Fourier-transform)", broken)
+        self.assertEqual(10, check.evidence["step_floor"])
+        self.assertEqual(verifier.RECORD_ONLY, check.run_policy)
+
+    def test_a_family_step_of_10_with_no_fallback_is_refused(self) -> None:
+        check = self._pkh1(_diagnostic(20, count=21578, estimated=3600, step=10, within=True,
+                                       coarse_threshold_step=10, step_fallback=False, fallback_reason=None))
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("neither 100", " ".join(check.evidence["step_rule_broken"]))
+
+    def test_a_fourier_transform_unit_never_goes_below_100(self) -> None:
+        """An Orbitrap published as mzML, which Interactive labels QTOF: the Catalog's instrument says FT. A
+        search at 100 that falls back to 10 breaks the floor of 100."""
+        check = self._pkh1(_diagnostic(30, count=10168, estimated=4722, step=10, within=True,
+                                       coarse_threshold_step=100, step_fallback=True, fallback_reason="r"),
+                           instrument="Thermo Q Exactive HF hybrid Orbitrap")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("finer than the floor of 100 for Fourier-transform data (the unit's instrument is Thermo Q "
+                      "Exactive HF hybrid Orbitrap)", " ".join(check.evidence["step_rule_broken"]))
+        self.assertEqual("fourier", check.evidence["instrument_family_for_step"])
+
+    def test_a_fourier_transform_fallback_to_100_passes_and_a_qtof_one_to_10_too(self) -> None:
+        for instrument, coarse, step, threshold in (("Thermo Orbitrap Exploris 480", 1000, 100, 8600),
+                                                    ("Bruker impact II UHR-TOF", 100, 10, 30)):
+            with self.subTest(instrument=instrument):
+                check = self._pkh1(_diagnostic(threshold, count=10168, estimated=4722, step=step, within=True,
+                                               coarse_threshold_step=coarse, step_fallback=True, fallback_reason="r"),
+                                   instrument=instrument)
+                self.assertEqual(verifier.PASS, check.status, check.detail)
+                self.assertNotIn("step_rule_broken", check.evidence)
+
+    def test_a_fourier_transform_unit_searched_at_100_is_to_be_read(self) -> None:
+        check = self._pkh1(_diagnostic(200, count=35678, estimated=3517, step=100, within=True,
+                                       coarse_threshold_step=100, step_fallback=False, fallback_reason=None),
+                           instrument="Thermo Q Exactive Orbitrap")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("take 1,000", check.detail)
+
+    def test_the_production_runs_peak_counts_are_reported_where_recorded(self) -> None:
+        """Interactive 0.5.28 appends production_peak_counts after each run; PKH-1 reports it and judges nothing."""
+        record = {"schema": "msdial-production-peak-counts.v1", "job_id": "run1", "run_complete": True,
+                  "minimum_peak_height": 200.0, "estimated_peak_count": 3517, "representative_file_name": "QC_05",
+                  "representative_peak_count": 2810, "representative_to_estimate_ratio": 0.799,
+                  "representative_within_target_range": False, "file_count": 4, "files_counted": 4,
+                  "peak_count_min": 2500, "peak_count_median": 2800, "peak_count_max": 3100, "peak_count_total": 11200,
+                  "files": [{"file_name": "QC_05", "peak_count": 2810}]}
+        check = self._pkh1(_diagnostic(200, count=35678, estimated=3517, step=100, within=True,
+                                       coarse_threshold_step=100, step_fallback=False, fallback_reason=None),
+                           production=[record])
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        production = check.evidence["production_peak_counts"]
+        self.assertEqual(2810, production["representative_peak_count"])
+        self.assertTrue(production["matches_method_threshold"])
+        self.assertNotIn("files", production)
+        self.assertIn("kept 2810 peaks in the representative file against the estimate of 3517", check.detail)
+
+    def test_no_production_record_reports_nothing_of_one(self) -> None:
+        check = self._pkh1(_diagnostic(200, count=35678, estimated=3517, step=100, within=True))
+
+        self.assertNotIn("production_peak_counts", check.evidence)
+
+
+class SplitPartPairingTests(unittest.TestCase):
+    """PAIR-1 on a split part lists only that part's own pairings and inputs (review of gate PR #31, finding 2)."""
+
+    def test_a_part_does_not_carry_its_siblings_pairings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = FolderBranchUnit(temporary, "parent")
+            positive = parent.file("pos_A.raw", "A")
+            negative = parent.file("x_neg_B.raw", "B")
+            row = next(row for row in parent.manifest["input_lineage"]["rows"] if row["path"] == negative)
+            row["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "neg_B.raw",
+                                   "member_name": "x_neg_B.raw"}
+            parent_root = parent.write()
+            part = {"split_from": {"manifest_path": str(parent_root / "provenance" / "run-manifest.json")},
+                    "input_candidates": [positive], "input_lineage": {"rows": [], "excluded": []}}
+            sibling = dict(part, input_candidates=[negative])
+            checks = {}
+            for name, manifest in (("part", part), ("sibling", sibling)):
+                report = verifier.Report(Path(temporary) / name)
+                verifier.check_inferred_name_pairings_are_listed(report, manifest, "")
+                checks[name] = report.checks[0]
+
+        self.assertEqual(verifier.PASS, checks["part"].status, checks["part"].detail)
+        self.assertEqual(1, checks["part"].evidence["inputs"])
+        self.assertEqual(verifier.WARN, checks["sibling"].status, checks["sibling"].detail)
+        self.assertEqual(1, checks["sibling"].evidence["inputs"])
+        self.assertEqual(["x_neg_B.raw"], [entry["member_name"] for entry in checks["sibling"].evidence["pairings"]])
+
+    def test_a_part_reads_its_own_lineage_rows_too(self) -> None:
+        """Interactive's split copies the parent's rows of the part's own inputs into the part (inherited_from)."""
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = FolderBranchUnit(temporary, "parent")
+            negative = parent.file("x_neg_B.raw", "B")
+            parent.file("pos_A.raw", "A")
+            row = next(row for row in parent.manifest["input_lineage"]["rows"] if row["path"] == negative)
+            row["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "neg_B.raw",
+                                   "member_name": "x_neg_B.raw"}
+            parent_root = parent.write()
+            part = {"split_from": {"manifest_path": str(parent_root / "provenance" / "run-manifest.json")},
+                    "input_candidates": [negative], "input_lineage": {"rows": [dict(row)], "excluded": []}}
+            report = verifier.Report(Path(temporary) / "part")
+            verifier.check_inferred_name_pairings_are_listed(report, part, "")
+
+        check = report.checks[0]
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual(1, check.evidence["inputs"], "the part's row and the parent's copy of it are one input")
+        self.assertEqual(1, check.evidence["paired_by_inference"])
+
+
+import test_verify_inputs_and_acquisition as acquisition  # noqa: E402
+
+
+class HeaderFirstAcquisitionTests(unittest.TestCase):
+    """ACQ-1 under rule B2 (2026-10-06, msdial-interactive-app#62 at 4802a98): the header's Console type binds
+    every row at any confidence; the declaration is named only where the header gave no Console type."""
+
+    verifier = acquisition.verifier
+
+    def _acq1(self, header: str, header_console: "str | None", console: "str | None", csv_type: str, *,
+              basis: str = "header", confidence: float = 0.75, declared: "str | None" = None,
+              declared_source: "str | None" = None, has_ms2: bool = True, disposition_extra=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = acquisition.Unit(temporary)
+            paths = unit.inputs(["S0.mzML"])
+            record = acquisition._record(paths[0], header, console, confidence=confidence,
+                                         console_acquisition_basis=basis,
+                                         header_console_acquisition_type=header_console,
+                                         header_console_acquisition_basis="header" if header_console else "")
+            record["has_ms2"] = has_ms2
+            unit.preflight([record])
+            disposition = acquisition._disposition([])
+            if declared is not None:
+                disposition["declared"] = {"acquisition_mode": declared, "ion_mode": "Negative",
+                                           "separation": "LC-MS", "untargeted": True}
+            if declared_source is not None:
+                disposition["declared_acquisition_source"] = declared_source
+            disposition.update((disposition_extra(paths[0]) if callable(disposition_extra) else disposition_extra) or {})
+            unit.manifest["campaign_disposition"] = disposition
+            unit.csv(unit.rows([csv_type]))
+            return _check(self.verifier.verify(unit.write(), "before-production"), "ACQ-1")
+
+    def test_mtbls1572_dda_headers_run_as_swath_are_refused(self) -> None:
+        """MTBLS1572: six DDA headers below 0.8, which the old disposition kept as the declared SWATH."""
+        check = self._acq1("DDA", "DDA", "SWATH", "SWATH", basis="declaration", confidence=0.75, declared="DIA")
+
+        self.assertEqual(self.verifier.FAIL, check.status, check.detail)
+        self.assertIn("S0: its header gives DDA, and the Console will deconvolute it as SWATH", check.detail)
+
+    def test_a_header_runs_as_itself_at_any_confidence(self) -> None:
+        check = self._acq1("DDA", "DDA", "DDA", "DDA", confidence=0.3, declared="DIA",
+                           declared_source="catalog_keyword_inference",
+                           disposition_extra={"declared_vs_header": [
+                               {"file": "S0", "declared": "DIA", "header": "DDA", "confidence": 0.3, "decided": "DDA",
+                                "basis": "header", "declaration_source": "catalog_keyword_inference"}]})
+
+        self.assertEqual(self.verifier.PASS, check.status, check.detail)
+        self.assertEqual({"header": 1}, check.evidence["sources"])
+        self.assertEqual(1, check.evidence["header_overrides_declaration"])
+        self.assertEqual({"catalog_keyword_inference": 1}, check.evidence["declaration_sources"])
+
+    def test_a_row_against_the_type_the_record_decided_is_refused(self) -> None:
+        check = self._acq1("DIA", None, "AIF", "SWATH", basis="declaration", declared="AIF")
+
+        self.assertEqual(self.verifier.FAIL, check.status, check.detail)
+        self.assertIn("S0: its record decided AIF, and the Console will deconvolute it as SWATH", check.detail)
+
+    def test_the_declaration_where_the_header_gave_no_console_type_is_a_warning(self) -> None:
+        """A DIA header whose single isolation target left SWATH and AIF open: the declared SWATH runs."""
+        check = self._acq1("DIA", None, "SWATH", "SWATH", basis="declaration", declared="DIA")
+
+        self.assertEqual(self.verifier.WARN, check.status, check.detail)
+        self.assertEqual({"declaration": 1}, check.evidence["sources"])
+        self.assertIn("no Console acquisition type", check.detail)
+
+    def test_a_declaration_the_header_agrees_with_is_not_a_warning(self) -> None:
+        check = self._acq1("AIF", "AIF", "AIF", "AIF", basis="declaration", declared="AIF")
+
+        self.assertEqual(self.verifier.PASS, check.status, check.detail)
+
+    def test_an_aif_header_run_as_swath_is_refused_while_no_mapping_is_sanctioned(self) -> None:
+        check = self._acq1("AIF", "AIF", "SWATH", "SWATH", basis="declaration", declared="DIA",
+                           disposition_extra={"sanctioned_acquisition_mappings": [
+                               {"file": "S0", "header": "AIF", "runs_as": "SWATH"}]})
+
+        self.assertEqual({}, self.verifier.SANCTIONED_ACQUISITION_MAPPINGS, "nothing is sanctioned yet")
+        self.assertEqual(self.verifier.FAIL, check.status, check.detail)
+        self.assertIn("its header gives AIF, and the Console will deconvolute it as SWATH", check.detail)
+
+    def test_a_sanctioned_mapping_is_accepted_only_where_the_disposition_records_it_for_the_file(self) -> None:
+        """The table a later rule (AIF run as SWATH, pending with the user) will fill; its field is that rule's."""
+        with mock.patch.dict(self.verifier.SANCTIONED_ACQUISITION_MAPPINGS,
+                             {("AIF", "SWATH"): "sanctioned_acquisition_mappings"}):
+            for file, status in ((None, self.verifier.PASS), ("elsewhere.mzML", self.verifier.FAIL)):
+                with self.subTest(file=file):
+                    check = self._acq1("AIF", "AIF", "SWATH", "SWATH", basis="declaration", declared="AIF",
+                                       disposition_extra=lambda path, file=file: {"sanctioned_acquisition_mappings": [
+                                           {"file": file or path, "header": "AIF", "runs_as": "SWATH"}]})
+                    self.assertEqual(status, check.status, check.detail)
+                    if status == self.verifier.PASS:
+                        self.assertEqual(1, check.evidence["sanctioned_mappings"])
+
+    def test_an_ms1_only_file_folded_into_dda_in_a_declared_dia_unit_is_refused(self) -> None:
+        """MTBKS217's z_014nn under its old disposition: rule B2 excludes such files."""
+        for source, said in ((None, "the disposition predates Interactive 0.5.29"),
+                             ("catalog_keyword_inference", "declared by catalog_keyword_inference")):
+            with self.subTest(source=source):
+                check = self._acq1("FullScan", None, "DDA", "DDA", basis="folded_ms1_only", declared="DIA",
+                                   declared_source=source, has_ms2=False)
+                self.assertEqual(self.verifier.FAIL, check.status, check.detail)
+                self.assertIn("ms1_only_in_declared_dia_unit", check.detail)
+                self.assertIn(said, check.detail)
+
+    def test_an_ms1_only_file_folded_into_dda_elsewhere_is_a_warning(self) -> None:
+        check = self._acq1("FullScan", None, "DDA", "DDA", basis="folded_ms1_only", declared="DDA", has_ms2=False)
+
+        self.assertEqual(self.verifier.WARN, check.status, check.detail)
+        self.assertEqual({"folded_ms1_only": 1}, check.evidence["sources"])
+
+    def test_a_legacy_record_is_read_from_its_acquisition_mode(self) -> None:
+        """A record from before header_console_acquisition_type: a DDA header gives DDA, at any confidence."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = acquisition.Unit(temporary)
+            paths = unit.inputs(["S0.mzML"])
+            unit.preflight([acquisition._record(paths[0], "DDA", "SWATH", confidence=0.5,
+                                                console_acquisition_basis="declaration")])
+            unit.manifest["campaign_disposition"] = acquisition._disposition([])
+            unit.csv(unit.rows(["SWATH"]))
+            check = _check(self.verifier.verify(unit.write(), "before-production"), "ACQ-1")
+
+        self.assertEqual(self.verifier.FAIL, check.status, check.detail)
+        self.assertIn("S0: its header gives DDA, and the Console will deconvolute it as SWATH", check.detail)
 
 
 if __name__ == "__main__":

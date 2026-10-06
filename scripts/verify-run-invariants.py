@@ -788,6 +788,8 @@ class _ArchiveListing:
     files: dict = field(default_factory=dict)
     directories: set = field(default_factory=set)
     problem: str = ""
+    # Each extracted file's path as the listing spells it, by its casefolded key in files.
+    names: dict = field(default_factory=dict)
 
 
 class _InputLineage:
@@ -1320,6 +1322,7 @@ def _read_archive_listing(path: Path, recorded_sha256: str, name: str) -> _Archi
             listing.directories.add(member)
         else:
             listing.files[member] = int(entry["size"]) if entry["size"].isdigit() else None
+            listing.names[member] = entry["path"].replace("\\", "/").strip("/")
     return listing
 
 
@@ -5923,8 +5926,9 @@ def _delivery_of(provenance: dict | None, unreached: dict[str, list[str]]) -> _D
                 result.problem = listing.problem
                 result.unestablished = dict(unreached)
                 return result
-            for member in sorted(set(listing.files) | listing.directories):
-                container = _member_container(member)
+            # The files first, whose names the listing spells; a directory only as its key.
+            for member in [*sorted(listing.files), *sorted(listing.directories)]:
+                container = _member_container(listing.names.get(member, member))
                 if container:
                     delivered.setdefault(_container_stem(container), container.rsplit("/", 1)[-1])
     paired: list[object] = [*((provenance or {}).get("input_candidates") or []), *(owner.get("input_candidates") or [])]
@@ -6822,6 +6826,32 @@ FOURIER_INSTRUMENT = re.compile(
 )
 PKH1_TITLE = "The threshold was measured on this unit"
 STEP_RULE_FIELDS = ("coarse_threshold_step", "step_fallback", "fallback_reason")
+# What a production run actually kept (the user's decision of 2026-10-06), as Interactive records it after
+# each repository run: production_peak_counts, one record per run, appended (msdial-production-peak-counts.v1,
+# Interactive 0.5.28, msdial-interactive-app#61). Read where present, and only recorded: the estimate is read
+# off one file's zero-threshold diagnostic, and no rule yet says what a production count must be.
+PRODUCTION_PEAK_COUNTS = "production_peak_counts"
+PRODUCTION_PEAK_COUNT_FIELDS = (
+    "job_id", "run_complete", "minimum_peak_height", "diagnostic_matches_applied_threshold", "estimated_peak_count",
+    "representative_file_name", "representative_peak_count", "representative_to_estimate_ratio",
+    "representative_within_target_range", "file_count", "files_counted", "peak_count_min", "peak_count_median",
+    "peak_count_max", "peak_count_total",
+)
+
+
+def _production_peak_counts(provenance: dict, threshold: "float | None") -> "dict | None":
+    """The latest production_peak_counts record of a run at this threshold, else the latest, with its fields
+    as recorded (PRODUCTION_PEAK_COUNT_FIELDS) and whether its threshold is the one method.txt asks for."""
+    records = [item for item in provenance.get(PRODUCTION_PEAK_COUNTS) or [] if isinstance(item, dict)]
+    if not records:
+        return None
+    matching = [item for item in records if threshold is not None
+                and _as_number(item.get("minimum_peak_height")) == threshold]
+    record = (matching or records)[-1]
+    summary = {name: record.get(name) for name in PRODUCTION_PEAK_COUNT_FIELDS if name in record}
+    summary["records"] = len(records)
+    summary["matches_method_threshold"] = bool(matching)
+    return summary
 
 
 def _diagnostic_field(item: dict, name: str) -> object:
@@ -6854,9 +6884,10 @@ def _step_family(item: dict, provenance: dict | None) -> tuple[str, str]:
     analyser (Interactive labels every mzML QTOF), or where the diagnostic searched at the Fourier-transform
     family step of 1,000; else QTOF-type."""
     representative = item.get("representative") if isinstance(item.get("representative"), dict) else {}
-    family = str(representative.get("instrument_family") or "").casefold()
-    if "fourier" in family or "ft-icr" in family or "fticr" in family:
-        return "fourier", f"the representative's instrument family is {representative.get('instrument_family')}"
+    for named in (representative.get("instrument_family"), _diagnostic_field(item, "instrument_family")):
+        family = str(named or "").casefold()
+        if "fourier" in family or "ft-icr" in family or "fticr" in family:
+            return "fourier", f"the diagnostic's instrument family is {named}"
     project = (provenance or {}).get("project") if isinstance((provenance or {}).get("project"), dict) else {}
     handoff = ((project.get("repository_metadata") or {}).get("catalog_handoff") or {}) if isinstance(
         project.get("repository_metadata"), dict) else {}
@@ -6902,6 +6933,9 @@ def _step_rule(item: dict, provenance: dict | None = None) -> dict:
                          "step_fallback": fallback, "fallback_reason": reason})
     if within is not None:
         evidence["within_target_range"] = within
+    for name in ("selection_rule", "fine_threshold_step", "instrument_family_source"):
+        if _diagnostic_field(item, name) is not None:
+            evidence[name] = _diagnostic_field(item, name)
     if estimated is not None:
         evidence["estimated_peak_count"] = _diagnostic_field(item, "estimated_peak_count")
     broken: list[str] = []
@@ -6978,7 +7012,12 @@ def check_threshold_was_measured_on_this_unit(
     anything but the family step divided by ten, a fallback where the zero-threshold count needed no
     threshold, or another step than the family's with no fallback recorded) is a FAIL. A diagnostic
     recorded before the rule records none of its fields; its step and within_target_range are read as
-    they are.
+    they are. The floor is absolute (_step_family): never finer than 10 for QTOF-type data or 100 for
+    Fourier-transform data, whatever family step the diagnostic itself records, and a recorded family step
+    is 100 or 1,000.
+
+    WHAT THE PRODUCTION RUN KEPT (production_peak_counts, Interactive 0.5.28) is reported where recorded,
+    against the estimate, and judged by nothing: the user asked that it be recorded (2026-10-06).
 
     RUN POLICY: record_only, as the user named it (2026-10-01). A threshold not measured here keeps
     more or fewer peaks; what it keeps is still this unit's data.
@@ -7038,8 +7077,17 @@ def check_threshold_was_measured_on_this_unit(
             detail += " The step is not one the rule of 2026-10-06 allows: " + "; ".join(rule["broken"]) + "."
         if rule["notes"]:
             detail += " To be read: " + "; ".join(rule["notes"]) + "."
+        production = _production_peak_counts(provenance, executed)
+        if production is not None:
+            kept = production.get("representative_peak_count")
+            detail += (f" The production run{'' if production['matches_method_threshold'] else ' recorded at another threshold'} "
+                       f"kept {kept if kept is not None else 'an unrecorded number of'} peaks in the representative "
+                       f"file against the estimate of {production.get('estimated_peak_count', '?')}, and "
+                       f"{production.get('peak_count_min', '?')}-{production.get('peak_count_max', '?')} across "
+                       f"{production.get('files_counted', '?')} file(s) (recorded, not judged).")
         report.add(
             "PKH-1", stage, PKH1_TITLE, status, detail,
+            **({"production_peak_counts": production} if production is not None else {}),
             method_threshold=written, measured=measured, stated=stated,
             representative=(latest.get("representative") or {}).get("file_name", ""),
             **rule["evidence"],
