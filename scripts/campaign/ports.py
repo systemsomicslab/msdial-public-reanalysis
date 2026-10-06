@@ -729,6 +729,20 @@ def copy_handoff(response: Mapping[str, Any], destination: Path) -> dict[str, An
     return record
 
 
+def release_stale_campaign_lock(lock_module: Any, database: str | Path, approval_id: str) -> dict[str, Any] | None:
+    """Release the Catalog's campaign lock when this approval holds it and its owner is no longer running: the
+    lock a runner of this campaign left when it died. A lock of another approval, or one whose owner is alive or
+    cannot be judged, is never touched. The release report, or None when nothing was released.
+
+    CatalogPort.lock does this before it takes the lock, and so does a runner that finds its campaign finished
+    and exits before taking it (campaign-runner.py, 2026-10-07 review of PR #30): the Catalog never breaks a
+    stale lock on its own, so without this a finished campaign whose last runner died would hold it for good."""
+    status = lock_module.campaign_lock_status(str(database))
+    if status.get("locked") and status.get("approval_id") == approval_id and status.get("owner") == "dead":
+        return lock_module.release_campaign_lock(str(database), approval_id)
+    return None
+
+
 class CatalogPort:
     def __init__(self, database: str | Path) -> None:
         from msdial_repository_catalog import campaign_lock
@@ -785,9 +799,7 @@ class CatalogPort:
 
     def lock(self, approval_id: str, campaign_id: str) -> dict[str, Any]:
         """Hold the catalog for the campaign; release a lock this approval left when its runner died."""
-        status = self.lock_module.campaign_lock_status(self.database)
-        if status.get("locked") and status.get("approval_id") == approval_id and status.get("owner") == "dead":
-            self.lock_module.release_campaign_lock(self.database, approval_id)
+        release_stale_campaign_lock(self.lock_module, self.database, approval_id)
         return self.lock_module.acquire_campaign_lock(self.database, approval_id, campaign_id=campaign_id)
 
     def unlock(self, approval_id: str) -> dict[str, Any]:
@@ -1080,7 +1092,16 @@ def process_descends_from(pid: Any, ancestor: Any, ancestor_created_at: float | 
             parent_pid = process.ppid()
             created = process.create_time()
             if parent_pid == ancestor:
-                return ancestor_created_at is None or float(ancestor_created_at) <= created + 1.0
+                if ancestor_created_at is None:
+                    return True
+                if float(ancestor_created_at) > created + 1.0:
+                    return False
+                # A live process holding the ancestor's id must be the recorded one, not a later one that reused
+                # the id after the recorded process exited (and started this one).
+                try:
+                    return abs(psutil.Process(ancestor).create_time() - float(ancestor_created_at)) <= 1.0
+                except psutil.NoSuchProcess:
+                    return True
             if not parent_pid:
                 return False
             try:
@@ -1095,6 +1116,43 @@ def process_descends_from(pid: Any, ancestor: Any, ancestor_created_at: float | 
         return False
     except (psutil.AccessDenied, OSError):
         return None
+
+
+def _same_path(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+
+
+def process_runs_command(pid: Any, command: list[str], created_from: float, created_until: float) -> bool | None:
+    """Whether process `pid` runs `command` (the same arguments after the interpreter, the script compared as a
+    path) and was created between created_from and created_until (epoch seconds).
+
+    The process tree cannot say this where a process between the listener and the recorded one has exited: under
+    a venv's Python the broker starts the venv's pythonw.exe, whose interpreter starts the backend's launcher and
+    exits, so the walk up from the backend stops at an exited interpreter (2026-10-07 review of PR #30). A
+    process's own command line and creation time stay readable for as long as it runs. A venv's launcher passes
+    its command line on to the interpreter unchanged (seen 2026-10-07), so the interpreter's argv[0] is the
+    launcher's and only the arguments after it are compared. None: not knowable here (no psutil, access denied)."""
+    if not pid or len(command) < 2:
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        process = psutil.Process(int(pid))
+        arguments = process.cmdline()
+        created = process.create_time()
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, OSError):
+        return None
+    if not created_from - 1.0 <= created <= created_until + 1.0:
+        return False
+    expected = [str(item) for item in command[1:]]
+    actual = [str(item) for item in arguments[1:]]
+    if len(actual) != len(expected) or not actual:
+        return False
+    return _same_path(actual[0], expected[0]) and actual[1:] == expected[1:]
 
 
 class MemoryStartState:
@@ -1152,7 +1210,10 @@ class BackendSupervisor:
     can be a launcher (a venv's python.exe, py.exe) whose child holds the port. A listener that is the
     started process, or descends from it (or, where the broker never reported, from the broker), is this
     runner's backend: its process id and creation time replace the launcher's in the launch record, which
-    keeps the launcher's as launcher_pid. Any other listener is refused, and named.
+    keeps the launcher's as launcher_pid. Where the tree breaks at a process that has exited (under a venv
+    Python, the broker's own interpreter), the listener's command line and creation time say it instead: the
+    backend's command, created within the start's window after the recorded process (_owns, 2026-10-07 round
+    3). Any other listener is refused, and named.
 
     READINESS is /api/agent/status (Interactive's job summary, which carries app_version and probes nothing),
     polled for start_timeout seconds. /api/config, which starts the Console and git for every Console
@@ -1165,7 +1226,11 @@ class BackendSupervisor:
     (origin()): by this campaign's runner (the launch record matches its process id and creation time, or it
     descends from the recorded process) or not, and whether it sits in a job object. Starts that fail
     max_start_failures times in a row are not tried again for retry_after seconds, and the refusal names
-    each failure. A start that has not answered yet is waited for again rather than started twice.
+    each failure. A start that has not answered yet is waited for until start_timeout from its launch, by this
+    runner or the next, and is not started twice. Past that deadline a backend whose process still runs is
+    counted as a failed start at every check, so the pause applies, and the failure names the process to end;
+    no second backend is started beside it (2026-10-07 round 3: it was waited for again by every runner, and
+    the pause, checked after it, never engaged). The pause is checked before any start still waited for.
 
     THAT START STATE LIVES IN THE LEDGER (2026-10-07). The consecutive failures, the time before which no
     start is tried and the start still waited for are read from `state` (LedgerStartState: a meta row of the
@@ -1179,6 +1244,10 @@ class BackendSupervisor:
     private library location may reach a log the runner writes. What each job did stays in the job
     registry and the unit manifest.
     """
+
+    # How long after the recorded process a backend's creation still counts as this start's, beyond start_timeout:
+    # the broker's 30 s to report, and margin.
+    OWNED_START_SECONDS = 90.0
 
     def __init__(
         self, *, python: str, interactive_root: Path, host: str, port: int, jobs_file: Path,
@@ -1335,11 +1404,15 @@ class BackendSupervisor:
         except OSError:
             pass
 
-    @staticmethod
-    def _owns(record: Mapping[str, Any], listener: int) -> bool | None:
+    def _owns(self, record: Mapping[str, Any], listener: int) -> bool | None:
         """Whether the process listening on the port is the backend this launch record names: that process,
         or one it started (through a launcher), or, where the broker never reported, one the broker started.
-        None: not knowable here."""
+        None: not knowable here.
+
+        Started is read from the process tree, and, where the tree breaks at a process that has exited (the
+        broker's interpreter under a venv Python), from the listener's own command line and creation time: the
+        backend's command, created no earlier than the recorded process and no later than the start could have
+        run (OWNED_START_SECONDS beyond start_timeout)."""
         if record.get("pid") and listener == record.get("pid"):
             return True
         answer: bool | None = False
@@ -1349,7 +1422,21 @@ class BackendSupervisor:
             found = process_descends_from(listener, record[pid_key], record.get(created_key))
             if found:
                 return True
-            if found is None:
+            try:
+                created = float(record[created_key]) if record.get(created_key) is not None else None
+            except (TypeError, ValueError):
+                created = None
+            if created is None:
+                said = found
+            else:
+                matched = process_runs_command(listener, self.command(), created,
+                                               created + self.start_timeout + self.OWNED_START_SECONDS)
+                if matched:
+                    return True
+                # Another command, or created outside the start's window, is not this start's backend; a command
+                # line that cannot be read leaves it not knowable, whatever the broken tree said.
+                said = False if matched is False else None
+            if said is None:
                 answer = None
         return answer
 
@@ -1423,16 +1510,9 @@ class BackendSupervisor:
         self._load_state()
         if self.status() is not None:
             return self._reuse()
-        if self._pending is not None:
-            if self._pending_expired(self._pending):
-                self._pending = None
-                self._save_state()
-            elif self._alive(self._pending) is not False:
-                return self._await(self._pending)
-            else:
-                self._pending = None
-                self._save_state()
         now = time.time()
+        # The pause comes first: a start still waited for does not get round it (2026-10-07 review of PR #30, where
+        # a hung backend was waited for by every runner, failure after failure, and the pause never engaged).
         if self.start_failures >= self.max_start_failures:
             if now < self._retry_at:
                 return {"ok": False, "started": False, "start_failures": self.start_failures,
@@ -1440,6 +1520,20 @@ class BackendSupervisor:
             self.failures = []
             self._retry_at = 0.0
             self._save_state()
+        if self._pending is not None:
+            alive = self._alive(self._pending)
+            if alive is False:
+                self._pending = None
+                self._save_state()
+            elif not self._pending_expired(self._pending):
+                return self._await(self._pending)
+            elif alive and self._pending.get("pid"):
+                return self._hung(self._pending)
+            else:
+                # Past its deadline with no process to ask (the broker never reported), or one whose state
+                # cannot be read: it is no longer waited for.
+                self._pending = None
+                self._save_state()
         try:
             record = self._launch()
         except BackendLaunchError as error:
@@ -1447,18 +1541,29 @@ class BackendSupervisor:
                 # The broker may yet start a backend: wait for it, from the ledger, instead of starting another.
                 self._pending = {**error.record, "launched_at_epoch": time.time()}
             return self._failed(str(error), started=False)
-        return self._await(record)
+        return self._await({**record, "launched_at_epoch": time.time()})
 
     def _pending_expired(self, record: Mapping[str, Any]) -> bool:
-        """A start whose backend's process id is not known (the broker never reported) is waited for only
-        start_timeout seconds from its launch: there is no process to ask whether it still runs."""
-        if record.get("pid"):
-            return False
+        """A start is waited for until start_timeout seconds from its launch, whether or not its backend's process
+        id is known, by this runner or the next (2026-10-07 review of PR #30: one with a known process id was
+        waited for again by every runner, without end). A record with no launch time has expired."""
         try:
             launched = float(record.get("launched_at_epoch") or 0.0)
         except (TypeError, ValueError):
             launched = 0.0
         return time.time() - launched >= self.start_timeout
+
+    def _hung(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        """A started backend that still runs past its start deadline and has never answered. No second backend is
+        started beside it: it may hold the port, and it shares the campaign's job registry. Each check counts it
+        as a failed start, so the pause after max_start_failures applies, and says which process to end."""
+        pid = record.get("pid")
+        return self._failed(
+            f"The backend started at {_iso_epoch(float(record.get('launched_at_epoch') or 0.0)) or 'an unknown time'} "
+            f"(pid {pid}, through {record.get('method')}) still runs and has not answered within "
+            f"{self.start_timeout:g} s of its start (--backend-start-timeout); no second backend is started beside it. "
+            f"End it (taskkill /PID {pid} /T /F) and the next check starts a new one, once any pause is over.",
+            started=False, record=record)
 
     def _reuse(self) -> dict[str, Any]:
         origin = self.origin()
@@ -1510,14 +1615,12 @@ class BackendSupervisor:
 
     def _await(self, record: dict[str, Any]) -> dict[str, Any]:
         begun = time.monotonic()
-        deadline = begun + self.start_timeout
-        if not record.get("pid"):
-            # Only the broker is known: wait no longer than start_timeout from its launch.
-            try:
-                launched = float(record.get("launched_at_epoch") or time.time())
-            except (TypeError, ValueError):
-                launched = time.time()
-            deadline = begun + max(0.0, launched + self.start_timeout - time.time())
+        # No longer than start_timeout from its launch, by this runner or the next (_pending_expired).
+        try:
+            launched = float(record.get("launched_at_epoch") or time.time())
+        except (TypeError, ValueError):
+            launched = time.time()
+        deadline = begun + max(0.0, launched + self.start_timeout - time.time())
         name = (f"The backend (pid {record.get('pid')}, started by {record.get('method')})" if record.get("pid") else
                 f"The backend the broker (pid {record.get('broker_pid')}) may have started")
         while time.monotonic() < deadline:
@@ -1560,9 +1663,12 @@ class BackendSupervisor:
             self._pending = None
             return self._failed(f"{name} did not answer within {self.start_timeout:g} s of the broker's launch "
                                 f"(--backend-start-timeout); the next check may start one.", started=True, record=record)
+        # Kept, so that no second backend is started beside it while it runs (_hung); not waited for again.
         self._pending = record
         return self._failed(f"{name} did not answer within {self.start_timeout:g} s (--backend-start-timeout); it is "
-                            f"left running and waited for again at the next check, by this runner or the next.",
+                            f"left running, and no second backend is started beside it while it runs: each check "
+                            f"counts it as a failed start until it answers or ends. End it (taskkill /PID "
+                            f"{record.get('pid')} /T /F) to have a new one started.",
                             started=True, record=record)
 
     def _log_path(self) -> Path | None:

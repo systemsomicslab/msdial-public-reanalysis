@@ -355,6 +355,21 @@ class BackendLifetimeTests(unittest.TestCase):
         self.assertEqual((origin["how"], origin.get("by"), origin.get("launcher_pid")),
                          ("wmi", "this campaign's runner", record["pid"]))
 
+        # Round 3 of the review: the same start as a broker that never reported records it. Under a venv the
+        # broker (the venv's pythonw.exe, which WMI started) ran its script in an interpreter that has exited, so
+        # the walk up from the backend breaks there; its command line and creation time still name it.
+        broker, broker_created = record.get("broker_pid"), record.get("broker_created_at")
+        self.assertTrue(broker and broker_created, record)
+        deadline = time.monotonic() + 30
+        while ports._process_alive(broker, broker_created) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        self.assertIs(ports.process_descends_from(listener, broker, broker_created), False,
+                      "the process tree breaks at the broker's exited interpreter")
+        supervisor.launch_record_path.write_text(json.dumps(
+            {"method": "wmi", "pid": None, "broker_pid": broker, "broker_created_at": broker_created}))
+        origin = self._supervisor(port, python=python).origin()
+        self.assertEqual((origin["how"], origin.get("by"), origin.get("broker_pid")), ("wmi", "this campaign's runner", broker))
+
         _kill_tree(result["launcher_pid"])
         _kill_tree(listener)
         deadline = time.monotonic() + 20
@@ -398,6 +413,64 @@ class ProcessTreeTests(unittest.TestCase):
                 else parent.kill()
             parent.wait(timeout=30)
             parent.stdout.close()
+
+
+    def test_a_backend_whose_chain_broke_at_an_exited_process_is_known_by_its_command_line(self) -> None:
+        """Round 3 of the 2026-10-07 review: A (the broker's launcher) waits for B (the broker's interpreter),
+        which starts C (the backend's launcher) and exits; C runs D, the backend. The walk from D stops at B."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "app.py").write_text(
+                "import os, time\nopen(os.environ['PID_FILE'], 'w').write(str(os.getpid()))\ntime.sleep(60)\n")
+            pid_file = root / "pid.txt"
+            supervisor = ports.BackendSupervisor(
+                python=sys.executable, interactive_root=root, host="127.0.0.1", port=8798,
+                jobs_file=root / "backend" / "agent-jobs.json", workspace_root=directory, start_timeout=60)
+            command = supervisor.command()
+            c_script = f"import subprocess, sys; sys.exit(subprocess.call({command!r}))"
+            b_script = (f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {c_script!r}], "
+                        f"creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))")
+            a = subprocess.Popen([sys.executable, "-c", f"import subprocess, sys; subprocess.call([sys.executable, '-c', {b_script!r}])"],
+                                 env={**os.environ, "PID_FILE": str(pid_file)})
+            a_created = ports._process_created_at(a.pid)
+            backend = None
+            try:
+                a.wait(timeout=60)
+                deadline = time.monotonic() + 60
+                while not (pid_file.is_file() and pid_file.read_text()) and time.monotonic() < deadline:
+                    time.sleep(0.2)
+                backend = int(pid_file.read_text())
+                self.assertIs(ports.process_descends_from(backend, a.pid, a_created), False, "the walk stops at the exited B")
+                self.assertIs(ports.process_runs_command(backend, command, a_created, a_created + 60), True)
+                at = command.index("--port")
+                other_port = [*command[:at + 1], "8797", *command[at + 2:]]
+                self.assertIs(ports.process_runs_command(backend, other_port, a_created, a_created + 60), False)
+                self.assertIs(ports.process_runs_command(backend, command, a_created + 3600, a_created + 3660), False,
+                              "created before the recorded process: not its start")
+                record = {"method": "wmi", "pid": None, "broker_pid": a.pid, "broker_created_at": a_created}
+                self.assertIs(supervisor._owns(record, backend), True)
+                self.assertIs(supervisor._owns({**record, "broker_created_at": a_created + 3600}, backend), False)
+                supervisor.port = 8797
+                self.assertIs(supervisor._owns(record, backend), False, "another port's backend is not this one")
+            finally:
+                if backend:
+                    try:
+                        import psutil
+
+                        launcher = psutil.Process(backend).ppid()
+                    except Exception:  # noqa: BLE001
+                        launcher = None
+                    for pid in (backend, launcher):
+                        if not pid:
+                            continue
+                        if os.name == "nt":
+                            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+                        else:
+                            with contextlib.suppress(OSError):
+                                os.kill(pid, 9)
+                if a.poll() is None:
+                    a.kill()
+                    a.wait(timeout=30)
 
 
 class StartPolicyTests(unittest.TestCase):
@@ -450,7 +523,8 @@ class StartPolicyTests(unittest.TestCase):
                     mock.patch.object(supervisor, "config", return_value={"root": directory}):
                 first = supervisor.ensure()
                 self.assertFalse(first["ok"])
-                self.assertIn("left running and waited for again", first["detail"])
+                self.assertIn("left running, and no second backend is started beside it", first["detail"])
+                # A runner given a longer start timeout waits for it until that long after its launch.
                 supervisor.start_timeout = 30
                 second = supervisor.ensure()
             self.assertEqual(launch.call_count, 1, "the slow backend was not started a second time")
@@ -662,8 +736,8 @@ class PersistedStartStateTests(unittest.TestCase):
         first = self.runner(start_timeout=0)
         with mock.patch.object(first, "status", return_value=None), \
                 mock.patch.object(first, "_launch", return_value=dict(record)):
-            self.assertIn("waited for again", first.ensure()["detail"])
-        second = self.runner(start_timeout=30)
+            self.assertIn("no second backend is started beside it", first.ensure()["detail"])
+        second = self.runner(start_timeout=30)  # a longer start timeout: still inside its window
         answers = iter([None, None, {"app_version": "x"}])
         with mock.patch.object(second, "status", side_effect=lambda: next(answers)), \
                 mock.patch.object(second, "_launch") as launch, \
@@ -762,6 +836,107 @@ class PersistedStartStateTests(unittest.TestCase):
                       result["detail"])
 
 
+    def test_a_hung_backend_is_counted_paused_and_named_not_waited_for_by_every_runner(self) -> None:
+        """Round 3 of the 2026-10-07 review: a backend that runs and never answers was waited for, 300 s at a time,
+        by every later runner, adding a failure each time, and the pause, checked after it, never engaged."""
+        launches, alive = [], {"value": True}
+
+        def launch():
+            launches.append(1)
+            return {"method": "wmi", "pid": 4242 + len(launches), "process_created_at": 1.0}
+
+        start = self.clock["now"]
+        results, waited = [], []
+        for index in range(30):
+            self.clock["now"] = start + 900 * index  # a runner every 15 minutes
+            supervisor = self.runner(start_timeout=300, retry_after=3600)
+            begun = self.clock["now"]
+            with mock.patch.object(supervisor, "status", return_value=None), \
+                    mock.patch.object(supervisor, "_launch", side_effect=launch), \
+                    mock.patch.object(ports, "_process_alive", side_effect=lambda *a, **k: alive["value"]):
+                result = supervisor.ensure()
+            waited.append(self.clock["now"] - begun)
+            results.append(result)
+            self.assertFalse(result["ok"])
+            self.assertLessEqual(supervisor.start_failures, 3, f"runner {index}")
+        self.assertEqual(len(launches), 1, "no second backend is started beside the one that still runs")
+        self.assertGreaterEqual(waited[0], 300)
+        self.assertEqual(waited[1:], [0.0] * 29, "only the runner that started it waits for it")
+        self.assertIn("still runs and has not answered within 300 s", results[1]["detail"])
+        self.assertIn("taskkill /PID 4243 /T /F", results[1]["detail"])
+        self.assertIn("retry_at", results[2], "the third failure in a row starts the pause")
+        self.assertIn("could not be started 3 times in a row", results[3]["detail"])
+        self.assertIn("No start is tried for another", results[3]["detail"])
+        self.assertIn("taskkill /PID 4243", results[3]["detail"], "the refusal names the process to end")
+        paused = [index for index, result in enumerate(results) if "No start is tried for another" in result["detail"]
+                  and "start_failures" in result and "retry_at" in result]
+        self.assertGreaterEqual(len(paused), 10, "runners inside the pause are refused")
+        self.assertLess(max(len(result["detail"]) for result in results), 3000, "the detail does not grow without end")
+        # Once it has been ended, the next runner after the pause starts a new one.
+        alive["value"] = False
+        self.clock["now"] += 3600
+        supervisor = self.runner(start_timeout=300, retry_after=3600)
+        with mock.patch.object(supervisor, "status", return_value=None), \
+                mock.patch.object(supervisor, "_launch", side_effect=launch), \
+                mock.patch.object(ports, "_process_alive", return_value=False):
+            supervisor.ensure()
+        self.assertEqual(len(launches), 2)
+
+    def test_a_start_still_waited_for_does_not_get_round_the_pause(self) -> None:
+        error = ports.BackendLaunchError("no report", may_have_started=True,
+                                         record={"method": "wmi", "pid": None, "broker_pid": 777})
+        for index in range(3):
+            if index:
+                self.clock["now"] += 700  # the earlier pending start has expired by the next runner
+            supervisor = self.runner(start_timeout=600, retry_after=3600)
+            with mock.patch.object(supervisor, "status", return_value=None), \
+                    mock.patch.object(supervisor, "_launch", side_effect=error):
+                supervisor.ensure()
+        self.assertIsNotNone(supervisor.state.load()["pending"], "the third start is still waited for")
+        later = self.runner(start_timeout=600, retry_after=3600)
+        with mock.patch.object(later, "status", return_value=None), \
+                mock.patch.object(later, "_await") as waited, mock.patch.object(later, "_launch") as launched:
+            refused = later.ensure()
+        waited.assert_not_called()
+        launched.assert_not_called()
+        self.assertIn("could not be started 3 times in a row", refused["detail"])
+
+    def test_a_broker_backend_whose_process_tree_broke_is_adopted_by_its_command_line(self) -> None:
+        """Round 3 of the 2026-10-07 review: under a venv Python the walk from the backend stops at the broker's
+        exited interpreter. The listener's own command line and creation time say it is this start's."""
+        created = self.clock["now"]
+        error = ports.BackendLaunchError("no report", may_have_started=True, record={
+            "method": "wmi", "pid": None, "broker_pid": 777, "broker_created_at": created})
+        for matches in (True, False):
+            first = self.runner(start_timeout=600)
+            with mock.patch.object(first, "status", return_value=None), \
+                    mock.patch.object(first, "_launch", side_effect=error):
+                first.ensure()
+            second = self.runner(start_timeout=600)
+            answers = iter([None, {"app_version": "x"}])
+            calls = []
+            with mock.patch.object(second, "status", side_effect=lambda: next(answers)), \
+                    mock.patch.object(second, "_launch") as launch, \
+                    mock.patch.object(ports, "listening_pid", return_value=9090), \
+                    mock.patch.object(ports, "process_descends_from", return_value=False), \
+                    mock.patch.object(ports, "process_runs_command",
+                                      side_effect=lambda *a: (calls.append(a), matches)[1]), \
+                    mock.patch.object(ports, "_process_created_at", return_value=created + 40), \
+                    mock.patch.object(ports, "process_in_job", return_value=False), \
+                    mock.patch.object(second, "config", return_value={"root": "x"}):
+                result = second.ensure()
+            launch.assert_not_called()
+            self.assertEqual(calls, [(9090, second.command(), created, created + 600 + second.OWNED_START_SECONDS)])
+            if matches:
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["pid"], 9090)
+                record = json.loads(second.launch_record_path.read_text())
+                self.assertEqual((record["pid"], record["broker_pid"]), (9090, 777))
+            else:
+                self.assertFalse(result["ok"])
+                self.assertIn("answered by pid 9090, which is not the backend this runner started", result["detail"])
+
+
 class FinishedCampaignTests(unittest.TestCase):
     """Review of 2026-10-07, finding 2: the hourly task kept starting runners on a finished campaign, each of which
     locked the Catalog and started a backend. run now exits before either, and says how to end the task."""
@@ -799,6 +974,95 @@ class FinishedCampaignTests(unittest.TestCase):
             self.assertEqual(len(book.events("runner_started")), started_before, "the campaign was not taken")
             self.assertEqual(len(book.events("no_work_left")), 1, "said once, not every hour")
             self.assertIsNone(book.runner()["pid"])
+
+    # ---- the Catalog lock a dead runner left (round 3 of the 2026-10-07 review) ----
+
+    LOCK_HOLDER = textwrap.dedent("""
+        import sys, time
+        sys.dont_write_bytecode = True
+        sys.path.insert(0, sys.argv[1])
+        from msdial_repository_catalog import campaign_lock
+        campaign_lock.acquire_campaign_lock(sys.argv[2], sys.argv[3], campaign_id="test-campaign", write_wait_seconds=30)
+        print("held", flush=True)
+        if sys.argv[4] == "stay":
+            time.sleep(120)
+    """)
+
+    def _catalog(self):
+        source = Path(self.cli.DEFAULT_CATALOG_ROOT) / "src"
+        if not (source / "msdial_repository_catalog" / "campaign_lock.py").is_file():
+            self.skipTest("the Catalog checkout (MSDIAL_CATALOG_ROOT) is not here")
+        if str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+        from msdial_repository_catalog import campaign_lock
+
+        with self.world.open() as book:
+            return campaign_lock, book.campaign()["catalog_database"], book.approval()["approval_id"], source
+
+    def _hold(self, source: Path, database: str, approval: str, *, stay: bool) -> subprocess.Popen:
+        holder = subprocess.Popen([sys.executable, "-c", self.LOCK_HOLDER, str(source), database, approval,
+                                   "stay" if stay else "exit"], stdout=subprocess.PIPE, text=True)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        if not stay:
+            holder.wait(timeout=60)
+            holder.stdout.close()
+        return holder
+
+    def test_a_finished_campaign_releases_the_catalog_lock_its_dead_runner_left(self) -> None:
+        """The last runner died holding the Catalog after the last unit ended. Only run released such a lock, and
+        the early exit came before it: every catalog update was refused for good."""
+        campaign_lock, database, approval, source = self._catalog()
+        holder = self._hold(source, database, approval, stay=False)
+        status = campaign_lock.campaign_lock_status(database)
+        self.assertEqual((status["locked"], status["owner"], status["approval_id"]), (True, "dead", approval))
+        with mock.patch.object(self.cli, "Environment", side_effect=AssertionError("built an environment")):
+            code, text = self.run_cli()
+            again, text_again = self.run_cli()
+        self.assertEqual((code, again), (0, 0))
+        self.assertIn(f"Released the Catalog's campaign lock that approval {approval} held", text)
+        self.assertNotIn("Released", text_again)
+        self.assertFalse(campaign_lock.campaign_lock_status(database)["locked"])
+        campaign_lock.refuse_while_campaign_locked(database, "a test update")  # no longer refused
+        with self.world.open() as book:
+            events = book.events("catalog_lock_released")
+            self.assertEqual(len(events), 1)
+            self.assertEqual(json.loads(events[0]["detail_json"])["owner_pid"], holder.pid)
+            self.assertEqual(len(book.events("no_work_left")), 1)
+            self.assertIsNone(book.runner()["pid"], "the campaign was not taken")
+
+    def test_a_finished_campaign_leaves_another_approvals_lock_and_a_live_owners_lock(self) -> None:
+        campaign_lock, database, approval, source = self._catalog()
+        self._hold(source, database, "another-approval", stay=False)
+        with mock.patch.object(self.cli, "Environment", side_effect=AssertionError("built an environment")):
+            code, text = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertIn("held by another approval, and is left as it is", text)
+        status = campaign_lock.campaign_lock_status(database)
+        self.assertEqual((status["locked"], status["approval_id"], status["owner"]), (True, "another-approval", "dead"))
+        campaign_lock.release_campaign_lock(database, "another-approval")
+
+        live = self._hold(source, database, approval, stay=True)
+        try:
+            with mock.patch.object(self.cli, "Environment", side_effect=AssertionError("built an environment")):
+                code, text = self.run_cli()
+            self.assertEqual(code, 0)
+            self.assertIn("is left as it is", text)
+            status = campaign_lock.campaign_lock_status(database)
+            self.assertEqual((status["locked"], status["owner"]), (True, "alive"))
+        finally:
+            live.kill()
+            live.wait(timeout=30)
+            live.stdout.close()
+        campaign_lock.release_campaign_lock(database, approval)
+        with self.world.open() as book:
+            self.assertEqual(book.events("catalog_lock_released"), [])
+
+    def test_a_catalog_lock_that_cannot_be_checked_is_an_environment_failure(self) -> None:
+        with mock.patch.object(self.cli, "Environment", side_effect=AssertionError("built an environment")), \
+                mock.patch("campaign.ports.release_stale_campaign_lock", side_effect=OSError("unreadable")):
+            code, text = self.run_cli()
+        self.assertEqual(code, 3)
+        self.assertIn("The Catalog's campaign lock could not be checked (OSError: unreadable)", text)
 
     def test_work_left_is_a_waiting_request_or_held_raw_data_the_runner_looks_at_again(self) -> None:
         from campaign import machine

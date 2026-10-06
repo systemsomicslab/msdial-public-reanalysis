@@ -211,17 +211,28 @@ knowable (`backend-launch.json` beside the campaign's job registry). The runner
 knows its own backend by the process tree: when its Python is a launcher (a
 venv's `python.exe`, `py.exe`), the process holding the port is the launcher's
 child, and the launch record names it, with the launcher as `launcher_pid`.
+Where the tree breaks at a process that has exited (under a venv Python, the
+broker's own interpreter exits after starting the backend), the listener's
+command line and creation time identify it instead.
 
 Three failed backend starts in a row pause starting for an hour. The failures,
 the pause and a start still waited for are kept in the campaign ledger, so a
-runner the task starts after another one exited honours them. Once the backend
+runner the task starts after another one exited honours them. A start is waited
+for until `--backend-start-timeout` from its launch, by that runner or the next.
+A backend still running past that deadline without answering counts as a failed
+start at every check, so the pause applies; no second backend is started beside
+it, and the failure names the process to end. Once the backend
 answers its status, `/api/config` has `--backend-config-timeout` of its own, and
 a backend that answers the status but not `/api/config` is reported as that.
 
 When the campaign has no work left (every unit has ended, no request waits for
 a runner, and no ended unit holds raw data the runner would look at again),
 `run` exits at once, before it takes the campaign, locks the Catalog or starts a
-backend, and prints how to end the task. The task keeps starting it every hour
+backend, and prints how to end the task. The one thing it still does is release
+a Catalog campaign lock that this campaign's approval holds and whose owner has
+died (a runner killed after the last unit ended), as `run` does before it locks
+the Catalog; a lock of another approval, or with a live owner, is left alone.
+The task keeps starting it every hour
 until you do: disable it with `schtasks /Change /TN "MSDIAL-campaign-ID"
 /Disable` or delete it with `schtasks /Delete /TN "MSDIAL-campaign-ID" /F`. The
 runner changes no task itself. Neither command stops the backend the last runner

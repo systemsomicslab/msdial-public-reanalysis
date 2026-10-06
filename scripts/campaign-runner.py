@@ -54,7 +54,9 @@ next runner the task starts honours them (2026-10-07).
 
 A CAMPAIGN WITH NO WORK LEFT (every unit ended, no request waiting, no ended unit holding raw data the runner
 would look at again) makes run exit at once, before it takes the campaign, locks the Catalog or starts a
-backend, with the schtasks lines that disable or delete the task; the task is the user's to end.
+backend, with the schtasks lines that disable or delete the task; the task is the user's to end. It still
+releases a Catalog lock this campaign's approval holds whose owner has died, as run does before it locks the
+Catalog: otherwise the lock a runner left when it was killed after the last unit would hold the Catalog for good.
 
 RUN --UNTIL-IDLE returns once every unit has ended or waits for disk. A held unit is not idle: the runner
 stays, polling, and makes the held unit's step again every few hours, so a unit that stays held keeps it
@@ -362,29 +364,65 @@ def task_end_commands(campaign: str) -> list[str]:
             f'schtasks /Delete /TN "{task_name(campaign)}" /F']
 
 
-def _no_work_left(args: argparse.Namespace) -> bool:
-    """Whether the campaign has no work left (machine.remaining_work), read from its ledger before anything is
-    locked or started. If so, say so, with how to disable or delete the task, and record it once."""
+def _release_stale_catalog_lock(book: Any) -> tuple[int | None, str]:
+    """On a finished campaign, release the Catalog lock this campaign's approval holds when the runner that took
+    it has died (ports.release_stale_campaign_lock), as `run` does before it takes the lock. Never another
+    approval's lock, nor one whose owner is alive or cannot be judged. (exit code or None, what was found)."""
+    from campaign import ports
+
+    campaign, approval = book.campaign(), book.approval()
+    database = campaign["catalog_database"]
+    try:
+        from msdial_repository_catalog import campaign_lock
+
+        released = ports.release_stale_campaign_lock(campaign_lock, database, approval["approval_id"])
+        status = campaign_lock.campaign_lock_status(database)
+    except Exception as error:  # noqa: BLE001 - ImportError, an unreadable lock, the Catalog's own refusal
+        return EXIT_ENVIRONMENT, (f"The Catalog's campaign lock could not be checked ({type(error).__name__}: {error}); "
+                                  f"if a runner of this campaign died holding it, it still holds the Catalog.")
+    if released:
+        book.event("catalog_lock_released", _now(), {
+            "approval_id": approval["approval_id"], "owner_pid": released.get("pid"),
+            "acquired_at": released.get("acquired_at"), "why": "its owner had died and the campaign has no work left"})
+        return None, (f"Released the Catalog's campaign lock that approval {approval['approval_id']} held: its owner "
+                      f"(pid {released.get('pid')}, since {released.get('acquired_at')}) is no longer running.")
+    if not status.get("locked"):
+        return None, ""
+    if status.get("approval_id") != approval["approval_id"]:
+        return None, f"The Catalog's campaign lock is held by another approval, and is left as it is: {status.get('message')}"
+    return None, f"The Catalog's campaign lock is left as it is: {status.get('message')}"
+
+
+def _no_work_left(args: argparse.Namespace) -> int | None:
+    """EXIT_OK when the campaign has no work left (machine.remaining_work), read from its ledger before anything is
+    locked or started, else None. If so, say so, with how to disable or delete the task, and record it once.
+
+    The Catalog lock is the exception (2026-10-07 round 3): the only code that releases a lock this campaign's
+    runner left when it died is `run`'s, before it takes the lock, so a finished campaign releases it here too.
+    A lock that cannot be checked is EXIT_ENVIRONMENT."""
     from campaign import ledger, machine
 
     path = _campaign_directory(args.workspace_root, args.campaign) / "ledger.sqlite"
     if not path.is_file():
-        return False
+        return None
     with ledger.Ledger(path) as book:
         if machine.remaining_work(book):
-            return False
+            return None
+        code, lock_note = _release_stale_catalog_lock(book)
         last = book.last_event(("runner_started", "no_work_left"))
         if last is None or last["kind"] != "no_work_left":
             book.event("no_work_left", _now(), {"task": task_name(args.campaign)})
     print(f"Campaign {args.campaign} has no work left: every unit has ended, no request waits for a runner, and no "
           f"ended unit holds raw data the runner would look at again. The runner exits without taking the campaign, "
           f"locking the Catalog or starting a backend.", file=sys.stderr)
+    if lock_note:
+        print(lock_note, file=sys.stderr)
     print("If a scheduled task starts this runner, disable or delete it (the runner changes no task itself):", file=sys.stderr)
     for line in task_end_commands(args.campaign):
         print(f"  {line}", file=sys.stderr)
     print(f"A request recorded later (retry, recheck-held) then waits for a runner started by hand: "
           f"campaign-runner.py run --campaign {args.campaign}.", file=sys.stderr)
-    return True
+    return EXIT_OK if code is None else code
 
 
 def command_run(args: argparse.Namespace) -> int:
@@ -392,9 +430,10 @@ def command_run(args: argparse.Namespace) -> int:
 
     # Before the runner lock, the Catalog lock and the backend (2026-10-07 review of PR #30): the scheduled task
     # starts a runner every hour, and each one on a finished campaign used to lock the Catalog and start a
-    # backend that nothing then stopped.
-    if _no_work_left(args):
-        return EXIT_OK
+    # backend that nothing then stopped. It still releases a Catalog lock this campaign's dead runner left.
+    finished = _no_work_left(args)
+    if finished is not None:
+        return finished
     try:
         environment = Environment(args)
     except (OSError, ValueError) as error:
