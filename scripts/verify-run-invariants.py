@@ -5857,6 +5857,20 @@ def _member_listing(owner: dict, record: dict) -> _ArchiveListing:
     return _read_archive_listing(path, str(members.get("sha256") or ""), name)
 
 
+def _download_container(path: str, raw_directory: str = "") -> str:
+    """The input container a download that is no archive is, or is inside, read as _member_container reads an
+    archive member: the path below the raw directory ("/"-separated; the whole path where it is not under
+    it), and in it the first component, from the top, that carries a container suffix. A vendor folder
+    fetched file by file (MetaboBank's Waters x.raw/_FUNC001.DAT, _extern.inf, SystemSettings.xml ...) is
+    one input, x.raw; a file that is an input (x.mzML, x.wiff) is itself; and a companion file beside its
+    input (x.wiff.scan) or a file in no container (a README) is no input, "", as in an archive listing."""
+    text = str(path).replace("\\", "/").rstrip("/")
+    root = str(raw_directory or "").replace("\\", "/").rstrip("/")
+    if root and text.casefold().startswith(root.casefold() + "/"):
+        text = text[len(root) + 1:]
+    return _member_container(text)
+
+
 def _is_archive_download(item: dict) -> bool:
     archive = item.get("archive")
     if isinstance(archive, dict) and str(archive.get("format") or "").strip():
@@ -5882,7 +5896,8 @@ def _delivery_of(provenance: dict | None, unreached: dict[str, list[str]]) -> _D
 
     WHAT WAS DELIVERED is the raw owner's record of its download, never the CSV: every input container an
     archive member listing (archive_extractions[].members_tsv, its sha256 checked) marks extracted, and every
-    download that is no archive. WHAT WAS PAIRED is every input the lease admitted or excluded: the input
+    input container a download that is no archive is or is inside (_download_container: a Waters .raw folder
+    fetched file by file is one input, and a .wiff.scan companion is none). WHAT WAS PAIRED is every input the lease admitted or excluded: the input
     candidates, the lineage rows of the raw owner and of the unit (a split part's sibling's included: paired,
     to the sibling), and the excluded candidates. A delivered container none of those is, compared by stem
     (_container_stem), is an unpaired delivered file.
@@ -5912,8 +5927,9 @@ def _delivery_of(provenance: dict | None, unreached: dict[str, list[str]]) -> _D
     delivered: dict[str, str] = {}
     for item in downloads:
         if not _is_archive_download(item):
-            name = Path(str(item["path"]).rstrip("\\/")).name
-            delivered.setdefault(_container_stem(name), name)
+            container = _download_container(str(item["path"]), str(owner.get("raw_directory") or ""))
+            if container:
+                delivered.setdefault(_container_stem(container), container.rsplit("/", 1)[-1])
     if any(_is_archive_download(item) for item in downloads):
         records = [item for item in owner.get("archive_extractions") or [] if isinstance(item, dict)]
         if not records:
@@ -6818,12 +6834,19 @@ FINE_STEP_DIVISOR = 10
 FAMILY_STEPS = {"qtof": 100, "fourier": 1000}
 STEP_FLOORS = {"qtof": 10, "fourier": 100}
 # Fourier-transform analysers in the Catalog's instrument text, as the campaign runner reads them for the
-# diagnostic's step (scripts/campaign/policy.py _FOURIER_INSTRUMENT): Interactive labels every mzML QTOF.
+# diagnostic's step (scripts/campaign/policy.py _FOURIER_INSTRUMENT). Read only where the diagnostic records
+# no family from the file itself (_step_family): before 0.5.28 Interactive labelled every mzML QTOF, and
+# since then it reads the mzML header and lets a declared instrument decide only over a format default.
 FOURIER_INSTRUMENT = re.compile(
     r"orbitrap|exactive|exploris|fusion|lumos|eclipse|astral|tribrid|ltq[\s-]?ft|ft[\s-]?icr|fticr|"
     r"solarix|apex|fourier",
     re.IGNORECASE,
 )
+# Where Interactive (0.5.28, workflow.detect_raw_format) took a file's instrument family from the file itself:
+# its vendor format, or its mzML header. A family from these is evidence about the file, and a repository's
+# declared instrument does not overrule it; "format_default" (an mzML whose header names no instrument, a
+# Bruker or unrecognised .d) is no such evidence.
+FILE_FAMILY_SOURCES = ("vendor_format", "mzml_instrument_configuration")
 PKH1_TITLE = "The threshold was measured on this unit"
 STEP_RULE_FIELDS = ("coarse_threshold_step", "step_fallback", "fallback_reason")
 # What a production run actually kept (the user's decision of 2026-10-06), as Interactive records it after
@@ -6879,20 +6902,38 @@ def _figure(value: "float | None") -> str:
 
 
 def _step_family(item: dict, provenance: dict | None) -> tuple[str, str]:
-    """("fourier" or "qtof", why): the unit's instrument family for the step floor. Fourier-transform where the
-    diagnostic's representative says so, where the Catalog's instrument text names a Fourier-transform
-    analyser (Interactive labels every mzML QTOF), or where the diagnostic searched at the Fourier-transform
-    family step of 1,000; else QTOF-type."""
+    """("fourier" or "qtof", why): the unit's instrument family for the step floor, read as Interactive reads
+    it (agent_workflow.representative_instrument_family, 0.5.28): the file first, the Catalog only where the
+    file says nothing.
+
+    1. Fourier-transform where the family the diagnostic recorded is (its representative's, or the record's).
+    2. The family the diagnostic recorded, where Interactive recorded it from the file itself
+       (instrument_family_source vendor_format or mzml_instrument_configuration: a SCIEX .wiff, a Waters
+       .raw folder, an mzML header naming a TOF). The Catalog's instrument text does not overrule it, as it
+       does not in Interactive: a multi-platform study's "Q Exactive; TripleTOF 6600" makes no .wiff FT data.
+    3. Else (no family recorded; a format default, an mzML whose header names no instrument; or a record
+       from before 0.5.28, which recorded no source and labelled every mzML QTOF), Fourier-transform where
+       the Catalog's instrument text names a Fourier-transform analyser, or where the diagnostic searched at
+       the Fourier-transform family step of 1,000; else QTOF-type."""
     representative = item.get("representative") if isinstance(item.get("representative"), dict) else {}
-    for named in (representative.get("instrument_family"), _diagnostic_field(item, "instrument_family")):
-        family = str(named or "").casefold()
+    recorded = [named for named in (representative.get("instrument_family"), _diagnostic_field(item, "instrument_family"))
+                if str(named or "").strip()]
+    source = str(representative.get("instrument_family_source")
+                 or _diagnostic_field(item, "instrument_family_source") or "").strip()
+    for named in recorded:
+        family = str(named).casefold()
         if "fourier" in family or "ft-icr" in family or "fticr" in family:
-            return "fourier", f"the diagnostic's instrument family is {named}"
+            return "fourier", f"the diagnostic's instrument family is {named}" + (f", from {source}" if source else "")
     project = (provenance or {}).get("project") if isinstance((provenance or {}).get("project"), dict) else {}
     handoff = ((project.get("repository_metadata") or {}).get("catalog_handoff") or {}) if isinstance(
         project.get("repository_metadata"), dict) else {}
     settings = handoff.get("technical_settings") if isinstance(handoff, dict) else None
     instrument = str((settings or {}).get("instrument") or "") if isinstance(settings, dict) else ""
+    if recorded and source in FILE_FAMILY_SOURCES and str(recorded[0]).strip().casefold() != "unknown":
+        why = f"the diagnostic's instrument family is {recorded[0]}, from {source}"
+        if FOURIER_INSTRUMENT.search(instrument):
+            why += f", which the unit's declared instrument ({instrument}) does not overrule"
+        return "qtof", why
     if FOURIER_INSTRUMENT.search(instrument):
         return "fourier", f"the unit's instrument is {instrument}"
     coarse = _as_number(_diagnostic_field(item, "coarse_threshold_step"))

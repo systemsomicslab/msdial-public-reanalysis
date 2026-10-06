@@ -149,12 +149,16 @@ row FAILs where it runs as another type than its file's header alone gives
 (`header_console_acquisition_type`), at any confidence, and where an MS1-only
 file was folded into DDA in a unit declared DIA, AIF or SWATH; its one table of
 sanctioned header-to-row mappings is empty. CLS-2 reads what the download
-delivered from the archive member listings and the downloads: an approved
-sample whose file was delivered and left unpaired is a FAIL
-(`delivered_unpaired_samples`), one never delivered a WARN
-(`undelivered_samples`). PKH-1 holds the step floor, never finer than 10 for
-QTOF-type or 100 for Fourier-transform data, whatever family step a diagnostic
-records, and reports the production run's `production_peak_counts` where
+delivered from the archive member listings and the downloads, counting a
+vendor folder fetched file by file (a Waters `.raw`) as one input and a
+companion file (`.wiff.scan`) as none: an approved sample whose file was
+delivered and left unpaired is a FAIL (`delivered_unpaired_samples`), one never
+delivered a WARN (`undelivered_samples`). PKH-1 holds the step floor, never
+finer than 10 for QTOF-type or 100 for Fourier-transform data, whatever family
+step a diagnostic records. It takes the family from the file first, as
+Interactive does: a family the diagnostic records from the vendor format or the
+mzML header stands, and the Catalog's instrument text decides only where none
+is recorded. It also reports the production run's `production_peak_counts` where
 Interactive records them. The campaign ledger (schema 3) records the step an
 estimate used (`threshold_step`), the family step it searched first
 (`coarse_threshold_step`) and the fallback (`step_fallback`,

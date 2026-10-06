@@ -581,6 +581,85 @@ class DeliveredButUnpairedTests(unittest.TestCase):
         self.assertIn("QC-D5-C", check.evidence["delivered_unpaired_samples"])
 
 
+def _never_shipped(unit: FolderBranchUnit, sample: str = "NeverShipped", raw_file: str = "NeverShipped.raw") -> None:
+    """An approved sample the repository never shipped: a sample row and a Class assignment, and no download."""
+    unit.manifest["project"]["sample_metadata"].append({"sample_id": sample, "raw_file": raw_file})
+    unit.manifest["project"]["class_proposal"]["assignments"].append({"sample_id": sample, "class_label": "A"})
+
+
+class DownloadsThatAreNoArchiveTests(unittest.TestCase):
+    """CLS-2 counts a vendor folder downloaded file by file as one input, and a companion file as none (review of
+    gate PR #31, round 4, finding 1). Before, every _FUNC001.DAT of a MetaboBank Waters .raw folder and every
+    .wiff.scan of a SCIEX unit was an unpaired container, and an approved sample never shipped FAILed as
+    delivered but unpaired."""
+
+    def test_a_waters_folder_fetched_file_by_file_is_one_input(self) -> None:
+        """MTBKS217 / MTBKS281: the downloads are Lm1.raw/_FUNC001.DAT, Lm1.raw/_extern.inf, ...; the input is
+        Lm1.raw, which the lease paired. A sample no file was delivered for is undelivered, a WARN."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.folder("raw/Lm1.raw", "Lm1")
+            unit.folder("raw/Lm2.raw", "Lm2")
+            _never_shipped(unit)
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual({"NeverShipped": ["NeverShipped.raw"]}, check.evidence["undelivered_samples"])
+        self.assertEqual([], check.evidence["unpaired_delivered_files"])
+        self.assertNotIn("delivered_unpaired_samples", check.evidence)
+        self.assertEqual(2, check.evidence["delivered_files"], "two folders, not four member files")
+
+    def test_a_wiff_scan_companion_is_no_input(self) -> None:
+        """MTBKS236: DEN_1.wiff and DEN_1.wiff.scan are both downloads; the .scan is the .wiff's companion."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            for name in ("DEN_1", "DEN_2"):
+                unit.file(f"raw/{name}.wiff", name)
+                unit._download(unit.data / "raw" / f"{name}.wiff.scan", name.encode("utf-8") * 2, verified=True)
+            _never_shipped(unit, "DEN_9", "DEN_9.wiff")
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual({"DEN_9": ["DEN_9.wiff"]}, check.evidence["undelivered_samples"])
+        self.assertEqual([], check.evidence["unpaired_delivered_files"])
+        self.assertEqual(2, check.evidence["delivered_files"])
+
+    def test_a_waters_folder_delivered_and_left_unpaired_is_still_a_fail(self) -> None:
+        """The folder is one input either way: delivered file by file and paired with nothing, it is unpaired."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = FolderBranchUnit(temporary)
+            unit.folder("raw/Lm1.raw", "Lm1")
+            for member in ("_FUNC001.DAT", "_extern.inf", "SystemSettings.xml"):
+                unit._download(unit.data / "raw" / "Lm9_.raw" / member, member.encode("utf-8"), verified=True)
+            _never_shipped(unit, "Lm9", "Lm9.raw")
+            unit.prepare()
+            check = _check(unit.gate(), "CLS-2")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual({"Lm9": ["Lm9_.raw"]}, check.evidence["delivered_unpaired_samples"])
+        self.assertEqual(["Lm9_.raw"], check.evidence["unpaired_delivered_files"])
+        self.assertEqual(2, check.evidence["delivered_files"])
+
+    def test_the_container_a_download_is_or_is_inside(self) -> None:
+        root = r"D:\ws\metabobank\MTBKS281\u\raw"
+        cases = {
+            rf"{root}\data\raw\Lm1.raw\_FUNC001.DAT": "data/raw/Lm1.raw",
+            rf"{root}\data\raw\Lm1.raw\SystemSettings.xml": "data/raw/Lm1.raw",
+            rf"{root}\data\raw\DEN_1.wiff": "data/raw/DEN_1.wiff",
+            rf"{root}\data\raw\DEN_1.wiff.scan": "",
+            rf"{root}\data\QC_01.mzML": "data/QC_01.mzML",
+            rf"{root}\data\X.d\AcqData\MSScan.bin": "data/X.d",
+            rf"{root}\README.txt": "",
+        }
+        for path, container in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(container, verifier._download_container(path, root))
+        # Below the raw directory only: a parent folder with a container suffix is not the input.
+        self.assertEqual("data/a.mzML", verifier._download_container(r"D:\x.d\raw\data\a.mzML", r"D:\x.d\raw"))
+
+
 class StepFloorTests(unittest.TestCase):
     """PKH-1 holds the absolute floor (10 QTOF-type, 100 FT), not the family step a diagnostic records."""
 
@@ -671,6 +750,87 @@ class StepFloorTests(unittest.TestCase):
         check = self._pkh1(_diagnostic(200, count=35678, estimated=3517, step=100, within=True))
 
         self.assertNotIn("production_peak_counts", check.evidence)
+
+
+def _with_family(diagnostic: dict, family: str, source: str) -> dict:
+    """The family Interactive 0.5.28 records with a diagnostic, on its representative and on the record."""
+    diagnostic["representative"].update(instrument_family=family, instrument_family_source=source)
+    diagnostic.update(instrument_family=family, instrument_family_source=source)
+    return diagnostic
+
+
+class FamilyFromTheFileTests(unittest.TestCase):
+    """PKH-1 takes the instrument family from the file first, as Interactive 0.5.28 does
+    (representative_instrument_family), and the Catalog's instrument text only where the file says nothing
+    (review of gate PR #31, round 4, finding 2)."""
+
+    _pkh1 = StepFloorTests._pkh1
+    MULTI_PLATFORM = "Thermo Q Exactive; SCIEX TripleTOF 6600"
+
+    def _fallback_to_10(self) -> dict:
+        return _diagnostic(30, count=10168, estimated=4722, step=10, within=True,
+                           coarse_threshold_step=100, step_fallback=True, fallback_reason="no_coarse_step_in_range")
+
+    def test_a_vendor_format_qtof_is_not_overruled_by_the_catalogs_text(self) -> None:
+        """A SCIEX .wiff in a study whose Catalog lists a Q Exactive too: Interactive keeps it QTOF, searches at
+        100 and falls back to 10, which the QTOF floor allows."""
+        check = self._pkh1(_with_family(self._fallback_to_10(), "QTOF", "vendor_format"),
+                           instrument=self.MULTI_PLATFORM)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual("qtof", check.evidence["instrument_family_for_step"])
+        self.assertEqual(10, check.evidence["step_floor"])
+        self.assertNotIn("step_rule_broken", check.evidence)
+        self.assertNotIn("step_rule_notes", check.evidence)
+
+    def test_an_mzml_header_naming_a_tof_is_not_overruled_either(self) -> None:
+        check = self._pkh1(_with_family(_diagnostic(200, count=35678, estimated=3517, step=100, within=True,
+                                                    coarse_threshold_step=100, step_fallback=False,
+                                                    fallback_reason=None),
+                                        "QTOF", "mzml_instrument_configuration"),
+                           instrument="Thermo Q Exactive Orbitrap")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual("qtof", check.evidence["instrument_family_for_step"])
+        self.assertNotIn("take 1,000", check.detail)
+
+    def test_a_format_default_gives_way_to_the_catalogs_fourier_transform_text(self) -> None:
+        """An mzML whose header names no instrument: Interactive itself lets the declared instrument decide, so a
+        fallback to 10 on an Orbitrap unit is below the floor of 100."""
+        check = self._pkh1(_with_family(self._fallback_to_10(), "QTOF", "format_default"),
+                           instrument="Thermo Q Exactive HF hybrid Orbitrap")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual("fourier", check.evidence["instrument_family_for_step"])
+        self.assertIn("finer than the floor of 100", " ".join(check.evidence["step_rule_broken"]))
+
+    def test_a_recorded_fourier_transform_family_stands_whatever_the_catalog_says(self) -> None:
+        check = self._pkh1(_with_family(self._fallback_to_10(), "Fourier-transform MS", "mzml_instrument_configuration"),
+                           instrument="Bruker impact II UHR-TOF")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual("fourier", check.evidence["instrument_family_for_step"])
+        self.assertIn("from mzml_instrument_configuration", " ".join(check.evidence["step_rule_broken"]))
+
+    def test_an_unknown_family_from_the_file_leaves_the_catalog_to_decide(self) -> None:
+        check = self._pkh1(_with_family(self._fallback_to_10(), "Unknown", "vendor_format"),
+                           instrument="Thermo Orbitrap Exploris 480")
+
+        self.assertEqual("fourier", check.evidence["instrument_family_for_step"])
+
+    def test_the_family_decides_over_a_runner_step_of_1000_on_qtof_data(self) -> None:
+        """The runner asked for 1,000 from the Catalog's text on a .wiff Interactive keeps QTOF: the floor is the
+        QTOF one, and the search at 1,000 is a note to be read, not a break."""
+        check = self._pkh1(_with_family(_diagnostic(3000, count=35678, estimated=3517, step=1000, within=True,
+                                                    coarse_threshold_step=1000, step_fallback=False,
+                                                    fallback_reason=None),
+                                        "QTOF", "vendor_format"),
+                           instrument=self.MULTI_PLATFORM)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual("qtof", check.evidence["instrument_family_for_step"])
+        self.assertNotIn("step_rule_broken", check.evidence)
+        self.assertIn("searched first at step 1,000, where QTOF-type data", check.detail)
 
 
 class SplitPartPairingTests(unittest.TestCase):
