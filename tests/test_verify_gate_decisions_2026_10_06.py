@@ -147,6 +147,14 @@ class ThresholdStepFallbackTests(unittest.TestCase):
         self.assertEqual(verifier.FAIL, check.status, check.detail)
         self.assertIn("keeps the threshold at 0", check.detail)
 
+    def test_a_fallback_that_records_no_family_step_is_refused(self) -> None:
+        for coarse in (None, 0):
+            with self.subTest(coarse=coarse):
+                check = self._pkh1(_diagnostic(30, count=10168, estimated=4722, step=10, within=True,
+                                               coarse_threshold_step=coarse, step_fallback=True, fallback_reason="r"))
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn("not the instrument-family step it fell back from", check.detail)
+
     def test_a_fallback_without_a_reason_is_to_be_read(self) -> None:
         check = self._pkh1(_diagnostic(20, count=22601, estimated=3627, step=10, within=True,
                                        coarse_threshold_step=100, step_fallback=True))
@@ -198,7 +206,9 @@ def _paired_unit(temporary: str, rows: int, delivered: "dict[int, str]") -> Fold
     for row in unit.manifest["input_lineage"]["rows"]:
         member = Path(row["path"]).name
         row["declared_names"] = []
-        row["name_pairing"] = {"paired_by": "prefixed_member_name", "key": f"biorec{by_member[member]}.raw",
+        # As build_input_lineage writes it (msdial-interactive-app#58 at 7ecfa99): a key only for a pairing
+        # by leading identifier token.
+        row["name_pairing"] = {"paired_by": "prefixed_member_name",
                                "declared_raw_file": f"BioRec{by_member[member]}.raw", "member_name": member}
     for number in range(1, rows - len(delivered) + 1):
         project["sample_metadata"].append({"sample_id": f"Sample{number}", "raw_file": f"Sample{number}"})
@@ -358,13 +368,13 @@ class InferredPairingTests(unittest.TestCase):
         self.assertEqual({"leading_identifier_token": 1, "prefixed_member_name": 1}, check.evidence["by_rule"])
         listed = {entry["member_name"]: entry for entry in check.evidence["pairings"]}
         self.assertEqual({"paired_by": "prefixed_member_name", "declared_raw_file": "BioRec1.raw",
-                          "member_name": "021518_387057_CSHp_BioRec1.raw", "sample_id": "Biorec1",
-                          "key": "biorec1.raw"}, listed["021518_387057_CSHp_BioRec1.raw"])
+                          "member_name": "021518_387057_CSHp_BioRec1.raw", "sample_id": "Biorec1"},
+                         listed["021518_387057_CSHp_BioRec1.raw"])
         self.assertEqual("VV_13", listed["VV_13_HEpG2_C1_exp344_pos.raw"]["key"])
         self.assertEqual("VV_13_HEpG2_C1_pos.raw", listed["VV_13_HEpG2_C1_exp344_pos.raw"]["declared_raw_file"])
         self.assertIn("VV_13_HEpG2_C1_exp344_pos.raw as VV_13_HEpG2_C1_pos.raw (leading_identifier_token, key VV_13)",
                       check.detail)
-        self.assertIn("021518_387057_CSHp_BioRec1.raw as BioRec1.raw (prefixed_member_name", check.detail)
+        self.assertIn("021518_387057_CSHp_BioRec1.raw as BioRec1.raw (prefixed_member_name)", check.detail)
         self.assertEqual(verifier.RECORD_ONLY, check.run_policy)
         self.assertNotIn("PAIR-1", report.run_blocked_by)
 
@@ -374,8 +384,8 @@ class InferredPairingTests(unittest.TestCase):
             unit.file("a.mzML", "a")
             path = unit.lease_excluded("x_b.mzML", "b")
             row = next(row for row in unit.manifest["input_lineage"]["excluded"] if row["path"] == path)
-            row["name_pairing"] = {"paired_by": "prefixed_member_name", "key": "b.mzml",
-                                   "declared_raw_file": "b.mzML", "member_name": "x_b.mzML"}
+            row["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "b.mzML",
+                                   "member_name": "x_b.mzML"}
             unit.prepare()
             check = _check(unit.gate(), "PAIR-1")
 

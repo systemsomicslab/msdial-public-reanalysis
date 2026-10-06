@@ -2653,8 +2653,9 @@ def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | N
 
     The lease admits an archive member as a declared raw file when its name is the declared name, and,
     since Interactive 0.5.25, when it carries that name behind a prefix or shares its leading identifier
-    token, one to one (_prefixed_member_pairing and its successor). The lineage row of such an input
-    records how (name_pairing: paired_by, key, declared_raw_file, member_name). An exact name needs no
+    token, one to one (repository_reanalysis._member_name_pairings, msdial-interactive-app#58). The lineage
+    row of such an input records how (name_pairing: paired_by, declared_raw_file, member_name, and key, the
+    shared identifier, for a pairing by leading identifier token). An exact name needs no
     record; an inferred one is a judgement about which file is which, which the user decided must always
     be on record (2026-10-06). This check lists each one, with the declared and the member name, as a
     WARN under INFERRED_PAIRING_WARNING, so the pairing is visible in every gate report of the unit.
@@ -6604,7 +6605,7 @@ def _step_rule(item: dict) -> dict:
         fine = coarse / FINE_STEP_DIVISOR if coarse else None
         said = (f"step {_figure(step)}, falling back from the instrument-family step {_figure(coarse)}"
                 + (f" ({reason})" if reason else ""))
-        if coarse is None:
+        if not coarse:
             broken.append("the diagnostic records a step fallback but not the instrument-family step it fell "
                           "back from")
         elif step is None or abs(step - fine) > 1e-9:
