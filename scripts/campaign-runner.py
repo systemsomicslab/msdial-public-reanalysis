@@ -86,6 +86,7 @@ import argparse
 import json
 import os
 import signal
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -536,7 +537,8 @@ def command_revoke(args: argparse.Namespace) -> int:
 
 def _task_python(python: str | Path) -> str:
     """pythonw.exe beside the given Python when there is one: a task's python.exe would open a console window on
-    the user's desktop for weeks, and closing that window would end the runner."""
+    the user's desktop for weeks, and closing that window would end the runner. Started with no console, the
+    runner runs itself again in a windowless one (run_in_windowless_console)."""
     windowless = Path(python).with_name("pythonw.exe")
     return str(windowless) if windowless.is_file() else str(python)
 
@@ -805,5 +807,33 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ENVIRONMENT
 
 
+def _has_console() -> bool:
+    if os.name != "nt":
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    buffer = (wintypes.DWORD * 1)()
+    return ctypes.WinDLL("kernel32").GetConsoleProcessList(buffer, 1) > 0
+
+
+def run_in_windowless_console(command: list[str]) -> int:
+    """Run the command in a console of its own with no window, wait for it, and return its exit code.
+
+    The scheduled task starts the runner with pythonw.exe, so that no window sits on the desktop for weeks
+    (closing it would end the runner). A process with no console makes Windows build a new console, with a
+    window, for every console program it starts: the gate, and the extractor of the raw-header preflight the
+    runner calls in-process. So a runner with no console runs itself again under python.exe with
+    CREATE_NO_WINDOW, whose console those programs inherit, as the backend's do (ports.backend_creation_flags).
+    """
+    environment = dict(os.environ, MSDIAL_RUNNER_CONSOLE="1")
+    process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    return process.wait()
+
+
 if __name__ == "__main__":
+    if os.name == "nt" and not os.environ.get("MSDIAL_RUNNER_CONSOLE") and not _has_console():
+        raise SystemExit(run_in_windowless_console(
+            [str(Path(sys.executable).with_name("python.exe")), str(Path(__file__).resolve()), *sys.argv[1:]]))
     raise SystemExit(main())

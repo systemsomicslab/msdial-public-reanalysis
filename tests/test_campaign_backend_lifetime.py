@@ -283,6 +283,37 @@ class BackendLifetimeTests(unittest.TestCase):
         self.assertEqual(facts["child"]["console_window"], 0)
         self.assertIn(facts["parent"]["pid"], facts["child"]["console_pids"])
 
+    def test_a_runner_started_without_a_console_runs_itself_again_in_a_windowless_one(self) -> None:
+        """The scheduled task starts the runner with pythonw.exe. Its console children (the gate, the extractor)
+        must not each get a console with a window, so it runs itself again under python.exe with CREATE_NO_WINDOW."""
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if not pythonw.is_file():
+            self.skipTest("no pythonw.exe beside this Python")
+        facts = self.directory / "facts.json"
+        probe = CONSOLE_FACTS + "\nimport sys\nopen(sys.argv[1], 'w').write(json.dumps(console_facts()))"
+        launcher = textwrap.dedent('''
+            import importlib.util, sys
+            sys.dont_write_bytecode = True
+            spec = importlib.util.spec_from_file_location("runner_cli", sys.argv[1])
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            assert not module._has_console()
+            sys.exit(module.run_in_windowless_console([sys.argv[2], "-c", sys.argv[3], sys.argv[4]]))
+        ''')
+        code = subprocess.run([str(pythonw), "-c", launcher, str(SCRIPTS / "campaign-runner.py"), sys.executable, probe,
+                               str(facts)], timeout=60).returncode
+        self.assertEqual(code, 0)
+        child = json.loads(facts.read_text())
+        self.assertEqual(child["console_window"], 0)
+        self.assertIn(child["pid"], child["console_pids"], "it has a console of its own")
+
+        # End to end: pythonw.exe campaign-runner.py, as the task runs it, does its work and returns its code.
+        target = self.directory / "task.xml"
+        code = subprocess.run([str(pythonw), str(SCRIPTS / "campaign-runner.py"), "--workspace-root", str(self.directory),
+                               "schedule-command", "--campaign", "c1", "--xml-out", str(target)], timeout=120).returncode
+        self.assertEqual(code, 0)
+        self.assertIn("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", target.read_text(encoding="utf-16"))
+
     def _supervisor(self, port: int) -> ports.BackendSupervisor:
         class Supervisor(ports.BackendSupervisor):
             def check(self, config):

@@ -182,6 +182,33 @@ released as it was read, or a deletion recorded within a lock's heartbeat
 window), and its output escapes what the console code page cannot print rather
 than ending without a verdict.
 
+## Running a campaign unattended
+
+Launch `scripts/campaign-runner.py run` for an unattended campaign through Task
+Scheduler, not from a Claude session. A process started from Claude Code or the
+Claude desktop app, `Start-Process` included, sits in the app's Windows job
+object. That job allows no breakaway, and the app is force-closed when it updates
+(it was on 2026-10-02 and 2026-10-06), so a runner started there ends with the
+app. `campaign-runner.py schedule-command --campaign ID [--xml-out FILE]` prints
+the task definition and the `schtasks` lines, and registers nothing: the task is
+persistent system configuration, so registering it is the user's step. The task
+has no execution time limit (a task made with `schtasks /SC` alone is stopped
+after 72 hours), runs one instance, restarts on failure, and starts again every
+hour, so a runner that ended comes back. It runs the runner with `pythonw.exe`,
+which runs itself again in a console with no window, and writes the runner's
+output to the campaign's `logs\runner.log`.
+
+The runner starts the Interactive backend through WMI (`Win32_Process.Create`):
+a broker (`scripts/campaign/backend_launch.py`) starts the backend and exits. The
+backend is then neither the runner's child nor in the runner's job, so a tree
+kill of the runner, or the end of its task or of the Claude app, leaves the
+backend and a running Console alone, and the next runner reattaches. It has a
+console of its own with no window, which git, the Console, 7-Zip and the
+extractor inherit. `run --backend-launch child` starts it as the runner's child,
+the way it was started before 2026-10-06. A backend already answering on the
+campaign port is reused, and the runner says how it was started where that is
+knowable (`backend-launch.json` beside the campaign's job registry).
+
 ## Codex pre-audit
 
 The local Python test suites passed on 2026-09-02 after the re-audit fixes:
