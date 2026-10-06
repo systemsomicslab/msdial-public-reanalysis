@@ -141,7 +141,9 @@ runs. The user decided it: a FAIL stops the run only for the checks that break
 the MS-DIAL results (2026-10-01), and every before-production check is placed
 (2026-10-02). ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1 are
 `blocks_run`. CLS-1, CLS-2, CLS-3, ORD-1, PKH-1 and SPL-1 are `record_only`,
-and so is PRE-1, which never FAILs. A `blocks_run` check left not evaluable on
+and so are PRE-1, which never FAILs, and PAIR-1 (2026-10-06), which lists as a
+WARN every input the lease paired with a declared raw file by inference
+(`input_names_paired_by_inference`), so each such pairing is on record. A `blocks_run` check left not evaluable on
 an artifact its stage owed, which `strict_failures` names, stops the run as its
 FAIL does; one not evaluable where the stage owed nothing, such as INP-1 for a
 unit that declares no analysis inputs, never does. Each check's docstring gives

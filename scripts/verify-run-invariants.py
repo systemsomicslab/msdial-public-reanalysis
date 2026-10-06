@@ -84,7 +84,8 @@ STAGES = ("before-production", "after-run", "before-publish")
 # deleted. Such a check left not evaluable on an artifact the stage owed stops the run as its FAIL does
 # (Check.blocks_run); one not evaluable where the stage owed nothing never does. Any other FAIL is
 # recorded and the unit runs: CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1, which the rule named, and SPL-1,
-# which the user placed with them; PRE-1, which never FAILs, records too. Each check's docstring gives
+# which the user placed with them; PRE-1, which never FAILs, records too, and so does PAIR-1 (2026-10-06),
+# which lists every inferred name pairing and never FAILs. Each check's docstring gives
 # its reason under "RUN POLICY". The campaign runner reads the class from each check's run_policy in
 # --json, and holds the eight blocking ones itself whatever the report states.
 BLOCKS_RUN = "blocks_run"
@@ -105,6 +106,7 @@ RUN_POLICY = {
     "ORD-1": RECORD_ONLY,
     "INP-1": BLOCKS_RUN,
     "CNT-1": BLOCKS_RUN,
+    "PAIR-1": RECORD_ONLY,
 }
 
 # A user-profile path inside an artifact built to be shared. Deliberately narrow: it
@@ -2629,6 +2631,107 @@ def check_analysis_inputs_are_the_inputs(
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates "
                   f"and the {len(csv_rows)} CSV rows.")
     report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names, **lease)
+
+
+# The rules by which Interactive's lease pairs a declared raw-file name with an archive member that does
+# not carry it exactly (lineage row name_pairing.paired_by). Both are inferences, and the user decided on
+# 2026-10-06 that every one MUST always be left on record: a member that carries the declared name behind
+# a prefix (021518_387057_CSHp_BioRec1.raw for BioRec1.raw), and a member whose leading identifier token
+# matches the declared name's uniquely on both sides (VV_13 in VV_13_HEpG2_C1_exp344_pos.raw for
+# VV_13_HEpG2_C1_pos.raw). Interactive warns of them as INFERRED_PAIRING_WARNING.
+INFERRED_PAIRING_RULES = {
+    "prefixed_member_name": "the declared name behind a prefix",
+    "leading_identifier_token": "the same leading identifier token",
+}
+INFERRED_PAIRING_WARNING = "input_names_paired_by_inference"
+PAIR1_TITLE = "Every input paired with a declared name by inference is on record"
+
+
+def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | None, reason: str) -> None:
+    """PAIR-1. Every input the lease paired with a declared raw file by inference, not by its exact name,
+    is listed in the gate report.
+
+    The lease admits an archive member as a declared raw file when its name is the declared name, and,
+    since Interactive 0.5.25, when it carries that name behind a prefix or shares its leading identifier
+    token, one to one (_prefixed_member_pairing and its successor). The lineage row of such an input
+    records how (name_pairing: paired_by, key, declared_raw_file, member_name). An exact name needs no
+    record; an inferred one is a judgement about which file is which, which the user decided must always
+    be on record (2026-10-06). This check lists each one, with the declared and the member name, as a
+    WARN under INFERRED_PAIRING_WARNING, so the pairing is visible in every gate report of the unit.
+
+    The lineage rows read are the unit's own and, for a split part, its raw owner's (_lineage_manifests),
+    the inputs and those the lease excluded; an input is listed once. A name_pairing whose paired_by is no
+    rule this gate knows is listed apart and WARNs too: a pairing nobody here can describe is still a
+    pairing. A unit whose lineage records no name_pairing PASSes; one with no input lineage at all, an
+    older manifest or a unit not yet leased, is not evaluable and owed nothing.
+
+    It judges nothing about the pairing itself. Whether the member is the declared file is the reader's
+    question: INP-1, CLS-2 and CNT-1 judge what the run holds.
+
+    RUN POLICY: record_only, as the task of 2026-10-06 placed it. A pairing is a fact to be read, and
+    listing it changes nothing in what MS-DIAL computes.
+    """
+    stage = "before-production"
+    if provenance is None:
+        report.add("PAIR-1", stage, PAIR1_TITLE, NOT_EVALUABLE, reason)
+        return
+    rows: list[tuple[dict, str]] = []
+    seen: set[str] = set()
+    for manifest in _lineage_manifests(provenance):
+        for part in ("rows", "excluded"):
+            for row in _lineage_rows(manifest, part):
+                key = _path_key(row["path"])
+                if key not in seen:
+                    seen.add(key)
+                    rows.append((row, part))
+    if not rows:
+        report.add("PAIR-1", stage, PAIR1_TITLE, NOT_EVALUABLE,
+                   "The manifest records no input lineage, so no pairing of a declared name with an input is "
+                   "recorded to list.", required=False)
+        return
+    inferred: list[dict] = []
+    unknown: list[dict] = []
+    for row, part in rows:
+        pairing = row.get("name_pairing")
+        if pairing is None:
+            continue
+        pairing = pairing if isinstance(pairing, dict) else {}
+        entry = {
+            "paired_by": str(pairing.get("paired_by") or ""),
+            "declared_raw_file": str(pairing.get("declared_raw_file") or ""),
+            "member_name": str(pairing.get("member_name") or "") or Path(str(row["path"]).rstrip("\\/")).name,
+            "sample_id": str(row.get("sample_id") or ""),
+        }
+        if pairing.get("key") is not None:
+            entry["key"] = pairing.get("key")
+        if part == "excluded":
+            entry["excluded_by_the_lease"] = True
+        (inferred if entry["paired_by"] in INFERRED_PAIRING_RULES else unknown).append(entry)
+    if not inferred and not unknown:
+        report.add("PAIR-1", stage, PAIR1_TITLE, PASS,
+                   f"None of the {len(rows)} input(s) in the lineage was paired with a declared raw file by "
+                   "inference.", inputs=len(rows))
+        return
+
+    def described(entry: dict) -> str:
+        key = f", key {entry['key']}" if "key" in entry else ""
+        return (f"{entry['member_name']} as {entry['declared_raw_file'] or 'an unrecorded declared file'} "
+                f"({entry['paired_by'] or 'no rule recorded'}{key})")
+
+    by_rule = dict(sorted(Counter(entry["paired_by"] for entry in inferred + unknown).items()))
+    listed = inferred + unknown
+    detail = (f"{len(listed)} of the {len(rows)} input(s) in the lineage were paired with a declared raw file by "
+              "inference, not by an exact name (" + ", ".join(f"{rule or 'unrecorded'} {count}"
+                                                              for rule, count in by_rule.items()) + "): "
+              + "; ".join(described(entry) for entry in listed[:10])
+              + (f"; and {len(listed) - 10} more, all in the evidence" if len(listed) > 10 else "") + ".")
+    if unknown:
+        detail += (f" {len(unknown)} of them name a rule this gate does not know "
+                   f"({', '.join(sorted({entry['paired_by'] or 'none' for entry in unknown}))}).")
+    detail += " Each is the lease's inference of which file is which; read them before the result is used."
+    report.add("PAIR-1", stage, PAIR1_TITLE, WARN, detail,
+               warning=INFERRED_PAIRING_WARNING, inputs=len(rows), paired_by_inference=len(listed),
+               by_rule=by_rule, pairings=inferred, **({"pairings_by_unknown_rule": unknown} if unknown else {}))
 
 
 def _absent_exports(run_manifest: dict | None) -> "tuple[int, list[str]] | None":
@@ -5556,6 +5659,76 @@ def _excluded_samples(provenance: dict | None, samples: set[str]) -> dict[str, l
     return result
 
 
+def _base_name(value: object) -> str:
+    """A path's last component, compared without case: "/" or "\\" separated, less a trailing separator."""
+    return str(value or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
+
+
+def _undelivered_samples(provenance: dict | None, samples: set[str]) -> dict[str, list[str]]:
+    """Of these approved samples, those the download never delivered, with the raw files their rows record.
+
+    A sample is undelivered when the input lineage, the lease's record of what it admitted, says nothing of
+    it, and nothing the lease saw carries its name. That is: no lineage row (an input, or one the lease
+    excluded, of the unit or of a split part's raw owner) names it, by its sample_id, by the sample of the
+    Catalog's declared input (_input_samples), by the sample row the CSV was written from (sample_row), by
+    a declared name it is listed under (declared_names) or by the declared raw file an inferred pairing
+    gave it (name_pairing); and no input candidate, lineage path or excluded candidate has the sample's
+    id or a raw file of its rows as its name (_container_stem). Metabolomics Workbench ST001264 is the
+    case: 31 sample rows, of which only BioRec1-3 are archive members the lease could pair, and 28 rows
+    (Sample1..Sample28) that no member is named after. Such a sample is not a row the CSV writer dropped,
+    which CLS-2 calls missing: the lineage shows it never reached the run.
+
+    Read from the lineage only, never from the CSV record (analysis_csv.samples_without_input), which is
+    the CSV writer's own account. Without a lineage nothing is known undelivered, and a sample with no
+    row stays missing as before.
+    """
+    if not isinstance(provenance, dict) or not samples:
+        return {}
+    manifests = _lineage_manifests(provenance)
+    lineage = [row for manifest in manifests for part in ("rows", "excluded") for row in _lineage_rows(manifest, part)]
+    if not lineage:
+        return {}
+    raw_files: dict[str, list[str]] = {}
+    by_name: dict[str, set[str]] = {}
+    for manifest in manifests:
+        for row in ((manifest.get("project") or {}).get("sample_metadata") or []):
+            if not isinstance(row, dict):
+                continue
+            sample, raw = str(row.get("sample_id") or "").strip(), str(row.get("raw_file") or "").strip()
+            if sample and raw:
+                if raw not in raw_files.setdefault(sample, []):
+                    raw_files[sample].append(raw)
+                for form in (_base_name(raw), _container_stem(raw)):
+                    by_name.setdefault(form, set()).add(sample)
+    named = {sample for sample in _input_samples(provenance, ("rows", "excluded")).values() if sample}
+    for row in lineage:
+        sample_row = row.get("sample_row")
+        if isinstance(sample_row, dict) and str(sample_row.get("sample_id") or "").strip():
+            named.add(str(sample_row["sample_id"]).strip())
+        pairing = row.get("name_pairing")
+        declared = [*(row.get("declared_names") if isinstance(row.get("declared_names"), list) else []),
+                    *([pairing.get("declared_raw_file")] if isinstance(pairing, dict) else [])]
+        for name in declared:
+            if str(name or "").strip():
+                named |= by_name.get(_base_name(name), set()) | by_name.get(_container_stem(str(name)), set())
+    seen: list[object] = list(provenance.get("input_candidates") or [])
+    for manifest in manifests:
+        seen += [item.get("path") for item in manifest.get("excluded_input_candidates") or [] if isinstance(item, dict)]
+    seen += [row["path"] for row in lineage]
+    stems = {_container_stem(str(path)) for path in seen if str(path or "").strip()}
+    stems |= {_base_name(path) for path in seen if str(path or "").strip()}
+    result: dict[str, list[str]] = {}
+    for sample in samples:
+        stripped = sample.strip()
+        if not stripped or stripped in named:
+            continue
+        forms = {stripped.casefold(), _container_stem(stripped)}
+        forms |= {form for raw in raw_files.get(stripped, []) for form in (_base_name(raw), _container_stem(raw))}
+        if not forms & stems:
+            result[sample] = raw_files.get(stripped, [])
+    return result
+
+
 def _class_token(value: object) -> str:
     """A Class label as Interactive projects it into the analysis CSV (repository_metadata.class_token,
     which apply_class_proposal applies to every approved label): NFKC, runs of white space and "_" as
@@ -5643,6 +5816,13 @@ def check_executed_class_matches_approved(
     that runs is absent however much else of it was excluded. Where every approved sample was excluded
     the Console reads no grouping, and that is a FAIL, not a comparison of nothing.
 
+    AN APPROVED SAMPLE THE DOWNLOAD NEVER DELIVERED is not absent either (_undelivered_samples): no input
+    lineage row names it and no input the lease saw carries its name, as for the 28 of ST001264's 31 rows
+    no archive member is named after. It is listed under its own evidence key (undelivered_samples) and
+    the check WARNs, naming how many approved samples the run covers, where a missing sample FAILs. It
+    is read from the lineage, never from the CSV record's samples_without_input, the CSV writer's own
+    account. A run of none of them is still a FAIL.
+
     A LABEL IS COMPARED AS INTERACTIVE WRITES IT: projected (_class_token, "Wild type" as "Wild-type",
     and "Sample" where the projection leaves nothing), and, where the Console could not read the
     projection back, folded to the ASCII Class the CSV record names (analysis_csv.class_id_aliases),
@@ -5690,6 +5870,7 @@ def check_executed_class_matches_approved(
     files_of_sample.update(by_name)
     unmatched = {sample for sample in approved if not files_of_sample.get(sample)}
     excluded = _excluded_samples(provenance, unmatched)
+    undelivered = _undelivered_samples(provenance, unmatched - set(excluded))
     aliases, refused = _class_id_aliases(provenance)
     mapped: set[str] = set()
     missing = []
@@ -5700,7 +5881,7 @@ def check_executed_class_matches_approved(
     for sample, label in sorted(approved.items()):
         files = files_of_sample.get(sample) or []
         if not files:
-            if sample not in excluded:
+            if sample not in excluded and sample not in undelivered:
                 missing.append(sample)
             continue
         forms = _executed_forms(label, aliases)
@@ -5728,22 +5909,34 @@ def check_executed_class_matches_approved(
         evidence["joined_through_lineage"] = joined_by_lineage
     if excluded:
         evidence["excluded_samples"] = {sample: names for sample, names in sorted(excluded.items())[:10]}
+    if undelivered:
+        # Kept apart from "missing": the lineage shows these never reached the run, which is not the CSV
+        # writer dropping a row it had.
+        evidence["undelivered_samples"] = {sample: raws for sample, raws in sorted(undelivered.items())[:10]}
+        evidence["undelivered_count"] = len(undelivered)
     if folded:
         evidence["written_as"] = dict(sorted(folded.items())[:10])
     if refused:
         evidence["class_id_aliases_not_a_fold"] = dict(sorted(refused.items())[:10])
-    if not missing and not extra and not differing and not regrouped and len(excluded) == len(approved):
+    analysed = len(approved) - len(excluded) - len(undelivered)
+    if not missing and not extra and not differing and not regrouped and analysed == 0:
+        reasons = []
+        if excluded:
+            reasons.append(f"the input of {len(excluded)} was excluded by the campaign disposition or the lease ("
+                           + ", ".join(sorted(excluded)[:5]) + ")")
+        if undelivered:
+            reasons.append(f"{len(undelivered)} were never delivered: no input lineage row names them and no input "
+                           "carries their name (" + ", ".join(sorted(undelivered)[:5]) + ")")
         report.add(
             "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
-            f"None of the {len(approved)} approved sample(s) is analysed: the input of every one was excluded by "
-            "the campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + "), so the Console "
-            "reads no grouping at all.", **evidence)
+            f"None of the {len(approved)} approved sample(s) is analysed: " + "; ".join(reasons)
+            + ", so the Console reads no grouping at all.", **evidence)
         return
     if not missing and not extra and not differing and not regrouped:
-        if not excluded and not folded:
+        if not excluded and not folded and not undelivered:
             detail = f"All {len(approved)} approved assignments appear in the analysis CSV with the same Class."
         else:
-            detail = (f"All {len(approved) - len(excluded)} approved assignments of the samples analysed appear in "
+            detail = (f"All {analysed} approved assignments of the samples analysed appear in "
                       "the analysis CSV with the same Class")
             if folded:
                 detail += (f", {len(folded)} Class label(s) written as the Console reads them ("
@@ -5751,15 +5944,23 @@ def check_executed_class_matches_approved(
             if excluded:
                 detail += (f"; {len(excluded)} approved sample(s) are not analysed, their input excluded by the "
                            "campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + ")")
+            if undelivered:
+                detail += (f"; {len(undelivered)} approved sample(s) were never delivered: no input lineage row "
+                           "names them and no input the lease saw carries their name ("
+                           + ", ".join(sorted(undelivered)[:5]) + (", ..." if len(undelivered) > 5 else "")
+                           + f"), so the run covers {analysed} of the {len(approved)} approved samples")
             detail += "."
-        report.add("CLS-2", stage, "Executed Class is the Class that was approved", PASS, detail, **evidence)
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved", WARN if undelivered else PASS,
+                   detail, **evidence)
         return
     report.add(
         "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
         "The grouping the Console will read is not the grouping that was approved. "
         f"{len(differing)} sample(s) carry a different Class, {len(missing)} approved sample(s) "
         f"are absent from the CSV, {len(extra)} CSV row(s) were never approved"
-        + (f", and {len(regrouped)} Class(es) were merged or split on the way" if regrouped else "") + ".",
+        + (f", and {len(regrouped)} Class(es) were merged or split on the way" if regrouped else "") + "."
+        + (f" {len(undelivered)} further approved sample(s) were never delivered (undelivered_samples)."
+           if undelivered else ""),
         differing=differing[:10], missing=missing[:10], unapproved=extra[:10],
         **({"regrouped": regrouped[:10]} if regrouped else {}), **evidence,
     )
@@ -6330,6 +6531,111 @@ def _method_threshold(output: Path) -> "tuple[str | None, str, list[str]]":
     return (usable or stated)[-1], "", stated
 
 
+# The step rule for the peak-height threshold, as the user decided it on 2026-10-06: search in the
+# instrument-family step (100 for QTOF-type data, 1,000 for Fourier-transform data). Only when the
+# zero-threshold count is above the target's upper bound and no threshold at that step lands in the
+# target range, search again at a step ten times finer (10, or 100), and never finer than that. The
+# fallback is recorded, and so is a fine step that still misses the range. Interactive's estimate
+# records it (0.5.28): threshold_step is the step the threshold was taken at, coarse_threshold_step the
+# instrument-family step, step_fallback whether the finer step was used and fallback_reason why, and
+# within_target_range whether the estimated count is in the target. A diagnostic recorded before then
+# carries threshold_step and within_target_range alone, and is read as it is.
+FINE_STEP_DIVISOR = 10
+PKH1_TITLE = "The threshold was measured on this unit"
+STEP_RULE_FIELDS = ("coarse_threshold_step", "step_fallback", "fallback_reason")
+
+
+def _diagnostic_field(item: dict, name: str) -> object:
+    """A field of a recorded diagnostic: as its estimate recorded it (every field the estimator produced,
+    unedited), else as the record copied it beside the estimate."""
+    estimate = item.get("estimate") if isinstance(item.get("estimate"), dict) else {}
+    value = estimate.get(name)
+    return value if value is not None else item.get(name)
+
+
+def _as_number(value: object) -> "float | None":
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _figure(value: "float | None") -> str:
+    if value is None:
+        return "?"
+    return f"{int(value):,}" if value == int(value) else f"{value:,}"
+
+
+def _step_rule(item: dict) -> dict:
+    """What a diagnostic records of the step rule (2026-10-06), and what it breaks or leaves to be read.
+
+    Returns the recorded fields ("evidence"), the words that describe them ("said"), the departures
+    from the rule ("broken": a fallback to another step than the finer one, a fallback where the count
+    needed no threshold, a step other than the family's with no fallback recorded) and what a person
+    should read ("notes": a fallback that records no reason, an estimate outside the target range where
+    the zero-threshold count was above it). A diagnostic recorded before the rule carries none of its
+    fields, and only its step and within_target_range are read.
+    """
+    step = _as_number(_diagnostic_field(item, "threshold_step"))
+    coarse = _as_number(_diagnostic_field(item, "coarse_threshold_step"))
+    fallback = _diagnostic_field(item, "step_fallback")
+    reason = str(_diagnostic_field(item, "fallback_reason") or "").strip()
+    within = _diagnostic_field(item, "within_target_range")
+    count = _as_number(_diagnostic_field(item, "diagnostic_peak_count"))
+    estimated = _as_number(_diagnostic_field(item, "estimated_peak_count"))
+    lower = _as_number(_diagnostic_field(item, "target_peak_count_min"))
+    upper = _as_number(_diagnostic_field(item, "target_peak_count_max"))
+    recorded = any(_diagnostic_field(item, name) is not None for name in STEP_RULE_FIELDS)
+    target = f"{_figure(lower)}-{_figure(upper)}" if lower is not None and upper is not None else "the target range"
+    evidence: dict = {"step_rule_recorded": recorded, "threshold_step": _diagnostic_field(item, "threshold_step")}
+    if recorded:
+        evidence.update({"coarse_threshold_step": _diagnostic_field(item, "coarse_threshold_step"),
+                         "step_fallback": fallback, "fallback_reason": reason})
+    if within is not None:
+        evidence["within_target_range"] = within
+    if estimated is not None:
+        evidence["estimated_peak_count"] = _diagnostic_field(item, "estimated_peak_count")
+    broken: list[str] = []
+    notes: list[str] = []
+    if fallback is True:
+        fine = coarse / FINE_STEP_DIVISOR if coarse else None
+        said = (f"step {_figure(step)}, falling back from the instrument-family step {_figure(coarse)}"
+                + (f" ({reason})" if reason else ""))
+        if coarse is None:
+            broken.append("the diagnostic records a step fallback but not the instrument-family step it fell "
+                          "back from")
+        elif step is None or abs(step - fine) > 1e-9:
+            broken.append(f"the fallback took step {_figure(step)}, where the rule's finer step for the "
+                          f"instrument-family step {_figure(coarse)} is {_figure(fine)} and nothing finer")
+        if count is not None and upper is not None and count <= upper:
+            broken.append(f"the fallback was taken although the zero-threshold count ({_figure(count)}) is not "
+                          f"above {_figure(upper)}, where the rule keeps the threshold at 0")
+        if not reason:
+            notes.append("the step fallback records no reason")
+    else:
+        said = f"step {_figure(step)}"
+        if recorded and coarse is not None and step is not None and abs(step - coarse) > 1e-9:
+            broken.append(f"the threshold was taken at step {_figure(step)}, not the instrument-family step "
+                          f"{_figure(coarse)}, and no step fallback is recorded")
+    if within is False and (count is None or upper is None or count > upper):
+        if fallback is True:
+            notes.append(f"even the finer step {_figure(step)} leaves the estimate ({_figure(estimated)} peaks) "
+                         f"outside {target}, and the threshold nearest the range was taken")
+        elif recorded:
+            notes.append(f"the estimate ({_figure(estimated)} peaks) is outside {target} at step {_figure(step)}, "
+                         "and no step fallback is recorded")
+        else:
+            notes.append(f"the estimate ({_figure(estimated)} peaks) is outside {target} at step {_figure(step)}; "
+                         "the diagnostic predates the step fallback of 2026-10-06 and records no step rule")
+    elif within is False:
+        said += (f"; the {_figure(count)} peaks at zero threshold are below {target}, which the contract leaves "
+                 "at threshold 0")
+    return {"evidence": evidence, "said": said, "broken": broken, "notes": notes}
+
+
 def check_threshold_was_measured_on_this_unit(
     report: Report, provenance: dict | None, reason: str, output: Path
 ) -> None:
@@ -6345,60 +6651,85 @@ def check_threshold_was_measured_on_this_unit(
     Compared as numbers, so 500 and 500.0 are the same threshold. Whether the Console can PARSE
     that literal is MTH-1's question, not this one.
 
+    THE STEP RULE (the user's decision of 2026-10-06, _step_rule) is read from the diagnostic that
+    produced the threshold, the latest where several did. A fallback to the finer step that lands in
+    the target range is the rule working, and passes with its reason stated. A fallback whose finer
+    step still misses the range, an estimate outside the range at the family step, or a fallback that
+    records no reason is a WARN, so a person reads it. A step the rule does not allow (a fallback to
+    anything but the family step divided by ten, a fallback where the zero-threshold count needed no
+    threshold, or another step than the family's with no fallback recorded) is a FAIL. A diagnostic
+    recorded before the rule records none of its fields; its step and within_target_range are read as
+    they are.
+
     RUN POLICY: record_only, as the user named it (2026-10-01). A threshold not measured here keeps
     more or fewer peaks; what it keeps is still this unit's data.
     """
     stage = "before-production"
     if provenance is None:
-        report.add("PKH-1", stage, "The threshold was measured on this unit", NOT_EVALUABLE, reason)
+        report.add("PKH-1", stage, PKH1_TITLE, NOT_EVALUABLE, reason)
         return
     diagnostics = provenance.get("peak_height_diagnostics")
     written, written_reason, stated = _method_threshold(output)
     if not isinstance(diagnostics, list) or not diagnostics:
         report.add(
-            "PKH-1", stage, "The threshold was measured on this unit", FAIL,
+            "PKH-1", stage, PKH1_TITLE, FAIL,
             "No peak-count diagnostic is recorded for this unit. The contract requires one before "
             f"every production run, and method.txt asks for {written or 'an unstated threshold'}.",
             method_threshold=written,
         )
         return
     if written is None:
-        report.add("PKH-1", stage, "The threshold was measured on this unit", NOT_EVALUABLE,
-                   written_reason)
+        report.add("PKH-1", stage, PKH1_TITLE, NOT_EVALUABLE, written_reason)
         return
     measured = []
+    measured_by: list[tuple[float, dict]] = []
     for item in diagnostics:
         if isinstance(item, dict) and item.get("minimum_peak_height") is not None:
             try:
-                measured.append(float(item["minimum_peak_height"]))
+                value = float(item["minimum_peak_height"])
             except (TypeError, ValueError):
                 continue
+            measured.append(value)
+            measured_by.append((value, item))
     try:
         executed = float(written)
     except ValueError:
-        report.add("PKH-1", stage, "The threshold was measured on this unit", FAIL,
+        report.add("PKH-1", stage, PKH1_TITLE, FAIL,
                    f"method.txt states a Minimum peak height of {written!r}, which is not a number.",
                    method_threshold=written, measured=measured)
         return
-    if any(abs(executed - value) < 1e-9 for value in measured):
-        latest = diagnostics[-1] if isinstance(diagnostics[-1], dict) else {}
+    producing = [item for value, item in measured_by if abs(executed - value) < 1e-9]
+    if producing:
+        # The diagnostic that produced the threshold, the latest where several did: re-running it with
+        # another step or representative is normal, and the step rule is read from the one that ran.
+        latest = producing[-1]
+        rule = _step_rule(latest)
         # Other stated values do not run, but a method file that asks for two thresholds was edited
         # by something that did not know which one the Console applies.
         differing = sorted({value for value in stated if value != written})
-        report.add(
-            "PKH-1", stage, "The threshold was measured on this unit", WARN if differing else PASS,
+        status = FAIL if rule["broken"] else WARN if differing or rule["notes"] else PASS
+        detail = (
             f"method.txt asks for {written}, which this unit's diagnostic measured "
             f"({latest.get('method', 'method unrecorded')}, "
-            f"{latest.get('diagnostic_peak_count', '?')} peaks at zero threshold, step "
-            f"{latest.get('threshold_step', '?')})."
+            f"{latest.get('diagnostic_peak_count', '?')} peaks at zero threshold, {rule['said']})."
             + (f" It also states {', '.join(differing)}, which the Console does not apply: it applies the last "
-               "value it can read." if differing else ""),
+               "value it can read." if differing else "")
+        )
+        if rule["broken"]:
+            detail += " The step is not one the rule of 2026-10-06 allows: " + "; ".join(rule["broken"]) + "."
+        if rule["notes"]:
+            detail += " To be read: " + "; ".join(rule["notes"]) + "."
+        report.add(
+            "PKH-1", stage, PKH1_TITLE, status, detail,
             method_threshold=written, measured=measured, stated=stated,
             representative=(latest.get("representative") or {}).get("file_name", ""),
+            **rule["evidence"],
+            **({"step_rule_broken": rule["broken"]} if rule["broken"] else {}),
+            **({"step_rule_notes": rule["notes"]} if rule["notes"] else {}),
         )
         return
     report.add(
-        "PKH-1", stage, "The threshold was measured on this unit", FAIL,
+        "PKH-1", stage, PKH1_TITLE, FAIL,
         f"method.txt asks for a Minimum peak height of {written}, and no diagnostic on this unit "
         f"produced it. Measured here: {', '.join(str(value) for value in measured) or 'nothing'}."
         + (f" (It states {len(stated)} values; the Console applies the last it can read.)" if len(stated) > 1 else ""),
@@ -7564,6 +7895,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_threshold_was_measured_on_this_unit(report, provenance, provenance_reason, output)
         check_analytical_order_is_real(report, csv_rows, csv_reason, "before-production", provenance)
         check_analysis_inputs_are_the_inputs(report, provenance, provenance_reason, csv_rows, csv_reason)
+        check_inferred_name_pairings_are_listed(report, provenance, provenance_reason)
         approved = check_sample_count_invariant(
             report, provenance, provenance_reason, csv_rows, csv_reason,
             run_manifest, output, "before-production",
@@ -7623,7 +7955,7 @@ COMPLETION_STAGES = (
     ("B1", "downloaded",
      "the raw owner's manifest lists its downloads, and every input is on disk or the raw tree was released "
      "by the confirmed cleanup (status raw_cleaned)",
-     ("SUM-1", "CONV-1")),
+     ("SUM-1", "CONV-1", "PAIR-1")),
     ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1", "PRE-2")),
     ("B3", "class_settled",
      "a ratified Class proposal, or where the Catalog abstains a ratified abstention (accepted, confirmed or approved)",

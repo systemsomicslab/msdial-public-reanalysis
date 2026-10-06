@@ -36,7 +36,9 @@ class RunPolicyTests(unittest.TestCase):
     """Each before-production check says whether its FAIL stops a campaign unit's run (2026-10-01, 2026-10-02)."""
 
     USER_BLOCKS = {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1"}
-    USER_RECORDS = {"CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1", "PRE-1"}
+    # PAIR-1 (2026-10-06) lists every name pairing the lease inferred, which the user decided must always be
+    # on record; it never FAILs and is recorded like PRE-1.
+    USER_RECORDS = {"CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1", "PRE-1", "PAIR-1"}
 
     def test_every_before_production_check_carries_its_class(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

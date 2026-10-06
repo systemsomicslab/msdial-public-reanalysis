@@ -165,7 +165,7 @@ class ConvertedInputTests(unittest.TestCase):
         self.assertEqual(1, sum1.evidence["converted_inputs"])
         self.assertEqual(verifier.PASS, conv1.status, conv1.detail)
         self.assertEqual(1, conv1.evidence["rehashed"])
-        self.assertEqual({"SUM-1": verifier.WARN, "CONV-1": verifier.PASS}, stages["B1"])
+        self.assertEqual({"SUM-1": verifier.WARN, "CONV-1": verifier.PASS, "PAIR-1": verifier.PASS}, stages["B1"])
 
     def test_an_output_outside_the_raw_tree_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
