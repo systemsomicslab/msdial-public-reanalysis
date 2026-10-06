@@ -2660,8 +2660,11 @@ def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | N
     be on record (2026-10-06). This check lists each one, with the declared and the member name, as a
     WARN under INFERRED_PAIRING_WARNING, so the pairing is visible in every gate report of the unit.
 
-    The lineage rows read are the unit's own and, for a split part, its raw owner's (_lineage_manifests),
-    the inputs and those the lease excluded; an input is listed once. A name_pairing whose paired_by is no
+    The lineage rows read are the unit's own (_own_lineage_rows): its manifest's, and for a split part those
+    of its raw owner's rows whose input is one of the part's own input candidates, never a sibling part's
+    (Interactive's split gives each part the parent's rows of its own inputs; the parent's excluded rows go
+    to no part and stay the parent's record). Both the inputs and those the lease excluded are read; an
+    input is listed once. A name_pairing whose paired_by is no
     rule this gate knows is listed apart and WARNs too: a pairing nobody here can describe is still a
     pairing. A unit whose lineage records no name_pairing PASSes; one with no input lineage at all, an
     older manifest or a unit not yet leased, is not evaluable and owed nothing.
@@ -2678,13 +2681,12 @@ def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | N
         return
     rows: list[tuple[dict, str]] = []
     seen: set[str] = set()
-    for manifest in _lineage_manifests(provenance):
-        for part in ("rows", "excluded"):
-            for row in _lineage_rows(manifest, part):
-                key = _path_key(row["path"])
-                if key not in seen:
-                    seen.add(key)
-                    rows.append((row, part))
+    for part in ("rows", "excluded"):
+        for row in _own_lineage_rows(provenance, part):
+            key = _path_key(row["path"])
+            if key not in seen:
+                seen.add(key)
+                rows.append((row, part))
     if not rows:
         report.add("PAIR-1", stage, PAIR1_TITLE, NOT_EVALUABLE,
                    "The manifest records no input lineage, so no pairing of a declared name with an input is "
@@ -2847,6 +2849,19 @@ def _lineage_rows(manifest: dict | None, part: str = "rows") -> list[dict]:
     return [row for row in rows if isinstance(row, dict) and str(row.get("path") or "").strip()]
 
 
+def _own_lineage_rows(provenance: dict, part: str = "rows") -> list[dict]:
+    """The lineage rows of this unit's own inputs: all of its manifest's, and, for a split part, those of its
+    raw owner's rows whose input is one of the part's input candidates. A sibling part's inputs, and the
+    parent's rows of inputs no part runs, are not the part's."""
+    rows = list(_lineage_rows(provenance, part))
+    if isinstance(provenance.get("split_from"), dict):
+        parent, _ = _raw_owner_manifest(provenance)
+        if parent is not None and parent is not provenance:
+            own = {_path_key(item) for item in provenance.get("input_candidates") or [] if str(item or "").strip()}
+            rows += [row for row in _lineage_rows(parent, part) if _path_key(row["path"]) in own]
+    return rows
+
+
 def _input_keys_by_console_path(provenance: dict) -> dict[str, str]:
     """The input each Console path stands for, where the CSV names an alias of it rather than the input.
 
@@ -2955,12 +2970,23 @@ def _header_contradiction(method: str, windows: int | None, value: str) -> str:
     return ""
 
 
-# Interactive's raw_metadata_preflight.HEADER_OVERRIDE_CONFIDENCE. A header verdict this confident replaces a
-# repository declaration it contradicts; below it, a campaign disposition keeps the declaration and records
-# that the two disagree (declared_vs_header, acquisition_header_disagrees_low_confidence).
-HEADER_OVERRIDE_CONFIDENCE = 0.8
+# RULE B2, HEADER FIRST (user decision, 2026-10-06; Interactive 0.5.29, msdial-interactive-app#62). A file
+# whose header was read and has MS2 runs as its header gives, over the repository's declaration (the Catalog's
+# keyword inference) and at any extractor confidence; the per-file record keeps what the header alone gives
+# as header_console_acquisition_type, which no disposition rewrites. Before it, a disposition kept the
+# declaration over a header below 0.8 confidence; that exemption is gone, here as in Interactive.
+#
 # Header verdicts that give a Console type: the extractor's DIA is SWATH or AIF by its isolation.
 HEADER_CONSOLE_METHODS = ("DDA", "DIA", "AIF", "SWATH")
+# Units declared in the DIA family, whose MS1-only files rule B2 never folds into a DDA run (Interactive's
+# _DECLARED_DIA_FAMILY): they may be all-ion data exported as MS1 scans.
+DECLARED_DIA_FAMILY = ("DIA", "AIF", "SWATH")
+# SANCTIONED MAPPINGS: a row that runs as another Console type than its header gives, which the user has
+# allowed, by (header type, row type), with the name of the binding disposition's field that must record the
+# mapping for that file ({"file", "header", "runs_as"} entries). A mapping is accepted only where the
+# disposition records it for that file explicitly. EMPTY: whether single-energy AIF may run as SWATH is still
+# with the user, and the later PR that decides it names its field.
+SANCTIONED_ACQUISITION_MAPPINGS: dict[tuple[str, str], str] = {}
 ACQ1_SOURCES = {
     "header": "from headers", "declaration": "from the repository declaration",
     "folded_ms1_only": "MS1-only folded into DDA", "unresolved": "with no Console type resolved",
@@ -3001,6 +3027,43 @@ def _header_confidence(record: dict | None, entry: dict | None) -> float | None:
     return None
 
 
+def _record_header_console(record: dict) -> "str | None":
+    """The Console type a file's header alone gives, as Interactive's entry_header_console reads it: the
+    record's header_console_acquisition_type where it has the field (0.5.29 on), else DDA, SWATH or AIF as its
+    acquisition_mode says; a legacy DIA recorded no isolation, and gives none."""
+    if "header_console_acquisition_type" in record:
+        value = record.get("header_console_acquisition_type")
+        return str(value) if value else None
+    mode = str(record.get("acquisition_mode") or "").strip()
+    return mode if mode in CONSOLE_ACQUISITION_TYPES else None
+
+
+def _sanctioned_mapping(header: str, value: str, key: str, dispositions: list[dict]) -> bool:
+    """Whether a binding disposition records, for this file, a mapping of its header type to the row's type
+    that SANCTIONED_ACQUISITION_MAPPINGS allows. Never, while the table is empty."""
+    field_name = SANCTIONED_ACQUISITION_MAPPINGS.get((header, value))
+    if not field_name:
+        return False
+    for disposition in dispositions:
+        entries = disposition.get(field_name)
+        for entry in entries if isinstance(entries, list) else []:
+            if (isinstance(entry, dict) and str(entry.get("file") or "").strip()
+                    and _path_key(entry["file"]) == key and entry.get("header") == header
+                    and entry.get("runs_as") == value):
+                return True
+    return False
+
+
+def _declared_dia_family(dispositions: list[dict]) -> "tuple[str, str] | None":
+    """(declared mode, its source) where a binding disposition records a unit declared DIA, AIF or SWATH."""
+    for disposition in dispositions:
+        declared = disposition.get("declared") if isinstance(disposition.get("declared"), dict) else {}
+        mode = str(declared.get("acquisition_mode") or "").strip()
+        if mode.upper() in DECLARED_DIA_FAMILY:
+            return mode, str(disposition.get("declared_acquisition_source") or "")
+    return None
+
+
 def check_acquisition_type_is_the_headers(
     report: Report, provenance: dict | None, reason: str, csv_rows: list[dict] | None, csv_reason: str,
 ) -> None:
@@ -3016,14 +3079,21 @@ def check_acquisition_type_is_the_headers(
     recorded. A record written before console_acquisition_type existed says DIA without saying which;
     its extractor record's windows settle SWATH, and without them the row is a WARN.
 
-    A row whose type is not the header's is a WARN that says what it rests on: the repository's
-    declaration, where the header gave no Console type (a Waters DDA read as Unknown) or where a campaign
-    disposition kept the declaration over a header below HEADER_OVERRIDE_CONFIDENCE that contradicts it;
-    an MS1-only file the disposition folded into a DDA run; or no header record at all. Whether a weak
-    header should outrank the declaration is a scientific decision the disposition recorded, and this
-    names it rather than settling it. A contradiction by a confident header, or by the header the type
-    was taken from, stays a FAIL, as does a row a binding campaign disposition gave no Console type: a
-    unit whose acquisition is still unknown does not run (user decision, 2026-09-30).
+    RULE B2, HEADER FIRST (user decision, 2026-10-06; Interactive 0.5.29). A row FAILs where its type is not
+    the one its file's header alone gives (header_console_acquisition_type: DDA, SWATH or AIF), at any
+    confidence and whatever the record's console_acquisition_basis, unless SANCTIONED_ACQUISITION_MAPPINGS
+    allows that mapping and the binding disposition records it for the file (the table is empty: no mapping
+    is sanctioned yet). It FAILs too where the type is not the one the record decided
+    (console_acquisition_type). A record written before header_console_acquisition_type existed gives DDA,
+    SWATH or AIF as its acquisition_mode says, and the extractor's own verdict is read beside it, as before;
+    the exemption that let a disposition keep the declaration over a header below 0.8 confidence is gone.
+    A WARN only names what a row's type rests on where it is not a header's: the repository's declaration
+    where the header gave no Console type (an unreadable header, a DIA header whose isolation left SWATH
+    and AIF open), and an MS1-only file folded into a DDA run. That fold FAILs where the binding disposition
+    records the unit as declared DIA, AIF or SWATH, where rule B2 excludes such files
+    (ms1_only_in_declared_dia_unit); only a disposition written before 0.5.29 holds one. A row a binding
+    campaign disposition gave no Console type stays a FAIL: a unit whose acquisition is still unknown does
+    not run (user decision, 2026-09-30).
 
     The header comparison is not required without a preflight: a unit whose acquisition mode was known
     from the repository never needed a header read (PRE-1). Nor is it made for a GC-MS unit, outside
@@ -3083,9 +3153,11 @@ def check_acquisition_type_is_the_headers(
     aliases = _input_keys_by_console_path(provenance)
     dispositions = _binding_dispositions(provenance)
     decisions = _declared_vs_header(dispositions)
+    declared_dia = _declared_dia_family(dispositions)
     warnings: list[str] = []
     basis: Counter = Counter()
     sources: Counter = Counter()
+    sanctioned = 0
     for row in csv_rows:
         path = str(row.get("file_path") or "")
         name = str(row.get("file_name") or "") or Path(path).name or "a row with no file"
@@ -3109,27 +3181,28 @@ def check_acquisition_type_is_the_headers(
             basis["console_acquisition_type"] += 1
             console = record.get("console_acquisition_type")
             decided = str(record.get("console_acquisition_basis") or "")
+            header_console = _record_header_console(record)
             if console is not None and console not in CONSOLE_ACQUISITION_TYPES:
                 failures.append(f"{name}: its record's console_acquisition_type {console!r} is no Console type, so "
                                 "its header verdict was never resolved to DDA, SWATH or AIF")
                 continue
-            if console is not None and console != value:
-                failures.append(f"{name}: its header gives {console}, and the Console will deconvolute it as {value}")
-                continue
-            contradiction = _header_contradiction(method, windows, value)
-            confidence = _header_confidence(record, decisions.get(key))
-            if contradiction:
-                if decided != "declaration" or (confidence is not None and confidence >= HEADER_OVERRIDE_CONFIDENCE):
-                    failures.append(f"{name}: {contradiction}")
+            if header_console in CONSOLE_ACQUISITION_TYPES and header_console != value:
+                if _sanctioned_mapping(header_console, value, key, dispositions):
+                    sanctioned += 1
+                else:
+                    failures.append(f"{name}: its header gives {header_console}, and the Console will deconvolute it "
+                                    f"as {value}" + ("" if decided in ("", "header") else
+                                                     f" (decided on the basis {decided!r})"))
                     continue
-                sources["declaration"] += 1
-                declared = str((decisions.get(key) or {}).get("declared") or "") or value
-                weak = (f"at confidence {confidence:.2f}, below" if confidence is not None else
-                        "at no recorded confidence, short of")
-                warnings.append(f"{name}: {contradiction}, {weak} the {HEADER_OVERRIDE_CONFIDENCE} at which a header "
-                                f"replaces the repository's declaration, so the campaign disposition kept the declared "
-                                f"{declared}")
-            elif console is None:
+            if console is not None and console != value:
+                failures.append(f"{name}: its record decided {console}, and the Console will deconvolute it as {value}")
+                continue
+            contradiction = _header_contradiction(method, windows, value) if header_console is None else ""
+            if contradiction:
+                failures.append(f"{name}: {contradiction}")
+                continue
+            confidence = _header_confidence(record, decisions.get(key))
+            if console is None:
                 sources["unresolved"] += 1
                 if dispositions:
                     failures.append(f"{name}: the campaign disposition gave it no Console acquisition type, and a unit "
@@ -3139,17 +3212,24 @@ def check_acquisition_type_is_the_headers(
                                     "something other than the raw headers")
             elif decided == "folded_ms1_only":
                 sources["folded_ms1_only"] += 1
-                warnings.append(f"{name}: its header gives {method or 'no acquisition mode'} with no MS2 to "
-                                "deconvolute, and the campaign disposition folded it into the DDA run")
-            elif decided == "declaration":
+                if declared_dia is not None:
+                    mode, source = declared_dia
+                    failures.append(f"{name}: its header gives {method or 'no acquisition mode'} with no MS2, and the "
+                                    f"campaign disposition folded it into the DDA run of a unit declared {mode}, where "
+                                    "rule B2 (2026-10-06) excludes it as ms1_only_in_declared_dia_unit"
+                                    + (f" (declared by {source})" if source else
+                                       "; the disposition predates Interactive 0.5.29"))
+                else:
+                    warnings.append(f"{name}: its header gives {method or 'no acquisition mode'} with no MS2 to "
+                                    "deconvolute, and the campaign disposition folded it into the DDA run")
+            elif decided == "declaration" and header_console is None:
                 sources["declaration"] += 1
                 warnings.append(f"{name}: its {value} is the repository's declaration, which the campaign disposition "
-                                f"kept where its header gives {method or 'no acquisition mode'}"
-                                + ("" if confidence is None else f" at confidence {confidence:.2f}"))
-            elif method not in HEADER_CONSOLE_METHODS:
-                sources["other"] += 1
-                warnings.append(f"{name}: its header gives {method or 'no acquisition mode'}, which is no Console "
-                                f"acquisition type, so its {value} rests on something other than the raw headers")
+                                f"took where its header gives {method or 'no acquisition mode'}"
+                                + ("" if confidence is None else f" at confidence {confidence:.2f}")
+                                + " and no Console acquisition type")
+            elif decided == "declaration":
+                sources["declaration"] += 1
             else:
                 sources["header"] += 1
             continue
@@ -3170,12 +3250,20 @@ def check_acquisition_type_is_the_headers(
         else:
             sources["header"] += 1
     evidence = {"basis": dict(basis), "sources": dict(sources), "extractor_records": len(extracted)}
+    overrides = [entry for entry in decisions.values() if str(entry.get("basis") or "") == "header"]
+    if overrides:
+        # acquisition_header_overrides_declaration: each declaration a header decided over, with its source.
+        evidence["header_overrides_declaration"] = len(overrides)
+        evidence["declaration_sources"] = dict(Counter(str(entry.get("declaration_source") or "unrecorded")
+                                                       for entry in overrides))
+    if sanctioned:
+        evidence["sanctioned_mappings"] = sanctioned
     if failures:
         refuse(warnings=warnings[:10], **evidence)
         return
     if warnings:
         report.add("ACQ-1", stage, ACQ1_TITLE, WARN,
-                   f"No row runs against a confident header verdict, but {len(warnings)} of the {len(csv_rows)} rest "
+                   f"No row runs against its header verdict, but {len(warnings)} of the {len(csv_rows)} rest "
                    "on something else for their acquisition type ("
                    + ", ".join(f"{count} {ACQ1_SOURCES[key]}" for key, count in sources.items()) + "): "
                    + "; ".join(warnings[:3]) + ".",
@@ -5665,22 +5753,25 @@ def _base_name(value: object) -> str:
     return str(value or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
 
 
-def _undelivered_samples(provenance: dict | None, samples: set[str]) -> dict[str, list[str]]:
-    """Of these approved samples, those the download never delivered, with the raw files their rows record.
+def _unreached_samples(provenance: dict | None, samples: set[str]) -> dict[str, list[str]]:
+    """Of these approved samples, those that never reached the lease's inputs, with the raw files their rows
+    record.
 
-    A sample is undelivered when the input lineage, the lease's record of what it admitted, says nothing of
-    it, and nothing the lease saw carries its name. That is: no lineage row (an input, or one the lease
+    A sample is unreached when the input lineage, the lease's record of what it admitted, says nothing of
+    it, and nothing the lease admitted carries its name. That is: no lineage row (an input, or one the lease
     excluded, of the unit or of a split part's raw owner) names it, by its sample_id, by the sample of the
     Catalog's declared input (_input_samples), by the sample row the CSV was written from (sample_row), by
     a declared name it is listed under (declared_names) or by the declared raw file an inferred pairing
     gave it (name_pairing); and no input candidate, lineage path or excluded candidate has the sample's
-    id or a raw file of its rows as its name (_container_stem). Metabolomics Workbench ST001264 is the
-    case: 31 sample rows, of which only BioRec1-3 are archive members the lease could pair, and 28 rows
-    (Sample1..Sample28) that no member is named after. Such a sample is not a row the CSV writer dropped,
-    which CLS-2 calls missing: the lineage shows it never reached the run.
+    id or a raw file of its rows as its name (_container_stem). Such a sample is not a row the CSV writer
+    dropped, which CLS-2 calls missing: the lineage shows it never reached the run.
+
+    Whether it was never delivered, or delivered and left unpaired, is not the lineage's to say: the
+    lineage records what the lease admitted, not what the download brought. _delivery_of reads that from
+    the archive member listings and the downloads.
 
     Read from the lineage only, never from the CSV record (analysis_csv.samples_without_input), which is
-    the CSV writer's own account. Without a lineage nothing is known undelivered, and a sample with no
+    the CSV writer's own account. Without a lineage nothing is known unreached, and a sample with no
     row stays missing as before.
     """
     if not isinstance(provenance, dict) or not samples:
@@ -5727,6 +5818,146 @@ def _undelivered_samples(provenance: dict | None, samples: set[str]) -> dict[str
         forms |= {form for raw in raw_files.get(stripped, []) for form in (_base_name(raw), _container_stem(raw))}
         if not forms & stems:
             result[sample] = raw_files.get(stripped, [])
+    return result
+
+
+def _loose_name(value: object) -> str:
+    """A name compared loosely: its container stem (_container_stem) with everything but letters and digits
+    dropped, so QC-D5-C and the archive member QC-D5-C-.mzML are one name."""
+    return "".join(character for character in _container_stem(str(value or "")) if character.isalnum())
+
+
+def _member_container(member: str) -> str:
+    """The container an archive member is, or is inside, as the listing names it ("/"-separated): the first
+    path component, from the top, that carries a container suffix (x.d of x.d/AcqData/..., x.raw of a
+    Waters folder), or ""; a member in no container (a log, a tag file, a README) is no input."""
+    parts = [part for part in member.split("/") if part]
+    for index, part in enumerate(parts):
+        if _strip_suffix(part, CONTAINER_SUFFIXES) != part:
+            return "/".join(parts[:index + 1])
+    return ""
+
+
+def _member_listing(owner: dict, record: dict) -> _ArchiveListing:
+    """An extraction record's member listing, as _InputLineage._listing finds and checks it."""
+    members = record.get("members_tsv")
+    name = str(record.get("archive_name") or "the archive")
+    if not isinstance(members, dict) or not str(members.get("path") or "").strip():
+        return _ArchiveListing(problem=f"the extraction record of {name} keeps no member listing")
+    recorded = Path(str(members["path"]))
+    candidates = [recorded]
+    if str(owner.get("workspace") or "").strip():
+        candidates.append(Path(str(owner["workspace"])) / "provenance" / recorded.name)
+    path = next((item for item in candidates if item.is_file()), None)
+    if path is None:
+        return _ArchiveListing(problem=f"the member listing of {name} ({recorded.name}) is absent")
+    return _read_archive_listing(path, str(members.get("sha256") or ""), name)
+
+
+def _is_archive_download(item: dict) -> bool:
+    archive = item.get("archive")
+    if isinstance(archive, dict) and str(archive.get("format") or "").strip():
+        return True
+    return str(item.get("path") or "").casefold().endswith(ARCHIVE_SUFFIXES)
+
+
+@dataclass
+class _Delivery:
+    """What the download delivered against what the lease paired (_delivery_of)."""
+    unpaired: dict = field(default_factory=dict)      # sample -> the unpaired delivered files named after it
+    undelivered: dict = field(default_factory=dict)   # sample -> the raw files its rows record
+    unestablished: dict = field(default_factory=dict)  # sample -> the raw files its rows record
+    unpaired_files: list = field(default_factory=list)
+    delivered: int = 0
+    shared: bool = False
+    problem: str = ""
+
+
+def _delivery_of(provenance: dict | None, unreached: dict[str, list[str]]) -> _Delivery:
+    """Of the approved samples that never reached the lease's inputs (_unreached_samples), those whose files the
+    download delivered but the lease did not pair, and those it never delivered.
+
+    WHAT WAS DELIVERED is the raw owner's record of its download, never the CSV: every input container an
+    archive member listing (archive_extractions[].members_tsv, its sha256 checked) marks extracted, and every
+    download that is no archive. WHAT WAS PAIRED is every input the lease admitted or excluded: the input
+    candidates, the lineage rows of the raw owner and of the unit (a split part's sibling's included: paired,
+    to the sibling), and the excluded candidates. A delivered container none of those is, compared by stem
+    (_container_stem), is an unpaired delivered file.
+
+    A sample is DELIVERED BUT UNPAIRED, a mapping failure, where an unpaired delivered file carries its name
+    loosely (_loose_name: ST004304's QC-D5-C and the member QC-D5-C-.mzML); and where unpaired delivered
+    files that carry no unreached sample's name remain, every unreached sample left is too, since one of
+    them may be any of those files (ST001264's Sample1..28 and its members Youn_sa1..28.raw), unless the
+    download is shared with other units (download_scope shared_unit_count above 1), whose files those may
+    be. A sample is NEVER DELIVERED only where the inventory leaves no such doubt. Where the inventory
+    cannot be read (no download recorded, an archive with no readable member listing), neither is
+    established, and the samples are left unestablished: CLS-2 counts them missing.
+    """
+    result = _Delivery()
+    if not unreached:
+        return result
+    owner, why = _raw_owner_manifest(provenance)
+    if owner is None:
+        result.problem = why or "the unit's raw owner is not recorded"
+        result.unestablished = dict(unreached)
+        return result
+    downloads = [item for item in owner.get("downloads") or [] if isinstance(item, dict) and str(item.get("path") or "").strip()]
+    if not downloads:
+        result.problem = "the raw owner's manifest records no download"
+        result.unestablished = dict(unreached)
+        return result
+    delivered: dict[str, str] = {}
+    for item in downloads:
+        if not _is_archive_download(item):
+            name = Path(str(item["path"]).rstrip("\\/")).name
+            delivered.setdefault(_container_stem(name), name)
+    if any(_is_archive_download(item) for item in downloads):
+        records = [item for item in owner.get("archive_extractions") or [] if isinstance(item, dict)]
+        if not records:
+            result.problem = "an archive was downloaded and the manifest records no extraction of it"
+            result.unestablished = dict(unreached)
+            return result
+        for record in records:
+            listing = _member_listing(owner, record)
+            if listing.problem:
+                result.problem = listing.problem
+                result.unestablished = dict(unreached)
+                return result
+            for member in sorted(set(listing.files) | listing.directories):
+                container = _member_container(member)
+                if container:
+                    delivered.setdefault(_container_stem(container), container.rsplit("/", 1)[-1])
+    paired: list[object] = [*((provenance or {}).get("input_candidates") or []), *(owner.get("input_candidates") or [])]
+    for manifest in [owner, *([provenance] if provenance is not owner else [])]:
+        paired += [item.get("path") for item in manifest.get("excluded_input_candidates") or [] if isinstance(item, dict)]
+        paired += [row["path"] for part in ("rows", "excluded") for row in _lineage_rows(manifest, part)]
+    paired_stems = {_container_stem(str(path)) for path in paired if str(path or "").strip()}
+    unpaired = {stem: name for stem, name in delivered.items() if stem not in paired_stems}
+    result.delivered = len(delivered)
+    result.unpaired_files = sorted(unpaired.values())
+    scope = ((owner.get("project") or {}).get("download_scope") if isinstance(owner.get("project"), dict) else None) or {}
+    counts = [scope.get("bundle_shared_unit_count")] + [item.get("shared_unit_count") for item in scope.get("objects") or []
+                                                       if isinstance(item, dict)]
+    result.shared = any(isinstance(count, int) and not isinstance(count, bool) and count > 1 for count in counts)
+    loose = {}
+    for stem, name in unpaired.items():
+        loose.setdefault(_loose_name(name), []).append(name)
+    claimed: set[str] = set()
+    for sample, raws in sorted(unreached.items()):
+        forms = {_loose_name(sample)} | {_loose_name(raw) for raw in raws}
+        forms.discard("")
+        names = sorted({name for form in forms for name in loose.get(form, [])})
+        if names:
+            result.unpaired[sample] = names
+            claimed.update(names)
+    leftover = [name for name in result.unpaired_files if name not in claimed]
+    for sample, raws in sorted(unreached.items()):
+        if sample in result.unpaired:
+            continue
+        if leftover and not result.shared:
+            result.unpaired[sample] = []
+        else:
+            result.undelivered[sample] = raws
     return result
 
 
@@ -5817,12 +6048,19 @@ def check_executed_class_matches_approved(
     that runs is absent however much else of it was excluded. Where every approved sample was excluded
     the Console reads no grouping, and that is a FAIL, not a comparison of nothing.
 
-    AN APPROVED SAMPLE THE DOWNLOAD NEVER DELIVERED is not absent either (_undelivered_samples): no input
-    lineage row names it and no input the lease saw carries its name, as for the 28 of ST001264's 31 rows
-    no archive member is named after. It is listed under its own evidence key (undelivered_samples) and
-    the check WARNs, naming how many approved samples the run covers, where a missing sample FAILs. It
-    is read from the lineage, never from the CSV record's samples_without_input, the CSV writer's own
-    account. A run of none of them is still a FAIL.
+    AN APPROVED SAMPLE THAT NEVER REACHED THE LEASE'S INPUTS (_unreached_samples: no input lineage row names
+    it and no input the lease admitted carries its name) is told apart by what the download delivered
+    (_delivery_of), read from the archive member listings and the downloads in provenance, never from the CSV:
+    - DELIVERED BUT UNPAIRED: a delivered file the lease did not pair carries its name, or unpaired
+      delivered files remain that may be its (ST004304's QC-D5-C beside the member QC-D5-C-.mzML; ST001264's
+      Sample1..28 beside the members Youn_sa1..28.raw). That is a mapping failure: listed under its own
+      evidence key (delivered_unpaired_samples, with the unpaired files under unpaired_delivered_files) and
+      a FAIL, since the run leaves out data it holds;
+    - NEVER DELIVERED: the delivery holds nothing it could be. Listed under undelivered_samples, and a WARN
+      naming how many approved samples the run covers, where a missing sample FAILs;
+    - neither established, where the delivery cannot be read: counted missing, as before.
+    It is never read from the CSV record's samples_without_input, the CSV writer's own account. A run of
+    none of the approved samples is still a FAIL.
 
     A LABEL IS COMPARED AS INTERACTIVE WRITES IT: projected (_class_token, "Wild type" as "Wild-type",
     and "Sample" where the projection leaves nothing), and, where the Console could not read the
@@ -5871,7 +6109,8 @@ def check_executed_class_matches_approved(
     files_of_sample.update(by_name)
     unmatched = {sample for sample in approved if not files_of_sample.get(sample)}
     excluded = _excluded_samples(provenance, unmatched)
-    undelivered = _undelivered_samples(provenance, unmatched - set(excluded))
+    delivery = _delivery_of(provenance, _unreached_samples(provenance, unmatched - set(excluded)))
+    undelivered, unpaired = delivery.undelivered, delivery.unpaired
     aliases, refused = _class_id_aliases(provenance)
     mapped: set[str] = set()
     missing = []
@@ -5882,7 +6121,7 @@ def check_executed_class_matches_approved(
     for sample, label in sorted(approved.items()):
         files = files_of_sample.get(sample) or []
         if not files:
-            if sample not in excluded and sample not in undelivered:
+            if sample not in excluded and sample not in undelivered and sample not in unpaired:
                 missing.append(sample)
             continue
         forms = _executed_forms(label, aliases)
@@ -5915,26 +6154,47 @@ def check_executed_class_matches_approved(
         # writer dropping a row it had.
         evidence["undelivered_samples"] = {sample: raws for sample, raws in sorted(undelivered.items())[:10]}
         evidence["undelivered_count"] = len(undelivered)
+    if unpaired:
+        # A mapping failure: the download delivered files the lease did not pair with these samples.
+        evidence["delivered_unpaired_samples"] = {sample: names for sample, names in sorted(unpaired.items())[:10]}
+        evidence["delivered_unpaired_count"] = len(unpaired)
+    if undelivered or unpaired:
+        evidence["unpaired_delivered_files"] = delivery.unpaired_files[:10]
+        evidence["unpaired_delivered_file_count"] = len(delivery.unpaired_files)
+        evidence["delivered_files"] = delivery.delivered
+        if delivery.shared:
+            evidence["download_shared_with_other_units"] = True
+    if delivery.unestablished:
+        evidence["delivery_not_established"] = delivery.problem
     if folded:
         evidence["written_as"] = dict(sorted(folded.items())[:10])
     if refused:
         evidence["class_id_aliases_not_a_fold"] = dict(sorted(refused.items())[:10])
-    analysed = len(approved) - len(excluded) - len(undelivered)
+    analysed = len(approved) - len(excluded) - len(undelivered) - len(unpaired)
+    unpaired_sentence = (
+        f"{len(unpaired)} approved sample(s) have no input although the download delivered files the lease did not "
+        "pair (" + ", ".join(f"{sample}" + (f" as {', '.join(names[:2])}" if names else "")
+                             for sample, names in sorted(unpaired.items())[:5])
+        + (", ..." if len(unpaired) > 5 else "") + f"; {len(delivery.unpaired_files)} unpaired delivered file(s): "
+        + ", ".join(delivery.unpaired_files[:5]) + (", ..." if len(delivery.unpaired_files) > 5 else "")
+        + "), a name-pairing failure, not a missing download") if unpaired else ""
     if not missing and not extra and not differing and not regrouped and analysed == 0:
         reasons = []
         if excluded:
             reasons.append(f"the input of {len(excluded)} was excluded by the campaign disposition or the lease ("
                            + ", ".join(sorted(excluded)[:5]) + ")")
         if undelivered:
-            reasons.append(f"{len(undelivered)} were never delivered: no input lineage row names them and no input "
-                           "carries their name (" + ", ".join(sorted(undelivered)[:5]) + ")")
+            reasons.append(f"{len(undelivered)} were never delivered: no input lineage row names them and nothing the "
+                           "download delivered could be theirs (" + ", ".join(sorted(undelivered)[:5]) + ")")
+        if unpaired:
+            reasons.append(unpaired_sentence)
         report.add(
             "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
             f"None of the {len(approved)} approved sample(s) is analysed: " + "; ".join(reasons)
             + ", so the Console reads no grouping at all.", **evidence)
         return
     if not missing and not extra and not differing and not regrouped:
-        if not excluded and not folded and not undelivered:
+        if not excluded and not folded and not undelivered and not unpaired:
             detail = f"All {len(approved)} approved assignments appear in the analysis CSV with the same Class."
         else:
             detail = (f"All {analysed} approved assignments of the samples analysed appear in "
@@ -5947,12 +6207,15 @@ def check_executed_class_matches_approved(
                            "campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + ")")
             if undelivered:
                 detail += (f"; {len(undelivered)} approved sample(s) were never delivered: no input lineage row "
-                           "names them and no input the lease saw carries their name ("
-                           + ", ".join(sorted(undelivered)[:5]) + (", ..." if len(undelivered) > 5 else "")
-                           + f"), so the run covers {analysed} of the {len(approved)} approved samples")
+                           "names them and nothing the download delivered could be theirs ("
+                           + ", ".join(sorted(undelivered)[:5]) + (", ..." if len(undelivered) > 5 else "") + ")")
+            if unpaired:
+                detail += "; " + unpaired_sentence
+            if undelivered or unpaired:
+                detail += f", so the run covers {analysed} of the {len(approved)} approved samples"
             detail += "."
-        report.add("CLS-2", stage, "Executed Class is the Class that was approved", WARN if undelivered else PASS,
-                   detail, **evidence)
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved",
+                   FAIL if unpaired else WARN if undelivered else PASS, detail, **evidence)
         return
     report.add(
         "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
@@ -5961,7 +6224,9 @@ def check_executed_class_matches_approved(
         f"are absent from the CSV, {len(extra)} CSV row(s) were never approved"
         + (f", and {len(regrouped)} Class(es) were merged or split on the way" if regrouped else "") + "."
         + (f" {len(undelivered)} further approved sample(s) were never delivered (undelivered_samples)."
-           if undelivered else ""),
+           if undelivered else "")
+        + (f" {len(unpaired)} further approved sample(s) were delivered and left unpaired "
+           "(delivered_unpaired_samples)." if unpaired else ""),
         differing=differing[:10], missing=missing[:10], unapproved=extra[:10],
         **({"regrouped": regrouped[:10]} if regrouped else {}), **evidence,
     )
@@ -6542,6 +6807,19 @@ def _method_threshold(output: Path) -> "tuple[str | None, str, list[str]]":
 # within_target_range whether the estimated count is in the target. A diagnostic recorded before then
 # carries threshold_step and within_target_range alone, and is read as it is.
 FINE_STEP_DIVISOR = 10
+# The absolute floor of the step (the user's rule: never finer than 10 for QTOF-type data, 100 for Fourier-
+# transform data), and the instrument-family steps it is a tenth of. Judged against the unit's instrument,
+# never against the family step the diagnostic records: an estimate asked for at step 10 records 10 as its
+# family step and falls back to 1, at the noise floor.
+FAMILY_STEPS = {"qtof": 100, "fourier": 1000}
+STEP_FLOORS = {"qtof": 10, "fourier": 100}
+# Fourier-transform analysers in the Catalog's instrument text, as the campaign runner reads them for the
+# diagnostic's step (scripts/campaign/policy.py _FOURIER_INSTRUMENT): Interactive labels every mzML QTOF.
+FOURIER_INSTRUMENT = re.compile(
+    r"orbitrap|exactive|exploris|fusion|lumos|eclipse|astral|tribrid|ltq[\s-]?ft|ft[\s-]?icr|fticr|"
+    r"solarix|apex|fourier",
+    re.IGNORECASE,
+)
 PKH1_TITLE = "The threshold was measured on this unit"
 STEP_RULE_FIELDS = ("coarse_threshold_step", "step_fallback", "fallback_reason")
 
@@ -6570,7 +6848,30 @@ def _figure(value: "float | None") -> str:
     return f"{int(value):,}" if value == int(value) else f"{value:,}"
 
 
-def _step_rule(item: dict) -> dict:
+def _step_family(item: dict, provenance: dict | None) -> tuple[str, str]:
+    """("fourier" or "qtof", why): the unit's instrument family for the step floor. Fourier-transform where the
+    diagnostic's representative says so, where the Catalog's instrument text names a Fourier-transform
+    analyser (Interactive labels every mzML QTOF), or where the diagnostic searched at the Fourier-transform
+    family step of 1,000; else QTOF-type."""
+    representative = item.get("representative") if isinstance(item.get("representative"), dict) else {}
+    family = str(representative.get("instrument_family") or "").casefold()
+    if "fourier" in family or "ft-icr" in family or "fticr" in family:
+        return "fourier", f"the representative's instrument family is {representative.get('instrument_family')}"
+    project = (provenance or {}).get("project") if isinstance((provenance or {}).get("project"), dict) else {}
+    handoff = ((project.get("repository_metadata") or {}).get("catalog_handoff") or {}) if isinstance(
+        project.get("repository_metadata"), dict) else {}
+    settings = handoff.get("technical_settings") if isinstance(handoff, dict) else None
+    instrument = str((settings or {}).get("instrument") or "") if isinstance(settings, dict) else ""
+    if FOURIER_INSTRUMENT.search(instrument):
+        return "fourier", f"the unit's instrument is {instrument}"
+    coarse = _as_number(_diagnostic_field(item, "coarse_threshold_step"))
+    step = _as_number(_diagnostic_field(item, "threshold_step"))
+    if (coarse if coarse is not None else step) == FAMILY_STEPS["fourier"]:
+        return "fourier", "the diagnostic searched at the Fourier-transform step of 1,000"
+    return "qtof", "no Fourier-transform analyser is recorded"
+
+
+def _step_rule(item: dict, provenance: dict | None = None) -> dict:
     """What a diagnostic records of the step rule (2026-10-06), and what it breaks or leaves to be read.
 
     Returns the recorded fields ("evidence"), the words that describe them ("said"), the departures
@@ -6579,6 +6880,10 @@ def _step_rule(item: dict) -> dict:
     should read ("notes": a fallback that records no reason, an estimate outside the target range where
     the zero-threshold count was above it). A diagnostic recorded before the rule carries none of its
     fields, and only its step and within_target_range are read.
+
+    THE FLOOR is absolute (_step_family): a step finer than 10 for QTOF-type data or 100 for
+    Fourier-transform data breaks the rule, whatever family step the diagnostic records; and a recorded
+    family step other than 100 or 1,000 is no family step.
     """
     step = _as_number(_diagnostic_field(item, "threshold_step"))
     coarse = _as_number(_diagnostic_field(item, "coarse_threshold_step"))
@@ -6601,6 +6906,19 @@ def _step_rule(item: dict) -> dict:
         evidence["estimated_peak_count"] = _diagnostic_field(item, "estimated_peak_count")
     broken: list[str] = []
     notes: list[str] = []
+    family, family_why = _step_family(item, provenance)
+    floor = STEP_FLOORS[family]
+    evidence.update({"instrument_family_for_step": family, "step_floor": floor})
+    family_name = "Fourier-transform" if family == "fourier" else "QTOF-type"
+    if step is not None and step < floor - 1e-9:
+        broken.append(f"the threshold was taken at step {_figure(step)}, finer than the floor of {floor} for "
+                      f"{family_name} data ({family_why}), which no recorded family step lowers")
+    if recorded and coarse is not None and coarse not in FAMILY_STEPS.values():
+        broken.append(f"the instrument-family step recorded is {_figure(coarse)}, which is neither 100 (QTOF-type) "
+                      "nor 1,000 (Fourier-transform)")
+    elif recorded and coarse is not None and coarse != FAMILY_STEPS[family]:
+        notes.append(f"the diagnostic searched first at step {_figure(coarse)}, where {family_name} data "
+                     f"({family_why}) take {FAMILY_STEPS[family]:,}")
     if fallback is True:
         fine = coarse / FINE_STEP_DIVISOR if coarse else None
         said = (f"step {_figure(step)}, falling back from the instrument-family step {_figure(coarse)}"
@@ -6704,7 +7022,7 @@ def check_threshold_was_measured_on_this_unit(
         # The diagnostic that produced the threshold, the latest where several did: re-running it with
         # another step or representative is normal, and the step rule is read from the one that ran.
         latest = producing[-1]
-        rule = _step_rule(latest)
+        rule = _step_rule(latest, provenance)
         # Other stated values do not run, but a method file that asks for two thresholds was edited
         # by something that did not know which one the Console applies.
         differing = sorted({value for value in stated if value != written})
