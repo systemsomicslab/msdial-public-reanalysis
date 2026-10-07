@@ -53,6 +53,13 @@ THE DIGEST is sha256 over the manifest's canonical JSON (sorted keys, no spaces,
 disk is exactly those bytes, so Interactive's campaign_authorization can check a manifest against the
 digest a person approved by hashing the file. Nothing in it names a private library's location:
 libraries are pinned by file name, sha256 and size.
+
+THE AUTOMATIC RT CORRECTION IS STATED IN WHAT A PERSON APPROVES. The campaign runs it on, with at most 12 anchors,
+#826's local window (the Console's 1.5 min) and an uncorrected fallback after an anchor-selection failure, Blanks
+interpolated only by a recorded injection order (decided 2026-10-07). A --policy override may change that, and is
+not refused for it, but the manifest names the fields the override set (policy_overrides) and keeps the
+correction as the summary states it, words included (automatic_rt_correction), so the digest covers what the
+person read; where it differs from the decision the summary says so first, in capitals.
 """
 
 from __future__ import annotations
@@ -622,6 +629,118 @@ def automatic_rt_correction_problems(
     return problems
 
 
+# What the user decided for the campaign's automatic alignment RT correction on 2026-10-07: on, at most 12 anchors,
+# and an uncorrected fallback after an anchor-selection failure (the policy fields that carry it). The local window
+# is #826's own default, which the runner does not send, and Blank interpolation is decided per unit by the order
+# Interactive recorded; neither is a policy field.
+AUTOMATIC_RT_DECISION_DATE = "2026-10-07"
+AUTOMATIC_RT_DECISION = {
+    "automatic_rt_correction": True,
+    "automatic_rt_correction_maximum_anchors": 12,
+    "automatic_rt_correction_fallback": True,
+}
+AUTOMATIC_RT_BLANK_RULE = (
+    "interpolated by analytical order only where an injection order was recorded (the raw headers' acquisition "
+    "start times or the repository's sample table); otherwise a Blank keeps its measured RTs")
+_MISSING = object()
+
+
+def _on(value: bool) -> str:
+    return "ON" if value else "OFF"
+
+
+def _profile_statements(profile: Mapping[str, Any] | None, key: str) -> list[dict[str, Any]]:
+    return [{"where": where, "value": value} for where, found, value in _profile_settings(profile) if found == key]
+
+
+def _stated(statements: Sequence[Mapping[str, Any]]) -> str:
+    return ", ".join(f"{item['value']!r} ({item['where']})" for item in statements)
+
+
+def automatic_rt_correction_record(
+    recorded_policy: Mapping[str, Any] | None,
+    profile: Mapping[str, Any] | None,
+    overridden: Iterable[str] | None,
+) -> dict[str, Any]:
+    """The campaign's automatic RT correction as a person approves it: what runs, where it comes from, and where it
+    differs from the decision of 2026-10-07, with the lines the plan prints (statement). The manifest keeps this
+    record, so its digest covers the words a person read as well as the policy fields.
+
+    `overridden` is the policy fields a --policy file named (None where nobody recorded them: a manifest planned
+    before this record). An override is never refused here: a person may decide otherwise, and the text says so.
+    """
+    recorded = dict(recorded_policy or {})
+    pinned = policy.automatic_rt_correction_pinned(recorded)
+    fields = None if overridden is None else sorted(set(overridden) & set(AUTOMATIC_RT_DECISION))
+    differences = []
+    for key, decided in AUTOMATIC_RT_DECISION.items():
+        value = recorded.get(key, _MISSING)
+        if value is _MISSING:
+            differences.append(f"{key} not recorded (a policy from before {AUTOMATIC_RT_DECISION_DATE}), "
+                               f"decided {json.dumps(decided)}")
+        elif value != decided or isinstance(value, bool) != isinstance(decided, bool):
+            differences.append(f"{key} {json.dumps(value)}, decided {json.dumps(decided)}")
+    windows = _profile_statements(profile, AUTOMATIC_RT_WINDOW_ANSWER)
+    window_text = (f"local window {_stated(windows)} min as the profile states it" if windows else
+                   f"local window {policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW} min (the Console's default; not sent)")
+    if fields is None:
+        source = "the manifest's recorded policy (which fields a --policy override named was not recorded)"
+    elif fields:
+        source = "a --policy override of " + ", ".join(fields)
+    else:
+        source = "the default campaign policy"
+    record: dict[str, Any] = {
+        "decision": {"date": AUTOMATIC_RT_DECISION_DATE, **AUTOMATIC_RT_DECISION},
+        "pinned": pinned,
+        "source": "unrecorded" if fields is None else ("policy_override" if fields else "default_policy"),
+        "overridden_fields": fields,
+        "differs_from_decision": differences,
+    }
+    lines = []
+    if differences:
+        lines.append(f"  !! AUTOMATIC RT CORRECTION DIFFERS FROM THE DECISION OF {AUTOMATIC_RT_DECISION_DATE} "
+                     "(on, 12 anchors, uncorrected fallback): " + "; ".join(differences))
+    if pinned:
+        anchors = recorded.get("automatic_rt_correction_maximum_anchors")
+        fallback = recorded.get("automatic_rt_correction_fallback") is True
+        record.update({
+            "correction": True, "maximum_anchors": anchors,
+            "local_support_rt_window_min": (windows[0]["value"] if windows else policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW),
+            "local_support_rt_window_source": "profile" if windows else "console_default",
+            "fallback_uncorrected": fallback, "blank_interpolation": AUTOMATIC_RT_BLANK_RULE,
+        })
+        lines += [
+            f"  automatic RT correction: {_on(True)}, pinned by the campaign policy over the profile; from {source}",
+            f"    maximum anchors {anchors}; {window_text}; MsdialWorkbench #826's local outlier test",
+            f"    fallback {_on(fallback)}: " + (
+                "after an anchor-selection failure the unit's next attempts run uncorrected, and its record says so"
+                if fallback else "a unit whose anchors cannot be selected is retried and ends as any failure does"),
+            f"    Blanks: {AUTOMATIC_RT_BLANK_RULE}",
+        ]
+    else:
+        requested = automatic_rt_correction_requested(profile)
+        anchors = _profile_statements(profile, AUTOMATIC_RT_ANCHORS_ANSWER)
+        blanks = _profile_statements(profile, policy.AUTOMATIC_RT_BLANK_ANSWER)
+        record.update({
+            "correction": requested, "maximum_anchors": None, "local_support_rt_window_min": None,
+            "fallback_uncorrected": False, "blank_interpolation": None,
+            "profile_statements": {key: _profile_statements(profile, key) for key in (
+                AUTOMATIC_RT_ANSWER, AUTOMATIC_RT_ANCHORS_ANSWER, AUTOMATIC_RT_WINDOW_ANSWER, policy.AUTOMATIC_RT_BLANK_ANSWER)},
+        })
+        lines.append(
+            f"  automatic RT correction: NOT PINNED by the campaign policy; from {source}. Each unit runs as the profile "
+            f"says: {_on(requested)}" + ("" if requested else " (the profile does not turn it on; Interactive's default is off)"))
+        if requested:
+            lines += [
+                "    maximum anchors " + (_stated(anchors) if anchors else "Interactive's default") + f"; {window_text}",
+                "    fallback OFF: the runner falls back to an uncorrected run only under the campaign policy's pin",
+                "    Blanks: " + (_stated(blanks) if blanks else
+                                  "Interactive's default (interpolated by analytical order, whatever the order was read from)"),
+            ]
+    record["statement"] = lines
+    return record
+
+
 # ---- the manifest ---------------------------------------------------------------------------------------
 
 def build_manifest(
@@ -642,13 +761,16 @@ def build_manifest(
     replan: Mapping[str, Mapping[str, str]] | None = None,
     unit_ids: Sequence[str] | None = None,
     ion_mobility_evidence: Any = DETECT,
+    policy_overrides: Iterable[str] = (),
 ) -> dict[str, Any]:
     """The manifest for one pool, or for a pilot of named units (`unit_ids`, pool "pilot"). `catalog` is a
     read-only Catalog; nothing is written anywhere.
 
     `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
     `ion_mobility_evidence` is the Catalog's helper, None for the fallback rule, or DETECT to look it up.
+    `policy_overrides` names the policy fields a --policy file set, so the manifest can say what it changed.
     """
+    policy_overrides = sorted({str(item) for item in policy_overrides})
     if (unit_ids is None) == (pool is None or pool == PILOT):
         raise PlanError("Plan one pool, or a pilot of named units (--units), not both and not neither.")
     if not str(campaign_id or "").strip() or not re.fullmatch(r"[A-Za-z0-9._-]+", str(campaign_id)):
@@ -797,6 +919,10 @@ def build_manifest(
             **({"units": requested, "pools": {name: SELECTION_RULES[name] for name in POOLS}} if pool == PILOT else {}),
         },
         "policy": campaign_policy.as_dict(),
+        # The policy fields a --policy file set (empty: the default policy), and the automatic RT correction as
+        # the summary states it, words included, so the digest a person approves covers both.
+        "policy_overrides": policy_overrides,
+        "automatic_rt_correction": automatic_rt_correction_record(campaign_policy.as_dict(), profile, policy_overrides),
         "profile": dict(profile) if profile is not None else None,
         "pins": dict(pins),
         "units": units,
@@ -879,6 +1005,11 @@ def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> lis
     problems.extend(automatic_rt_correction_problems(
         manifest.get("profile"), manifest.get("pins", {}).get("console"), manifest.get("policy")
     ))
+    stated = manifest.get("automatic_rt_correction")
+    if stated is not None and stated != automatic_rt_correction_record(
+            manifest.get("policy"), manifest.get("profile"), manifest.get("policy_overrides") or []):
+        # The words a person reads must be the policy and profile the runner reads.
+        problems.append("the manifest's automatic RT correction statement does not match its policy and profile: plan again")
     for name in ("console", "extractor"):
         pin = manifest.get("pins", {}).get(name) or {}
         if not pin.get("exists") or not pin.get("binary_sha256"):
@@ -971,8 +1102,11 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     def tb(value: int) -> str:
         return f"{value / 1000**4:.2f} TB"
 
-    lines = [
-        f"Campaign {manifest['campaign_id']} ({manifest['pool']} pool): {SELECTION_RULES[manifest['pool']]}",
+    correction = manifest_automatic_rt_correction(manifest)
+    lines = [f"Campaign {manifest['campaign_id']} ({manifest['pool']} pool): {SELECTION_RULES[manifest['pool']]}"]
+    # A correction that differs from the decision is said first, then again with the rest of the correction.
+    lines += [line for line in correction["statement"] if line.lstrip().startswith("!!")]
+    lines += [
         f"  selected {totals['selected_units']}, excluded {totals['excluded_units']}, planned {totals['planned_units']}",
     ]
     if manifest["pool"] == PILOT:
@@ -1016,9 +1150,19 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
             f"  planned beside an earlier accession-level workspace, left as it is: {len(legacy)} accessions "
             f"({', '.join(legacy[:5])}{', ...' if len(legacy) > 5 else ''})"
         )
+    lines += correction["statement"]
     lines.append(multi_energy_aif_text((manifest.get("pins") or {}).get("console") or {}))
     lines.append(f"  manifest digest {digest}")
     return "\n".join(lines)
+
+
+def manifest_automatic_rt_correction(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """The manifest's automatic RT correction record (automatic_rt_correction_record), as the plan wrote it; for a
+    manifest planned before the record, made from its recorded policy, which overrides it does not say."""
+    record = manifest.get("automatic_rt_correction")
+    if isinstance(record, Mapping) and isinstance(record.get("statement"), list):
+        return dict(record)
+    return automatic_rt_correction_record(manifest.get("policy"), manifest.get("profile"), manifest.get("policy_overrides"))
 
 
 def multi_energy_aif_text(console: Mapping[str, Any]) -> str:

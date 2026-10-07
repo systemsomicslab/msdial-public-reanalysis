@@ -17,6 +17,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -279,6 +280,75 @@ class PlanTests(unittest.TestCase):
         text = plan.summary_text(manifest, "sha256:" + "0" * 64)
         self.assertIn("transfer and disk: at least 6.99 TB of known size, each shared object fetched once", text)
         self.assertIn("without the store the units would fetch 12.82 TB", text)
+
+    def rt_manifest(self, overrides: dict | None = None) -> dict:
+        """A declared-pool manifest planned at a fixed moment, with the campaign policy a --policy file would give."""
+        catalog = ports.read_only_catalog(self.database)
+        try:
+            return plan.build_manifest(
+                catalog, pool="declared", campaign_id="test-rt", analysis_purpose="annotation",
+                workspace_root=self.workspace_root, raw_retention_policy="keep",
+                pins={"catalog": {"version": "0.6.1"}, "libraries": []}, profile=None,
+                campaign_policy=policy.CampaignPolicy.from_dict(overrides), policy_overrides=sorted(overrides or {}),
+                class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, "annotation"),
+                catalog_database=str(self.database), now=datetime(2026, 10, 8, tzinfo=timezone.utc),
+            )
+        finally:
+            catalog.close()
+
+    def test_the_summary_states_the_automatic_rt_correction_the_default_policy_pins(self) -> None:
+        manifest = self.rt_manifest()
+        record = manifest["automatic_rt_correction"]
+        self.assertEqual(manifest["policy_overrides"], [])
+        self.assertEqual((record["pinned"], record["correction"], record["maximum_anchors"], record["local_support_rt_window_min"],
+                          record["local_support_rt_window_source"], record["fallback_uncorrected"], record["source"]),
+                         (True, True, 12, 1.5, "console_default", True, "default_policy"))
+        self.assertEqual(record["differs_from_decision"], [])
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        self.assertIn("automatic RT correction: ON, pinned by the campaign policy over the profile; "
+                      "from the default campaign policy", text)
+        self.assertIn("maximum anchors 12; local window 1.5 min (the Console's default; not sent)", text)
+        self.assertIn("fallback ON: after an anchor-selection failure the unit's next attempts run uncorrected", text)
+        self.assertIn("Blanks: interpolated by analytical order only where an injection order was recorded", text)
+        self.assertNotIn("!!", text)
+        self.assertNotIn("DIFFERS", text)
+
+    def test_a_policy_override_of_the_correction_is_said_first_and_changes_the_digest(self) -> None:
+        default = plan.digest_of(plan.canonical_bytes(self.rt_manifest()))
+        cases = {
+            "correction off": ({"automatic_rt_correction": False}, "automatic_rt_correction false, decided true",
+                               "NOT PINNED by the campaign policy; from a --policy override of automatic_rt_correction"),
+            "Interactive's 6 anchors": ({"automatic_rt_correction_maximum_anchors": 6},
+                                        "automatic_rt_correction_maximum_anchors 6, decided 12", "maximum anchors 6;"),
+            "no fallback": ({"automatic_rt_correction_fallback": False}, "automatic_rt_correction_fallback false, decided true",
+                            "fallback OFF: a unit whose anchors cannot be selected is retried"),
+        }
+        for name, (overrides, difference, words) in cases.items():
+            with self.subTest(name):
+                manifest = self.rt_manifest({**overrides, "prefetch": 1})
+                record = manifest["automatic_rt_correction"]
+                self.assertEqual(record["source"], "policy_override")
+                self.assertEqual(record["overridden_fields"], sorted(overrides), "the override's correction fields, named")
+                self.assertEqual(manifest["policy_overrides"], sorted({**overrides, "prefetch": 1}))
+                self.assertEqual(record["differs_from_decision"], [difference])
+                lines = plan.summary_text(manifest, "sha256:" + "0" * 64).splitlines()
+                self.assertTrue(lines[1].startswith("  !! AUTOMATIC RT CORRECTION DIFFERS FROM THE DECISION OF 2026-10-07"),
+                                "said straight after the campaign's own line, before anything else")
+                self.assertIn(difference, lines[1])
+                self.assertIn(words, "\n".join(lines))
+                self.assertNotEqual(plan.digest_of(plan.canonical_bytes(manifest)), default)
+                self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]),
+                                 plan.approval_problems(self.rt_manifest(), ["1", "3", "4"]),
+                                 "a person may decide otherwise: the override is said, not refused")
+        # An override that restates the decision is named, and changes the digest, but differs from nothing.
+        same = self.rt_manifest({"automatic_rt_correction_maximum_anchors": 12})
+        self.assertEqual(same["automatic_rt_correction"]["differs_from_decision"], [])
+        self.assertIn("from a --policy override of automatic_rt_correction_maximum_anchors",
+                      plan.summary_text(same, "sha256:" + "0" * 64))
+        self.assertNotEqual(plan.digest_of(plan.canonical_bytes(same)), default)
+        # An override of other fields only leaves the correction the default policy's.
+        other = self.rt_manifest({"prefetch": 1})["automatic_rt_correction"]
+        self.assertEqual((other["source"], other["overridden_fields"]), ("default_policy", []))
 
     def test_the_acquisition_unknown_pool_is_its_own_manifest(self) -> None:
         manifest = self.manifest("acquisition_unknown")
@@ -676,6 +746,31 @@ class PlanTests(unittest.TestCase):
             self.assertEqual(book.campaign()["pool"], "pilot")
             self.assertEqual(sorted(unit["unit_key"] for unit in book.units()), ["uA", "uK"])
 
+    def test_the_plan_command_states_a_policy_override_of_the_correction(self) -> None:
+        overrides = self.root / "policy.json"
+        overrides.write_text(json.dumps({"automatic_rt_correction_maximum_anchors": 6}), encoding="utf-8")
+        dry = self.root / "dry" / "rt-manifest.json"
+        code, out, err = self.cli("plan", "--campaign", "rt0", "--pool", "declared", "--purpose", "a", "--retention", "keep",
+                                  "--catalog", str(self.database), "--out", str(dry), "--policy", str(overrides))
+        self.assertEqual(code, 0, err)
+        self.assertIn("!! AUTOMATIC RT CORRECTION DIFFERS FROM THE DECISION OF 2026-10-07", out.splitlines()[1])
+        self.assertIn("from a --policy override of automatic_rt_correction_maximum_anchors", out)
+        self.assertIn("Automatic RT correction differs from the decision of 2026-10-07: "
+                      "automatic_rt_correction_maximum_anchors 6, decided 12", err)
+        manifest = json.loads(dry.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["policy_overrides"], ["automatic_rt_correction_maximum_anchors"])
+        summary = json.loads((self.root / "dry" / "rt-manifest.summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["automatic_rt_correction"], manifest["automatic_rt_correction"])
+        self.assertEqual(summary["summary_text"].strip(), out.strip())
+        self.assertIn(summary["manifest_digest"], summary["summary_text"])
+        code, out, err = self.cli("plan", "--campaign", "rt1", "--pool", "declared", "--purpose", "a", "--retention", "keep",
+                                  "--catalog", str(self.database), "--out", str(self.root / "dry" / "rt1.json"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("automatic RT correction: ON, pinned by the campaign policy over the profile; "
+                      "from the default campaign policy", out)
+        self.assertNotIn("DIFFERS", out)
+        self.assertNotIn("differs from the decision", err)
+
     def test_each_operator_request_is_recorded_under_its_action(self) -> None:
         for command, action in (("skip", "skip"), ("retry", "retry"), ("release-held", "release_held")):
             with self.subTest(command=command):
@@ -837,6 +932,43 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
             "library_strategy": "existing", "execute_automatic_rt_correction": "true", "execute_rt_correction": False,
             "automatic_rt_correction_maximum_anchors": "12", "automatic_rt_correction_local_support_rt_window": 1.5}}
         self.assertEqual(plan.approval_problems(self.pinned(stated), ["1", "3", "4"]), [])
+
+    def test_the_statement_follows_the_policy_and_the_profile(self) -> None:
+        stated = plan.automatic_rt_correction_record(
+            policy.CampaignPolicy().as_dict(),
+            {"answers": {"automatic_rt_correction_local_support_rt_window": 1.5}}, [])
+        self.assertEqual((stated["local_support_rt_window_min"], stated["local_support_rt_window_source"]), (1.5, "profile"))
+        self.assertIn("local window 1.5 (answers) min as the profile states it", "\n".join(stated["statement"]))
+        # Not pinned, each unit runs as its profile says, and the statement says what that is.
+        unpinned = policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()
+        off = plan.automatic_rt_correction_record(unpinned, None, ["automatic_rt_correction"])
+        self.assertEqual(off["correction"], False)
+        self.assertIn("Each unit runs as the profile says: OFF", off["statement"][1])
+        on = plan.automatic_rt_correction_record(unpinned, {"answers": {"execute_automatic_rt_correction": True,
+                                                                        "automatic_rt_correction_maximum_anchors": 8}},
+                                                 ["automatic_rt_correction"])
+        self.assertEqual(on["correction"], True)
+        text = "\n".join(on["statement"])
+        self.assertIn("Each unit runs as the profile says: ON", text)
+        self.assertIn("maximum anchors 8 (answers)", text)
+        self.assertIn("fallback OFF: the runner falls back to an uncorrected run only under the campaign policy's pin", text)
+        self.assertIn("Blanks: Interactive's default", text)
+        # A policy recorded before 2026-10-07 differs from the decision, and which fields were overridden is unknown.
+        legacy = {key: value for key, value in policy.CampaignPolicy().as_dict().items() if not key.startswith("automatic_rt")}
+        record = plan.manifest_automatic_rt_correction({"policy": legacy, "profile": None})
+        self.assertEqual((record["pinned"], record["source"], len(record["differs_from_decision"])), (False, "unrecorded", 3))
+        self.assertTrue(record["statement"][0].startswith("  !! AUTOMATIC RT CORRECTION DIFFERS"))
+
+    def test_a_statement_that_does_not_match_the_policy_is_not_approvable(self) -> None:
+        plain = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}
+        manifest = self.pinned(plain)
+        manifest["policy_overrides"] = []
+        manifest["automatic_rt_correction"] = plan.automatic_rt_correction_record(manifest["policy"], plain, [])
+        self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]), [])
+        manifest["policy"]["automatic_rt_correction_maximum_anchors"] = 6
+        problems = plan.approval_problems(manifest, ["1", "3", "4"])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("automatic RT correction statement does not match its policy and profile", problems[0])
 
     def test_a_manifest_approved_before_the_pin_keeps_its_profile(self) -> None:
         legacy = {key: value for key, value in policy.CampaignPolicy().as_dict().items() if not key.startswith("automatic_rt")}

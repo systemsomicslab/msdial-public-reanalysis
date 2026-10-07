@@ -183,9 +183,8 @@ def command_plan(args: argparse.Namespace) -> int:
     if args.resources:
         libraries = ports.load_resources(args.resources)["libraries"]
     profile = json.loads(Path(args.profile).read_text(encoding="utf-8-sig")) if args.profile else None
-    campaign_policy = policy.CampaignPolicy.from_dict(
-        json.loads(Path(args.policy).read_text(encoding="utf-8-sig")) if args.policy else None
-    )
+    overrides = json.loads(Path(args.policy).read_text(encoding="utf-8-sig")) if args.policy else None
+    campaign_policy = policy.CampaignPolicy.from_dict(overrides)
     # The extractor is the newest built pin of Interactive's PINNED_BUILDS unless another is named; either
     # way the plan records what it inspects as, and a build that is not verified and pinned is not approvable.
     extractor = args.extractor or str(ports.default_extractor_path(args.interactive_root))
@@ -213,7 +212,7 @@ def command_plan(args: argparse.Namespace) -> int:
             profile=profile, campaign_policy=campaign_policy,
             class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, args.purpose),
             catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
-            replan=replan, unit_ids=unit_ids,
+            replan=replan, unit_ids=unit_ids, policy_overrides=sorted(overrides or {}),
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
@@ -225,11 +224,18 @@ def command_plan(args: argparse.Namespace) -> int:
     # is approved without it).
     covers = ["1", "3", "4", "split"] + (["5"] if args.retention == "delete_after_validated_output" else [])
     problems = plan.approval_problems(manifest, covers)
+    text = plan.summary_text(manifest, digest)
     ports.write_json_atomic(manifest_path.with_name(manifest_path.stem + ".summary.json"), {
         "manifest_path": str(manifest_path), "manifest_digest": digest, "totals": manifest["totals"],
         "approval_problems": problems, "approval_covers": covers,
+        # The automatic RT correction as the manifest states it, and the text a person approves.
+        "automatic_rt_correction": plan.manifest_automatic_rt_correction(manifest), "summary_text": text,
     })
-    print(plan.summary_text(manifest, digest))
+    print(text)
+    differs = plan.manifest_automatic_rt_correction(manifest)["differs_from_decision"]
+    if differs:
+        print(f"Automatic RT correction differs from the decision of {plan.AUTOMATIC_RT_DECISION_DATE}: "
+              + "; ".join(differs), file=sys.stderr)
     if problems:
         print("Not approvable as it stands: " + "; ".join(problems), file=sys.stderr)
     return EXIT_OK
@@ -848,7 +854,8 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--extractor", help="the raw-metadata extractor to pin")
     plan.add_argument("--resources", help="the git-ignored map of library file names to locations")
     plan.add_argument("--profile", help=f"the shared answers ({'msdial-campaign-profile.v1'})")
-    plan.add_argument("--policy", help="campaign policy overrides (JSON)")
+    plan.add_argument("--policy", help="campaign policy overrides (JSON); the summary names the fields it sets, and says "
+                      "where the automatic RT correction differs from the decision of 2026-10-07")
     plan.add_argument("--out", help="a dry run: write the manifest into this folder instead of the campaign directory, "
                                      "or to this file where the name ends in .json")
     plan.add_argument("--replan-from", action="append", default=[], metavar="CAMPAIGN",
