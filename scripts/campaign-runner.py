@@ -27,7 +27,9 @@ THE ORDER OF USE
         usable report for, the gate. The runner also makes it again at every start and every few hours.
         A unit Interactive's disposition holds (disposition_held: a multi-collision-energy AIF unit waiting for
         a patched Console, the rule of 2026-10-07) is rechecked only when asked: recheck-held --unit KEY, or
-        recheck-held --disposition-held for every such unit, makes its preflight again.
+        recheck-held --disposition-held for every such unit, makes its preflight again, decided for the pinned
+        Console: with Interactive 0.5.34 and a pinned Console that has MsdialWorkbench #825 the unit then runs as
+        AIF (multi_ce_aif_with_console_825).
         Every request is acted on by the runner that holds the campaign; with none running, by the next run.
 
 A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, a failure or a hold stops
@@ -79,6 +81,16 @@ discard records that the part has ended, and its parent's release then goes ahea
 every held part was skipped. A held part that ended otherwise keeps the parent's raw data (kept, waiting for that
 part). Nothing else releases a hold:
 Interactive never discards a held unit without it, and an Interactive that cannot take it leaves the raw data held.
+
+THE PATCHED CONSOLE (MsdialWorkbench #825, Interactive 0.5.34). The preflight is sent the pinned Console's path,
+and Interactive decides a multi-energy AIF unit for it: with #825 the unit runs as AIF under
+multi_ce_aif_with_console_825 (its disposition records aif_multi_ce_run and the probe of that Console), without
+#825 it is held as above. The plan prints which (pins.console.multi_energy_aif) and refuses neither. A recheck that
+releases a held unit writes a disposition_hold_lifted event (what held it, and aif_multi_ce_run), and status
+counts such runs under multi_energy_aif_runs. A unit whose AIF inputs' energies differ, or one with an input whose
+energy is unrecorded, is still held with that Console. A campaign pinned to a Console without #825 cannot take it
+up in place, since a changed pin pauses the campaign: plan a new campaign pinning the #825 Console with
+--replan-from, which takes its disposition_held units again.
 
 THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
 of the approved manifest, naming each library as "library:<file name>" and never by location:
@@ -915,7 +927,8 @@ def parser() -> argparse.ArgumentParser:
     recheck.add_argument("--unit", help="one held unit; every held unit when left out")
     recheck.add_argument("--disposition-held", action="store_true",
                          help="every unit Interactive's disposition holds (disposition_held, a multi-collision-energy "
-                              "AIF unit waiting for a patched Console), in place of the gate- and contract-held units")
+                              "AIF unit waiting for a patched Console, MsdialWorkbench #825), in place of the gate- and "
+                              "contract-held units; each is decided anew for the pinned Console")
     recheck.add_argument("--reason", default="operator recheck of a held unit")
     recheck.add_argument("--by", default="")
     recheck.set_defaults(handler=command_recheck_held)

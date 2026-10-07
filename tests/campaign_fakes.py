@@ -73,7 +73,9 @@ class UnitScript:
     # unit's lease to fetch a shared object, no bytes of its own, then ok)
     downloads: list[str] = field(default_factory=lambda: ["ok"])
     # run, split, skip, exclude, none, malformed; aif_hold (Interactive 0.5.31: a skip with hold true for a
-    # multi-collision-energy AIF unit, aif_multi_ce_awaiting_console)
+    # multi-collision-energy AIF unit, aif_multi_ce_awaiting_console); aif_multi_ce (Interactive 0.5.34: such a unit
+    # decided for the Console the preflight is given, else the saved one (World.saved_console): run as AIF under
+    # multi_ce_aif_with_console_825 where that Console is in World.consoles_825, held as aif_hold otherwise)
     disposition: str = "run"
     # Whether the preflight applies its disposition (a campaign unit, Interactive 0.5.17), and whether
     # classify_preflight then does; held: what disposition_hold holds the unit for, if anything.
@@ -368,9 +370,10 @@ class FakeInteractive:
             self.jobs[job_id]["cancel"] = True
         return {"ok": True, "cancel_requested": True}
 
-    def preflight(self, *, manifest_path: str, extractor_path: str, authorization_path: str) -> dict[str, Any]:
+    def preflight(self, *, manifest_path: str, extractor_path: str, authorization_path: str,
+                  console_path: str = "") -> dict[str, Any]:
         self.calls.append(("preflight", {"manifest_path": manifest_path, "extractor_path": extractor_path,
-                                         "authorization_path": authorization_path}))
+                                         "authorization_path": authorization_path, "console_path": console_path}))
         if self.world.extractor_refused:
             return {"ok": False, "reason": "raw_metadata_extractor_refused", "codes": ["extractor_not_pinned"],
                     "detail": "raw_metadata_extractor_refused [extractor_not_pinned]: not a pinned build."}
@@ -380,6 +383,19 @@ class FakeInteractive:
             # disposition_hold: nothing is read, and the unit keeps whatever disposition it carries.
             return {"completed": False, "extractor_found": True, "preflight_held": {"reason": script.held, "detail": "held"}}
         disposition = script.disposition
+        multi = {}
+        if disposition == "aif_multi_ce":
+            # Interactive 0.5.34: decided for console_path, else the saved setting, and probed for #825.
+            console = (console_path if self.world.preflight_takes_console else "") or self.world.saved_console
+            ready = bool(console) and console in self.world.consoles_825
+            probe = {"capability": "multi_energy_aif_representative_collision_energy", "available": ready,
+                     "console_path": console, "console_source": "argument" if console_path else "setting",
+                     "console_assembly": "MSDIALCUI.exe", "assembly_sha256": SHA["console"] if ready else "",
+                     "probe": "multi_energy_aif_marker" if ready else ("marker_absent" if console else "no_console_configured")}
+            multi = {"multi_energy_aif_console": probe}
+            if ready:
+                multi["aif_multi_ce_run"] = {"collision_energies": [10.0, 20.0], "rule": "multi_ce_aif_with_console_825"}
+            disposition = "run" if ready else "aif_hold"
         hold = disposition == "aif_hold"
         if hold:
             disposition = "skip"
@@ -394,15 +410,17 @@ class FakeInteractive:
                               "provenance_status": "verified", "pinned": True},
                 "applied": script.applied,
                 **({"hold": True} if hold else {}),
+                **multi,
             }
             if disposition == "malformed":
                 record = {"schema": "other", "disposition": "maybe"}
             self._update(manifest_path, lambda manifest: manifest.update(campaign_disposition=record, status="preflight_passed"))
         return {"completed": True, "extractor_found": True, "status": "preflight_passed"}
 
-    def classify(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+    def classify(self, *, manifest_path: str, authorization_path: str, console_path: str = "") -> dict[str, Any]:
         """classify_preflight: the recorded preflight decided again under the approval, and applied."""
-        self.calls.append(("classify", {"manifest_path": manifest_path, "authorization_path": authorization_path}))
+        self.calls.append(("classify", {"manifest_path": manifest_path, "authorization_path": authorization_path,
+                                        "console_path": console_path}))
         unit = self._unit_of_manifest(manifest_path)
         script = self.world.scripts.setdefault(unit, UnitScript())
         if script.classify_applies:
@@ -808,6 +826,13 @@ class World:
         }
         # While set, Interactive refuses every campaign preflight: the extractor is not a verified, pinned build.
         self.extractor_refused = False
+        # The Consoles with MsdialWorkbench #825 (Interactive 0.5.34's probe finds its markers), and the Console
+        # Interactive's saved setting names, which a preflight given no console_path decides for.
+        self.consoles_825: set[str] = set()
+        self.saved_console = ""
+        # While false, a preflight decides for the saved Console whatever console_path it is sent, as Interactive
+        # did for a runner that sent none.
+        self.preflight_takes_console = True
         self.extractor_sha = SHA["extractor"]
         self.instrument_family = "QTOF"
         self.instrument_family_source = "mzml_instrument_configuration"

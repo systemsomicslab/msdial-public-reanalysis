@@ -61,6 +61,15 @@ held), the parent's raw tree is kept, and the parent is reported as waiting for 
 discards a held unit or a held split part without it: a held unit's discard made otherwise keeps its raw data
 (kept), and an Interactive whose discard cannot take the release leaves them held.
 
+THE PATCHED CONSOLE (MsdialWorkbench #825, Interactive 0.5.34). The preflight and classify_preflight are sent the
+pinned Console's path, so Interactive decides a multi-energy AIF unit for the Console that will run it: with #825
+it runs as AIF under policy.AIF_MULTI_CE_RULE (the disposition records aif_multi_ce_run and its probe of the
+Console), without #825 it is held as above. An operator's recheck-held of such a unit, once the campaign's pinned
+Console has #825, therefore brings it through: the preflighted transition and a disposition_hold_lifted event say
+what held it and what now runs it, and status counts it under multi_energy_aif_runs. The gate's ACQ-1 refuses such
+a run where the Console the run manifest records lacks #825. An Interactive before 0.5.34 is not sent the path
+and holds every such unit, as before.
+
 AUTOMATIC RT CORRECTION (decided 2026-10-07). A campaign whose recorded policy pins it
 (policy.automatic_rt_correction_pinned) sends every Console start execute_automatic_rt_correction true and the
 policy's maximum anchors (12), over the profile, as it sends the peak-count targets; the zero-threshold
@@ -145,9 +154,14 @@ DISPOSITION_HELD = ledger_module.DISPOSITION_HELD
 RELEASE_HOLD = "release_disposition_hold"
 DISPOSITION_HELD_WARNING = (
     "held: Interactive's campaign disposition holds this unit (a multi-collision-energy AIF unit waits for a "
-    "patched Console), so it has not run, its raw data are kept and nothing is counted against it. Only an "
-    "operator's recheck-held for the unit makes its preflight again; nothing rechecks it by itself"
+    "patched Console, one with MsdialWorkbench#825, or its AIF inputs' collision energies differ or are "
+    "unrecorded), so it has "
+    "not run, its raw data are kept and nothing is counted against it. Only an operator's recheck-held for the "
+    "unit makes its preflight again, decided for the pinned Console; nothing rechecks it by itself"
 )
+# The event a recheck writes when a unit Interactive's disposition held is decided anew and no longer held (with
+# Interactive 0.5.34 and a pinned Console that has #825, a multi-energy AIF unit then runs as AIF).
+DISPOSITION_HOLD_LIFTED = "disposition_hold_lifted"
 
 
 @dataclass
@@ -1390,8 +1404,12 @@ class Runner:
         """The raw-header preflight; then Interactive's campaign_disposition says what the unit does."""
         extractor = str((self.pins.get("extractor") or {}).get("path") or "")
         attempt = self.ledger.open_attempt(unit["unit_key"], "preflight", self.stamp(), tool="msdial_repository_raw_metadata_preflight")
+        # The pinned Console, the one that will run the unit: Interactive 0.5.34 decides a multi-energy AIF unit
+        # for it (run as AIF with MsdialWorkbench #825, held without).
+        console = str((self.pins.get("console") or {}).get("path") or "")
         result = self.ports.interactive.preflight(
-            manifest_path=unit["manifest_path"], extractor_path=extractor, authorization_path=self._authorization(unit)
+            manifest_path=unit["manifest_path"], extractor_path=extractor, authorization_path=self._authorization(unit),
+            console_path=console,
         )
         if result.get("ok") is False:
             # An extractor Interactive refuses as unverified or unpinned (0.5.17) is no failure of this unit:
@@ -1417,7 +1435,8 @@ class Runner:
                 # Recorded as advice (the unit was no campaign unit as it was decided): classify_preflight
                 # decides it again under the approval and applies it, without reading a header again.
                 classified = self.ports.interactive.classify(
-                    manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit)
+                    manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+                    console_path=console,
                 )
                 if classified.get("ok") is False:
                     self._fail(unit, step="classify", result=classified, retry_state="downloaded", attempt_id=attempt)
@@ -1456,9 +1475,22 @@ class Runner:
             )
         record = disposition.as_dict()
         close = (attempt, "ok", False, {"disposition": disposition.disposition, "reasons": list(disposition.reasons),
-                                        "warnings": list(disposition.warnings)})
+                                        "warnings": list(disposition.warnings),
+                                        **({"aif_multi_ce_run": dict(disposition.aif_multi_ce_run)}
+                                           if disposition.aif_multi_ce_run is not None else {})})
         if disposition.held:
             return self._disposition_hold(unit, record, close)
+        if _held_by_disposition(unit):
+            # A recheck of a unit Interactive's disposition held, decided anew and no longer held: say what held
+            # it and what now sends it on (for a multi-energy AIF unit, #825 in the pinned Console).
+            probe = disposition.multi_energy_aif_console or {}
+            self._event(DISPOSITION_HOLD_LIFTED, {
+                "held_for": list(_loads(unit.get("disposition_json")).get("reasons") or []),
+                "disposition": disposition.disposition,
+                "aif_multi_ce_run": disposition.aif_multi_ce_run,
+                "console_multi_energy_aif": ({key: probe.get(key) for key in ("available", "probe", "assembly_sha256")}
+                                             if probe else None),
+            }, unit["unit_key"])
         if disposition.disposition == "run":
             self._move(unit, "preflighted", disposition_json=json.dumps(record, sort_keys=True), close_attempt=close)
         elif disposition.disposition == "split":
@@ -1483,7 +1515,9 @@ class Runner:
             unit, DISPOSITION_HELD, resume_state="downloaded", next_attempt_at=None,
             disposition_json=json.dumps(dict(record), sort_keys=True),
             detail={DISPOSITION_HELD: ", ".join(reasons) or "hold", "awaiting": policy.HOLD_FOR_CONSOLE
-                    if policy.HOLD_FOR_CONSOLE in reasons else None},
+                    if policy.HOLD_FOR_CONSOLE in reasons else None,
+                    **({"console_multi_energy_aif": record["multi_energy_aif_console"].get("probe")}
+                       if isinstance(record.get("multi_energy_aif_console"), Mapping) else {})},
             close_attempt=close,
         )
         self._event(DISPOSITION_HELD, {"reasons": reasons, "warning": DISPOSITION_HELD_WARNING}, unit["unit_key"])
@@ -2747,6 +2781,8 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     for unit in disposition_held:
         for code in _loads(unit.get("disposition_json")).get("reasons") or ["unrecorded"]:
             held_for[str(code)] = held_for.get(str(code), 0) + 1
+    # Decided to run as multi-energy AIF with a Console that has MsdialWorkbench #825 (Interactive 0.5.34).
+    multi_energy = [unit for unit in units if isinstance(_loads(unit.get("disposition_json")).get("aif_multi_ce_run"), dict)]
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
@@ -2771,6 +2807,9 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
                              "reasons": dict(sorted(held_for.items())),
                              "recheck_asked": sum(1 for unit in disposition_held if unit["next_attempt_at"]),
                              "warning": DISPOSITION_HELD_WARNING if disposition_held else None},
+        # Run as multi-energy AIF under policy.AIF_MULTI_CE_RULE: their disposition records aif_multi_ce_run.
+        "multi_energy_aif_runs": {"units": len(multi_energy), "unit_keys": [unit["unit_key"] for unit in multi_energy],
+                                  "rule": policy.AIF_MULTI_CE_RULE},
         # The pause in force, named: one of the four pauses of the whole campaign, each lifting by itself, or
         # an operator's own (or a contract pause an earlier runner left), which waits for an operator's resume.
         "paused": {"kind": runner["pause_kind"], "name": policy.pause_name(runner["pause_kind"]),
