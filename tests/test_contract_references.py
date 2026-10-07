@@ -45,6 +45,13 @@ contract also says that the backend pause covers every call, the diagnostic's es
 poll; that an unreadable poll is never taken for a lost job, the unit waiting for its Console and then held
 at that poll; and that a unit whose Catalog record the plan cannot read is never excluded for ion mobility
 on the plan's own row.
+
+The decisions of 2026-10-06 to 2026-10-08 are recorded in the trial manifest and quoted in the contract in the
+user's words: the lower-end threshold, header-first acquisition (rule B2), inferred pairings on record, AIF by its
+collision energies, automatic RT correction, the local production Console, no Catalog recrawl, and merges left to
+Claude. PAIR-1 joined record_only on 2026-10-06 as the agent's reading of the pairing decision, and the manifest and
+the contract both say so; the lists are otherwise those of 2026-10-02. A unit Interactive's disposition holds
+(disposition_held) is stated as the operator's skip releases it.
 """
 
 from __future__ import annotations
@@ -106,6 +113,11 @@ _DECIDED_2026_10_02 = {
     "blocks_run": {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1"},
     "record_only": {"CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1", "PRE-1"},
 }
+# PAIR-1 came with the user's decision of 2026-10-06 that every inferred name pairing be kept on record. Its place
+# in record_only is the agent's reading of that decision (gate #31), recorded as such in the trial manifest and
+# stated as such in the contract, which the user has not yet been asked to confirm.
+_PLACED_2026_10_06 = {"record_only": {"PAIR-1"}}
+_DECIDED_NOW = {name: checks | _PLACED_2026_10_06.get(name, set()) for name, checks in _DECIDED_2026_10_02.items()}
 # The paragraph of the gate rule that names the before-production checks the user placed in neither
 # list: none since 2026-10-02, and any the gate adds until the user places it.
 _NEITHER_LIST = "**In neither list.**"
@@ -158,6 +170,34 @@ _DECIDED_CASES = {
         "did not object to on 2026-10-03", "declares one polarity", "opposite polarity", "record none",
         "excluded with its reason recorded", "the rest of the unit runs", "not given the declared one",
     )),
+    # Settled on 2026-10-06 and 2026-10-07.
+    "acquisition, header first": (_SCOPE_SECTION, "- **Acquisition, header first (rule B2).**", (
+        "2026-10-06", "the header decides", "keyword inference", "not a probability", "is excluded with its reason",
+        "not folded into a DDA run", "ACQ-1 FAILs",
+    )),
+    "AIF": (_SCOPE_SECTION, "- **AIF.**", (
+        "2026-10-07", "it runs as SWATH", "MsdialWorkbench #825", "same energies", "raw data kept",
+        "`aif_multi_ce_awaiting_console`", "`aif_collision_energies_differ_between_inputs`",
+        "`aif_collision_energy_unrecorded`",
+    )),
+    "held by Interactive": (_GATE_RULE_SECTION, "**Held by Interactive.**", (
+        "`disposition_held`", "raw data kept", "counted neither as a retry nor as a failure",
+        "not rechecked by itself", "keeps no runner going", "operator's `skip`", "`operator_skip`",
+        "every held part",
+    )),
+}
+# The user's own words for the decisions of 2026-10-06 to 2026-10-08, which the contract quotes and the trial
+# manifest records.
+_WORDS_2026_10_06_TO_08 = {
+    "2026-10-06": ("High qualityのMS2を取りたい",
+                   "必ず記録として残してください"),
+    "2026-10-07": ("無理やりにでも",
+                   "まだ公開しませんし、大丈夫です",
+                   "マージについては、お任せできますか",
+                   "12で確認解析を回してください。#826の"
+                   "マージもOKです。",
+                   "推奨でお願いします"),
+    "2026-10-08": ("再クロールは必要ないです！",),
 }
 # What the trial manifest's 2026-10-03 decision says, and the user's answer verbatim.
 _DECISION_2026_10_03_SAYS = (
@@ -488,10 +528,21 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertEqual(gate[name], lists[name], "the contract's list is the gate's RUN_POLICY's")
 
     def test_the_lists_are_the_ones_the_user_gave_on_2026_10_02(self) -> None:
-        self.assertEqual(_DECIDED_2026_10_02, self._decided())
-        self.assertEqual(_DECIDED_2026_10_02, _gate_run_policy())
-        self.assertEqual(set(self.stages["before-production"]), set().union(*_DECIDED_2026_10_02.values()),
+        # With PAIR-1, placed on 2026-10-06 as the reading of the user's pairing decision, and nothing else.
+        self.assertEqual(_DECIDED_NOW, self._decided())
+        self.assertEqual(_DECIDED_NOW, _gate_run_policy())
+        self.assertEqual(set(self.stages["before-production"]), set().union(*_DECIDED_NOW.values()),
                          "every before-production check the gate runs is placed")
+        entry = _latest_list_decision(_trial_decisions())
+        self.assertEqual("2026-10-06", entry["at"])
+        self.assertIn("not yet put to the user", entry.get("state", ""), "PAIR-1's place is a reading, said as such")
+
+    def test_pair1s_place_is_stated_as_a_reading_of_the_users_decision(self) -> None:
+        rule = " ".join(_section(self.contract, _GATE_RULE_SECTION).split())
+        for phrase in ("PAIR-1 came with the decision of 2026-10-06", "the reading of that decision",
+                       "has not been asked to confirm"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, rule)
 
     def test_the_batch_skill_gives_the_same_lists(self) -> None:
         skill = (_ROOT / _BATCH_SKILL).read_text(encoding="utf-8")
@@ -619,7 +670,9 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("no report:") for item in _case_problems(marked)))
 
     def test_the_latest_decision_settles_the_cases_in_the_users_words(self) -> None:
-        decision = str(_latest_list_decision(_trial_decisions())["decision"])
+        # The user's latest decision that placed checks, 2026-10-02; the entry of 2026-10-06 is the agent's reading.
+        decision = str(_latest_list_decision([entry for entry in _trial_decisions()
+                                              if str(entry.get("by", "")).startswith("user")])["decision"])
         for phrase in _DECISION_SAYS:
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, decision)
@@ -632,6 +685,25 @@ class ContractGateChecksTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, decision)
         self.assertFalse(any(f"({name})" in decision for name in _GATE_LISTS), "it moves no check between the lists")
+
+    def test_the_decisions_of_2026_10_06_to_08_are_recorded_and_quoted_in_the_users_words(self) -> None:
+        decisions = _trial_decisions()
+        for day, words in _WORDS_2026_10_06_TO_08.items():
+            entries = [entry for entry in decisions
+                       if str(entry.get("at", "")).startswith(day) and str(entry.get("by", "")).startswith("user")]
+            self.assertEqual(1, len(entries), day)
+            for phrase in words:
+                with self.subTest(day=day, phrase=phrase):
+                    self.assertIn(phrase, str(entries[0]["decision"]))
+                    self.assertIn(phrase, self.contract)
+
+    def test_the_rule_the_user_replaced_is_not_stated_as_standing(self) -> None:
+        """On 2026-10-06 the user merged the pull requests; on 2026-10-07 the user left merges to Claude. The
+        approval-taking discard has been on Interactive main since 0.5.22."""
+        merges = " ".join(_section(self.contract, "## Merges").split())
+        self.assertIn("replaces the rule of 2026-10-06 that the user merges", merges)
+        self.assertIn("still takes the user's explicit OK", merges)
+        self.assertNotIn("It is not on Interactive main yet", self.contract)
 
     def test_a_unit_flagged_by_its_studys_text_alone_is_not_stated_as_excluded(self) -> None:
         """Before 2026-10-03 the contract excluded ion-mobility data "whether the repository or the raw headers

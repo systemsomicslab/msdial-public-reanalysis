@@ -34,7 +34,10 @@ For a repository range:
    If acquisition is unknown, require raw-header preflight; never guess DDA.
    The preflight reads the headers with the raw-metadata extractor, which a
    campaign pins, and a unit whose mode is still unknown after it is not run.
-   In a campaign, a unit the repository does not declare runs without the
+   In a campaign the header decides even where the repository declares a mode
+   (rule B2, 2026-10-06): the declaration is the Catalog's keyword inference,
+   and the extractor's `confidence` is a constant per heuristic branch, not a
+   probability. A unit runs without the
    files whose header left the mode unknown: its `campaign_disposition` lists
    each in `excluded_inputs` with the reason (`acquisition_unresolved`, or
    `raw_header_unreadable` or `raw_header_unsupported_format` for a header no
@@ -43,8 +46,12 @@ For a repository range:
    `acquisition_type` takes that input's `console_acquisition_type` (DDA,
    SWATH or AIF) and no other, and a mode the repository declared is written
    as DDA, SWATH or AIF, never DIA: the Console silently turns any value it
-   cannot parse into DDA. An AIF file whose collision-energy target list is
-   empty gets a recorded warning and still runs. Ion-mobility data are
+   cannot parse into DDA. AIF goes by the energies its inputs record
+   (`CLAUDE.md`, Supported production scope, 2026-10-07): one energy runs as
+   SWATH; several run as AIF only on a Console with MsdialWorkbench #825 and
+   the same energies in every input; otherwise, and where no energy is
+   recorded, the unit is held (`disposition_held`) with its raw data kept.
+   Ion-mobility data are
    excluded, with the reason recorded (LC-MS only), and a unit counts as ion
    mobility only on its own evidence (option A, 2026-10-03; `CLAUDE.md`,
    Supported production scope): its rows or assay fields, such as an
@@ -77,10 +84,8 @@ For a repository range:
    polarity: nothing is imputed to it (the runner's default, which the user did
    not object to on 2026-10-03). mzData stays
    `requires_conversion` and excludes the unit: there is no reader and no
-   converter for it. Interactive main (0.5.19) takes neither a folder nor a
-   converted mzXML yet: it refuses a folder input with the production Console,
-   and it still excludes an mzXML unit at eligibility, before download,
-   because the lease does not run the converter.
+   converter for it. Interactive has taken folder inputs since 0.5.20 and
+   converts a campaign unit's mzXML since 0.5.21.
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
@@ -104,8 +109,8 @@ For a repository range:
    extracts zip, tar, `.7z`, `.rar`, bare `.gz` and `.lzma` objects and records
    each extraction with its member listing (`archive_extractions`). An object
    that several units list is to be fetched once, into the accession's download
-   store `_dl`, with each unit reading its own tree of it; the lease does not
-   use the store yet.
+   store `_dl`, with each unit reading its own tree of it; a campaign's lease
+   has done so since Interactive 0.5.23.
    When raw-header preflight reports `Mixed`, the unit holds more than one
    acquisition mode and cannot run as one. Preview `msdial_split_repository_unit`
    with `confirmed=false`, show the parts, and split only on an explicit
@@ -154,7 +159,8 @@ For a repository range:
    ID-1, PRE-2 and CONV-1), and so does one of them left `not_evaluable` where
    it is required: the unit is then a failed unit, retried and its raw data
    deleted as the campaign's rule for one says. A FAIL in a `record_only` check
-   (CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1 and PRE-1, which never FAILs) is
+   (CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1, PAIR-1 and PRE-1, which never
+   FAILs) is
    recorded, and the unit runs, as it does past a check left `not_evaluable`
    where it is not required. A gate that gives no usable report holds the unit
    unrun, its raw data kept and nothing counted, until a recheck gives one; the
@@ -272,25 +278,20 @@ Server-side state on `msdial_interactive_app` `main`:
   are moved into `output\msdial-intermediates` and its
   `<project>_Loaded.msp2.dbs` is deleted when the run is finalised; a container
   that could not be moved is recorded in `finalisation_holds` and holds the
-  deletion. Three parts of the campaign's deletion rule have no approval-taking
-  entry point on main yet. `discard_download_lease`, which releases a failed,
-  skipped or excluded unit's raw data, takes only `confirmed`. The runner is to
-  use its approval-taking form, which checks boundary 5 and records the
-  crossing itself; until that lands, calling it with `confirmed=true` after
+  deletion. Since Interactive 0.5.22, `discard_download_lease`, which releases
+  a failed, skipped or excluded unit's raw data, takes the campaign approval
+  too: it checks boundary 5 and records the crossing itself, and it accepts a
+  failed unit whose output holds an mzTab-M, keeping that mzTab-M as a failure
+  artifact. A split parent's raw tree, which its parts share, is released once
+  every part has ended. With an Interactive that lacks the approval-taking
+  discard, calling it with `confirmed=true` after
   `campaign_authorization.authorize` has accepted boundary 5 for the unit and
   the crossing is recorded in the unit's manifest is a fallback that waits for
   the user's approval, made only where the approved manifest's policy states
   `confirmed_discard_fallback: true` (`CLAUDE.md`, Raw-data deletion in a
-  campaign); without it those raw data stay. The discard on main also refuses
-  any unit whose output holds an mzTab-M, and cleanup accepts only a validated
-  run, so neither can delete the raw data of a failed unit whose mzTab-M did
-  not validate, or whose run left one while missing another planned export:
-  those raw data stay, with the refusal recorded as the reason, until the
-  approval-taking discard accepts such a unit and keeps its mzTab-M as a
-  failure artifact. A split unit cannot be cleaned up: its parts share the
-  parent's raw tree, which lies outside a part's workspace, and the parent is
-  not a completed run, so the tool refuses both, and its raw data stay until
-  split-parent release exists.
+  campaign); without it those raw data stay. A unit Interactive's disposition
+  holds is never discarded unless an operator's skip passes
+  `release_disposition_hold`.
 - A unit whose manifest says `execution_allowed` is not true is refused before
   MS-DIAL starts, and so is a workflow whose polarity, output directory or input
   set disagrees with the manifest.
@@ -314,8 +315,9 @@ makes that check itself wherever it takes the approval. The Catalog checks only
 a ratification's form, never the approval it names or the unit it is for, so
 the runner validates boundary 3 for the unit before every Class save. The
 discard of a failed, skipped or excluded unit goes through Interactive's
-approval-taking discard; until that lands, the runner's `confirmed=true` call
-after the same validation for boundary 5 is a fallback that waits for the
+approval-taking discard; with an Interactive that lacks it, the runner's
+`confirmed=true` call after the same validation for boundary 5 is a fallback
+that waits for the
 user's approval, and the runner makes it only where the approved manifest's
 policy states `confirmed_discard_fallback: true`. The runner never records a
 reading (boundary 6). It decides no eligibility: it reads the unit's

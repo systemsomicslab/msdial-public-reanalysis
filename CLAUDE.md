@@ -93,14 +93,37 @@ location.
 - This public-repository campaign accepts LC-MS/MS only.
 - Acquisition must be untargeted DDA or DIA/AIF/SWATH with an MS1 survey and
   product-ion spectra.
-- In a campaign, where the repository record does not declare a unit's
-  acquisition, it is read from each file's raw header with the raw-metadata
-  extractor the campaign pins, and a unit whose acquisition is still unknown
-  after that does not run. In such a unit, a file whose header leaves its
-  acquisition unknown is excluded with its reason recorded, and the rest of
-  the unit runs; a unit with no file left does not run. Interactive's
-  `classify_preflight` applies this as the unit's `campaign_disposition`,
-  which lists each excluded input with its reason.
+- **Acquisition, header first (rule B2).** The user decided it on 2026-10-06.
+  In a campaign, each file's acquisition is read from its raw header with the
+  raw-metadata extractor the campaign pins, and the header decides. A header
+  verdict with product-ion spectra (DDA, DIA, AIF or SWATH) wins over the
+  repository's declaration, which is only the Catalog's keyword inference from
+  the record's text. The extractor's `confidence` is no reason to set a verdict
+  aside: it is a constant for each heuristic branch, not a probability. A file
+  whose header leaves its acquisition unknown is excluded with its reason
+  recorded, and the rest of the unit runs; a unit with no file left does not
+  run. In a unit declared DIA, AIF or SWATH, an MS1-only file is not folded
+  into a DDA run. ACQ-1 FAILs a row run as another type than its header gives
+  (Interactive #62, gate #31). Interactive's `classify_preflight` applies this
+  as the unit's `campaign_disposition`, which lists each excluded input with
+  its reason.
+- **AIF.** The user decided it on 2026-10-07. An AIF unit is judged by the MS2
+  collision energies its inputs record (a Waters LockSpray reference function
+  records none, msrawdataworkbench #43). With one energy it runs as SWATH
+  (`single_ce_aif_as_swath_2026_10_07`), whatever the Console: the user's
+  proposal of 2026-10-06, adopted once the kept pilot data (ST004304,
+  MTBKS281) gave the same results. With more than one, the user held the unit
+  until a patched Console; it runs as AIF only on a Console that has
+  MsdialWorkbench #825, which deconvolutes each energy and represents a peak by
+  the energy of its MS/MS reference match, else by the energy with the most
+  product ions (the user's choice), and only when every input records the same
+  energies, since #825 chooses among one file's energies, never across files.
+  Otherwise the unit is held, its raw data kept: on a Console without
+  #825 (`aif_multi_ce_awaiting_console`), where the inputs' energies differ
+  (`aif_collision_energies_differ_between_inputs`), and where they record none
+  (`aif_collision_energy_unrecorded`), which the warning of 2026-09-30 for an
+  empty energy list no longer lets run. Interactive #64 and #67 and gate #32
+  and #34 implement it; Gate verdicts in a campaign says how a held unit ends.
 - mzML is supported, and so is a vendor folder: a Waters `.raw`, or an Agilent
   or Bruker `.d` directory, or an archive holding one. A folder is one data
   file, one input and one row of the analysis CSV, which is generated from the
@@ -193,15 +216,54 @@ QA, and reporting decisions. Do not proceed to download while it is missing.
 For production repository runs, use the zero-threshold diagnostic before the
 main run. Select a QC nearest the analytical-order midpoint, or a non-blank
 sample nearest that midpoint when no QC exists. Set Minimum peak height to keep
-approximately 3,000-6,000 peaks, using 100-unit steps for QTOF-type data and
-1,000-unit steps for Fourier-transform data. Keep 0 when the diagnostic count is
-at most 6,000. Use `TimeBasedLinearWeightedMovingAverage` and retain the method,
-representative sample, diagnostic count, threshold step, and accepted threshold
-in provenance.
+approximately 3,000-6,000 peaks, and aim for the lower end of that range: the
+highest threshold whose estimated count is still at least 3,000 (the user's
+decision of 2026-10-06, "High qualityのMS2を取りたい"; gap-filling recovers
+peaks below the threshold). Search in the instrument family's step, 100 for
+QTOF-type data and 1,000 for Fourier-transform data, the family read from the
+file before the repository's text. Only when the diagnostic count is above
+6,000 and no step of the family lands in the range, fall back to 10 (for
+Fourier-transform data, 100), never finer, and record the fallback and its
+reason. Keep 0 when the diagnostic count is at most 6,000. Use
+`TimeBasedLinearWeightedMovingAverage` and retain the method, representative
+sample, diagnostic count, threshold step, any fallback, accepted threshold and
+the production run's own peak counts in provenance: in the first pilot,
+production kept 61-88% of the diagnostic's estimate. Interactive #61 implements
+the step rule, and #59 runs the diagnostic without annotation libraries, which
+leaves its count unchanged; PKH-1 holds the step and its floor (gate #31).
+
+In a campaign, automatic alignment RT correction is on: MsdialWorkbench #826's
+local outlier test at its default window of 1.5 min, with 12 anchors (the
+user's decision of 2026-10-07, "12で確認解析を回してください。#826のマージもOKです。",
+after an evaluation on MTBLS417 and confirmatory runs on MTBKS236 and
+MTBKS217). The runner sends it to every Console start, and a manifest whose
+profile says otherwise, or whose Console lacks #826's local test, is not
+approvable (Interactive #65, gate #33). Two defaults the user accepted as
+recommended on 2026-10-07 ("推奨でお願いします"): when the Console cannot
+select anchors and exits before alignment, the unit's later attempts run
+uncorrected, on record (`automatic_rt_correction_fallback`); and a Blank is
+interpolated by analytical order only where that order is recorded, from the
+raw headers' start times or the repository's sample table, and otherwise keeps
+its measured RTs. The zero-threshold diagnostic never corrects.
 
 For Class proposals, include one assignment per sample, selected source fields,
 the intended contrast, rationale, and warnings about confounding or missingness.
 Do not use continuous fields merely because they are available.
+
+A sample row is paired with its raw file by its exact name, by that name behind
+a prefix, or, since the user's decision of 2026-10-06, by a leading identifier
+token that matches exactly one file (`VV_13` with `VV_13_..._exp344`). Every
+pairing not made by the exact name is an inference, and the user asked that
+each be kept on record ("必ず記録として残してください"): the input lineage
+records how each input was paired (`name_pairing.paired_by`), and PAIR-1 lists
+every inferred pairing (Interactive #58, gate #31). For ST001264, where 3 of 31
+rows paired, the user asked on 2026-10-07 that the unit be analysed
+"無理やりにでも". The rule that does it was the agent's proposal: in a unit
+whose download is its own alone, an archive member that no row pairs with is an
+input all the same (`unattributed_member`), in the abstention's Class or
+`Unattributed`, on record. The members of an archive shared with other units
+are left out, on record, and INP-1 FAILs any that reach a run (Interactive #64,
+gate #32).
 
 Where the Catalog abstains because no declared factor groups the samples, do not
 build Class from other columns. Show the abstention preview
@@ -244,6 +306,9 @@ A pilot is such a manifest of named units (`scripts/campaign-runner.py plan
 --units`), drawn from both pools, each held to its own pool's rules and
 recorded with it. The user started one on 2026-10-03, 15 units with their raw
 data kept, so its approval covers boundaries 1, 3 and 4 and the split, never 5.
+A pilot run again on the software of 2026-10-08 is a new manifest with its own
+approval; the first pilot's profile, which turned RT correction off, is no
+longer approvable (Evidence and decisions).
 
 Interactive checks the record at each boundary it guards and writes the
 crossing into the unit's manifest. The Catalog does not read the record: it
@@ -259,6 +324,16 @@ any pin pauses the campaign until a new approval is recorded. The gate is
 pinned by this repository's commit and a clean tree, so any commit here pauses
 a running campaign too, one that changes only this contract or records a
 decision in the trial manifest included.
+
+The production Console is a local build that is never published: MsdialWorkbench
+master with #825 and #826, and a local, unobfuscated RawDataHandler 1.3.9776.346
+built from msrawdataworkbench master with #42 and #43 (the user, 2026-10-07:
+"まだ公開しませんし、大丈夫です"). The raw-metadata extractor is the build of
+msrawdataworkbench 5f60446 (Interactive #68, gate #35); on 21 real files its
+verdicts equal those of the a12293c61 build it replaces. Each is pinned by its
+sha256, never by its location. The campaign plans on
+the Catalog as last crawled, on 2026-09-21 and 2026-09-22, and no crawl is
+started unless the user asks (2026-10-08: "再クロールは必要ないです！").
 
 Outside a campaign, an accepted raw-retention policy records intent but is not
 deletion approval. Preview `msdial_cleanup_repository_raw` and obtain a
@@ -291,11 +366,12 @@ which takes the approval itself. The other two go through Interactive's
 approval-taking discard: `discard_download_lease` given the campaign approval,
 as cleanup is given it, which checks boundary 5 for the unit and records the
 crossing in the unit's manifest before it deletes anything. The runner uses
-that discard and passes it no `confirmed=true`. It is not on Interactive main
-yet, where the discard takes only `confirmed`.
+that discard and passes it no `confirmed=true`. Interactive has had it since
+0.5.22.
 
-**Fallback, awaiting the user's approval.** Until the approval-taking discard
-lands, the runner may call the discard with `confirmed=true`, but only in a
+**Fallback, awaiting the user's approval.** With an Interactive that lacks
+the approval-taking discard, the runner may call the discard with
+`confirmed=true`, but only in a
 campaign whose approved manifest states `confirmed_discard_fallback: true` in
 its policy, and only after `campaign_authorization.authorize` has accepted
 boundary 5 for that unit and the crossing is recorded in the unit's manifest.
@@ -304,20 +380,22 @@ covers the manifest's policy, so approving a manifest that states it approves
 the fallback for that campaign, and a session that asks for the approval names
 the field and its value. The field is absent, or false, unless the user asks
 for it, and then the runner never makes that call: the raw data of a failed,
-skipped or excluded unit stay until the discard lands, with the reason
+skipped or excluded unit stay, with the reason
 recorded in the unit's failure record and its bytes counted against the disk
-budget. Either way the fallback ends when the discard lands.
+budget. Either way the runner never makes that call where Interactive's
+discard takes the approval.
 
 For a failed unit whose output holds an mzTab-M, because the mzTab-M did not
 validate or because the run missed another planned export, the deletion rule
 wins: once its retries are spent its raw tree is discarded, and the mzTab-M,
 its validation and whatever else the run left in `output` are kept as the
-failure record's artifacts. The approval-taking discard is to accept such a
-unit; the discard on main refuses any unit whose output holds an mzTab-M, and
-cleanup accepts only a validated run. Until a discard accepts it, its raw data
-stay, the refusal is recorded as the reason in its failure record, and its
-bytes count against the disk budget. The runner never works around the guard,
-by deleting the mzTab-M or the raw tree itself.
+failure record's artifacts. The approval-taking discard accepts such a unit
+and keeps them (`failure_artifacts`); the `confirmed=true` discard refuses
+any unit whose output holds an mzTab-M, and cleanup accepts only a validated
+run. Where no discard accepts it, its raw data stay, the refusal is recorded as
+the reason in its failure record, and its bytes count against the disk budget.
+The runner never works around the guard, by deleting the mzTab-M or the raw
+tree itself.
 
 Every guard Interactive puts on a deletion still applies, the retained-artifact
 inventory a finished run's cleanup requires included. Before a finished run's
@@ -337,17 +415,22 @@ The runner runs the gate at each of its points and keeps every report for the
 verification that follows the campaign. No verdict holds the raw-data
 deletion. Which `before-production` FAILs stop a unit's MS-DIAL run is the
 user's decision. The rule of 2026-10-01 stops a run only for a FAIL that breaks
-the results, and on 2026-10-02 the user placed every check in one of two lists:
+the results, and on 2026-10-02 the user placed every check the gate then ran
+in one of two lists (PAIR-1, added on 2026-10-06, is placed below):
 
 - `blocks_run`: ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1. A
   FAIL in one of them breaks the results, so it stops the run, and the unit is
   a failed unit under the deletion rule: it is retried twice, and its raw data
   are then deleted.
-- `record_only`: CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1 and PRE-1. A FAIL in
-  one of them is recorded with the unit, and the unit runs. Its raw data then go
-  once its outputs are present and its mzTab-M validates, so a Class, grouping,
-  order, threshold or split-coverage error it carries is corrected only from a
-  new download. PRE-1 never FAILs: it reports PASS, WARN or not_evaluable.
+- `record_only`: CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1, PAIR-1 and PRE-1. A
+  FAIL in one of them is recorded with the unit, and the unit runs. Its raw data
+  then go once its outputs are present and its mzTab-M validates, so a Class,
+  grouping, order, threshold or split-coverage error it carries is corrected
+  only from a new download. PRE-1 never FAILs: it reports PASS, WARN or
+  not_evaluable. PAIR-1 came with the decision of 2026-10-06 that every
+  inferred name pairing be kept on record; the gate placed it here as the
+  reading of that decision (gate #31), which the user has not been asked to
+  confirm.
 
 The gate states each check's list as its `run_policy`, and the runner holds
 the `blocks_run` list itself, whatever a report states.
@@ -415,6 +498,19 @@ Interactive cannot make as called leaves that unit's raw data held, looked at
 again at each start and every few hours, and the unit ends as it was going
 to.
 
+**Held by Interactive.** A unit whose `campaign_disposition` holds it (the AIF
+holds, Supported production scope) is `disposition_held`: not run, its raw
+data kept, counted neither as a retry nor as a failure, and named apart in the
+status export. Unlike `gate_held` and `contract_held` it is not rechecked by
+itself and keeps no runner going. `recheck-held --unit` or `recheck-held
+--disposition-held` makes its preflight again, which runs it where the pinned
+Console now allows; a campaign pinned to another Console takes it again only as
+a new manifest (`plan --replan-from`). Otherwise only an operator's `skip`
+releases the hold, and its discard records `disposition_hold_released_by`
+`operator_skip` before deleting the raw data; a split parent's raw data go
+only once every held part has been skipped so (gate #32 and #34, Interactive
+#64).
+
 The gate lifts none of Interactive's own refusals: a unit Interactive refuses
 to start does not run, whatever the gate said.
 
@@ -458,6 +554,18 @@ repository/publication metadata, reviewed sample metadata, analysis CSV,
 parameter file, command, software versions, logs, checksums, MS-DIAL text
 outputs, mzTab-M validation, QA status, publication artifacts when requested,
 and a failure record when unsuccessful.
+
+## Merges
+
+Since 2026-10-07 the user has left the merging of the campaign's pull requests
+(this repository, Interactive, the Catalog, msrawdataworkbench) to Claude, once
+a review comes back clean and the change is validated
+("マージについては、お任せできますか"; for msrawdataworkbench,
+"PR/Mergeはお願いします"). This replaces the rule of 2026-10-06 that the user
+merges. A merge into MsdialWorkbench master still takes the user's explicit
+OK, as #825 and #826 each had, and this amendment merges only once the user
+has approved its wording. A merge here changes the gate pin and pauses a
+running campaign (Confirmation boundaries).
 
 ## Feedback to Codex
 
