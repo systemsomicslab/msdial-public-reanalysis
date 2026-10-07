@@ -820,6 +820,10 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
             "Interactive's default of 6 anchors": ({"answers": {"automatic_rt_correction_maximum_anchors": 6}}, "pins 12"),
             "the anchor-library correction": ({"answers": {"execute_rt_correction": True}}, "the automatic correction alone"),
             "the run-wide test only": ({"answers": {"automatic_rt_correction_local_support_rt_window": 0}}, "default window of 1.5 min"),
+            # The runner sets Blank interpolation for each unit from its recorded order, whatever the profile says.
+            "Blank interpolation": (
+                {"answers": {"automatic_rt_correction_interpolate_blanks_by_analytical_order": True}},
+                "the runner sets it for each unit"),
         }
         for name, (parts, words) in cases.items():
             with self.subTest(name):

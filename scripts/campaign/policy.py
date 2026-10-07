@@ -985,12 +985,39 @@ AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW = 1.5
 # The line the Console writes when it could not select anchors (LcmsProcess: "Automatic alignment RT correction
 # failed: <reason>", then exit -1); Interactive keeps the Console's output in the job's log.
 AUTOMATIC_RT_FAILED_LINE = "Automatic alignment RT correction failed"
+# Blank files have no anchors of their own. With the answer below true (Interactive's default) the Console gives
+# each Blank a model interpolated between the non-Blank files beside it in the analytical order; false, a Blank
+# keeps its measured RTs (audit status BlankNotCorrected). The runner sends it per unit, true only where the order
+# the analysis CSV carries is one an injection sequence was recorded in: the acquisition start times of the raw
+# headers, or the order the repository's sample table declares (the two the gate's ORD-2 accepts). An order read
+# out of the file names or the listing, or one nobody recorded, is no injection order (decided 2026-09-29), and a
+# Blank model resting on it would be a guess the run's outputs could not show.
+AUTOMATIC_RT_BLANK_ANSWER = "automatic_rt_correction_interpolate_blanks_by_analytical_order"
+HEADER_ORDER_SOURCE = "raw_header_acquisition_start_time"
+DECLARED_ORDER_SOURCE = "repository_sample_table"
+AUTOMATIC_RT_BLANK_ORDER_SOURCES = (HEADER_ORDER_SOURCE, DECLARED_ORDER_SOURCE)
 
 
 def automatic_rt_correction_pinned(recorded: Mapping[str, Any] | None) -> bool:
     """Whether a campaign's recorded policy pins automatic RT correction on: only a policy that names the field.
     One recorded before 2026-10-07 does not, and its units run with what their profile says, as they did."""
     return isinstance(recorded, Mapping) and recorded.get("automatic_rt_correction") is True
+
+
+def analytical_order_source(record: Mapping[str, Any] | None) -> str | None:
+    """What Interactive's analytical-order record (msdial_prepare_repository_reanalysis's preview.analytical_order,
+    also kept in the unit manifest) says the analysis CSV's order was taken from, or None. A header record from
+    before Interactive 0.5.4 names no order_source and reads as the header source, as the gate reads it."""
+    if not isinstance(record, Mapping):
+        return None
+    source = record.get("order_source") or (
+        HEADER_ORDER_SOURCE if record.get("derived_from") == HEADER_ORDER_SOURCE else None)
+    return source if isinstance(source, str) and source else None
+
+
+def blank_interpolation_allowed(order_source: str | None) -> bool:
+    """Whether a Blank's automatic RT-correction model may be interpolated by this analytical order."""
+    return order_source in AUTOMATIC_RT_BLANK_ORDER_SOURCES
 
 
 # What identifies each pinned thing. Paths are recorded but not compared: the Console and the extractor

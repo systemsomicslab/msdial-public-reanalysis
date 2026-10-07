@@ -2143,7 +2143,8 @@ class AutomaticRtCorrectionTests(Base):
                 self.assertIs(answers["execute_automatic_rt_correction"], True)
                 self.assertEqual(answers["automatic_rt_correction_maximum_anchors"], 12)
         self.assertEqual(self.record(book, "u1")["automatic_rt_correction"],
-                         {"maximum_anchors": 12, "anchor_selection_failed": False, "fallback_uncorrected": False})
+                         {"maximum_anchors": 12, "anchor_selection_failed": False, "fallback_uncorrected": False,
+                          "blank_interpolation_by_analytical_order": False, "analytical_order_source": None})
         self.assertNotIn(("job_log", {"job_id": book.unit("u1")["run_job_id"]}), world.interactive.calls)
 
     def test_a_unit_whose_console_finds_too_few_anchors_runs_again_without_the_correction(self) -> None:
@@ -2164,7 +2165,8 @@ class AutomaticRtCorrectionTests(Base):
         # The Console's line sat above 40 lines of finalisation, so the job's kept log was read.
         self.assertEqual([name for name, _call in world.interactive.calls].count("job_log"), 1)
         self.assertEqual(self.record(book, "u1")["automatic_rt_correction"],
-                         {"maximum_anchors": 12, "anchor_selection_failed": True, "fallback_uncorrected": True})
+                         {"maximum_anchors": 12, "anchor_selection_failed": True, "fallback_uncorrected": True,
+                          "blank_interpolation_by_analytical_order": False, "analytical_order_source": None})
         document, tsv = machine.export_status(book)
         rows = {row["unit_key"]: row for row in document["units"]}
         self.assertIn(machine.AUTOMATIC_RT_FALLBACK_WARNING, rows["u1"]["warnings"])
@@ -2182,7 +2184,8 @@ class AutomaticRtCorrectionTests(Base):
         self.assertEqual((unit["state"], unit["failures"]), ("failed", 3))
         self.assertEqual([answers["execute_automatic_rt_correction"] for answers in self.starts(world, "run")], [True] * 3)
         self.assertEqual(self.record(book, "u1")["automatic_rt_correction"],
-                         {"maximum_anchors": 12, "anchor_selection_failed": True, "fallback_uncorrected": False})
+                         {"maximum_anchors": 12, "anchor_selection_failed": True, "fallback_uncorrected": False,
+                          "blank_interpolation_by_analytical_order": False, "analytical_order_source": None})
 
     def test_another_failure_keeps_the_correction(self) -> None:
         world = self.world()
@@ -2200,8 +2203,57 @@ class AutomaticRtCorrectionTests(Base):
         for answers in self.starts(world, "run"):
             self.assertNotIn("execute_automatic_rt_correction", answers)
             self.assertNotIn("automatic_rt_correction_maximum_anchors", answers)
+            self.assertNotIn(policy.AUTOMATIC_RT_BLANK_ANSWER, answers)
         self.assertIsNone(self.record(book, "u1")["automatic_rt_correction"])
         self.assertNotIn("job_log", [name for name, _call in world.interactive.calls])
+
+    def test_blanks_are_interpolated_only_by_a_recorded_injection_order(self) -> None:
+        """A Blank's RT model is interpolated between its neighbours in the analytical order. The runner allows it
+        only for an order the raw headers record or the repository sample table declares; an order read from the
+        file names or the listing, or none recorded, is no injection order (2026-09-29), and the Blanks keep
+        their measured RTs. Before this, Interactive's default (true) ran unseen on a file-name order."""
+        cases = {
+            "raw_header_acquisition_start_time": True,
+            "repository_sample_table": True,
+            "listing": False,
+            "embedded": False,
+            None: False,
+        }
+        for source, interpolated in cases.items():
+            with self.subTest(source=source):
+                world = self.world()
+                world.scripts["u1"] = fakes.UnitScript(order_source=source)
+                book = self.finish(world)
+                self.assertEqual(book.unit("u1")["state"], "done")
+                for kind in ("diagnostic", "run"):
+                    (answers,) = self.starts(world, kind)
+                    self.assertIs(answers[policy.AUTOMATIC_RT_BLANK_ANSWER], interpolated, kind)
+                (prepared,) = [row for row in book.attempts("u1") if row["step"] == "prepare_metadata"]
+                self.assertEqual(json.loads(prepared["detail_json"])["analytical_order_source"], source)
+                record = self.record(book, "u1")["automatic_rt_correction"]
+                self.assertIs(record["blank_interpolation_by_analytical_order"], interpolated)
+                self.assertEqual(record["analytical_order_source"], source)
+
+    def test_a_header_record_from_before_order_source_reads_as_the_header_order(self) -> None:
+        self.assertEqual(policy.analytical_order_source({"derived_from": "raw_header_acquisition_start_time"}),
+                         "raw_header_acquisition_start_time")
+        self.assertIsNone(policy.analytical_order_source({"derived_from": None, "order_source": None}))
+        self.assertIsNone(policy.analytical_order_source(None))
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(no_order_record=True)
+        self.finish(world)
+        (answers,) = self.starts(world, "run")
+        self.assertIs(answers[policy.AUTOMATIC_RT_BLANK_ANSWER], False)
+
+    def test_interactives_plan_warnings_are_kept_with_the_prepared_run(self) -> None:
+        warning = ("Blank RT-correction models would be interpolated using analytical order inferred from the "
+                   "repository file names or listing, not read from the instrument.")
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(plan_warnings=[warning])
+        book = self.finish(world)
+        self.assertEqual(book.unit("u1")["state"], "done")
+        (prepared,) = [row for row in book.attempts("u1") if row["step"] == "prepare_run"]
+        self.assertEqual(json.loads(prepared["detail_json"])["plan_warnings"], [warning])
 
     def test_the_policy_refuses_a_maximum_below_the_consoles_minimum(self) -> None:
         for value in (2, 12.0, True, "12"):

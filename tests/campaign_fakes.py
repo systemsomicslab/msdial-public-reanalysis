@@ -94,6 +94,12 @@ class UnitScript:
     # maximum_gb) and the bytes the lease streams (it stops past maximum_gb). 0 is small.
     required_bytes: int = 0
     remote_bytes: int = 0
+    # The analytical-order record the prepared metadata's preview carries (Interactive's with_order_source): its
+    # order_source, or None for a record that names none; the key is left out when no_order_record.
+    order_source: str | None = None
+    no_order_record: bool = False
+    # The warnings Interactive's guided plan validation raises (level warning; they stop nothing).
+    plan_warnings: list[str] = field(default_factory=list)
 
 
 def _write(path: Path, value: Any) -> None:
@@ -439,7 +445,13 @@ class FakeInteractive:
         csv.write_text("file_path,acquisition_type\nS1.mzML,DDA\n", encoding="ascii")
         seed = {"parameter_strategy": "auto_peak_range", "project_type": "lcms", "ion_mode": "Positive",
                 "output_root": str(output), "workflow_overrides": {"repository_run_manifest": manifest_path}}
-        return {"prepared": True, "input_path": str(csv), "preview": {"answer_seed": seed}}
+        script = self.world.scripts.get(self._unit_of_manifest(manifest_path)) or UnitScript()
+        preview: dict[str, Any] = {"answer_seed": seed}
+        if not script.no_order_record:
+            header = script.order_source == "raw_header_acquisition_start_time"
+            preview["analytical_order"] = {"derived_from": script.order_source if header else None,
+                                           "order_source": script.order_source, "files_recorded": 1}
+        return {"prepared": True, "input_path": str(csv), "preview": preview}
 
     def _console(self, kind: str, *, input_path: str, answers: dict[str, Any], authorization_path: str,
                  timeout_seconds: float, idle_timeout_seconds: float) -> dict[str, Any]:
@@ -521,7 +533,10 @@ class FakeInteractive:
 
     def prepare_guided(self, *, input_path: str, answers: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("prepare_guided", {"answers": answers}))
-        return {"prepared": True}
+        manifest_path = (answers.get("workflow_overrides") or {}).get("repository_run_manifest") or ""
+        script = self.world.scripts.get(self._unit_of_manifest(manifest_path)) or UnitScript()
+        validation = [{"level": "warning", "message": message} for message in script.plan_warnings]
+        return {"plan": {"validation": validation, "ready_to_prepare": True}, "preparation": {}, "messages": []}
 
     def qa(self, *, manifest_path: str) -> dict[str, Any]:
         return {"ok": True}

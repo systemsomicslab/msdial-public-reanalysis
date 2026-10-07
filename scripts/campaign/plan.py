@@ -578,6 +578,9 @@ def automatic_rt_profile_conflicts(profile: Mapping[str, Any] | None, campaign_p
         elif key == AUTOMATIC_RT_WINDOW_ANSWER and _number(value) != policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW:
             problems.append(f"the profile sets {key} {value!r} ({where}); the campaign runs #826's default window of "
                             f"{policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW} min")
+        elif key == policy.AUTOMATIC_RT_BLANK_ANSWER:
+            problems.append(f"the profile sets {key} ({where}); the runner sets it for each unit from the analytical "
+                            "order Interactive records (true only for a header or declared order)")
     return problems
 
 

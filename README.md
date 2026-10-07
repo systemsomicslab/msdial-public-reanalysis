@@ -265,6 +265,22 @@ attempt. The unit's `campaign-record.json` (`automatic_rt_correction`) and its
 status row say so. With the fallback off, the unit is retried and ends as any
 failure does.
 
+Blank files have no anchors of their own. By default the Console gives each
+Blank a model interpolated between the non-Blank files beside it in the
+analytical order. The runner allows that only where the order Interactive
+recorded with the analysis CSV is an injection order: the raw headers'
+acquisition start times, or the order the repository's sample table declares
+(the two ORD-2 accepts). For an order read out of the file names or the
+listing, or none recorded, it sends
+`automatic_rt_correction_interpolate_blanks_by_analytical_order` false, and the
+Blanks keep their measured RTs (audit status `BlankNotCorrected`; the Methods
+paragraph counts them among the files that kept their original RTs). A profile
+may not set this answer. The unit's `campaign-record.json` records the choice
+and the order source, and the `prepare_run` attempt in the ledger keeps
+Interactive's plan warnings, which stop nothing. For a declared order,
+Interactive may still warn about Blank interpolation, because its plan adopts
+only a header order.
+
 The zero-threshold diagnostic never corrects: Interactive turns the correction
 off for it. The gate needs nothing more. EXP-1 requires the two audit TSVs that
 Interactive adds to `expected_analysis_exports` when the correction is on.
