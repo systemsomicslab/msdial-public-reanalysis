@@ -57,6 +57,8 @@ would look at again) makes run exit at once, before it takes the campaign, locks
 backend, with the schtasks lines that disable or delete the task; the task is the user's to end. It still
 releases a Catalog lock this campaign's approval holds whose owner has died, as run does before it locks the
 Catalog: otherwise the lock a runner left when it was killed after the last unit would hold the Catalog for good.
+A lock that cannot be checked (the Catalog cannot be imported, a lock file that cannot be read or is not a lock
+record) makes it exit 3 and says so; it is never reported as another approval's.
 
 RUN --UNTIL-IDLE returns once every unit has ended or waits for disk. A held unit is not idle: the runner
 stays, polling, and makes the held unit's step again every few hours, so a unit that stays held keeps it
@@ -367,7 +369,11 @@ def task_end_commands(campaign: str) -> list[str]:
 def _release_stale_catalog_lock(book: Any) -> tuple[int | None, str]:
     """On a finished campaign, release the Catalog lock this campaign's approval holds when the runner that took
     it has died (ports.release_stale_campaign_lock), as `run` does before it takes the lock. Never another
-    approval's lock, nor one whose owner is alive or cannot be judged. (exit code or None, what was found)."""
+    approval's lock, nor one whose owner is alive or cannot be judged. (exit code or None, what was found).
+
+    A lock that cannot be checked is EXIT_ENVIRONMENT: the Catalog cannot be imported, or its lock file exists
+    but cannot be read or is not a lock record (campaign_lock_status then says readable False and names no
+    approval; round 4 of the 2026-10-07 review: that lock was reported as another approval's, and run exited 0)."""
     from campaign import ports
 
     campaign, approval = book.campaign(), book.approval()
@@ -388,6 +394,10 @@ def _release_stale_catalog_lock(book: Any) -> tuple[int | None, str]:
                       f"(pid {released.get('pid')}, since {released.get('acquired_at')}) is no longer running.")
     if not status.get("locked"):
         return None, ""
+    if not status.get("readable"):
+        return EXIT_ENVIRONMENT, (f"The Catalog's campaign lock could not be checked: {status.get('message')} Whose it "
+                                  f"is cannot be told, so it is left as it is, and every catalog update stays refused "
+                                  f"while it exists.")
     if status.get("approval_id") != approval["approval_id"]:
         return None, f"The Catalog's campaign lock is held by another approval, and is left as it is: {status.get('message')}"
     return None, f"The Catalog's campaign lock is left as it is: {status.get('message')}"

@@ -221,7 +221,13 @@ runner the task starts after another one exited honours them. A start is waited
 for until `--backend-start-timeout` from its launch, by that runner or the next.
 A backend still running past that deadline without answering counts as a failed
 start at every check, so the pause applies; no second backend is started beside
-it, and the failure names the process to end. Once the backend
+it, and the failure names the process to end, with its creation time. When the
+WMI broker never reported, the backend has no recorded process id: past the
+deadline it is found by the port it holds, or by its command line and creation
+time, and a broker that still runs is named in its place; only a start of which
+nothing is found running is given up. Whether a named process still runs is read
+again each time it is named, the pause's refusal included, so a process that has
+ended since gets no `taskkill` line. Once the backend
 answers its status, `/api/config` has `--backend-config-timeout` of its own, and
 a backend that answers the status but not `/api/config` is reported as that.
 
@@ -232,6 +238,8 @@ backend, and prints how to end the task. The one thing it still does is release
 a Catalog campaign lock that this campaign's approval holds and whose owner has
 died (a runner killed after the last unit ended), as `run` does before it locks
 the Catalog; a lock of another approval, or with a live owner, is left alone.
+A lock it cannot check (the Catalog cannot be imported, or the lock file cannot
+be read or is not a lock record) makes `run` exit with code 3 and say so.
 The task keeps starting it every hour
 until you do: disable it with `schtasks /Change /TN "MSDIAL-campaign-ID"
 /Disable` or delete it with `schtasks /Delete /TN "MSDIAL-campaign-ID" /F`. The

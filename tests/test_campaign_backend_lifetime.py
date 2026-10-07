@@ -450,8 +450,22 @@ class ProcessTreeTests(unittest.TestCase):
                 record = {"method": "wmi", "pid": None, "broker_pid": a.pid, "broker_created_at": a_created}
                 self.assertIs(supervisor._owns(record, backend), True)
                 self.assertIs(supervisor._owns({**record, "broker_created_at": a_created + 3600}, backend), False)
+                # Round 4: the same backend found with no process id to start from, by what it runs and when.
+                self.assertEqual([pid for pid, _ in ports.processes_running_command(command, a_created, a_created + 60)],
+                                 [backend], "C runs another command; only D runs the backend's")
+                self.assertEqual(ports.processes_running_command(other_port, a_created, a_created + 60), [])
+                self.assertEqual(ports.processes_running_command(command, a_created + 3600, a_created + 3660), [])
+                unreported = supervisor._unreported({**record, "launched_at_epoch": a_created + 30})
+                self.assertIsNotNone(unreported, "a start whose broker never reported, with its backend still running")
+                self.assertFalse(unreported["ok"])
+                self.assertIn(f"(pid {backend}, through wmi) (the broker never reported it; found by its command line",
+                              unreported["detail"])
+                self.assertIn(f"taskkill /PID {backend} /T /F", unreported["detail"])
+                self.assertEqual(supervisor.state.load()["pending"]["pid"], backend)
                 supervisor.port = 8797
                 self.assertIs(supervisor._owns(record, backend), False, "another port's backend is not this one")
+                self.assertIsNone(supervisor._unreported({**record, "launched_at_epoch": a_created + 30}),
+                                  "another port's command: nothing of this start runs, and the broker A has exited")
             finally:
                 if backend:
                     try:
@@ -679,6 +693,10 @@ class PersistedStartStateTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(ports.time, "time", side_effect=lambda: self.clock["now"]))
         self.stack.enter_context(mock.patch.object(
             ports.time, "sleep", side_effect=lambda s: self.clock.__setitem__("now", self.clock["now"] + s)))
+        # No real port or process table: a test that needs a listener or a process running the backend's command
+        # patches these again inside its own block.
+        self.stack.enter_context(mock.patch.object(ports, "listening_pid", return_value=None))
+        self.stack.enter_context(mock.patch.object(ports, "processes_running_command", return_value=[]))
 
     def tearDown(self) -> None:
         self.stack.close()
@@ -936,6 +954,149 @@ class PersistedStartStateTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertIn("answered by pid 9090, which is not the backend this runner started", result["detail"])
 
+    # ---- round 4 of the 2026-10-07 review ----
+
+    def _unreported_start(self, created: float) -> None:
+        """A first runner whose WMI broker (pid 777, created at `created`) reported nothing within 30 s."""
+        error = ports.BackendLaunchError("no report", may_have_started=True, record={
+            "method": "wmi", "pid": None, "broker_pid": 777, "broker_created_at": created})
+        first = self.runner(start_timeout=600, retry_after=3600)
+        with mock.patch.object(first, "status", return_value=None), \
+                mock.patch.object(first, "_launch", side_effect=error):
+            first.ensure()
+
+    def test_a_hung_backend_of_a_broker_that_never_reported_is_found_by_its_port_and_named(self) -> None:
+        """Past the deadline the pending start was dropped and a second backend launched beside the hung one, which
+        was never named. Its backend holds the port without answering: it is this start's (_owns), and is named."""
+        created = self.clock["now"]
+        self._unreported_start(created)
+        self.clock["now"] += 700
+        launches = []
+        for index in range(3):
+            supervisor = self.runner(start_timeout=600, retry_after=3600)
+            with mock.patch.object(supervisor, "status", return_value=None), \
+                    mock.patch.object(supervisor, "_launch", side_effect=lambda: launches.append(1)), \
+                    mock.patch.object(ports, "listening_pid", return_value=9090), \
+                    mock.patch.object(ports, "process_descends_from", side_effect=lambda pid, ancestor, *a, **k: ancestor == 777), \
+                    mock.patch.object(ports, "_process_created_at", return_value=created + 40), \
+                    mock.patch.object(ports, "_process_alive", return_value=True):
+                result = supervisor.ensure()
+            self.assertFalse(result["ok"])
+            self.clock["now"] += 900
+            if index == 0:
+                self.assertIn("(pid 9090, through wmi) (the broker never reported it; found by the port it holds, "
+                              "broker pid 777) still runs", result["detail"])
+                self.assertIn("taskkill /PID 9090 /T /F", result["detail"])
+                pending = supervisor.state.load()["pending"]
+                self.assertEqual((pending["pid"], pending["process_created_at"], pending["broker_pid"]),
+                                 (9090, created + 40, 777))
+        self.assertEqual(launches, [], "no second backend is started beside the hung one")
+        self.assertIn("No start is tried for another", result["detail"], "the third check starts the pause")
+        self.assertIn("taskkill /PID 9090", result["detail"])
+
+    def test_a_hung_backend_that_holds_no_port_is_found_by_its_command_line_and_window(self) -> None:
+        created = self.clock["now"]
+        self._unreported_start(created)
+        self.clock["now"] += 700
+        supervisor = self.runner(start_timeout=600, retry_after=3600)
+        calls = []
+        with mock.patch.object(supervisor, "status", return_value=None), \
+                mock.patch.object(supervisor, "_launch") as launch, \
+                mock.patch.object(ports, "processes_running_command",
+                                  side_effect=lambda *a: (calls.append(a), [(4321, created + 20), (4322, created + 21)])[1]), \
+                mock.patch.object(ports, "_process_alive", return_value=True):
+            result = supervisor.ensure()
+        launch.assert_not_called()
+        self.assertEqual(calls, [(supervisor.command(), created, created + 600 + supervisor.OWNED_START_SECONDS)])
+        self.assertIn("(pid 4321, through wmi) (the broker never reported it; found by its command line and creation "
+                      "time, broker pid 777)", result["detail"], "the earliest: a launcher before its interpreter")
+        self.assertIn("taskkill /PID 4321 /T /F", result["detail"])
+        self.assertEqual(supervisor.state.load()["pending"]["pid"], 4321)
+
+    def test_a_broker_that_still_runs_is_named_and_nothing_is_started_beside_it(self) -> None:
+        created = self.clock["now"]
+        self._unreported_start(created)
+        self.clock["now"] += 700
+        supervisor = self.runner(start_timeout=600, retry_after=3600)
+        probed = []
+        with mock.patch.object(supervisor, "status", return_value=None), \
+                mock.patch.object(supervisor, "_launch") as launch, \
+                mock.patch.object(ports, "_process_alive", side_effect=lambda *a: (probed.append(a), True)[1]):
+            result = supervisor.ensure()
+        launch.assert_not_called()
+        self.assertIn((777, created), probed, "the broker is asked with its recorded creation time")
+        self.assertIn("The broker WMI created (pid 777)", result["detail"])
+        self.assertIn("taskkill /PID 777 /T /F", result["detail"])
+        self.assertIsNone(supervisor.state.load()["pending"]["pid"], "still a start with no backend process id")
+        # Once the broker has ended too, and nothing of the start is found, a new one is started.
+        self.clock["now"] += 900
+        later = self.runner(start_timeout=600, retry_after=3600)
+        with mock.patch.object(later, "status", return_value=None), \
+                mock.patch.object(later, "_launch", side_effect=ports.BackendLaunchError("no")) as launch, \
+                mock.patch.object(ports, "_process_alive", return_value=False):
+            later.ensure()
+        launch.assert_called_once()
+
+    def test_a_broker_with_no_recorded_creation_time_does_not_hold_back_a_start(self) -> None:
+        """Without the broker's creation time its process id could be another process's by now."""
+        self._unreported_start(None)  # type: ignore[arg-type]
+        self.clock["now"] += 700
+        supervisor = self.runner(start_timeout=600, retry_after=3600)
+        with mock.patch.object(supervisor, "status", return_value=None), \
+                mock.patch.object(supervisor, "_launch", side_effect=ports.BackendLaunchError("no")) as launch, \
+                mock.patch.object(ports, "_process_alive", return_value=True):
+            supervisor.ensure()
+        launch.assert_called_once()
+
+    def test_a_runner_waiting_for_a_broker_start_names_its_hung_backend_at_the_deadline(self) -> None:
+        created = self.clock["now"]
+        self._unreported_start(created)
+        self.clock["now"] += 60
+        supervisor = self.runner(start_timeout=600, retry_after=3600)
+        with mock.patch.object(supervisor, "status", return_value=None), \
+                mock.patch.object(supervisor, "_launch") as launch, \
+                mock.patch.object(ports, "processes_running_command", return_value=[(4321, created + 20)]), \
+                mock.patch.object(ports, "_process_alive", return_value=True):
+            result = supervisor.ensure()
+        launch.assert_not_called()
+        self.assertIn("(pid 4321, through wmi)", result["detail"])
+        self.assertIn("taskkill /PID 4321 /T /F", result["detail"])
+        self.assertEqual(supervisor.start_failures, 2, "the broker's silence, then the hung backend: one failure each")
+        self.assertEqual(supervisor.state.load()["pending"]["pid"], 4321)
+
+    def test_the_pause_refusal_asks_again_whether_the_process_it_names_still_runs(self) -> None:
+        """The refusal repeated 'taskkill /PID <pid>' for an hour from the stored reasons, and Windows reuses
+        process ids: /T on a reused id ends an unrelated process tree."""
+        record = {"method": "wmi", "pid": 4243, "process_created_at": 1_000.0}
+        state = {"alive": True}
+        for _ in range(4):
+            supervisor = self.runner(start_timeout=300, retry_after=3600)
+            with mock.patch.object(supervisor, "status", return_value=None), \
+                    mock.patch.object(supervisor, "_launch", return_value=dict(record)), \
+                    mock.patch.object(ports, "_process_alive", side_effect=lambda *a, **k: state["alive"]):
+                result = supervisor.ensure()
+            self.clock["now"] += 600
+        self.assertIn("No start is tried for another", result["detail"])
+        self.assertEqual(result["detail"].count("taskkill /PID 4243 /T /F"), 1, "named once, not once per failure")
+        self.assertIn("created 1970-01-01T00:16:40+00:00", result["detail"])
+        stored = supervisor.state.load()["failures"]
+        self.assertEqual([failure.get("process") for failure in stored], [{"pid": 4243, "created_at": 1_000.0}] * 3)
+        self.assertFalse(any("taskkill" in failure["reason"] for failure in stored), "the stored reasons carry no taskkill")
+        for alive, said, absent in ((False, "has ended since; there is nothing to end", "taskkill"),
+                                    (None, "could not be read: end it (taskkill /PID 4243 /T /F) only if a process with "
+                                           "that id and creation time still runs", None)):
+            state["alive"] = alive
+            inside = self.runner(start_timeout=300, retry_after=3600)
+            with mock.patch.object(inside, "status", return_value=None), \
+                    mock.patch.object(inside, "_launch") as launch, \
+                    mock.patch.object(ports, "_process_alive", side_effect=lambda *a, **k: state["alive"]):
+                refused = inside.ensure()
+            launch.assert_not_called()
+            self.assertIn("No start is tried for another", refused["detail"])
+            self.assertIn(said, refused["detail"])
+            if absent:
+                self.assertNotIn(absent, refused["detail"])
+
 
 class FinishedCampaignTests(unittest.TestCase):
     """Review of 2026-10-07, finding 2: the hourly task kept starting runners on a finished campaign, each of which
@@ -959,7 +1120,21 @@ class FinishedCampaignTests(unittest.TestCase):
                                   "--until-idle"])
         return code, err.getvalue()
 
+    def _require_catalog(self):
+        """The Catalog's campaign_lock, imported as the runner imports it (DEFAULT_CATALOG_ROOT, then an installed
+        package), or a skip: a finished campaign checks the Catalog lock, and the suite skips what needs a Catalog
+        that is not here (round 4 of the 2026-10-07 review: these tests failed without one)."""
+        source = Path(self.cli.DEFAULT_CATALOG_ROOT) / "src"
+        if source.is_dir() and str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+        try:
+            from msdial_repository_catalog import campaign_lock
+        except ImportError as error:
+            self.skipTest(f"the Catalog (MSDIAL_CATALOG_ROOT) cannot be imported here: {error}")
+        return campaign_lock, source
+
     def test_a_runner_on_a_finished_campaign_exits_before_any_lock_or_backend(self) -> None:
+        self._require_catalog()
         with self.world.open() as book:
             self.assertEqual(book.unit("u1")["state"], "done")
             started_before = len(book.events("runner_started"))
@@ -989,13 +1164,9 @@ class FinishedCampaignTests(unittest.TestCase):
     """)
 
     def _catalog(self):
-        source = Path(self.cli.DEFAULT_CATALOG_ROOT) / "src"
+        campaign_lock, source = self._require_catalog()
         if not (source / "msdial_repository_catalog" / "campaign_lock.py").is_file():
-            self.skipTest("the Catalog checkout (MSDIAL_CATALOG_ROOT) is not here")
-        if str(source) not in sys.path:
-            sys.path.insert(0, str(source))
-        from msdial_repository_catalog import campaign_lock
-
+            self.skipTest("the Catalog checkout (MSDIAL_CATALOG_ROOT) is not here: the lock holder imports it from there")
         with self.world.open() as book:
             return campaign_lock, book.campaign()["catalog_database"], book.approval()["approval_id"], source
 
@@ -1058,11 +1229,52 @@ class FinishedCampaignTests(unittest.TestCase):
             self.assertEqual(book.events("catalog_lock_released"), [])
 
     def test_a_catalog_lock_that_cannot_be_checked_is_an_environment_failure(self) -> None:
+        self._require_catalog()
         with mock.patch.object(self.cli, "Environment", side_effect=AssertionError("built an environment")), \
                 mock.patch("campaign.ports.release_stale_campaign_lock", side_effect=OSError("unreadable")):
             code, text = self.run_cli()
         self.assertEqual(code, 3)
         self.assertIn("The Catalog's campaign lock could not be checked (OSError: unreadable)", text)
+
+    def test_a_catalog_that_cannot_be_imported_is_an_environment_failure(self) -> None:
+        """Runs without a Catalog: the import is what fails."""
+        blocked = {"msdial_repository_catalog": None, "msdial_repository_catalog.campaign_lock": None}
+        with mock.patch.object(self.cli, "Environment", side_effect=AssertionError("built an environment")), \
+                mock.patch.dict(sys.modules, blocked):
+            code, text = self.run_cli()
+        self.assertEqual(code, 3)
+        self.assertRegex(text, r"The Catalog's campaign lock could not be checked \((ModuleNotFound|Import)Error")
+        self.assertNotIn("another approval", text)
+
+    def test_an_unreadable_or_corrupt_catalog_lock_is_an_environment_failure_not_another_approvals(self) -> None:
+        """Round 4 of the 2026-10-07 review: campaign_lock_status reads such a lock as readable False with no approval
+        id, and the runner said 'held by another approval' and exited 0, the opposite of what the PR claimed."""
+        campaign_lock, _source = self._require_catalog()
+        with self.world.open() as book:
+            database = book.campaign()["catalog_database"]
+        lock = campaign_lock.campaign_lock_path(database)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        for make, said in ((lambda: lock.write_text("{not json", encoding="utf-8"), "is not a lock record"),
+                           (lambda: lock.mkdir(), "could not be read")):
+            make()
+            try:
+                status = campaign_lock.campaign_lock_status(database)
+                self.assertEqual((status["locked"], status["readable"]), (True, False))
+                with mock.patch.object(self.cli, "Environment", side_effect=AssertionError("built an environment")):
+                    code, text = self.run_cli()
+                self.assertEqual(code, 3, text)
+                self.assertIn("The Catalog's campaign lock could not be checked: A campaign lock exists at", text)
+                self.assertIn(said, text)
+                self.assertIn("left as it is, and every catalog update stays refused", text)
+                self.assertNotIn("another approval", text)
+                self.assertTrue(campaign_lock.campaign_lock_status(database)["locked"], "the lock is left as it is")
+            finally:
+                if lock.is_dir():
+                    lock.rmdir()
+                else:
+                    lock.unlink(missing_ok=True)
+        with self.world.open() as book:
+            self.assertEqual(book.events("catalog_lock_released"), [])
 
     def test_work_left_is_a_waiting_request_or_held_raw_data_the_runner_looks_at_again(self) -> None:
         from campaign import machine

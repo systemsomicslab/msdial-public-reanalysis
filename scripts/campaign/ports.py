@@ -1148,11 +1148,47 @@ def process_runs_command(pid: Any, command: list[str], created_from: float, crea
         return None
     if not created_from - 1.0 <= created <= created_until + 1.0:
         return False
+    return _command_matches(arguments, command)
+
+
+def _command_matches(arguments: list[str], command: list[str]) -> bool:
+    """The same arguments after the interpreter, the script compared as a path (process_runs_command)."""
     expected = [str(item) for item in command[1:]]
     actual = [str(item) for item in arguments[1:]]
     if len(actual) != len(expected) or not actual:
         return False
     return _same_path(actual[0], expected[0]) and actual[1:] == expected[1:]
+
+
+def processes_running_command(command: list[str], created_from: float, created_until: float) -> list[tuple[int, float]] | None:
+    """Every process that runs `command` (as process_runs_command compares it) and was created between created_from
+    and created_until (epoch seconds), as (pid, creation time), earliest first: a launcher before the interpreter it
+    started. Processes whose command line cannot be read are passed over. None: not knowable here (no psutil).
+
+    For a start whose broker never reported (round 4 of the 2026-10-07 review of PR #30): its backend has no
+    recorded process id, and may not hold the port yet, so it is found by what it runs and when it was created."""
+    if len(command) < 2:
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    found: list[tuple[int, float]] = []
+    try:
+        processes = list(psutil.process_iter(["pid", "create_time"]))
+    except (psutil.Error, OSError):
+        return None
+    for process in processes:
+        try:
+            created = process.info.get("create_time")
+            if created is None or not created_from - 1.0 <= float(created) <= created_until + 1.0:
+                continue
+            arguments = process.cmdline()
+        except (psutil.Error, OSError):
+            continue
+        if _command_matches(arguments, command):
+            found.append((int(process.pid), float(created)))
+    return sorted(found, key=lambda item: item[1])
 
 
 class MemoryStartState:
@@ -1230,7 +1266,13 @@ class BackendSupervisor:
     runner or the next, and is not started twice. Past that deadline a backend whose process still runs is
     counted as a failed start at every check, so the pause applies, and the failure names the process to end;
     no second backend is started beside it (2026-10-07 round 3: it was waited for again by every runner, and
-    the pause, checked after it, never engaged). The pause is checked before any start still waited for.
+    the pause, checked after it, never engaged). The pause is checked before any start still waited for. A start
+    whose broker never reported has no backend process id: past its deadline its backend is looked for, by the
+    port it holds or by its command line and creation time, and a broker that still runs is named in its place;
+    either is then a hung start, and only a start of which nothing is found running is given up (_unreported,
+    round 4). A failure that names a process keeps its id and creation time, and whether to end it is read again
+    whenever it is said, the pause's refusal included: a process that has ended since is said to have ended, and
+    no taskkill line is given for it (_end_advice, round 4).
 
     THAT START STATE LIVES IN THE LEDGER (2026-10-07). The consecutive failures, the time before which no
     start is tried and the start still waited for are read from `state` (LedgerStartState: a meta row of the
@@ -1270,7 +1312,7 @@ class BackendSupervisor:
         self.max_start_failures = int(max_start_failures)
         self.retry_after = float(retry_after)
         self.state = state if state is not None else MemoryStartState()
-        self.failures: list[dict[str, str]] = []
+        self.failures: list[dict[str, Any]] = []
         # Wall-clock seconds (time.time), not monotonic: it is read again by another runner process.
         self._retry_at = 0.0
         self._pending: dict[str, Any] | None = None
@@ -1529,9 +1571,12 @@ class BackendSupervisor:
                 return self._await(self._pending)
             elif alive and self._pending.get("pid"):
                 return self._hung(self._pending)
+            elif not self._pending.get("pid") and (traced := self._unreported(self._pending)) is not None:
+                # The broker never reported, and its backend (or the broker itself) still runs (_unreported).
+                return traced
             else:
-                # Past its deadline with no process to ask (the broker never reported), or one whose state
-                # cannot be read: it is no longer waited for.
+                # Past its deadline with nothing of it found running, or a process whose state cannot be read:
+                # it is no longer waited for.
                 self._pending = None
                 self._save_state()
         try:
@@ -1558,12 +1603,84 @@ class BackendSupervisor:
         started beside it: it may hold the port, and it shares the campaign's job registry. Each check counts it
         as a failed start, so the pause after max_start_failures applies, and says which process to end."""
         pid = record.get("pid")
+        found = (" (the broker never reported it; found by "
+                 + ("the port it holds" if record.get("found_by") == "listener" else "its command line and creation time")
+                 + f", broker pid {record.get('broker_pid')})") if record.get("found_by") else ""
         return self._failed(
             f"The backend started at {_iso_epoch(float(record.get('launched_at_epoch') or 0.0)) or 'an unknown time'} "
-            f"(pid {pid}, through {record.get('method')}) still runs and has not answered within "
-            f"{self.start_timeout:g} s of its start (--backend-start-timeout); no second backend is started beside it. "
-            f"End it (taskkill /PID {pid} /T /F) and the next check starts a new one, once any pause is over.",
-            started=False, record=record)
+            f"(pid {pid}, through {record.get('method')}){found} still runs and has not answered within "
+            f"{self.start_timeout:g} s of its start (--backend-start-timeout); no second backend is started beside it.",
+            started=False, record=record, end=(pid, record.get("process_created_at")))
+
+    def _start_window(self, record: Mapping[str, Any]) -> tuple[float, float] | None:
+        """When the backend of a start whose broker never reported can have been created (epoch seconds): from the
+        broker's creation (else 60 s before the start was recorded, which was after the broker's 30 s to report)
+        to start_timeout + OWNED_START_SECONDS later, as _owns judges it. None: no time is recorded."""
+        try:
+            if record.get("broker_created_at") is not None:
+                begun = float(record["broker_created_at"])
+            elif record.get("launched_at_epoch"):
+                begun = float(record["launched_at_epoch"]) - 60.0
+            else:
+                return None
+        except (TypeError, ValueError):
+            return None
+        return begun, begun + self.start_timeout + self.OWNED_START_SECONDS
+
+    def _unreported(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
+        """A start whose broker never reported, past its deadline (round 4 of the 2026-10-07 review of PR #30: it was
+        dropped, and a second backend was launched beside a hung one that was never named).
+
+        Its backend is looked for: the listener on the port, if it is this start's (_owns), else a process that runs
+        the backend's command and was created in the start's window (processes_running_command), the earliest (a
+        launcher before its interpreter). Found, it becomes the pending start's process and is a hung start (_hung),
+        and the checks after this one ask it directly. Not found, a broker that still runs, with its recorded creation
+        time, is named instead, and no backend is started beside it either. The failure, or None when nothing of the
+        start is found running (or nothing can be read: no psutil, no creation time recorded)."""
+        found: tuple[int, Any, str] | None = None
+        listener = listening_pid(self.port)
+        if listener is not None and self._owns(record, listener):
+            found = (listener, _process_created_at(listener), "listener")
+        else:
+            window = self._start_window(record)
+            matches = processes_running_command(self.command(), *window) if window is not None else None
+            if matches:
+                found = (matches[0][0], matches[0][1], "command line")
+        if found is not None:
+            pid, created, how = found
+            self._pending = {**record, "pid": pid, "process_created_at": created, "found_by": how}
+            return self._hung(self._pending)
+        broker, broker_created = record.get("broker_pid"), record.get("broker_created_at")
+        if broker and broker_created is not None and _process_alive(broker, broker_created):
+            self._pending = dict(record)
+            return self._failed(
+                f"The broker WMI created (pid {broker}) for the start at "
+                f"{_iso_epoch(float(record.get('launched_at_epoch') or 0.0)) or 'an unknown time'} still runs, never "
+                f"reported, and no backend of that start answers or can be found {self.start_timeout:g} s after it "
+                f"(--backend-start-timeout); no second backend is started beside it.",
+                started=False, record=record, end=(broker, broker_created))
+        return None
+
+    def _end_advice(self, pid: Any, created: Any) -> str:
+        """What to do about a process a failure names, read now (round 4 of the 2026-10-07 review of PR #30: the pause
+        repeated a taskkill line for an hour without asking whether the process still ran, and Windows reuses
+        process ids). Its creation time is named with it, and the liveness check compares it."""
+        try:
+            created_at = float(created) if created is not None else None
+        except (TypeError, ValueError):
+            created_at = None
+        name = f"pid {pid}" + (f", created {_iso_epoch(created_at)}" if created_at else "")
+        alive = _process_alive(pid, created_at)
+        line = f"taskkill /PID {pid} /T /F"
+        if alive is False:
+            return f"That process ({name}) has ended since; there is nothing to end."
+        if alive is None:
+            return (f"Whether that process ({name}) still runs could not be read: end it ({line}) only if a process "
+                    f"with that id{' and creation time' if created_at else ''} still runs.")
+        if created_at is None:
+            return (f"A process with that id runs ({name}; its creation time was not recorded, so check that it is the "
+                    f"backend's): end it ({line}) and the next check starts a new one, once any pause is over.")
+        return f"It still runs ({name}): end it ({line}) and the next check starts a new one, once any pause is over."
 
     def _reuse(self) -> dict[str, Any]:
         origin = self.origin()
@@ -1596,12 +1713,28 @@ class BackendSupervisor:
     def _refusal(self, now: float) -> str:
         reasons = "; ".join(f"{index}. {failure['reason']}" for index, failure in enumerate(self.failures, 1))
         wait = int(max(0.0, self._retry_at - now))
+        # Each process the failures name, once, with what to do about it as of now (_end_advice).
+        named: list[tuple[Any, Any]] = []
+        for failure in self.failures:
+            process = failure.get("process")
+            if isinstance(process, dict) and process.get("pid"):
+                key = (process["pid"], process.get("created_at"))
+                if key not in named:
+                    named.append(key)
+        advice = "".join(f" {self._end_advice(pid, created)}" for pid, created in named)
         return (f"The campaign backend could not be started {self.start_failures} times in a row ({reasons}). "
                 f"No start is tried for another {wait} s (until {_iso_epoch(self._retry_at)}); until then the runner "
-                f"pauses for the backend.")
+                f"pauses for the backend.{advice}")
 
-    def _failed(self, reason: str, *, started: bool, record: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        self.failures.append({"at": _now().isoformat(timespec="seconds"), "reason": reason})
+    def _failed(self, reason: str, *, started: bool, record: Mapping[str, Any] | None = None,
+                end: tuple[Any, Any] | None = None) -> dict[str, Any]:
+        """Count a failed start. `end` is (pid, creation time) of a process left running that the operator may have to
+        end: it is kept with the failure, and what to do about it is read again whenever it is said (_end_advice)."""
+        failure: dict[str, Any] = {"at": _now().isoformat(timespec="seconds"), "reason": reason}
+        if end is not None and end[0]:
+            failure["process"] = {"pid": end[0], "created_at": end[1]}
+            reason = f"{reason} {self._end_advice(*end)}"
+        self.failures.append(failure)
         result: dict[str, Any] = {"ok": False, "started": started, "start_failures": self.start_failures, "detail": reason}
         if record is not None:
             result.update({key: record.get(key) for key in ("pid", "process_created_at", "method") if record.get(key) is not None})
@@ -1660,16 +1793,20 @@ class BackendSupervisor:
                 return self._failed(f"{name} exited before it answered.", started=True, record=record)
             time.sleep(1)
         if not record.get("pid"):
+            # Its backend, or the broker, may still run: if so it is named and kept, not started over (_unreported).
+            traced = self._unreported(record)
+            if traced is not None:
+                return traced
             self._pending = None
             return self._failed(f"{name} did not answer within {self.start_timeout:g} s of the broker's launch "
-                                f"(--backend-start-timeout); the next check may start one.", started=True, record=record)
+                                f"(--backend-start-timeout), and nothing of that start was found running; the next "
+                                f"check may start one.", started=True, record=record)
         # Kept, so that no second backend is started beside it while it runs (_hung); not waited for again.
         self._pending = record
         return self._failed(f"{name} did not answer within {self.start_timeout:g} s (--backend-start-timeout); it is "
                             f"left running, and no second backend is started beside it while it runs: each check "
-                            f"counts it as a failed start until it answers or ends. End it (taskkill /PID "
-                            f"{record.get('pid')} /T /F) to have a new one started.",
-                            started=True, record=record)
+                            f"counts it as a failed start until it answers or ends.",
+                            started=True, record=record, end=(record.get("pid"), record.get("process_created_at")))
 
     def _log_path(self) -> Path | None:
         if self.log_directory is None:
