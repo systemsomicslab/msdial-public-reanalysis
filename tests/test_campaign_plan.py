@@ -281,14 +281,14 @@ class PlanTests(unittest.TestCase):
         self.assertIn("transfer and disk: at least 6.99 TB of known size, each shared object fetched once", text)
         self.assertIn("without the store the units would fetch 12.82 TB", text)
 
-    def rt_manifest(self, overrides: dict | None = None) -> dict:
+    def rt_manifest(self, overrides: dict | None = None, profile: dict | None = None) -> dict:
         """A declared-pool manifest planned at a fixed moment, with the campaign policy a --policy file would give."""
         catalog = ports.read_only_catalog(self.database)
         try:
             return plan.build_manifest(
                 catalog, pool="declared", campaign_id="test-rt", analysis_purpose="annotation",
                 workspace_root=self.workspace_root, raw_retention_policy="keep",
-                pins={"catalog": {"version": "0.6.1"}, "libraries": []}, profile=None,
+                pins={"catalog": {"version": "0.6.1"}, "libraries": []}, profile=profile,
                 campaign_policy=policy.CampaignPolicy.from_dict(overrides), policy_overrides=sorted(overrides or {}),
                 class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, "annotation"),
                 catalog_database=str(self.database), now=datetime(2026, 10, 8, tzinfo=timezone.utc),
@@ -746,6 +746,20 @@ class PlanTests(unittest.TestCase):
             self.assertEqual(book.campaign()["pool"], "pilot")
             self.assertEqual(sorted(unit["unit_key"] for unit in book.units()), ["uA", "uK"])
 
+    def test_a_correction_split_by_ion_mode_is_said_first_in_the_plan(self) -> None:
+        profile = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"},
+                   "by_ion_mode": {"Positive": {"execute_automatic_rt_correction": True}}}
+        manifest = self.rt_manifest({"automatic_rt_correction": False}, profile)
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64).splitlines()
+        self.assertIn("DIFFERS FROM THE DECISION OF 2026-10-07", text[1])
+        self.assertIn("!! AUTOMATIC RT CORRECTION DIFFERS BY ION MODE (not pinned by the campaign policy): "
+                      "Positive units ON (set by by_ion_mode.Positive), Negative units OFF", text[2])
+        both = json.loads(json.dumps(profile))
+        both["answers"]["execute_automatic_rt_correction"] = True
+        uniform = self.rt_manifest({"automatic_rt_correction": False}, both)
+        self.assertNotIn("BY ION MODE", plan.summary_text(uniform, "sha256:" + "0" * 64))
+        self.assertNotEqual(plan.digest_of(plan.canonical_bytes(manifest)), plan.digest_of(plan.canonical_bytes(uniform)))
+
     def test_the_plan_command_states_a_policy_override_of_the_correction(self) -> None:
         overrides = self.root / "policy.json"
         overrides.write_text(json.dumps({"automatic_rt_correction_maximum_anchors": 6}), encoding="utf-8")
@@ -770,6 +784,20 @@ class PlanTests(unittest.TestCase):
                       "from the default campaign policy", out)
         self.assertNotIn("DIFFERS", out)
         self.assertNotIn("differs from the decision", err)
+        self.assertNotIn("differs by ion mode", err)
+        # With the correction off, a profile that turns it on for one ion mode is said on stderr as well.
+        overrides.write_text(json.dumps({"automatic_rt_correction": False}), encoding="utf-8")
+        profile = self.root / "split-profile.json"
+        profile.write_text(json.dumps({"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"},
+                                       "by_ion_mode": {"Positive": {"execute_automatic_rt_correction": True}}}),
+                           encoding="utf-8")
+        code, out, err = self.cli("plan", "--campaign", "rt2", "--pool", "declared", "--purpose", "a", "--retention", "keep",
+                                  "--catalog", str(self.database), "--out", str(self.root / "dry" / "rt2.json"),
+                                  "--policy", str(overrides), "--profile", str(profile))
+        self.assertEqual(code, 0, err)
+        self.assertIn("!! AUTOMATIC RT CORRECTION DIFFERS BY ION MODE", out.splitlines()[2])
+        self.assertIn("Automatic RT correction differs by ion mode: Positive units ON (set by by_ion_mode.Positive), "
+                      "Negative units OFF (not set; Interactive's default is off)", err)
 
     def test_each_operator_request_is_recorded_under_its_action(self) -> None:
         for command, action in (("skip", "skip"), ("retry", "retry"), ("release-held", "release_held")):
@@ -958,6 +986,62 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
         record = plan.manifest_automatic_rt_correction({"policy": legacy, "profile": None})
         self.assertEqual((record["pinned"], record["source"], len(record["differs_from_decision"])), (False, "unrecorded", 3))
         self.assertTrue(record["statement"][0].startswith("  !! AUTOMATIC RT CORRECTION DIFFERS"))
+
+    def test_an_unpinned_correction_is_stated_for_each_ion_mode(self) -> None:
+        unpinned = policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()
+        on = {"execute_automatic_rt_correction": True}
+        off = {"execute_automatic_rt_correction": False}
+        cases = {
+            "on for Positive only": (
+                {"by_ion_mode": {"Positive": on}},
+                "Positive units ON (set by by_ion_mode.Positive), Negative units OFF (not set; Interactive's default is off)"),
+            "on, off for Negative": (
+                {"answers": on, "by_ion_mode": {"Negative": off}},
+                "Positive units ON (set by answers), Negative units OFF (set by by_ion_mode.Negative)"),
+            "workflow_overrides win": (
+                {"answers": {**on, "workflow_overrides": off}, "by_ion_mode": {
+                    "Positive": on, "Negative": {"workflow_overrides": on}}},
+                "Positive units OFF (set by answers.workflow_overrides), "
+                "Negative units ON (set by by_ion_mode.Negative.workflow_overrides)"),
+        }
+        for name, (profile, words) in cases.items():
+            with self.subTest(name):
+                record = plan.automatic_rt_correction_record(unpinned, profile, ["automatic_rt_correction"])
+                self.assertEqual(record["correction"], "by_ion_mode")
+                lines = record["statement"]
+                self.assertTrue(lines[0].startswith("  !! AUTOMATIC RT CORRECTION DIFFERS FROM THE DECISION"), lines)
+                self.assertEqual(lines[1], "  !! AUTOMATIC RT CORRECTION DIFFERS BY ION MODE (not pinned by the "
+                                           "campaign policy): " + words)
+                self.assertIn("Each unit runs as the profile says for its ion mode: " + words, lines[2])
+                self.assertNotIn("Each unit runs as the profile says: ON", "\n".join(lines))
+                on_mode = next(mode for mode, item in record["correction_by_ion_mode"].items() if item["correction"])
+                self.assertTrue(lines[3].startswith(f"    for the {on_mode} units: maximum anchors"), lines)
+        # The same setting in both modes is one state, said once, with where each mode's came from.
+        both = plan.automatic_rt_correction_record(unpinned, {"answers": on, "by_ion_mode": {"Positive": on}}, [])
+        self.assertEqual(both["correction"], True)
+        self.assertNotIn("BY ION MODE", "\n".join(both["statement"]))
+        self.assertIn("Each unit runs as the profile says: ON, Positive units ON (set by by_ion_mode.Positive), "
+                      "Negative units ON (set by answers)", "\n".join(both["statement"]))
+
+    def test_the_ion_mode_statement_follows_how_the_runner_merges_the_profile(self) -> None:
+        from campaign import machine
+        on, off = {"execute_automatic_rt_correction": True}, {"execute_automatic_rt_correction": "false"}
+        profiles = [
+            {"by_ion_mode": {"Positive": on}},
+            {"answers": on, "by_ion_mode": {"Negative": off}},
+            {"answers": {**off, "workflow_overrides": on}, "by_ion_mode": {"Positive": {"workflow_overrides": off}}},
+            {"answers": {"workflow_overrides": {"x": 1}}, "by_ion_mode": {"Negative": {**on, "workflow_overrides": {}}}},
+            {"answers": {}, "by_ion_mode": {}},
+        ]
+        for profile in profiles:
+            stated = plan.automatic_rt_correction_by_ion_mode(profile)
+            for mode in plan.ION_MODES:
+                with self.subTest(profile=profile, mode=mode):
+                    # As Runner.answers merges the profile for a unit; Interactive then applies workflow_overrides.
+                    merged = machine._merge(dict(profile.get("answers") or {}), dict(profile["by_ion_mode"].get(mode) or {}))
+                    state = {**merged, **dict(merged.get("workflow_overrides") or {})}
+                    runs = plan._true(state.get("execute_automatic_rt_correction", False))
+                    self.assertEqual(stated[mode]["correction"], runs)
 
     def test_a_statement_that_does_not_match_the_policy_is_not_approvable(self) -> None:
         plain = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}

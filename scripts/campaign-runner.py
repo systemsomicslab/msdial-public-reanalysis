@@ -232,10 +232,15 @@ def command_plan(args: argparse.Namespace) -> int:
         "automatic_rt_correction": plan.manifest_automatic_rt_correction(manifest), "summary_text": text,
     })
     print(text)
-    differs = plan.manifest_automatic_rt_correction(manifest)["differs_from_decision"]
+    correction = plan.manifest_automatic_rt_correction(manifest)
+    differs = correction["differs_from_decision"]
     if differs:
         print(f"Automatic RT correction differs from the decision of {plan.AUTOMATIC_RT_DECISION_DATE}: "
               + "; ".join(differs), file=sys.stderr)
+    if correction.get("correction") == "by_ion_mode":
+        print("Automatic RT correction differs by ion mode: " + ", ".join(
+            f"{mode} units {plan.automatic_rt_mode_state(item)}" for mode, item in correction["correction_by_ion_mode"].items()),
+            file=sys.stderr)
     if problems:
         print("Not approvable as it stands: " + "; ".join(problems), file=sys.stderr)
     return EXIT_OK

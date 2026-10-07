@@ -657,6 +657,41 @@ def _stated(statements: Sequence[Mapping[str, Any]]) -> str:
     return ", ".join(f"{item['value']!r} ({item['where']})" for item in statements)
 
 
+ION_MODES = ("Positive", "Negative")
+
+
+def automatic_rt_correction_by_ion_mode(profile: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Whether a unit of each ion mode runs the automatic RT correction under the profile alone (no policy pin),
+    and which setting decides it (set_by; None where the profile does not set it and Interactive's default, off,
+    applies). Runner.answers merges the profile's answers, then by_ion_mode for the unit's ion mode, nested
+    objects key by key; Interactive then applies workflow_overrides over the answers. So the first of these that
+    sets it decides: by_ion_mode.<mode>.workflow_overrides, answers.workflow_overrides, by_ion_mode.<mode>,
+    answers. Interactive's answer seed does not set it."""
+    profile = profile or {}
+    answers = profile.get("answers") if isinstance(profile.get("answers"), Mapping) else {}
+    by_mode = profile.get("by_ion_mode") if isinstance(profile.get("by_ion_mode"), Mapping) else {}
+    result = {}
+    for mode in ION_MODES:
+        mode_answers = by_mode.get(mode) if isinstance(by_mode.get(mode), Mapping) else {}
+        for where, settings in (
+            (f"by_ion_mode.{mode}.workflow_overrides", mode_answers.get("workflow_overrides")),
+            ("answers.workflow_overrides", answers.get("workflow_overrides")),
+            (f"by_ion_mode.{mode}", mode_answers),
+            ("answers", answers),
+        ):
+            if isinstance(settings, Mapping) and AUTOMATIC_RT_ANSWER in settings:
+                result[mode] = {"correction": _true(settings[AUTOMATIC_RT_ANSWER]), "set_by": where}
+                break
+        else:
+            result[mode] = {"correction": False, "set_by": None}
+    return result
+
+
+def automatic_rt_mode_state(item: Mapping[str, Any]) -> str:
+    return _on(item["correction"]) + (f" (set by {item['set_by']})" if item["set_by"]
+                                      else " (not set; Interactive's default is off)")
+
+
 def automatic_rt_correction_record(
     recorded_policy: Mapping[str, Any] | None,
     profile: Mapping[str, Any] | None,
@@ -718,21 +753,35 @@ def automatic_rt_correction_record(
             f"    Blanks: {AUTOMATIC_RT_BLANK_RULE}",
         ]
     else:
-        requested = automatic_rt_correction_requested(profile)
+        # Each unit runs as the profile says for its ion mode, which need not be the same for both.
+        modes = automatic_rt_correction_by_ion_mode(profile)
+        on_modes = [mode for mode in ION_MODES if modes[mode]["correction"]]
+        requested = bool(on_modes)
+        split = 0 < len(on_modes) < len(ION_MODES)
         anchors = _profile_statements(profile, AUTOMATIC_RT_ANCHORS_ANSWER)
         blanks = _profile_statements(profile, policy.AUTOMATIC_RT_BLANK_ANSWER)
         record.update({
-            "correction": requested, "maximum_anchors": None, "local_support_rt_window_min": None,
+            "correction": "by_ion_mode" if split else requested, "correction_by_ion_mode": modes,
+            "maximum_anchors": None, "local_support_rt_window_min": None,
             "fallback_uncorrected": False, "blank_interpolation": None,
             "profile_statements": {key: _profile_statements(profile, key) for key in (
                 AUTOMATIC_RT_ANSWER, AUTOMATIC_RT_ANCHORS_ANSWER, AUTOMATIC_RT_WINDOW_ANSWER, policy.AUTOMATIC_RT_BLANK_ANSWER)},
         })
-        lines.append(
-            f"  automatic RT correction: NOT PINNED by the campaign policy; from {source}. Each unit runs as the profile "
-            f"says: {_on(requested)}" + ("" if requested else " (the profile does not turn it on; Interactive's default is off)"))
+        per_mode = ", ".join(f"{mode} units {automatic_rt_mode_state(modes[mode])}" for mode in ION_MODES)
+        if split:
+            lines.append("  !! AUTOMATIC RT CORRECTION DIFFERS BY ION MODE (not pinned by the campaign policy): "
+                         + per_mode)
+            says = f"Each unit runs as the profile says for its ion mode: {per_mode}"
+        elif modes["Positive"]["set_by"] == modes["Negative"]["set_by"]:
+            says = f"Each unit runs as the profile says: {automatic_rt_mode_state(modes['Positive'])}"
+        else:
+            says = f"Each unit runs as the profile says: {_on(requested)}, " + ", ".join(
+                f"{mode} units {automatic_rt_mode_state(modes[mode])}" for mode in ION_MODES)
+        lines.append(f"  automatic RT correction: NOT PINNED by the campaign policy; from {source}. {says}")
         if requested:
             lines += [
-                "    maximum anchors " + (_stated(anchors) if anchors else "Interactive's default") + f"; {window_text}",
+                ("    for the " + " and ".join(on_modes) + " units: " if split else "    ")
+                + "maximum anchors " + (_stated(anchors) if anchors else "Interactive's default") + f"; {window_text}",
                 "    fallback OFF: the runner falls back to an uncorrected run only under the campaign policy's pin",
                 "    Blanks: " + (_stated(blanks) if blanks else
                                   "Interactive's default (interpolated by analytical order, whatever the order was read from)"),
