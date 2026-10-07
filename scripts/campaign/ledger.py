@@ -28,13 +28,19 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 # 2 (2026-10-02): the gate_held and contract_held states, the recheck_held request and the gate verdict's
-# blocking unevaluated checks; and (2026-10-03) the backend and outage pauses and a pilot's pool. A ledger of
-# schema 1 is brought to 2 when it is opened (Ledger._migrate); its campaign row is already written, so its
-# pool's CHECK is left as it is.
-SCHEMA_VERSION = 2
+# blocking unevaluated checks; and (2026-10-03) the backend and outage pauses and a pilot's pool. 3 (2026-10-07):
+# the threshold step a unit's estimate actually used (threshold_step, 10 as well as 100 and 1000) beside the
+# instrument-family step it searched first (coarse_threshold_step) and whether and why it fell back to the finer
+# one (step_fallback, fallback_reason), the user's step rule of 2026-10-06. A ledger of schema 1 or 2 is brought
+# to 3 when it is opened (Ledger._migrate); its campaign row is already written, so its pool's CHECK is left as
+# it is, and a unit diagnosed before 3 keeps no record of the step it searched first (NULL). 4 (2026-10-07): the
+# state disposition_held, a unit whose campaign disposition holds it (a multi-collision-energy AIF unit waiting for
+# a patched Console). A ledger of schema 3 is brought to 4 when it is opened, its unit and transition tables made
+# anew with the wider list of states.
+SCHEMA_VERSION = 4
 
 ACTIVE_STATES = (
     "pending", "class_settled", "handoff_ready",
@@ -51,9 +57,15 @@ ACTIVE_STATES = (
 # campaign_disposition, a malformed one, one another extractor made, a reply of another shape). "Stop" is
 # per unit (2026-10-02), so it is held as gate_held is, never the campaign paused for it, and the step it
 # was held at is made again at the same rechecks.
-WAITING_STATES = ("waiting_retry", "deferred_disk", "queued", "gate_held", "contract_held")
+# disposition_held: a unit Interactive's campaign_disposition holds (hold true; the AIF rule of 2026-10-07: a
+# multi-collision-energy AIF unit waits for a patched Console). It has not run, keeps its raw data and is counted
+# nothing, and the other units go on. No recheck comes by itself: only an operator's recheck-held (or retry) for
+# the unit makes its preflight again, and Interactive then decides it anew.
+WAITING_STATES = ("waiting_retry", "deferred_disk", "queued", "gate_held", "contract_held", "disposition_held")
 # The waiting states a recheck releases, by itself or at an operator's recheck-held.
 HELD_STATES = ("gate_held", "contract_held")
+# The waiting state an operator's recheck-held alone releases.
+DISPOSITION_HELD = "disposition_held"
 TERMINAL_STATES = (
     "done", "skipped", "excluded", "failed", "split_done", "stopped_no_approval", "stopped_policy_drift",
 )
@@ -79,7 +91,8 @@ FAULT_PAUSES = ("backend", "outage", "fault")
 # A pause never gives way to a lesser one: a disk that runs short while the operator has paused the
 # campaign must not lift the operator's pause by replacing it.
 PAUSE_RANK = {kind: len(PAUSE_KINDS) - index for index, kind in enumerate(PAUSE_KINDS)}
-# recheck_held: make the step a held unit (HELD_STATES) was held at again now: for gate_held, the gate.
+# recheck_held: make the step a held unit (HELD_STATES, or DISPOSITION_HELD) was held at again now: for gate_held,
+# the gate; for disposition_held, the preflight.
 REQUEST_ACTIONS = ("skip", "retry", "release_held", "recheck_held")
 
 
@@ -184,7 +197,7 @@ CREATE TABLE IF NOT EXISTS unit(
     diagnostic_job_id TEXT,
     run_job_id TEXT,
     input_path TEXT,
-    threshold_step INTEGER CHECK(threshold_step IS NULL OR threshold_step IN (100, 1000)),
+    threshold_step INTEGER CHECK(threshold_step IS NULL OR threshold_step IN (10, 100, 1000)),
     minimum_peak_height REAL CHECK(minimum_peak_height IS NULL OR minimum_peak_height >= 0),
     diagnostic_peak_count INTEGER CHECK(diagnostic_peak_count IS NULL OR diagnostic_peak_count >= 0),
     representative_file TEXT,
@@ -198,6 +211,12 @@ CREATE TABLE IF NOT EXISTS unit(
     downloaded_bytes INTEGER CHECK(downloaded_bytes IS NULL OR downloaded_bytes >= 0),
     peak_workspace_bytes INTEGER CHECK(peak_workspace_bytes IS NULL OR peak_workspace_bytes >= 0),
     updated_at TEXT NOT NULL,
+    coarse_threshold_step INTEGER CHECK(coarse_threshold_step IS NULL OR coarse_threshold_step IN (100, 1000)),
+    step_fallback INTEGER CHECK(step_fallback IS NULL OR step_fallback IN (0, 1)),
+    fallback_reason TEXT,
+    CHECK(step_fallback IS NULL OR coarse_threshold_step IS NOT NULL),
+    CHECK(step_fallback IS NOT 1 OR threshold_step * 10 = coarse_threshold_step),
+    CHECK(step_fallback IS NOT 0 OR threshold_step = coarse_threshold_step),
     CHECK((role = 'split_part') = (parent_unit_key IS NOT NULL)),
     CHECK((state IN {_in(TERMINAL_STATES)}) = (terminal_reason IS NOT NULL)),
     CHECK(state NOT IN {_in(WAITING_STATES)} OR resume_state IS NOT NULL),
@@ -366,6 +385,7 @@ UNIT_COLUMNS = frozenset({
     "input_path", "threshold_step", "minimum_peak_height", "diagnostic_peak_count", "representative_file",
     "order_source", "disposition_json", "outputs_produced", "gate_exit_pre", "gate_exit_final",
     "raw_disposition", "raw_detail", "downloaded_bytes", "peak_workspace_bytes",
+    "coarse_threshold_step", "step_fallback", "fallback_reason",
 })
 
 
@@ -440,39 +460,46 @@ class Ledger:
             self.connection.execute(
                 "INSERT INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
             )
-        elif int(row["value"]) == 1:
-            self._migrate()
+        elif int(row["value"]) in self._REBUILT:
+            self._migrate(int(row["value"]))
         elif int(row["value"]) != SCHEMA_VERSION:
             raise LedgerError(f"Ledger schema {row['value']} is not {SCHEMA_VERSION}.")
 
-    # The tables whose CHECK constraints name a list schema 2 widened: unit and transition the states
-    # (gate_held, contract_held), request the actions (recheck_held), runner the pauses (backend, outage).
-    _REBUILT_FOR_2 = ("unit", "transition", "request", "runner")
+    # The tables each schema rebuilt, by the schema a ledger is brought from: 2 widened the CHECK lists of
+    # unit and transition (the states gate_held, contract_held), request (the action recheck_held) and runner
+    # (the pauses backend, outage); 3 widened unit's threshold_step to the finer step and added the step rule's
+    # columns; 4 widened the states of unit and transition (disposition_held).
+    _REBUILT = {1: ("unit", "transition", "request", "runner"), 2: ("unit",), 3: ("unit", "transition")}
 
-    def _migrate(self) -> None:
-        """Bring a schema 1 ledger to schema 2, in one transaction, keeping every row it holds.
+    def _migrate(self, version: int) -> None:
+        """Bring a schema 1, 2 or 3 ledger to SCHEMA_VERSION, in one transaction, keeping every row it holds.
 
         SQLite cannot widen a CHECK constraint in place, so each table whose CHECK names a widened list is
-        made anew from SCHEMA, filled from the old one, and put in its place: the procedure SQLite documents
-        for a change ALTER TABLE cannot make, with foreign keys off while it runs and checked before it
-        commits. Dropping a table drops its triggers and indexes (the append-only and approval triggers of
-        transition among them), so every trigger and index of SCHEMA is made again in the same transaction.
-        The gate verdict's new column is added in place. A crash leaves schema 1 as it was."""
+        made anew from SCHEMA, filled from the old one by the old one's columns (a column a later schema
+        added starts NULL), and put in its place: the procedure SQLite documents for a change ALTER TABLE
+        cannot make, with foreign keys off while it runs and checked before it commits. Dropping a table drops
+        its triggers and indexes (the append-only and approval triggers of transition among them), so every
+        trigger and index of SCHEMA is made again in the same transaction. The gate verdict's column of
+        schema 2 is added in place. A crash leaves the old schema as it was."""
         statements = _statements(SCHEMA)
         db = self.connection
+        tables = list(dict.fromkeys(table for start, rebuilt in sorted(self._REBUILT.items()) if start >= version
+                                    for table in rebuilt))
         db.execute("PRAGMA foreign_keys = OFF")
         try:
             with self.transaction():
-                for table in self._REBUILT_FOR_2:
+                for table in tables:
                     created = next(item for item in statements if item.startswith(f"CREATE TABLE IF NOT EXISTS {table}("))
+                    columns = ", ".join(row[1] for row in db.execute(f"PRAGMA table_info({table})"))
                     db.execute(created.replace(f"CREATE TABLE IF NOT EXISTS {table}(", f"CREATE TABLE {table}_2(", 1))
-                    db.execute(f"INSERT INTO {table}_2 SELECT * FROM {table}")
+                    db.execute(f"INSERT INTO {table}_2 ({columns}) SELECT {columns} FROM {table}")
                     db.execute(f"DROP TABLE {table}")
                     db.execute(f"ALTER TABLE {table}_2 RENAME TO {table}")
-                db.execute(
-                    "ALTER TABLE gate_verdict ADD COLUMN blocking_unevaluated_ids_json TEXT NOT NULL DEFAULT '[]' "
-                    "CHECK(json_valid(blocking_unevaluated_ids_json))"
-                )
+                if version < 2:
+                    db.execute(
+                        "ALTER TABLE gate_verdict ADD COLUMN blocking_unevaluated_ids_json TEXT NOT NULL DEFAULT '[]' "
+                        "CHECK(json_valid(blocking_unevaluated_ids_json))"
+                    )
                 for statement in statements:
                     if statement.startswith(("CREATE TRIGGER", "CREATE INDEX")):
                         db.execute(statement)
@@ -908,6 +935,39 @@ class Ledger:
         else:
             rows = self.connection.execute("SELECT * FROM campaign_event WHERE kind = ? ORDER BY seq", (kind,))
         return [dict(row) for row in rows]
+
+    def last_event(self, kinds: Iterable[str]) -> dict[str, Any] | None:
+        """The newest event of any of these kinds, or None."""
+        kinds = list(kinds)
+        row = self.connection.execute(
+            f"SELECT * FROM campaign_event WHERE kind IN ({', '.join('?' for _ in kinds)}) ORDER BY seq DESC LIMIT 1", kinds
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    # ---- the backend's start state ----------------------------------------------------------------
+    # BackendSupervisor's consecutive start failures, the time before which it starts no backend, and the start
+    # it is still waiting for (ports.LedgerStartState). Kept here, not in the runner's memory, because the
+    # scheduled task starts a new runner process after each one that exits (2026-10-07 review of PR #30): a
+    # pause or a pending start held in memory was forgotten at every restart. A meta row, so no schema change.
+
+    BACKEND_START_KEY = "backend_start"
+
+    def backend_start_state(self) -> dict[str, Any]:
+        row = self.connection.execute("SELECT value FROM meta WHERE key = ?", (self.BACKEND_START_KEY,)).fetchone()
+        if row is None:
+            return {}
+        try:
+            value = json.loads(row["value"])
+        except ValueError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def set_backend_start_state(self, value: Mapping[str, Any]) -> None:
+        with self.transaction() as db:
+            db.execute(
+                "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (self.BACKEND_START_KEY, _json(dict(value))),
+            )
 
     # ---- the runner: lock, heartbeat, pause ------------------------------------------------------
 

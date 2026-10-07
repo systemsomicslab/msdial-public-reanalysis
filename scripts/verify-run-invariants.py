@@ -23,11 +23,14 @@ Nothing here writes, moves or deletes anything. It is safe to run at any point i
 Usage:
     python scripts/verify-run-invariants.py <unit-workspace> [--stage STAGE] [--json]
 
-    <unit-workspace>  the directory holding provenance/ and output/ for ONE analysis unit
+    <unit-workspace>  the directory holding provenance/ and output/ for ONE analysis unit; a run's outputs
+                      are read in the folder the manifest's output_directory names (output-run-<n> for a
+                      new run of a finished unit), which must lie inside this directory
     --stage           before-production | after-run | before-publish | all   (default: all)
     --json            emit the full report as JSON on stdout
 
-Exit codes: 0 no evaluated check failed, 2 at least one failed, 3 the workspace is unusable,
+Exit codes: 0 no evaluated check failed, 2 at least one failed, 3 the workspace is unusable (not a
+directory, or a run's output_directory outside it),
 4 (--strict only) a check could not be evaluated because an artifact the stage owed is absent.
 A WARN exits 0 and is for a person to read before publishing: QA-1's, for one, quotes every QA
 sentence that is not Interactive's own statement for the assessment. Those sentences, and the
@@ -84,7 +87,8 @@ STAGES = ("before-production", "after-run", "before-publish")
 # deleted. Such a check left not evaluable on an artifact the stage owed stops the run as its FAIL does
 # (Check.blocks_run); one not evaluable where the stage owed nothing never does. Any other FAIL is
 # recorded and the unit runs: CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1, which the rule named, and SPL-1,
-# which the user placed with them; PRE-1, which never FAILs, records too. Each check's docstring gives
+# which the user placed with them; PRE-1, which never FAILs, records too, and so does PAIR-1 (2026-10-06),
+# which lists every inferred name pairing and never FAILs. Each check's docstring gives
 # its reason under "RUN POLICY". The campaign runner reads the class from each check's run_policy in
 # --json, and holds the eight blocking ones itself whatever the report states.
 BLOCKS_RUN = "blocks_run"
@@ -105,6 +109,7 @@ RUN_POLICY = {
     "ORD-1": RECORD_ONLY,
     "INP-1": BLOCKS_RUN,
     "CNT-1": BLOCKS_RUN,
+    "PAIR-1": RECORD_ONLY,
 }
 
 # A user-profile path inside an artifact built to be shared. Deliberately narrow: it
@@ -404,11 +409,13 @@ def check_preflight_claim(report: Report, provenance: dict | None, reason: str) 
 # "planned" one was approved and never built. Mirrored rather than imported, because the gate judges what
 # Interactive recorded without running Interactive's code, and in one place only;
 # tests/test_verify_extractor_and_release.py holds it equal to the table at EXTRACTOR_PINS_MIRRORED_FROM.
-EXTRACTOR_PINS_MIRRORED_FROM = "89a97bc"
+EXTRACTOR_PINS_MIRRORED_FROM = "c9ef2f6"
 EXTRACTOR_RAW_TREE = "msrawdataworkbench"
 EXTRACTOR_COMMON_TREE = "MsdialWorkbench"
 EXTRACTOR_PIN_BUILT = "built"
 EXTRACTOR_PINNED_BUILDS = (
+    {"msrawdataworkbench": "5f604462d7bd61141bf764ca04ce52bf3f6452c9",
+     "MsdialWorkbench": "f0583493a44e73723f53ae312e33955f62052dd7", "state": "built"},
     {"msrawdataworkbench": "a12293c612a4e29b23d1d584f1c19556d76863f6",
      "MsdialWorkbench": "f0583493a44e73723f53ae312e33955f62052dd7", "state": "built"},
     {"msrawdataworkbench": "592b6dbce72177fa14d3e7cd407557b1c64a3046",
@@ -786,6 +793,8 @@ class _ArchiveListing:
     files: dict = field(default_factory=dict)
     directories: set = field(default_factory=set)
     problem: str = ""
+    # Each extracted file's path as the listing spells it, by its casefolded key in files.
+    names: dict = field(default_factory=dict)
 
 
 class _InputLineage:
@@ -1318,6 +1327,7 @@ def _read_archive_listing(path: Path, recorded_sha256: str, name: str) -> _Archi
             listing.directories.add(member)
         else:
             listing.files[member] = int(entry["size"]) if entry["size"].isdigit() else None
+            listing.names[member] = entry["path"].replace("\\", "/").strip("/")
     return listing
 
 
@@ -2451,6 +2461,203 @@ def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
     return [str(item) for item in candidates if _path_key(item) in keys]
 
 
+# UNATTRIBUTED MEMBERS (user decision, 2026-10-07; Interactive 0.5.31). A unit whose archive is unit-scoped
+# (every download object its scope lists is claimed by this unit alone, or the Catalog scoped the download to
+# the unit's own files, kind "unit_files") is analysed "even by force": the archive members no sample row pairs
+# with run as inputs of their own, attributed to no sample, and always on record. ST001264 has 31 members and 31
+# sample rows, and only the three BioRec rows pair; the 28 "..._Youn_saN.raw" members are included so.
+# Interactive records each as an input_lineage row whose name_pairing is {"paired_by": "unattributed_member",
+# "member_name": <name>}, with the member's stem as sample_id and sample_row null; its analysis-CSV row has the
+# unit's abstention Class where the Class decision is an abstention, else UNATTRIBUTED_CLASS, as a Sample; the
+# manifest's unattributed_members gives {"count", "members", "paths", "rule"} (members the basenames, as each
+# name_pairing.member_name is; paths the '/'-separated paths under the unit's raw data root, its parent's for a
+# split part: the agreed contract of 2026-10-07); and the manifest's and the disposition's
+# warnings carry UNATTRIBUTED_WARNING. INP-1, CLS-1, CLS-2, CLS-3 and PAIR-1 read them as explained inputs:
+# never a FAIL for being there, always a WARN that lists them, and never an approved sample.
+UNATTRIBUTED_PAIRING = "unattributed_member"
+UNATTRIBUTED_WARNING = "unattributed_members_included"
+UNATTRIBUTED_RULE = "unit_scoped_archive_2026_10_07"
+UNATTRIBUTED_CLASS = "Unattributed"
+UNATTRIBUTED_RECORD = "unattributed_members"
+UNIT_SCOPED_DOWNLOAD_KIND = "unit_files"
+
+
+def _is_unattributed(row: object) -> bool:
+    """Whether a lineage row is an archive member the lease included unattributed (name_pairing.paired_by)."""
+    pairing = row.get("name_pairing") if isinstance(row, dict) else None
+    return isinstance(pairing, dict) and str(pairing.get("paired_by") or "") == UNATTRIBUTED_PAIRING
+
+
+def _basename(name: str) -> str:
+    """The last part of a member name, or of a '/'- or backslash-separated path under a data root."""
+    return name.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _member_name(row: dict) -> str:
+    """The member's basename: name_pairing.member_name, as Interactive writes it for every rule, else its path's."""
+    pairing = row.get("name_pairing") if isinstance(row.get("name_pairing"), dict) else {}
+    return _basename(str(pairing.get("member_name") or "") or str(row["path"]))
+
+
+def _download_scope(manifest: "dict | None") -> dict:
+    project = (manifest or {}).get("project")
+    scope = project.get("download_scope") if isinstance(project, dict) else None
+    return scope if isinstance(scope, dict) else {}
+
+
+def _unit_scoped(manifest: "dict | None") -> "tuple[bool | None, str]":
+    """Whether the raw owner's download is unit-scoped, as the rule of 2026-10-07 reads the Catalog's scope.
+    Shared first, in the order Interactive's unit_scoped_download reads it: any bundle URL or object claimed by
+    more than one unit (shared_unit_count above 1, or bundle_shared_unit_count above 1) is a shared archive,
+    whatever the scope's kind (False). Then its own: kind "unit_files", or every count the scope records (on its
+    bundle_urls, its objects and bundle_shared_unit_count) is 1 (True). None where no scope is recorded, or one
+    that records no count for some of its objects and is not unit_files."""
+    scope = _download_scope(manifest)
+    if not scope:
+        return None, "the manifest records no download_scope"
+
+    def count(value: object) -> "int | None":
+        if isinstance(value, bool):
+            return None
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    listed = [count(item.get("shared_unit_count")) for key in ("bundle_urls", "objects")
+              for item in scope.get(key) or [] if isinstance(item, dict)]
+    bundle = count(scope.get("bundle_shared_unit_count"))
+    numbers = [number for number in [*listed, bundle] if number is not None]
+    if any(number > 1 for number in numbers):
+        return False, (f"the download is shared with other units (shared_unit_count up to {max(numbers)}), so a "
+                       "member no sample row pairs with may be another unit's file")
+    if str(scope.get("kind") or "") == UNIT_SCOPED_DOWNLOAD_KIND:
+        return True, "the Catalog scoped the download to the unit's own files (unit_files)"
+    if numbers and None not in listed:
+        return True, "every download object is claimed by this unit alone (shared_unit_count 1)"
+    return None, "the download_scope records no shared_unit_count for its objects"
+
+
+@dataclass
+class _Unattributed:
+    """The archive members a unit's lease included unattributed (_unattributed_members)."""
+    rows: list = field(default_factory=list)       # their lineage rows, inputs and lease-excluded alike
+    keys: set = field(default_factory=set)         # their paths, keyed as _path_key keys them
+    members: list = field(default_factory=list)    # their member names, in lineage order
+    record: "dict | None" = None                   # manifest.unattributed_members, the unit's or its raw owner's
+    record_rows: int = 0                           # the unattributed lineage rows of the manifest that holds it
+    class_label: str = UNATTRIBUTED_CLASS          # the Class their CSV rows carry
+    abstention: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.rows)
+
+    @property
+    def recorded_count(self) -> "int | None":
+        count = (self.record or {}).get("count")
+        return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+    def sentence(self) -> str:
+        names = ", ".join(self.members[:5]) + (f", and {len(self.members) - 5} more" if len(self.members) > 5 else "")
+        count = self.recorded_count
+        return (f"{len(self.members)} input(s) are archive members no sample row pairs with, included unattributed "
+                f"under the rule {UNATTRIBUTED_RULE} (manifest.unattributed_members.count "
+                f"{count if count is not None else 'not recorded'}) in Class {self.class_label!r}: {names}")
+
+    def evidence(self) -> dict:
+        paths = (self.record or {}).get("paths")
+        return {"warning": UNATTRIBUTED_WARNING, UNATTRIBUTED_RECORD: {
+            "count": self.recorded_count, "lineage_rows": len(self.members), "members": self.members[:10],
+            **({"paths": [str(item) for item in paths[:10]]} if isinstance(paths, list) else {}),
+            "rule": (self.record or {}).get("rule"), "class": self.class_label}}
+
+
+def _unattributed_members(provenance: "dict | None") -> _Unattributed:
+    """The archive members this unit's lease included unattributed: its own lineage rows (_own_lineage_rows, a
+    split part's share of its raw owner's) whose name_pairing says so, and the record that counts them, the
+    unit's own manifest.unattributed_members or else its raw owner's. The Class their rows carry is the Class of
+    the unit's ratified abstention where its Class decision is one, else UNATTRIBUTED_CLASS."""
+    result = _Unattributed()
+    if not isinstance(provenance, dict):
+        return result
+    seen: set[str] = set()
+    for part in ("rows", "excluded"):
+        for row in _own_lineage_rows(provenance, part):
+            key = _path_key(row["path"])
+            if key not in seen and _is_unattributed(row):
+                seen.add(key)
+                result.rows.append(row)
+                result.keys.add(key)
+                result.members.append(_member_name(row))
+    holder = provenance
+    if not isinstance(provenance.get(UNATTRIBUTED_RECORD), dict) and isinstance(provenance.get("split_from"), dict):
+        owner, _ = _raw_owner_manifest(provenance)
+        if isinstance(owner, dict) and isinstance(owner.get(UNATTRIBUTED_RECORD), dict):
+            holder = owner
+    record = holder.get(UNATTRIBUTED_RECORD)
+    result.record = record if isinstance(record, dict) else None
+    rows = _own_lineage_rows(provenance, "rows") + _own_lineage_rows(provenance, "excluded") \
+        if holder is provenance else _lineage_rows(holder, "rows") + _lineage_rows(holder, "excluded")
+    result.record_rows = len({_path_key(row["path"]) for row in rows if _is_unattributed(row)})
+    proposal = _class_proposal(provenance)
+    contrast = (proposal or {}).get("contrast_definition")
+    if isinstance(contrast, dict) and contrast.get("kind") == "abstention" and str(contrast.get("class_label") or ""):
+        result.abstention = True
+        result.class_label = str(contrast["class_label"])
+    return result
+
+
+def _unattributed_csv_names(provenance: "dict | None", csv_rows: "list[dict] | None",
+                            unattributed: "_Unattributed | None" = None) -> list[str]:
+    """The file_name of each analysis-CSV row that opens an unattributed member, through its Console alias where
+    it has one (_input_key), in CSV order."""
+    unattributed = unattributed if unattributed is not None else _unattributed_members(provenance)
+    if not unattributed or not csv_rows:
+        return []
+    aliases = _input_keys_by_console_path(provenance)
+    return [str(row.get("file_name") or "") for row in csv_rows if _input_key(row, aliases) in unattributed.keys]
+
+
+def _unattributed_record_problems(provenance: dict, unattributed: _Unattributed) -> list[str]:
+    """What keeps the unattributed members off the record the rule of 2026-10-07 requires, or []."""
+    problems = []
+    record = unattributed.record
+    if record is None:
+        problems.append(f"the manifest records no {UNATTRIBUTED_RECORD}")
+    else:
+        if unattributed.recorded_count != unattributed.record_rows:
+            problems.append(f"{UNATTRIBUTED_RECORD}.count is {unattributed.recorded_count!r}, and the lineage holds "
+                            f"{unattributed.record_rows} unattributed member(s)")
+        if str(record.get("rule") or "") != UNATTRIBUTED_RULE:
+            problems.append(f"{UNATTRIBUTED_RECORD}.rule is {str(record.get('rule') or '') or 'none'!r}, not "
+                            f"{UNATTRIBUTED_RULE}")
+        listed = record.get("members")
+        if isinstance(listed, list):
+            # Basenames on both sides (the agreed contract of 2026-10-07): members lists them, as each lineage
+            # row's name_pairing.member_name does; the paths under the data root are unattributed_members.paths.
+            recorded = {_basename(str(item)) for item in listed}
+            missing = [name for name in unattributed.members if _basename(name) not in recorded]
+            if missing:
+                problems.append(f"{UNATTRIBUTED_RECORD}.members does not list {', '.join(missing[:5])}")
+        else:
+            problems.append(f"{UNATTRIBUTED_RECORD}.members is no list")
+    owner, _ = _raw_owner_manifest(provenance)
+    warned = [manifest for manifest in (provenance, owner) if isinstance(manifest, dict)
+              and UNATTRIBUTED_WARNING in (manifest.get("warnings") or [])]
+    if not warned:
+        problems.append(f"the manifest's warnings do not carry {UNATTRIBUTED_WARNING}")
+    dispositions = _binding_dispositions(provenance)
+    if dispositions and not any(UNATTRIBUTED_WARNING in (item.get("warnings") or []) for item in dispositions):
+        problems.append(f"the campaign disposition's warnings do not carry {UNATTRIBUTED_WARNING}")
+    attributed = [_member_name(row) for row in unattributed.rows if row.get("sample_row") is not None]
+    if attributed:
+        problems.append(f"{len(attributed)} unattributed member(s) carry a sample_row ({', '.join(attributed[:3])})")
+    scoped, why = _unit_scoped(owner if isinstance(owner, dict) else provenance)
+    if scoped is not True:
+        problems.append(f"the rule includes unattributed members only from a unit-scoped archive, and {why}")
+    return problems
+
+
 def check_analysis_inputs_are_the_inputs(
     report: Report, provenance: dict | None, reason: str, csv_rows: list[dict] | None, csv_reason: str,
 ) -> None:
@@ -2492,6 +2699,17 @@ def check_analysis_inputs_are_the_inputs(
     of the part's own with the part's candidates, and the part's candidates with its rows. SPL-1 holds
     that the parts partition the parent.
 
+    UNATTRIBUTED MEMBERS (user decision, 2026-10-07; Interactive 0.5.31). Archive members of a unit-scoped
+    archive that no sample row pairs with are input candidates and CSV rows of their own, included unattributed
+    (_unattributed_members). They are explained inputs, not a contradiction of the declaration: the declared
+    inputs are then at least the candidates the lease attributed, and the unattributed members stand beside
+    them, since which declared input each one is, if any, is exactly what nobody could say. Every row must still
+    open a candidate, once. The check is then a WARN that lists them with manifest.unattributed_members.count,
+    never a PASS. They FAIL it only where the download is recorded as shared with other units, whose files they
+    may be: the rule includes them from a unit-scoped archive only. That guard is read first, before INP-1 finds
+    nothing declared to compare: Interactive includes unattributed members only where the Catalog declared no
+    analysis inputs, so a check that returned NOT_EVALUABLE first never blocked a real run on it.
+
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
     an input the run never opens, gives results for files that are not the unit's.
     """
@@ -2509,6 +2727,20 @@ def check_analysis_inputs_are_the_inputs(
     own_declared, own_contradiction = declaration(provenance)
     declared, contradiction = declaration(owner) if split and owner is not None else (own_declared, own_contradiction)
     if declared is None and own_declared is None:
+        # Interactive includes unattributed members only where the Catalog declared no analysis inputs, so the
+        # shared-archive guard is read here, before the declaration is found missing: members of an archive
+        # other units share may be their files, and the unit does not run on them.
+        unattributed = _unattributed_members(provenance)
+        if unattributed:
+            scoped, why = _unit_scoped(owner if isinstance(owner, dict) else provenance)
+            if scoped is False:
+                report.add("INP-1", stage, INP1_TITLE, FAIL,
+                           "What MS-DIAL will open is not what the rule of 2026-10-07 lets it open: "
+                           f"{len(unattributed.members)} input candidate(s) are archive members no sample row "
+                           f"pairs with, included unattributed, and {why}. The rule includes them from a "
+                           "unit-scoped archive only. " + unattributed.sentence() + ".",
+                           **unattributed.evidence())
+                return
         report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
                    "The manifest declares no analysis inputs: the unit finds its inputs after the download, or "
                    "was prepared before the Catalog declared them.", required=False)
@@ -2557,20 +2789,41 @@ def check_analysis_inputs_are_the_inputs(
         counts["excluded input_candidates"] = len(held)
     if lease_out:
         counts["lease excluded_input_candidates"] = len(lease_out)
+    # The archive members the lease included unattributed (2026-10-07): candidates no declared input is known to be.
+    unattributed = _unattributed_members(provenance)
+    owner_unattributed = {_path_key(row["path"]) for row in _lineage_rows(owner) if _is_unattributed(row)}
+    owner_free = sum(1 for item in owner_candidates if _path_key(item) in owner_unattributed)
+    own_free = sum(1 for item in own_candidates if _path_key(item) in unattributed.keys | owner_unattributed)
+    if unattributed:
+        counts["unattributed input_candidates"] = own_free
+
+    def disagrees(count: int, held: int, free: int) -> bool:
+        """Whether a declaration of `count` inputs disagrees with `held` candidates and excluded inputs, `free` of
+        them unattributed members: equal where there are none, else at least the attributed ones."""
+        return count != held if not free else count < held - free
+
     # A part's own list is its parent's cut to its samples, so a count it carries is the parent's.
     problems = [contradiction] if contradiction else []
-    if declared is not None and len(declared) != len(owner_candidates) + len(outside) + len(lease_out):
+    held_by_owner = len(owner_candidates) + len(outside) + len(lease_out)
+    if declared is not None and disagrees(len(declared), held_by_owner, owner_free):
         problems.append(
             f"the Catalog declared {len(declared)} analysis input(s) and the lease found {len(owner_candidates)} "
             "input candidate(s)" + (" in the parent" if split else "")
+            + (f", {owner_free} of them unattributed members" if owner_free else "")
             + (f", with {len(outside)} more excluded" if outside else "")
             + (f", and excluded {len(lease_out)} itself" if lease_out else ""))
-    if own_list and len(own_declared) != len(own_candidates) + len(own_outside) + len(own_lease_out):
+    if own_list and disagrees(len(own_declared), len(own_candidates) + len(own_outside) + len(own_lease_out), own_free):
         problems.append(
             f"the part declares {len(own_declared)} analysis input(s) of its own samples and holds "
             f"{len(own_candidates)} input candidate(s)"
+            + (f", {own_free} of them unattributed members" if own_free else "")
             + (f", with {len(own_outside)} more excluded" if own_outside else "")
             + (f", and its lease excluded {len(own_lease_out)} itself" if own_lease_out else ""))
+    if unattributed:
+        scoped, why = _unit_scoped(owner)
+        if scoped is False:
+            problems.append(f"{len(unattributed.members)} input candidate(s) are archive members no sample row pairs "
+                            f"with, included unattributed, and {why}")
     if len(own_candidates) - len(held) != len(csv_rows):
         problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
                         + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))
@@ -2605,11 +2858,12 @@ def check_analysis_inputs_are_the_inputs(
     excluded_names = [Path(item.rstrip("\\/")).name for item in dict.fromkeys(owner_excluded + own_excluded)][:10]
     lease = {"lease_excluded": [{"input": Path(item.rstrip("\\/")).name, "reason": owner_lease[_path_key(item)][1]}
                                 for item in lease_out[:10]]} if lease_out else {}
+    unattributed_evidence = unattributed.evidence() if unattributed else {}
     if problems:
         report.add("INP-1", stage, INP1_TITLE, FAIL,
                    "What MS-DIAL will open is not what the Catalog declared it opens: " + "; ".join(problems)
                    + ". A vendor folder read as its member files, or a sample dropped on the way, looks like this.",
-                   counts=counts, excluded=excluded_names, **lease)
+                   counts=counts, excluded=excluded_names, **lease, **unattributed_evidence)
         return
     less = f", less the {len(held)} the campaign disposition excluded," if held else ""
     reasons = sorted({owner_lease[_path_key(item)][1] or "no reason recorded" for item in lease_out})
@@ -2625,10 +2879,157 @@ def check_analysis_inputs_are_the_inputs(
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates"
                   + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
                   + by_lease + f"; the candidates{less} are the {len(csv_rows)} CSV rows.")
+    elif unattributed:
+        detail = (f"The {len(declared)} declared analysis input(s) account for the {len(own_candidates) - own_free} "
+                  f"input candidate(s) the lease attributed, and the {len(own_candidates)} candidates are the "
+                  f"{len(csv_rows)} CSV rows.")
     else:
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates "
                   f"and the {len(csv_rows)} CSV rows.")
+    if unattributed:
+        detail += (" " + unattributed.sentence() + ". Which declared input each one is, if any, is not recorded; "
+                   "read them before the result is used.")
+        report.add("INP-1", stage, INP1_TITLE, WARN, detail, counts=counts, excluded=excluded_names, **lease,
+                   **unattributed_evidence)
+        return
     report.add("INP-1", stage, INP1_TITLE, PASS, detail, counts=counts, excluded=excluded_names, **lease)
+
+
+# The rules by which Interactive's lease pairs a declared raw-file name with an archive member that does
+# not carry it exactly (lineage row name_pairing.paired_by). Both are inferences, and the user decided on
+# 2026-10-06 that every one MUST always be left on record: a member that carries the declared name behind
+# a prefix (021518_387057_CSHp_BioRec1.raw for BioRec1.raw), and a member whose leading identifier token
+# matches the declared name's uniquely on both sides (VV_13 in VV_13_HEpG2_C1_exp344_pos.raw for
+# VV_13_HEpG2_C1_pos.raw). Interactive warns of them as INFERRED_PAIRING_WARNING.
+INFERRED_PAIRING_RULES = {
+    "prefixed_member_name": "the declared name behind a prefix",
+    "leading_identifier_token": "the same leading identifier token",
+}
+INFERRED_PAIRING_WARNING = "input_names_paired_by_inference"
+PAIR1_TITLE = "Every input paired with a declared name by inference is on record"
+
+
+def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | None, reason: str) -> None:
+    """PAIR-1. Every input the lease paired with a declared raw file by inference, not by its exact name,
+    is listed in the gate report.
+
+    The lease admits an archive member as a declared raw file when its name is the declared name, and,
+    since Interactive 0.5.25, when it carries that name behind a prefix or shares its leading identifier
+    token, one to one (repository_reanalysis._member_name_pairings, msdial-interactive-app#58). The lineage
+    row of such an input records how (name_pairing: paired_by, declared_raw_file, member_name, and key, the
+    shared identifier, for a pairing by leading identifier token). An exact name needs no
+    record; an inferred one is a judgement about which file is which, which the user decided must always
+    be on record (2026-10-06). This check lists each one, with the declared and the member name, as a
+    WARN under INFERRED_PAIRING_WARNING, so the pairing is visible in every gate report of the unit.
+
+    The lineage rows read are the unit's own (_own_lineage_rows): its manifest's, and for a split part those
+    of its raw owner's rows whose input is one of the part's own input candidates, never a sibling part's
+    (Interactive's split gives each part the parent's rows of its own inputs; the parent's excluded rows go
+    to no part and stay the parent's record). Both the inputs and those the lease excluded are read; an
+    input is listed once. A name_pairing whose paired_by is no
+    rule this gate knows is listed apart and WARNs too: a pairing nobody here can describe is still a
+    pairing. A unit whose lineage records no name_pairing PASSes; one with no input lineage at all, an
+    older manifest or a unit not yet leased, is not evaluable and owed nothing.
+
+    It judges nothing about the pairing itself. Whether the member is the declared file is the reader's
+    question: INP-1, CLS-2 and CNT-1 judge what the run holds.
+
+    UNATTRIBUTED MEMBERS (user decision, 2026-10-07). A row whose name_pairing.paired_by is
+    "unattributed_member" is an archive member no sample row pairs with, included as an input of its own; the
+    user decided it is always on record. Each is listed apart (unattributed_members, with
+    manifest.unattributed_members.count) as a WARN under the warning code unattributed_members_included. The
+    record itself is held to the rule (_unattributed_record_problems): manifest.unattributed_members counts and
+    lists every such row under the rule unit_scoped_archive_2026_10_07, the manifest's and the disposition's
+    warnings carry the code, no such row carries a sample row, and the download is unit-scoped. A record that
+    falls short of that is a FAIL here.
+
+    RUN POLICY: record_only, as the task of 2026-10-06 placed it. A pairing is a fact to be read, and
+    listing it changes nothing in what MS-DIAL computes.
+    """
+    stage = "before-production"
+    if provenance is None:
+        report.add("PAIR-1", stage, PAIR1_TITLE, NOT_EVALUABLE, reason)
+        return
+    rows: list[tuple[dict, str]] = []
+    seen: set[str] = set()
+    for part in ("rows", "excluded"):
+        for row in _own_lineage_rows(provenance, part):
+            key = _path_key(row["path"])
+            if key not in seen:
+                seen.add(key)
+                rows.append((row, part))
+    if not rows:
+        report.add("PAIR-1", stage, PAIR1_TITLE, NOT_EVALUABLE,
+                   "The manifest records no input lineage, so no pairing of a declared name with an input is "
+                   "recorded to list.", required=False)
+        return
+    inferred: list[dict] = []
+    unknown: list[dict] = []
+    unattributed = _unattributed_members(provenance)
+    for row, part in rows:
+        pairing = row.get("name_pairing")
+        if pairing is None or _is_unattributed(row):
+            continue
+        pairing = pairing if isinstance(pairing, dict) else {}
+        entry = {
+            "paired_by": str(pairing.get("paired_by") or ""),
+            "declared_raw_file": str(pairing.get("declared_raw_file") or ""),
+            "member_name": str(pairing.get("member_name") or "") or Path(str(row["path"]).rstrip("\\/")).name,
+            "sample_id": str(row.get("sample_id") or ""),
+        }
+        if pairing.get("key") is not None:
+            entry["key"] = pairing.get("key")
+        if part == "excluded":
+            entry["excluded_by_the_lease"] = True
+        (inferred if entry["paired_by"] in INFERRED_PAIRING_RULES else unknown).append(entry)
+    record_problems = _unattributed_record_problems(provenance, unattributed) if unattributed else []
+    free_evidence = unattributed.evidence() if unattributed else {}
+    free_sentence = (" " + unattributed.sentence() + "; which declared file each one is, if any, is not recorded."
+                     if unattributed else "")
+    if record_problems:
+        report.add("PAIR-1", stage, PAIR1_TITLE, FAIL,
+                   f"{len(unattributed.members)} input(s) in the lineage are archive members included unattributed, "
+                   "and the record the rule of 2026-10-07 requires of them falls short: " + "; ".join(record_problems)
+                   + "." + free_sentence,
+                   inputs=len(rows), paired_by_inference=len(inferred) + len(unknown), record_problems=record_problems,
+                   pairings=inferred, **({"pairings_by_unknown_rule": unknown} if unknown else {}), **free_evidence)
+        return
+    if not inferred and not unknown and not unattributed:
+        report.add("PAIR-1", stage, PAIR1_TITLE, PASS,
+                   f"None of the {len(rows)} input(s) in the lineage was paired with a declared raw file by "
+                   "inference.", inputs=len(rows))
+        return
+    if not inferred and not unknown:
+        report.add("PAIR-1", stage, PAIR1_TITLE, WARN,
+                   f"None of the {len(rows)} input(s) in the lineage was paired with a declared raw file by "
+                   "inference." + free_sentence,
+                   inputs=len(rows), paired_by_inference=0, by_rule={}, pairings=[], **free_evidence)
+        return
+
+    def described(entry: dict) -> str:
+        key = f", key {entry['key']}" if "key" in entry else ""
+        return (f"{entry['member_name']} as {entry['declared_raw_file'] or 'an unrecorded declared file'} "
+                f"({entry['paired_by'] or 'no rule recorded'}{key})")
+
+    by_rule = dict(sorted(Counter(entry["paired_by"] for entry in inferred + unknown).items()))
+    listed = inferred + unknown
+    detail = (f"{len(listed)} of the {len(rows)} input(s) in the lineage were paired with a declared raw file by "
+              "inference, not by an exact name (" + ", ".join(f"{rule or 'unrecorded'} {count}"
+                                                              for rule, count in by_rule.items()) + "): "
+              + "; ".join(described(entry) for entry in listed[:10])
+              + (f"; and {len(listed) - 10} more, all in the evidence" if len(listed) > 10 else "") + ".")
+    if unknown:
+        detail += (f" {len(unknown)} of them name a rule this gate does not know "
+                   f"({', '.join(sorted({entry['paired_by'] or 'none' for entry in unknown}))}).")
+    detail += " Each is the lease's inference of which file is which; read them before the result is used."
+    detail += free_sentence
+    if unattributed:
+        free_evidence["warnings"] = [INFERRED_PAIRING_WARNING, UNATTRIBUTED_WARNING]
+        free_evidence.pop("warning")
+    report.add("PAIR-1", stage, PAIR1_TITLE, WARN, detail,
+               warning=INFERRED_PAIRING_WARNING, inputs=len(rows), paired_by_inference=len(listed),
+               by_rule=by_rule, pairings=inferred, **({"pairings_by_unknown_rule": unknown} if unknown else {}),
+               **free_evidence)
 
 
 def _absent_exports(run_manifest: dict | None) -> "tuple[int, list[str]] | None":
@@ -2743,6 +3144,19 @@ def _lineage_rows(manifest: dict | None, part: str = "rows") -> list[dict]:
     return [row for row in rows if isinstance(row, dict) and str(row.get("path") or "").strip()]
 
 
+def _own_lineage_rows(provenance: dict, part: str = "rows") -> list[dict]:
+    """The lineage rows of this unit's own inputs: all of its manifest's, and, for a split part, those of its
+    raw owner's rows whose input is one of the part's input candidates. A sibling part's inputs, and the
+    parent's rows of inputs no part runs, are not the part's."""
+    rows = list(_lineage_rows(provenance, part))
+    if isinstance(provenance.get("split_from"), dict):
+        parent, _ = _raw_owner_manifest(provenance)
+        if parent is not None and parent is not provenance:
+            own = {_path_key(item) for item in provenance.get("input_candidates") or [] if str(item or "").strip()}
+            rows += [row for row in _lineage_rows(parent, part) if _path_key(row["path"]) in own]
+    return rows
+
+
 def _input_keys_by_console_path(provenance: dict) -> dict[str, str]:
     """The input each Console path stands for, where the CSV names an alias of it rather than the input.
 
@@ -2851,16 +3265,62 @@ def _header_contradiction(method: str, windows: int | None, value: str) -> str:
     return ""
 
 
-# Interactive's raw_metadata_preflight.HEADER_OVERRIDE_CONFIDENCE. A header verdict this confident replaces a
-# repository declaration it contradicts; below it, a campaign disposition keeps the declaration and records
-# that the two disagree (declared_vs_header, acquisition_header_disagrees_low_confidence).
-HEADER_OVERRIDE_CONFIDENCE = 0.8
+# RULE B2, HEADER FIRST (user decision, 2026-10-06; Interactive 0.5.29, msdial-interactive-app#62). A file
+# whose header was read and has MS2 runs as its header gives, over the repository's declaration (the Catalog's
+# keyword inference) and at any extractor confidence; the per-file record keeps what the header alone gives
+# as header_console_acquisition_type, which no disposition rewrites. Before it, a disposition kept the
+# declaration over a header below 0.8 confidence; that exemption is gone, here as in Interactive.
+#
 # Header verdicts that give a Console type: the extractor's DIA is SWATH or AIF by its isolation.
 HEADER_CONSOLE_METHODS = ("DDA", "DIA", "AIF", "SWATH")
+# Units declared in the DIA family, whose MS1-only files rule B2 never folds into a DDA run (Interactive's
+# _DECLARED_DIA_FAMILY): they may be all-ion data exported as MS1 scans.
+DECLARED_DIA_FAMILY = ("DIA", "AIF", "SWATH")
+# SANCTIONED MAPPINGS: a row that runs as another Console type than its header gives, which the user has
+# allowed, by (header type, row type), with the name of the binding disposition's field that must record the
+# mapping. A mapping is accepted only where the disposition records it and the file's own record says that rule
+# decided it (_sanctioned_mapping).
+#
+# AIF RUN AS SWATH (user decision, 2026-10-07; Interactive 0.5.31). An AIF unit whose included files carry one
+# distinct MS2 collision energy (Waters LockSpray excluded) runs as SWATH-type in the Console: ST004304 gives
+# identical results either way, and MTBKS281 matches its 30 eV collection. Interactive records it as
+# campaign_disposition.aif_run_as_swath = {"collision_energies": [<one energy>], "rule": AIF_AS_SWATH_RULE}, and
+# each such file's per-file record keeps header_console_acquisition_type "AIF" with console_acquisition_type
+# "SWATH" and console_acquisition_basis AIF_AS_SWATH_BASIS. A multi-energy AIF unit is held until a patched
+# Console exists (campaign_disposition hold, aif_multi_ce_awaiting_console), never run as SWATH: a record of more
+# than one energy sanctions nothing.
+AIF_AS_SWATH_FIELD = "aif_run_as_swath"
+AIF_AS_SWATH_RULE = "single_ce_aif_as_swath_2026_10_07"
+AIF_AS_SWATH_BASIS = "aif_single_ce_as_swath"
+#
+# MULTI-ENERGY AIF WITH #825 (Interactive 0.5.34, msdial-interactive-app#67). The patched Console is MsdialWorkbench
+# #825: it deconvolutes a multi-energy AIF file once per energy and represents each peak by the energy of its MS/MS
+# reference-spectrum match, else the energy with the most product ions. Where the Console Interactive decided for
+# has it, a unit whose AIF inputs all record the same MS2 collision energies, more than one, runs as AIF (header
+# type AIF, row AIF, so no mapping is involved): the disposition records aif_multi_ce_run = {"collision_energies",
+# "rule": AIF_MULTI_CE_RULE} beside its probe of that Console (multi_energy_aif_console: capability, available,
+# probe, assembly_sha256), and each input's record carries console_acquisition_basis AIF_MULTI_CE_BASIS and its own
+# ms2_collision_energies. Without #825 the unit is held as before; with it, inputs whose energies differ from one
+# another are held too (#825 chooses among one file's energies, never across files). ACQ-1 reads those records:
+# a multi-energy AIF row passes only where they say so and the Console the run manifest names is the one the probe
+# found #825 in (or, where it is another, the gate finds #825's markers in that Console's assembly itself).
+AIF_MULTI_CE_FIELD = "aif_multi_ce_run"
+AIF_MULTI_CE_RULE = "multi_ce_aif_with_console_825"
+AIF_MULTI_CE_BASIS = "aif_multi_ce_console_825"
+MULTI_ENERGY_AIF_PROBE_FIELD = "multi_energy_aif_console"
+# Mirrored from Interactive's workflow.MULTI_ENERGY_AIF_CAPABILITY and MULTI_ENERGY_AIF_CONSOLE_MARKERS: two messages
+# of #825's RepresentativeDeconvolutionReader, .NET literals in the Console assembly (UTF-16LE). Both are required:
+# a local AIF patch build from before #825's representative-energy rule carries the second only.
+MULTI_ENERGY_AIF_CAPABILITY = "multi_energy_aif_representative_collision_energy"
+MULTI_ENERGY_AIF_CONSOLE_MARKERS = ("The collision-energy files of ", " nor a collision-energy file exists.")
+# Interactive compares collision energies to 0.1 eV (raw_metadata_preflight.COLLISION_ENERGY_DECIMALS).
+COLLISION_ENERGY_DECIMALS = 1
+SANCTIONED_ACQUISITION_MAPPINGS: dict[tuple[str, str], str] = {("AIF", "SWATH"): AIF_AS_SWATH_FIELD}
 ACQ1_SOURCES = {
     "header": "from headers", "declaration": "from the repository declaration",
     "folded_ms1_only": "MS1-only folded into DDA", "unresolved": "with no Console type resolved",
     "unsettled": "DIA with its scheme unsettled", "other": "from another source", "no_record": "with no header record",
+    "sanctioned": f"AIF run as SWATH under {AIF_AS_SWATH_RULE}",
 }
 
 
@@ -2897,8 +3357,221 @@ def _header_confidence(record: dict | None, entry: dict | None) -> float | None:
     return None
 
 
+def _record_header_console(record: dict) -> "str | None":
+    """The Console type a file's header alone gives, as Interactive's entry_header_console reads it: the
+    record's header_console_acquisition_type where it has the field (0.5.29 on), else DDA, SWATH or AIF as its
+    acquisition_mode says; a legacy DIA recorded no isolation, and gives none."""
+    if "header_console_acquisition_type" in record:
+        value = record.get("header_console_acquisition_type")
+        return str(value) if value else None
+    mode = str(record.get("acquisition_mode") or "").strip()
+    return mode if mode in CONSOLE_ACQUISITION_TYPES else None
+
+
+def _aif_as_swath_energies(entry: object) -> "tuple[list[float] | None, str]":
+    """The collision energies an aif_run_as_swath record gives, rounded to two places as the Console rounds them,
+    each once; or None, and why the record sanctions nothing."""
+    if not isinstance(entry, dict):
+        return None, f"the campaign disposition records no {AIF_AS_SWATH_FIELD}"
+    if str(entry.get("rule") or "") != AIF_AS_SWATH_RULE:
+        return None, (f"its {AIF_AS_SWATH_FIELD} names the rule {str(entry.get('rule') or '') or 'none'!r}, not "
+                      f"{AIF_AS_SWATH_RULE}")
+    values = entry.get("collision_energies")
+    if not isinstance(values, list) or not all(
+            isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item) for item in values):
+        return None, f"its {AIF_AS_SWATH_FIELD} records no list of collision energies"
+    energies = sorted({round(float(item), 2) for item in values})
+    if len(energies) != 1:
+        return None, (f"its {AIF_AS_SWATH_FIELD} records {len(energies)} collision energies, and only a single-energy "
+                      f"AIF unit runs as SWATH (a multi-energy one runs as AIF under {AIF_MULTI_CE_RULE} on a Console "
+                      "with MsdialWorkbench#825, and is held otherwise)")
+    return energies, ""
+
+
+def _energy_set(values: object) -> "tuple[float, ...] | None":
+    """The distinct collision energies a recorded list gives, to 0.1 eV as Interactive compares them; None where
+    nothing is recorded (no list)."""
+    if not isinstance(values, list):
+        return None
+    return tuple(sorted({round(float(item), COLLISION_ENERGY_DECIMALS) for item in values
+                         if isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item)}))
+
+
+def _energies_text(energies: "tuple[float, ...] | list[float] | None") -> str:
+    return ", ".join(f"{value:g}" for value in energies) + " eV" if energies else "no energy"
+
+
+def _aif_multi_ce_record(dispositions: list[dict]) -> "tuple[dict | None, tuple[float, ...], str]":
+    """(the binding disposition whose aif_multi_ce_run names AIF_MULTI_CE_RULE and two or more energies, those
+    energies, ""); or (None, (), why no binding disposition sanctions a multi-energy AIF run)."""
+    reasons = []
+    for disposition in dispositions:
+        entry = disposition.get(AIF_MULTI_CE_FIELD)
+        if not isinstance(entry, dict):
+            held = ", ".join(str(item) for item in disposition.get("reasons") or [])
+            reasons.append(f"the campaign disposition records no {AIF_MULTI_CE_FIELD}"
+                           + (f" (it holds the unit: {held})" if disposition.get("hold") is True and held else ""))
+            continue
+        if str(entry.get("rule") or "") != AIF_MULTI_CE_RULE:
+            reasons.append(f"its {AIF_MULTI_CE_FIELD} names the rule {str(entry.get('rule') or '') or 'none'!r}, not "
+                           f"{AIF_MULTI_CE_RULE}")
+            continue
+        energies = _energy_set(entry.get("collision_energies")) or ()
+        if len(energies) < 2:
+            reasons.append(f"its {AIF_MULTI_CE_FIELD} records {len(energies)} collision energies, not two or more")
+            continue
+        return disposition, energies, ""
+    return None, (), "; ".join(dict.fromkeys(reasons)) or f"no binding campaign disposition records {AIF_MULTI_CE_FIELD}"
+
+
+def _probe_ready(probe: object) -> bool:
+    """Whether a multi_energy_aif_console record shows #825 in the Console it read, as Interactive's
+    raw_metadata_preflight.multi_energy_aif_ready reads it."""
+    return (isinstance(probe, dict) and probe.get("capability") == MULTI_ENERGY_AIF_CAPABILITY
+            and probe.get("available") is True)
+
+
+def _assembly_markers(path: Path) -> "tuple[bool | None, str]":
+    """Whether a Console assembly carries every #825 marker (True, False), or None and why it was not read."""
+    try:
+        binary = path.read_bytes()
+    except OSError as error:
+        return None, f"its assembly could not be read ({type(error).__name__})"
+    present = [marker.encode("utf-16-le") in binary or marker.encode("utf-8") in binary
+               for marker in MULTI_ENERGY_AIF_CONSOLE_MARKERS]
+    if all(present):
+        return True, ""
+    return False, "its assembly carries only some of #825's markers" if any(present) else "its assembly carries none of #825's markers"
+
+
+def _multi_energy_aif_console(probe: object, run_manifest: "dict | None") -> "tuple[bool, str, dict]":
+    """Whether the Console the run manifest names has MsdialWorkbench#825: (shown, how or why not, evidence).
+
+    Shown where the disposition's probe found #825 in an assembly whose sha256 is the one the run manifest records
+    for the Console that runs; or, where the probe read another Console or none, where the gate finds every #825
+    marker in the assembly the run manifest names, whose sha256 is still the one recorded."""
+    console = (run_manifest or {}).get("console") if isinstance(run_manifest, dict) else None
+    console = console if isinstance(console, dict) else {}
+    recorded = str(console.get("assembly_sha256") or console.get("binary_sha256") or "").strip().casefold()
+    probed = str(probe.get("assembly_sha256") or "").strip().casefold() if isinstance(probe, dict) else ""
+    evidence = {"run_console_assembly_sha256": recorded or None,
+                "probe": probe.get("probe") if isinstance(probe, dict) else None,
+                "probe_available": _probe_ready(probe), "probe_assembly_sha256": probed or None}
+    if not isinstance(run_manifest, dict):
+        return False, "no run manifest records the Console that runs it", evidence
+    if not recorded:
+        return False, "the run manifest records no Console assembly sha256", evidence
+    if _probe_ready(probe) and probed == recorded:
+        evidence["shown_by"] = "disposition_probe"
+        return True, "the disposition's probe found #825 in the assembly the run manifest records", evidence
+    named = str(console.get("assembly_path") or console.get("path") or "").strip()
+    assembly = Path(named) if named else None
+    probed_text = ("the disposition's probe read another Console" if _probe_ready(probe) else
+                   f"the disposition's probe found no #825 ({evidence['probe'] or 'not probed'})")
+    if assembly is None or not assembly.is_file():
+        return False, probed_text + ", and the assembly the run manifest names is not on disk to read", evidence
+    try:
+        actual = _file_sha256(assembly)
+    except OSError as error:
+        return False, f"{probed_text}, and the assembly the run manifest names could not be read ({type(error).__name__})", evidence
+    if actual != recorded:
+        return False, f"{probed_text}, and the assembly the run manifest names is no longer the one it recorded", evidence
+    found, why = _assembly_markers(assembly)
+    if found:
+        evidence["shown_by"] = "gate_read_the_assembly"
+        return True, "the gate found #825's markers in the assembly the run manifest records", evidence
+    return False, f"{probed_text}, and the Console the run manifest names has no MsdialWorkbench#825 ({why})", evidence
+
+
+def _multi_energy_aif_failures(
+    rows: "list[tuple[str, tuple[float, ...] | None, str]]", dispositions: list[dict], run_manifest: "dict | None",
+) -> "tuple[list[str], dict]":
+    """Why the rows that run as multi-energy AIF may not, and the evidence. Each row is (name, its record's
+    ms2_collision_energies, its record's console_acquisition_basis).
+
+    Under a binding disposition its aif_multi_ce_run decides: without one naming AIF_MULTI_CE_RULE and two or more
+    energies nothing runs as multi-energy AIF, and each row's basis must be AIF_MULTI_CE_BASIS and its energies the
+    recorded ones. Without a binding disposition (no campaign) the rows' energies must agree. Either way the Console
+    the run manifest names must be shown to have #825 (_multi_energy_aif_console)."""
+    failures: list[str] = []
+    record, energies, why = _aif_multi_ce_record(dispositions)
+    evidence: dict = {"rows": len(rows), "rule": AIF_MULTI_CE_RULE}
+    first = rows[0][0]
+    if dispositions and record is None:
+        failures.append(
+            f"{len(rows)} row(s) run as AIF with more than one MS2 collision energy (the first {first}), and {why}: a "
+            f"multi-energy AIF unit runs as AIF only under {AIF_MULTI_CE_RULE}, on a Console with MsdialWorkbench#825, "
+            "and is held otherwise (aif_multi_ce_awaiting_console)")
+        return failures, evidence
+    if record is not None:
+        evidence[AIF_MULTI_CE_FIELD] = record.get(AIF_MULTI_CE_FIELD)
+        for name, own, basis in rows:
+            if basis != AIF_MULTI_CE_BASIS:
+                failures.append(f"{name}: runs as multi-energy AIF, and its record's console_acquisition_basis is "
+                                f"{basis or 'none'!r}, not {AIF_MULTI_CE_BASIS}")
+            elif own != energies:
+                failures.append(f"{name}: records {_energies_text(own) if own is not None else 'no ms2_collision_energies'}"
+                                f", not the unit's {_energies_text(energies)}, and {AIF_MULTI_CE_RULE} holds only where "
+                                "every input records the same energies (#825 chooses among one file's energies, never "
+                                "across files)")
+    else:
+        sets = {own for _name, own, _basis in rows}
+        energies = next(iter(sets)) if len(sets) == 1 and None not in sets else ()
+        if len(sets) > 1:
+            failures.append(f"{len(rows)} row(s) run as multi-energy AIF, and their inputs record different MS2 "
+                            "collision energies (" + "; ".join(sorted(_energies_text(item) for item in sets if item))
+                            + "): #825 chooses a representative energy among one file's energies, never across files")
+    evidence["collision_energies"] = list(energies)
+    probe = record.get(MULTI_ENERGY_AIF_PROBE_FIELD) if record is not None else None
+    shown, how, console = _multi_energy_aif_console(probe, run_manifest)
+    evidence.update(console=console, console_shown=shown, console_detail=how)
+    if not shown:
+        failures.append(f"{len(rows)} row(s) run as multi-energy AIF ({_energies_text(energies)}; the first {first}), "
+                        f"which only an MS-DIAL Console with MsdialWorkbench#825 processes, and {how}; decide the unit "
+                        "again with the Console that will run it")
+    return failures, evidence
+
+
+def _sanctioned_mapping(header: str, value: str, key: str, dispositions: list[dict],
+                        record: "dict | None" = None) -> "tuple[str, str]":
+    """(rule, "") where SANCTIONED_ACQUISITION_MAPPINGS allows this file's header type to run as the row's type and
+    the binding disposition records the mapping; else ("", why it is not sanctioned, "" where no rule applies).
+
+    AIF as SWATH (2026-10-07): a binding disposition's aif_run_as_swath names AIF_AS_SWATH_RULE and exactly one
+    collision energy, and the file's per-file record says that rule decided its type (console_acquisition_basis
+    AIF_AS_SWATH_BASIS). The disposition decides for the unit, so the file is not named in it."""
+    field_name = SANCTIONED_ACQUISITION_MAPPINGS.get((header, value))
+    if not field_name:
+        return "", ""
+    if field_name != AIF_AS_SWATH_FIELD:
+        return "", f"no rule of this gate reads {field_name}"
+    reasons = []
+    for disposition in dispositions:
+        energies, why = _aif_as_swath_energies(disposition.get(field_name))
+        if energies is None:
+            reasons.append(why)
+            continue
+        basis = str((record or {}).get("console_acquisition_basis") or "")
+        if basis != AIF_AS_SWATH_BASIS:
+            reasons.append(f"its record's console_acquisition_basis is {basis or 'none'!r}, not {AIF_AS_SWATH_BASIS}")
+            continue
+        return AIF_AS_SWATH_RULE, ""
+    return "", "; ".join(dict.fromkeys(reasons)) or f"no binding campaign disposition records {field_name}"
+
+
+def _declared_dia_family(dispositions: list[dict]) -> "tuple[str, str] | None":
+    """(declared mode, its source) where a binding disposition records a unit declared DIA, AIF or SWATH."""
+    for disposition in dispositions:
+        declared = disposition.get("declared") if isinstance(disposition.get("declared"), dict) else {}
+        mode = str(declared.get("acquisition_mode") or "").strip()
+        if mode.upper() in DECLARED_DIA_FAMILY:
+            return mode, str(disposition.get("declared_acquisition_source") or "")
+    return None
+
+
 def check_acquisition_type_is_the_headers(
     report: Report, provenance: dict | None, reason: str, csv_rows: list[dict] | None, csv_reason: str,
+    run_manifest: "dict | None" = None,
 ) -> None:
     """ACQ-1. Every CSV row's acquisition_type is a Console type, and the one its file's header gives.
 
@@ -2912,14 +3585,38 @@ def check_acquisition_type_is_the_headers(
     recorded. A record written before console_acquisition_type existed says DIA without saying which;
     its extractor record's windows settle SWATH, and without them the row is a WARN.
 
-    A row whose type is not the header's is a WARN that says what it rests on: the repository's
-    declaration, where the header gave no Console type (a Waters DDA read as Unknown) or where a campaign
-    disposition kept the declaration over a header below HEADER_OVERRIDE_CONFIDENCE that contradicts it;
-    an MS1-only file the disposition folded into a DDA run; or no header record at all. Whether a weak
-    header should outrank the declaration is a scientific decision the disposition recorded, and this
-    names it rather than settling it. A contradiction by a confident header, or by the header the type
-    was taken from, stays a FAIL, as does a row a binding campaign disposition gave no Console type: a
-    unit whose acquisition is still unknown does not run (user decision, 2026-09-30).
+    RULE B2, HEADER FIRST (user decision, 2026-10-06; Interactive 0.5.29). A row FAILs where its type is not
+    the one its file's header alone gives (header_console_acquisition_type: DDA, SWATH or AIF), at any
+    confidence and whatever the record's console_acquisition_basis, unless SANCTIONED_ACQUISITION_MAPPINGS
+    allows that mapping and the binding disposition records it (_sanctioned_mapping). One mapping is sanctioned
+    (user decision, 2026-10-07): an AIF header runs as SWATH where campaign_disposition.aif_run_as_swath names the
+    rule single_ce_aif_as_swath_2026_10_07 and exactly one collision energy, and the file's record says that rule
+    decided it; the row is then a WARN naming the rule, never a PASS, and a record of more than one energy (a
+    multi-energy AIF unit) sanctions nothing. It FAILs too where the type is not the one the record decided
+    (console_acquisition_type).
+
+    MULTI-ENERGY AIF WITH #825 (Interactive 0.5.34). A row that runs as AIF is a multi-energy AIF row where its
+    record gives more than one MS2 collision energy (ms2_collision_energies, to 0.1 eV), where its record's basis is
+    aif_multi_ce_console_825, or where a binding disposition records aif_multi_ce_run. It runs as its header gives,
+    so it PASSes only where (_multi_energy_aif_failures): a binding disposition records aif_multi_ce_run under the
+    rule multi_ce_aif_with_console_825 with two or more energies, and each such row's record carries that basis and
+    those energies (inputs whose energies differ are held by Interactive, so a row with others FAILs); and the
+    Console the run manifest (output/run-manifest.json) records is shown to have MsdialWorkbench#825: the
+    disposition's multi_energy_aif_console probe found it in the assembly whose sha256 the run manifest records,
+    or the gate finds both of #825's markers in that assembly itself. A multi-energy AIF row on a Console without
+    #825 FAILs, and so does one whose disposition holds the unit or records no such run. Without a binding
+    disposition (no campaign) the rows' energies must agree and the Console must be shown the same way. A
+    single-energy AIF unit is still expected as SWATH under single_ce_aif_as_swath_2026_10_07, whatever the
+    Console. A record written before header_console_acquisition_type existed gives DDA,
+    SWATH or AIF as its acquisition_mode says, and the extractor's own verdict is read beside it, as before;
+    the exemption that let a disposition keep the declaration over a header below 0.8 confidence is gone.
+    A WARN only names what a row's type rests on where it is not a header's: the repository's declaration
+    where the header gave no Console type (an unreadable header, a DIA header whose isolation left SWATH
+    and AIF open), and an MS1-only file folded into a DDA run. That fold FAILs where the binding disposition
+    records the unit as declared DIA, AIF or SWATH, where rule B2 excludes such files
+    (ms1_only_in_declared_dia_unit); only a disposition written before 0.5.29 holds one. A row a binding
+    campaign disposition gave no Console type stays a FAIL: a unit whose acquisition is still unknown does
+    not run (user decision, 2026-09-30).
 
     The header comparison is not required without a preflight: a unit whose acquisition mode was known
     from the repository never needed a header read (PRE-1). Nor is it made for a GC-MS unit, outside
@@ -2944,10 +3641,17 @@ def check_acquisition_type_is_the_headers(
     types = dict(Counter(str(row.get("acquisition_type") or "") for row in rows))
     type_text = ", ".join(f"{key} {count}" for key, count in sorted(types.items()))
 
+    # The rows that run as multi-energy AIF (name, recorded energies, basis), and why they may not.
+    multi_rows: "list[tuple[str, tuple[float, ...] | None, str]]" = []
+    multi_failures: list[str] = []
+
     def refuse(**evidence) -> None:
+        typed = len(failures) - unparsed - len(multi_failures)
         parts = ([f"{unparsed} carry an acquisition_type other than {domain_text}"] if unparsed else []) + (
-            [f"{len(failures) - unparsed} would be deconvoluted as an acquisition type their header does not give"]
-            if len(failures) > unparsed else [])
+            [f"{typed} would be deconvoluted as an acquisition type their header does not give"]
+            if typed > 0 else []) + (
+            [f"{len(multi_rows)} run as multi-energy AIF where the records or the Console do not allow it"]
+            if multi_failures else [])
         report.add("ACQ-1", stage, ACQ1_TITLE, FAIL,
                    f"Of the {len(rows)} row(s), " + " and ".join(parts) + ", which completes, validates and is wrong: "
                    + "; ".join(failures[:3]) + ".",
@@ -2979,9 +3683,13 @@ def check_acquisition_type_is_the_headers(
     aliases = _input_keys_by_console_path(provenance)
     dispositions = _binding_dispositions(provenance)
     decisions = _declared_vs_header(dispositions)
+    declared_dia = _declared_dia_family(dispositions)
+    multi_ce_recorded = any(isinstance(item.get(AIF_MULTI_CE_FIELD), dict) for item in dispositions)
     warnings: list[str] = []
     basis: Counter = Counter()
     sources: Counter = Counter()
+    sanctioned = 0
+    sanctioned_rows: list[str] = []
     for row in csv_rows:
         path = str(row.get("file_path") or "")
         name = str(row.get("file_name") or "") or Path(path).name or "a row with no file"
@@ -3005,27 +3713,39 @@ def check_acquisition_type_is_the_headers(
             basis["console_acquisition_type"] += 1
             console = record.get("console_acquisition_type")
             decided = str(record.get("console_acquisition_basis") or "")
+            header_console = _record_header_console(record)
             if console is not None and console not in CONSOLE_ACQUISITION_TYPES:
                 failures.append(f"{name}: its record's console_acquisition_type {console!r} is no Console type, so "
                                 "its header verdict was never resolved to DDA, SWATH or AIF")
                 continue
-            if console is not None and console != value:
-                failures.append(f"{name}: its header gives {console}, and the Console will deconvolute it as {value}")
-                continue
-            contradiction = _header_contradiction(method, windows, value)
-            confidence = _header_confidence(record, decisions.get(key))
-            if contradiction:
-                if decided != "declaration" or (confidence is not None and confidence >= HEADER_OVERRIDE_CONFIDENCE):
-                    failures.append(f"{name}: {contradiction}")
+            mapped = ""
+            if header_console in CONSOLE_ACQUISITION_TYPES and header_console != value:
+                mapped, why = _sanctioned_mapping(header_console, value, key, dispositions, record)
+                if not mapped:
+                    failures.append(f"{name}: its header gives {header_console}, and the Console will deconvolute it "
+                                    f"as {value}" + ("" if decided in ("", "header") else
+                                                     f" (decided on the basis {decided!r})")
+                                    + (f"; no sanctioned mapping covers it: {why}" if why else ""))
                     continue
-                sources["declaration"] += 1
-                declared = str((decisions.get(key) or {}).get("declared") or "") or value
-                weak = (f"at confidence {confidence:.2f}, below" if confidence is not None else
-                        "at no recorded confidence, short of")
-                warnings.append(f"{name}: {contradiction}, {weak} the {HEADER_OVERRIDE_CONFIDENCE} at which a header "
-                                f"replaces the repository's declaration, so the campaign disposition kept the declared "
-                                f"{declared}")
-            elif console is None:
+            if console is not None and console != value:
+                failures.append(f"{name}: its record decided {console}, and the Console will deconvolute it as {value}")
+                continue
+            if value == "AIF":
+                energies = _energy_set(record.get("ms2_collision_energies"))
+                basis_text = str(record.get("console_acquisition_basis") or "")
+                if (energies and len(energies) > 1) or basis_text == AIF_MULTI_CE_BASIS or multi_ce_recorded:
+                    multi_rows.append((name, energies, basis_text))
+            if mapped:
+                sanctioned += 1
+                sources["sanctioned"] += 1
+                sanctioned_rows.append(f"{name}: its header gives {header_console}, and it runs as {value} under {mapped}")
+                continue
+            contradiction = _header_contradiction(method, windows, value) if header_console is None else ""
+            if contradiction:
+                failures.append(f"{name}: {contradiction}")
+                continue
+            confidence = _header_confidence(record, decisions.get(key))
+            if console is None:
                 sources["unresolved"] += 1
                 if dispositions:
                     failures.append(f"{name}: the campaign disposition gave it no Console acquisition type, and a unit "
@@ -3035,17 +3755,24 @@ def check_acquisition_type_is_the_headers(
                                     "something other than the raw headers")
             elif decided == "folded_ms1_only":
                 sources["folded_ms1_only"] += 1
-                warnings.append(f"{name}: its header gives {method or 'no acquisition mode'} with no MS2 to "
-                                "deconvolute, and the campaign disposition folded it into the DDA run")
-            elif decided == "declaration":
+                if declared_dia is not None:
+                    mode, source = declared_dia
+                    failures.append(f"{name}: its header gives {method or 'no acquisition mode'} with no MS2, and the "
+                                    f"campaign disposition folded it into the DDA run of a unit declared {mode}, where "
+                                    "rule B2 (2026-10-06) excludes it as ms1_only_in_declared_dia_unit"
+                                    + (f" (declared by {source})" if source else
+                                       "; the disposition predates Interactive 0.5.29"))
+                else:
+                    warnings.append(f"{name}: its header gives {method or 'no acquisition mode'} with no MS2 to "
+                                    "deconvolute, and the campaign disposition folded it into the DDA run")
+            elif decided == "declaration" and header_console is None:
                 sources["declaration"] += 1
                 warnings.append(f"{name}: its {value} is the repository's declaration, which the campaign disposition "
-                                f"kept where its header gives {method or 'no acquisition mode'}"
-                                + ("" if confidence is None else f" at confidence {confidence:.2f}"))
-            elif method not in HEADER_CONSOLE_METHODS:
-                sources["other"] += 1
-                warnings.append(f"{name}: its header gives {method or 'no acquisition mode'}, which is no Console "
-                                f"acquisition type, so its {value} rests on something other than the raw headers")
+                                f"took where its header gives {method or 'no acquisition mode'}"
+                                + ("" if confidence is None else f" at confidence {confidence:.2f}")
+                                + " and no Console acquisition type")
+            elif decided == "declaration":
+                sources["declaration"] += 1
             else:
                 sources["header"] += 1
             continue
@@ -3066,19 +3793,55 @@ def check_acquisition_type_is_the_headers(
         else:
             sources["header"] += 1
     evidence = {"basis": dict(basis), "sources": dict(sources), "extractor_records": len(extracted)}
+    overrides = [entry for entry in decisions.values() if str(entry.get("basis") or "") == "header"]
+    if overrides:
+        # acquisition_header_overrides_declaration: each declaration a header decided over, with its source.
+        evidence["header_overrides_declaration"] = len(overrides)
+        evidence["declaration_sources"] = dict(Counter(str(entry.get("declaration_source") or "unrecorded")
+                                                       for entry in overrides))
+    multi_text = ""
+    if multi_rows:
+        refused, evidence["multi_energy_aif"] = _multi_energy_aif_failures(multi_rows, dispositions, run_manifest)
+        multi_failures.extend(refused)
+        failures.extend(refused)
+        multi = evidence["multi_energy_aif"]
+        sha = str((multi.get("console") or {}).get("run_console_assembly_sha256") or "")
+        multi_text = (f" {len(multi_rows)} of them run as multi-energy AIF ({_energies_text(multi.get('collision_energies'))}) "
+                      f"under {AIF_MULTI_CE_RULE}: {multi.get('console_detail')}"
+                      + (f" ({sha[:12]})" if sha else "") + ", and that Console represents each peak by the energy of "
+                      "its MS/MS reference-spectrum match, else the energy with the most product ions.")
+    if sanctioned:
+        evidence["sanctioned_mappings"] = sanctioned
+        evidence["sanctioned_rule"] = AIF_AS_SWATH_RULE
+        evidence[AIF_AS_SWATH_FIELD] = next((item.get(AIF_AS_SWATH_FIELD) for item in dispositions
+                                             if _aif_as_swath_energies(item.get(AIF_AS_SWATH_FIELD))[0] is not None), None)
     if failures:
-        refuse(warnings=warnings[:10], **evidence)
+        refuse(warnings=warnings[:10], **({"sanctioned": sanctioned_rows[:10]} if sanctioned_rows else {}), **evidence)
         return
-    if warnings:
-        report.add("ACQ-1", stage, ACQ1_TITLE, WARN,
-                   f"No row runs against a confident header verdict, but {len(warnings)} of the {len(csv_rows)} rest "
-                   "on something else for their acquisition type ("
-                   + ", ".join(f"{count} {ACQ1_SOURCES[key]}" for key, count in sources.items()) + "): "
-                   + "; ".join(warnings[:3]) + ".",
-                   warnings=warnings[:10], rows=len(csv_rows), types=types, **evidence)
+    if warnings or sanctioned_rows:
+        sentences = []
+        if sanctioned_rows:
+            energies, _why = _aif_as_swath_energies(evidence.get(AIF_AS_SWATH_FIELD))
+            energy = f"{energies[0]:g} eV" if energies else "one collision energy"
+            sentences.append(
+                f"{len(sanctioned_rows)} of the {len(csv_rows)} row(s) run as SWATH where their header gives AIF, under "
+                f"the rule {AIF_AS_SWATH_RULE} (the user's interim rule of 2026-10-07: a unit whose included files carry "
+                f"a single MS2 collision energy, here {energy}, runs as SWATH-type in the Console, as the campaign "
+                "disposition records it): " + "; ".join(sanctioned_rows[:3]) + ".")
+        if warnings:
+            other = {key: count for key, count in sources.items() if key != "sanctioned"}
+            sentences.append(
+                f"No row runs against its header verdict, but {len(warnings)} of the {len(csv_rows)} rest "
+                "on something else for their acquisition type ("
+                + ", ".join(f"{count} {ACQ1_SOURCES[key]}" for key, count in other.items()) + "): "
+                + "; ".join(warnings[:3]) + ".")
+        report.add("ACQ-1", stage, ACQ1_TITLE, WARN, " ".join(sentences) + multi_text,
+                   warnings=warnings[:10], rows=len(csv_rows), types=types,
+                   **({"sanctioned": sanctioned_rows[:10]} if sanctioned_rows else {}), **evidence)
         return
     report.add("ACQ-1", stage, ACQ1_TITLE, PASS,
-               f"All {len(csv_rows)} row(s) run as the acquisition type their raw header gives ({type_text}).",
+               f"All {len(csv_rows)} row(s) run as the acquisition type their raw header gives ({type_text})."
+               + multi_text,
                rows=len(csv_rows), types=types, **evidence)
 
 
@@ -3138,7 +3901,9 @@ def check_aif_files_have_collision_energies(
     empty gets no MS2 deconvolution at all, and nothing says so. The targets are read from the per-file
     raw-header record; the extractor samples spectrum headers and also reads an energy under activation,
     where the Console reads spectrum-level energies only, so a target recorded here is the extractor's
-    evidence and not the Console's list.
+    evidence and not the Console's list. A Console with MsdialWorkbench#825 stops instead on an AIF file whose MS2
+    scans carry no collision energy, and Interactive 0.5.34 holds such a unit before it runs
+    (aif_collision_energy_unrecorded), with or without #825.
 
     Never a FAIL, and never required: the user decided on 2026-09-30 that an AIF file with an empty
     target list is recorded with a warning and still runs. The files are named; the Console's own line is
@@ -3215,13 +3980,18 @@ _QC_TOKENS = ("qc",)
 _BLANK_TOKENS = ("blank",)
 
 
-def check_class_distribution(report: Report, csv_rows: list[dict] | None, reason: str, stage: str) -> None:
+def check_class_distribution(report: Report, csv_rows: list[dict] | None, reason: str, stage: str,
+                             provenance: "dict | None" = None) -> None:
     """Report the executed grouping, and flag names a substring matcher would reclassify.
 
     Sample category is re-derived downstream by substring match over file_type + class_id, so a
     biological class whose name contains "qc" or "blank" is removed from the comparison and
     simultaneously used as the QC-precision basis. The study that motivated this check contains a
     wine strain named QA23 with samples QA1..QA3; it survives that matcher, but only just.
+
+    Rows of archive members the lease included unattributed (user decision, 2026-10-07; _unattributed_members)
+    carry the unit's abstention Class or "Unattributed": a stated grouping, and a WARN that lists them with
+    manifest.unattributed_members.count, since no sample row says what they are.
 
     RUN POLICY: record_only, as the user named it (2026-10-01). The grouping decides the comparison
     made from the results, not the spectra each file yields.
@@ -3250,14 +4020,35 @@ def check_class_distribution(report: Report, csv_rows: list[dict] | None, reason
             classes=dict(classes), file_types=dict(file_types),
         )
         return
+    unattributed = _unattributed_members(provenance)
+    free = _unattributed_csv_names(provenance, csv_rows, unattributed)
+    free_evidence = {}
+    free_sentence = ""
+    if free:
+        carried = Counter(str(row.get("class_id", "")).strip() for row in csv_rows
+                          if str(row.get("file_name") or "") in set(free))
+        free_evidence = {**unattributed.evidence(), "unattributed_rows": len(free),
+                         "unattributed_classes": dict(carried)}
+        free_sentence = (f" {len(free)} of the {len(csv_rows)} rows are archive members no sample row pairs with, "
+                         f"included unattributed under the rule {UNATTRIBUTED_RULE} "
+                         f"(manifest.unattributed_members.count {unattributed.recorded_count}), in Class "
+                         + ", ".join(f"{label!r} ({count})" for label, count in sorted(carried.items()))
+                         + ": " + ", ".join(free[:5]) + (", ..." if len(free) > 5 else "")
+                         + ". No sample row says what they are.")
     if blank_named:
         report.add(
             "CLS-1", stage, "Executed grouping is stated and unambiguous", WARN,
             "A class name contains 'qc' or 'blank' as a substring. Sample category is re-derived by "
             "substring match downstream, so this class may be pulled out of the biological "
-            "comparison and used as the QC or blank basis instead. Confirm the intent before running.",
-            classes=dict(classes), file_types=dict(file_types), matched_names=blank_named,
+            "comparison and used as the QC or blank basis instead. Confirm the intent before running."
+            + free_sentence,
+            classes=dict(classes), file_types=dict(file_types), matched_names=blank_named, **free_evidence,
         )
+        return
+    if free:
+        report.add("CLS-1", stage, "Executed grouping is stated and unambiguous", WARN,
+                   f"{len(classes)} classes over {len(csv_rows)} samples." + free_sentence,
+                   classes=dict(classes), file_types=dict(file_types), **free_evidence)
         return
     report.add("CLS-1", stage, "Executed grouping is stated and unambiguous", PASS,
                f"{len(classes)} classes over {len(csv_rows)} samples.",
@@ -5556,6 +6347,236 @@ def _excluded_samples(provenance: dict | None, samples: set[str]) -> dict[str, l
     return result
 
 
+def _base_name(value: object) -> str:
+    """A path's last component, compared without case: "/" or "\\" separated, less a trailing separator."""
+    return str(value or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
+
+
+def _unreached_samples(provenance: dict | None, samples: set[str]) -> dict[str, list[str]]:
+    """Of these approved samples, those that never reached the lease's inputs, with the raw files their rows
+    record.
+
+    A sample is unreached when the input lineage, the lease's record of what it admitted, says nothing of
+    it, and nothing the lease admitted carries its name. That is: no lineage row (an input, or one the lease
+    excluded, of the unit or of a split part's raw owner) names it, by its sample_id, by the sample of the
+    Catalog's declared input (_input_samples), by the sample row the CSV was written from (sample_row), by
+    a declared name it is listed under (declared_names) or by the declared raw file an inferred pairing
+    gave it (name_pairing); and no input candidate, lineage path or excluded candidate has the sample's
+    id or a raw file of its rows as its name (_container_stem). Such a sample is not a row the CSV writer
+    dropped, which CLS-2 calls missing: the lineage shows it never reached the run.
+
+    Whether it was never delivered, or delivered and left unpaired, is not the lineage's to say: the
+    lineage records what the lease admitted, not what the download brought. _delivery_of reads that from
+    the archive member listings and the downloads.
+
+    Read from the lineage only, never from the CSV record (analysis_csv.samples_without_input), which is
+    the CSV writer's own account. Without a lineage nothing is known unreached, and a sample with no
+    row stays missing as before.
+    """
+    if not isinstance(provenance, dict) or not samples:
+        return {}
+    manifests = _lineage_manifests(provenance)
+    lineage = [row for manifest in manifests for part in ("rows", "excluded") for row in _lineage_rows(manifest, part)]
+    if not lineage:
+        return {}
+    raw_files: dict[str, list[str]] = {}
+    by_name: dict[str, set[str]] = {}
+    for manifest in manifests:
+        for row in ((manifest.get("project") or {}).get("sample_metadata") or []):
+            if not isinstance(row, dict):
+                continue
+            sample, raw = str(row.get("sample_id") or "").strip(), str(row.get("raw_file") or "").strip()
+            if sample and raw:
+                if raw not in raw_files.setdefault(sample, []):
+                    raw_files[sample].append(raw)
+                for form in (_base_name(raw), _container_stem(raw)):
+                    by_name.setdefault(form, set()).add(sample)
+    named = {sample for sample in _input_samples(provenance, ("rows", "excluded")).values() if sample}
+    for row in lineage:
+        sample_row = row.get("sample_row")
+        if isinstance(sample_row, dict) and str(sample_row.get("sample_id") or "").strip():
+            named.add(str(sample_row["sample_id"]).strip())
+        pairing = row.get("name_pairing")
+        declared = [*(row.get("declared_names") if isinstance(row.get("declared_names"), list) else []),
+                    *([pairing.get("declared_raw_file")] if isinstance(pairing, dict) else [])]
+        for name in declared:
+            if str(name or "").strip():
+                named |= by_name.get(_base_name(name), set()) | by_name.get(_container_stem(str(name)), set())
+    seen: list[object] = list(provenance.get("input_candidates") or [])
+    for manifest in manifests:
+        seen += [item.get("path") for item in manifest.get("excluded_input_candidates") or [] if isinstance(item, dict)]
+    seen += [row["path"] for row in lineage]
+    stems = {_container_stem(str(path)) for path in seen if str(path or "").strip()}
+    stems |= {_base_name(path) for path in seen if str(path or "").strip()}
+    result: dict[str, list[str]] = {}
+    for sample in samples:
+        stripped = sample.strip()
+        if not stripped or stripped in named:
+            continue
+        forms = {stripped.casefold(), _container_stem(stripped)}
+        forms |= {form for raw in raw_files.get(stripped, []) for form in (_base_name(raw), _container_stem(raw))}
+        if not forms & stems:
+            result[sample] = raw_files.get(stripped, [])
+    return result
+
+
+def _loose_name(value: object) -> str:
+    """A name compared loosely: its container stem (_container_stem) with everything but letters and digits
+    dropped, so QC-D5-C and the archive member QC-D5-C-.mzML are one name."""
+    return "".join(character for character in _container_stem(str(value or "")) if character.isalnum())
+
+
+def _member_container(member: str) -> str:
+    """The container an archive member is, or is inside, as the listing names it ("/"-separated): the first
+    path component, from the top, that carries a container suffix (x.d of x.d/AcqData/..., x.raw of a
+    Waters folder), or ""; a member in no container (a log, a tag file, a README) is no input."""
+    parts = [part for part in member.split("/") if part]
+    for index, part in enumerate(parts):
+        if _strip_suffix(part, CONTAINER_SUFFIXES) != part:
+            return "/".join(parts[:index + 1])
+    return ""
+
+
+def _member_listing(owner: dict, record: dict) -> _ArchiveListing:
+    """An extraction record's member listing, as _InputLineage._listing finds and checks it."""
+    members = record.get("members_tsv")
+    name = str(record.get("archive_name") or "the archive")
+    if not isinstance(members, dict) or not str(members.get("path") or "").strip():
+        return _ArchiveListing(problem=f"the extraction record of {name} keeps no member listing")
+    recorded = Path(str(members["path"]))
+    candidates = [recorded]
+    if str(owner.get("workspace") or "").strip():
+        candidates.append(Path(str(owner["workspace"])) / "provenance" / recorded.name)
+    path = next((item for item in candidates if item.is_file()), None)
+    if path is None:
+        return _ArchiveListing(problem=f"the member listing of {name} ({recorded.name}) is absent")
+    return _read_archive_listing(path, str(members.get("sha256") or ""), name)
+
+
+def _download_container(path: str, raw_directory: str = "") -> str:
+    """The input container a download that is no archive is, or is inside, read as _member_container reads an
+    archive member: the path below the raw directory ("/"-separated; the whole path where it is not under
+    it), and in it the first component, from the top, that carries a container suffix. A vendor folder
+    fetched file by file (MetaboBank's Waters x.raw/_FUNC001.DAT, _extern.inf, SystemSettings.xml ...) is
+    one input, x.raw; a file that is an input (x.mzML, x.wiff) is itself; and a companion file beside its
+    input (x.wiff.scan) or a file in no container (a README) is no input, "", as in an archive listing."""
+    text = str(path).replace("\\", "/").rstrip("/")
+    root = str(raw_directory or "").replace("\\", "/").rstrip("/")
+    if root and text.casefold().startswith(root.casefold() + "/"):
+        text = text[len(root) + 1:]
+    return _member_container(text)
+
+
+def _is_archive_download(item: dict) -> bool:
+    archive = item.get("archive")
+    if isinstance(archive, dict) and str(archive.get("format") or "").strip():
+        return True
+    return str(item.get("path") or "").casefold().endswith(ARCHIVE_SUFFIXES)
+
+
+@dataclass
+class _Delivery:
+    """What the download delivered against what the lease paired (_delivery_of)."""
+    unpaired: dict = field(default_factory=dict)      # sample -> the unpaired delivered files named after it
+    undelivered: dict = field(default_factory=dict)   # sample -> the raw files its rows record
+    unestablished: dict = field(default_factory=dict)  # sample -> the raw files its rows record
+    unpaired_files: list = field(default_factory=list)
+    delivered: int = 0
+    shared: bool = False
+    problem: str = ""
+
+
+def _delivery_of(provenance: dict | None, unreached: dict[str, list[str]]) -> _Delivery:
+    """Of the approved samples that never reached the lease's inputs (_unreached_samples), those whose files the
+    download delivered but the lease did not pair, and those it never delivered.
+
+    WHAT WAS DELIVERED is the raw owner's record of its download, never the CSV: every input container an
+    archive member listing (archive_extractions[].members_tsv, its sha256 checked) marks extracted, and every
+    input container a download that is no archive is or is inside (_download_container: a Waters .raw folder
+    fetched file by file is one input, and a .wiff.scan companion is none). WHAT WAS PAIRED is every input the lease admitted or excluded: the input
+    candidates, the lineage rows of the raw owner and of the unit (a split part's sibling's included: paired,
+    to the sibling), and the excluded candidates. A delivered container none of those is, compared by stem
+    (_container_stem), is an unpaired delivered file.
+
+    A sample is DELIVERED BUT UNPAIRED, a mapping failure, where an unpaired delivered file carries its name
+    loosely (_loose_name: ST004304's QC-D5-C and the member QC-D5-C-.mzML); and where unpaired delivered
+    files that carry no unreached sample's name remain, every unreached sample left is too, since one of
+    them may be any of those files (ST001264's Sample1..28 and its members Youn_sa1..28.raw), unless the
+    download is shared with other units (download_scope shared_unit_count above 1), whose files those may
+    be. A sample is NEVER DELIVERED only where the inventory leaves no such doubt. Where the inventory
+    cannot be read (no download recorded, an archive with no readable member listing), neither is
+    established, and the samples are left unestablished: CLS-2 counts them missing.
+    """
+    result = _Delivery()
+    if not unreached:
+        return result
+    owner, why = _raw_owner_manifest(provenance)
+    if owner is None:
+        result.problem = why or "the unit's raw owner is not recorded"
+        result.unestablished = dict(unreached)
+        return result
+    downloads = [item for item in owner.get("downloads") or [] if isinstance(item, dict) and str(item.get("path") or "").strip()]
+    if not downloads:
+        result.problem = "the raw owner's manifest records no download"
+        result.unestablished = dict(unreached)
+        return result
+    delivered: dict[str, str] = {}
+    for item in downloads:
+        if not _is_archive_download(item):
+            container = _download_container(str(item["path"]), str(owner.get("raw_directory") or ""))
+            if container:
+                delivered.setdefault(_container_stem(container), container.rsplit("/", 1)[-1])
+    if any(_is_archive_download(item) for item in downloads):
+        records = [item for item in owner.get("archive_extractions") or [] if isinstance(item, dict)]
+        if not records:
+            result.problem = "an archive was downloaded and the manifest records no extraction of it"
+            result.unestablished = dict(unreached)
+            return result
+        for record in records:
+            listing = _member_listing(owner, record)
+            if listing.problem:
+                result.problem = listing.problem
+                result.unestablished = dict(unreached)
+                return result
+            # The files first, whose names the listing spells; a directory only as its key.
+            for member in [*sorted(listing.files), *sorted(listing.directories)]:
+                container = _member_container(listing.names.get(member, member))
+                if container:
+                    delivered.setdefault(_container_stem(container), container.rsplit("/", 1)[-1])
+    paired: list[object] = [*((provenance or {}).get("input_candidates") or []), *(owner.get("input_candidates") or [])]
+    for manifest in [owner, *([provenance] if provenance is not owner else [])]:
+        paired += [item.get("path") for item in manifest.get("excluded_input_candidates") or [] if isinstance(item, dict)]
+        paired += [row["path"] for part in ("rows", "excluded") for row in _lineage_rows(manifest, part)]
+    paired_stems = {_container_stem(str(path)) for path in paired if str(path or "").strip()}
+    unpaired = {stem: name for stem, name in delivered.items() if stem not in paired_stems}
+    result.delivered = len(delivered)
+    result.unpaired_files = sorted(unpaired.values())
+    scope = ((owner.get("project") or {}).get("download_scope") if isinstance(owner.get("project"), dict) else None) or {}
+    counts = [scope.get("bundle_shared_unit_count")] + [item.get("shared_unit_count") for item in scope.get("objects") or []
+                                                       if isinstance(item, dict)]
+    result.shared = any(isinstance(count, int) and not isinstance(count, bool) and count > 1 for count in counts)
+    loose = {}
+    for stem, name in unpaired.items():
+        loose.setdefault(_loose_name(name), []).append(name)
+    claimed: set[str] = set()
+    for sample, raws in sorted(unreached.items()):
+        forms = {_loose_name(sample)} | {_loose_name(raw) for raw in raws}
+        forms.discard("")
+        names = sorted({name for form in forms for name in loose.get(form, [])})
+        if names:
+            result.unpaired[sample] = names
+            claimed.update(names)
+    leftover = [name for name in result.unpaired_files if name not in claimed]
+    for sample, raws in sorted(unreached.items()):
+        if sample in result.unpaired:
+            continue
+        if leftover and not result.shared:
+            result.unpaired[sample] = []
+        else:
+            result.undelivered[sample] = raws
+    return result
+
+
 def _class_token(value: object) -> str:
     """A Class label as Interactive projects it into the analysis CSV (repository_metadata.class_token,
     which apply_class_proposal applies to every approved label): NFKC, runs of white space and "_" as
@@ -5643,6 +6664,20 @@ def check_executed_class_matches_approved(
     that runs is absent however much else of it was excluded. Where every approved sample was excluded
     the Console reads no grouping, and that is a FAIL, not a comparison of nothing.
 
+    AN APPROVED SAMPLE THAT NEVER REACHED THE LEASE'S INPUTS (_unreached_samples: no input lineage row names
+    it and no input the lease admitted carries its name) is told apart by what the download delivered
+    (_delivery_of), read from the archive member listings and the downloads in provenance, never from the CSV:
+    - DELIVERED BUT UNPAIRED: a delivered file the lease did not pair carries its name, or unpaired
+      delivered files remain that may be its (ST004304's QC-D5-C beside the member QC-D5-C-.mzML; ST001264's
+      Sample1..28 beside the members Youn_sa1..28.raw). That is a mapping failure: listed under its own
+      evidence key (delivered_unpaired_samples, with the unpaired files under unpaired_delivered_files) and
+      a FAIL, since the run leaves out data it holds;
+    - NEVER DELIVERED: the delivery holds nothing it could be. Listed under undelivered_samples, and a WARN
+      naming how many approved samples the run covers, where a missing sample FAILs;
+    - neither established, where the delivery cannot be read: counted missing, as before.
+    It is never read from the CSV record's samples_without_input, the CSV writer's own account. A run of
+    none of the approved samples is still a FAIL.
+
     A LABEL IS COMPARED AS INTERACTIVE WRITES IT: projected (_class_token, "Wild type" as "Wild-type",
     and "Sample" where the projection leaves nothing), and, where the Console could not read the
     projection back, folded to the ASCII Class the CSV record names (analysis_csv.class_id_aliases),
@@ -5650,6 +6685,15 @@ def check_executed_class_matches_approved(
     Class must still run as one executed Class and no executed Class carry two: a projection or a fold
     that merges or splits Classes is a grouping nobody approved, which the label comparison alone would
     not see.
+
+    UNATTRIBUTED MEMBERS (user decision, 2026-10-07; _unattributed_members). A row that opens an archive member
+    the lease included unattributed is no approved sample: it is neither an unapproved row nor joined to one by
+    its name, and its Class must be the unit's abstention Class where the Class decision is an abstention, else
+    "Unattributed" (a different one is a Class mismatch). An approved sample that never reached the lease's
+    inputs in such a unit is neither missing nor undelivered nor a pairing failure: its file may be any of the
+    unattributed members, and which one nobody recorded. It is listed apart (samples_without_attributed_input),
+    and the check WARNs, listing the members with manifest.unattributed_members.count. Delivered files that are
+    neither paired nor unattributed still FAIL as before.
 
     RUN POLICY: record_only, as the user named it (2026-10-01), as for CLS-1.
     """
@@ -5673,6 +6717,8 @@ def check_executed_class_matches_approved(
                    "The Class proposal carries no assignments.")
         return
     executed = {str(row.get("file_name", "")): str(row.get("class_id", "")) for row in csv_rows}
+    unattributed = _unattributed_members(provenance)
+    free = set(_unattributed_csv_names(provenance, csv_rows, unattributed))
     # A Class is assigned to a SAMPLE and the CSV has a row per FILE. Where a repository names its
     # samples after their files the two keys coincide, which is all this check used to handle.
     # MetaboLights does not: MTBLS2207's "DDA E. coli" is the file M3T-Std_Ecoli_neg_DDA_1mz, and
@@ -5680,16 +6726,24 @@ def check_executed_class_matches_approved(
     # while every one carried its approved Class. The repository's own sample-to-file record
     # (sample_metadata raw_file) is the link; it is neither of the two writers being compared. The
     # input lineage, written by the lease, is the link for a CSV built from it.
-    through_lineage = _samples_by_csv_name(provenance, csv_rows)
+    through_lineage = {name: sample for name, sample in _samples_by_csv_name(provenance, csv_rows).items()
+                       if name not in free}
     by_id = {sample.strip(): sample for sample in approved}
     files_of_sample: dict[str, list[str]] = {}
     for name, sample in through_lineage.items():
         if sample in by_id:
             files_of_sample.setdefault(by_id[sample], []).append(name)
-    by_name = _files_of_samples(provenance, set(approved) - set(files_of_sample), set(executed) - set(through_lineage))
+    by_name = _files_of_samples(provenance, set(approved) - set(files_of_sample),
+                                set(executed) - set(through_lineage) - free)
     files_of_sample.update(by_name)
     unmatched = {sample for sample in approved if not files_of_sample.get(sample)}
     excluded = _excluded_samples(provenance, unmatched)
+    delivery = _delivery_of(provenance, _unreached_samples(provenance, unmatched - set(excluded)))
+    undelivered, unpaired = delivery.undelivered, delivery.unpaired
+    # Beside unattributed members, a sample nothing delivered could be is one whose file may be any of them.
+    without_attribution = dict(undelivered) if unattributed else {}
+    if without_attribution:
+        undelivered = {}
     aliases, refused = _class_id_aliases(provenance)
     mapped: set[str] = set()
     missing = []
@@ -5700,7 +6754,8 @@ def check_executed_class_matches_approved(
     for sample, label in sorted(approved.items()):
         files = files_of_sample.get(sample) or []
         if not files:
-            if sample not in excluded:
+            if (sample not in excluded and sample not in undelivered and sample not in unpaired
+                    and sample not in without_attribution):
                 missing.append(sample)
             continue
         forms = _executed_forms(label, aliases)
@@ -5716,7 +6771,13 @@ def check_executed_class_matches_approved(
             carried.setdefault(executed[name], set()).add(label)
             if executed[name] != label:
                 folded[label] = executed[name]
-    extra = sorted(set(executed) - mapped)
+    extra = sorted(set(executed) - mapped - free)
+    # An unattributed member's row runs in the abstention Class, or in "Unattributed": any other is a mismatch.
+    free_forms = _executed_forms(unattributed.class_label, aliases) if free else set()
+    for name in sorted(free):
+        if executed.get(name) not in free_forms:
+            differing.append(f"{name} (an unattributed archive member): executed {executed.get(name)!r}, where an "
+                             f"unattributed member runs in {unattributed.class_label!r}")
     regrouped = ([f"approved {label!r} runs as {sorted(labels)}" for label, labels in sorted(ran_as.items())
                   if len(labels) > 1]
                  + [f"{label!r} carries approved {sorted(labels)}" for label, labels in sorted(carried.items())
@@ -5728,22 +6789,69 @@ def check_executed_class_matches_approved(
         evidence["joined_through_lineage"] = joined_by_lineage
     if excluded:
         evidence["excluded_samples"] = {sample: names for sample, names in sorted(excluded.items())[:10]}
+    if undelivered:
+        # Kept apart from "missing": the lineage shows these never reached the run, which is not the CSV
+        # writer dropping a row it had.
+        evidence["undelivered_samples"] = {sample: raws for sample, raws in sorted(undelivered.items())[:10]}
+        evidence["undelivered_count"] = len(undelivered)
+    if unpaired:
+        # A mapping failure: the download delivered files the lease did not pair with these samples.
+        evidence["delivered_unpaired_samples"] = {sample: names for sample, names in sorted(unpaired.items())[:10]}
+        evidence["delivered_unpaired_count"] = len(unpaired)
+    if undelivered or unpaired:
+        evidence["unpaired_delivered_files"] = delivery.unpaired_files[:10]
+        evidence["unpaired_delivered_file_count"] = len(delivery.unpaired_files)
+        evidence["delivered_files"] = delivery.delivered
+        if delivery.shared:
+            evidence["download_shared_with_other_units"] = True
+    if delivery.unestablished:
+        evidence["delivery_not_established"] = delivery.problem
+    if free or without_attribution:
+        evidence.update(unattributed.evidence())
+        evidence["unattributed_rows"] = len(free)
+    if without_attribution:
+        evidence["samples_without_attributed_input"] = {sample: raws for sample, raws in
+                                                        sorted(without_attribution.items())[:10]}
+        evidence["samples_without_attributed_input_count"] = len(without_attribution)
     if folded:
         evidence["written_as"] = dict(sorted(folded.items())[:10])
     if refused:
         evidence["class_id_aliases_not_a_fold"] = dict(sorted(refused.items())[:10])
-    if not missing and not extra and not differing and not regrouped and len(excluded) == len(approved):
+    analysed = len(approved) - len(excluded) - len(undelivered) - len(unpaired) - len(without_attribution)
+    free_sentence = ""
+    if free or without_attribution:
+        free_sentence = unattributed.sentence() + ", none of them an approved sample"
+        if without_attribution:
+            free_sentence += (f"; {len(without_attribution)} approved sample(s) have no attributed input, and their "
+                              "files may be any of those members (" + ", ".join(sorted(without_attribution)[:5])
+                              + (", ..." if len(without_attribution) > 5 else "") + ")")
+    unpaired_sentence = (
+        f"{len(unpaired)} approved sample(s) have no input although the download delivered files the lease did not "
+        "pair (" + ", ".join(f"{sample}" + (f" as {', '.join(names[:2])}" if names else "")
+                             for sample, names in sorted(unpaired.items())[:5])
+        + (", ..." if len(unpaired) > 5 else "") + f"; {len(delivery.unpaired_files)} unpaired delivered file(s): "
+        + ", ".join(delivery.unpaired_files[:5]) + (", ..." if len(delivery.unpaired_files) > 5 else "")
+        + "), a name-pairing failure, not a missing download") if unpaired else ""
+    if not missing and not extra and not differing and not regrouped and analysed == 0 and not free:
+        reasons = []
+        if excluded:
+            reasons.append(f"the input of {len(excluded)} was excluded by the campaign disposition or the lease ("
+                           + ", ".join(sorted(excluded)[:5]) + ")")
+        if undelivered:
+            reasons.append(f"{len(undelivered)} were never delivered: no input lineage row names them and nothing the "
+                           "download delivered could be theirs (" + ", ".join(sorted(undelivered)[:5]) + ")")
+        if unpaired:
+            reasons.append(unpaired_sentence)
         report.add(
             "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
-            f"None of the {len(approved)} approved sample(s) is analysed: the input of every one was excluded by "
-            "the campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + "), so the Console "
-            "reads no grouping at all.", **evidence)
+            f"None of the {len(approved)} approved sample(s) is analysed: " + "; ".join(reasons)
+            + ", so the Console reads no grouping at all.", **evidence)
         return
     if not missing and not extra and not differing and not regrouped:
-        if not excluded and not folded:
+        if not excluded and not folded and not undelivered and not unpaired and not free_sentence:
             detail = f"All {len(approved)} approved assignments appear in the analysis CSV with the same Class."
         else:
-            detail = (f"All {len(approved) - len(excluded)} approved assignments of the samples analysed appear in "
+            detail = (f"All {analysed} approved assignments of the samples analysed appear in "
                       "the analysis CSV with the same Class")
             if folded:
                 detail += (f", {len(folded)} Class label(s) written as the Console reads them ("
@@ -5751,15 +6859,31 @@ def check_executed_class_matches_approved(
             if excluded:
                 detail += (f"; {len(excluded)} approved sample(s) are not analysed, their input excluded by the "
                            "campaign disposition or the lease (" + ", ".join(sorted(excluded)[:5]) + ")")
+            if undelivered:
+                detail += (f"; {len(undelivered)} approved sample(s) were never delivered: no input lineage row "
+                           "names them and nothing the download delivered could be theirs ("
+                           + ", ".join(sorted(undelivered)[:5]) + (", ..." if len(undelivered) > 5 else "") + ")")
+            if unpaired:
+                detail += "; " + unpaired_sentence
+            if free_sentence:
+                detail += "; " + free_sentence
+            if undelivered or unpaired or without_attribution:
+                detail += f", so the run covers {analysed} of the {len(approved)} approved samples by attribution"
             detail += "."
-        report.add("CLS-2", stage, "Executed Class is the Class that was approved", PASS, detail, **evidence)
+        report.add("CLS-2", stage, "Executed Class is the Class that was approved",
+                   FAIL if unpaired else WARN if undelivered or free_sentence else PASS, detail, **evidence)
         return
     report.add(
         "CLS-2", stage, "Executed Class is the Class that was approved", FAIL,
         "The grouping the Console will read is not the grouping that was approved. "
         f"{len(differing)} sample(s) carry a different Class, {len(missing)} approved sample(s) "
         f"are absent from the CSV, {len(extra)} CSV row(s) were never approved"
-        + (f", and {len(regrouped)} Class(es) were merged or split on the way" if regrouped else "") + ".",
+        + (f", and {len(regrouped)} Class(es) were merged or split on the way" if regrouped else "") + "."
+        + (f" {len(undelivered)} further approved sample(s) were never delivered (undelivered_samples)."
+           if undelivered else "")
+        + (f" {len(unpaired)} further approved sample(s) were delivered and left unpaired "
+           "(delivered_unpaired_samples)." if unpaired else "")
+        + (f" {free_sentence[:1].upper() + free_sentence[1:]}." if free_sentence else ""),
         differing=differing[:10], missing=missing[:10], unapproved=extra[:10],
         **({"regrouped": regrouped[:10]} if regrouped else {}), **evidence,
     )
@@ -5774,79 +6898,98 @@ def check_class_proposal_was_accepted(report: Report, provenance: dict | None, r
     ratification happened somewhere no artifact records -- which, for a machine-authored grouping,
     is the whole of the safety argument.
 
+    Archive members the lease included unattributed (user decision, 2026-10-07; _unattributed_members) run in
+    the abstention Class or in "Unattributed", which no assignment of the ratified record gives them: a ratified
+    decision is then a WARN that lists them with manifest.unattributed_members.count, never a PASS
+    (_unattributed_beside_the_decision).
+
     RUN POLICY: record_only, as the user named it (2026-10-01), as for CLS-1.
     """
-    stage = "before-production"
-    proposal = _class_proposal(provenance)
-    if proposal is None:
-        report.add("CLS-3", stage, "The executed grouping was ratified", NOT_EVALUABLE,
-                   reason or "The manifest carries no Class proposal.", required=False)
-        return
-    status = str(proposal.get("status") or "").strip().casefold()
-    model = str(proposal.get("model") or "")
-    warnings = [str(item) for item in proposal.get("warnings") or []]
-    contrast = proposal.get("contrast_definition") if isinstance(proposal.get("contrast_definition"), dict) else {}
-    # A Class record saved for another unit settles nothing here, however it was ratified. A split
-    # part carries its parent's record, so the parent's id is this unit's too.
-    record_unit = str(proposal.get("unit_id") or "")
-    own_unit = str(((provenance or {}).get("project") or {}).get("analysis_unit_id") or "")
-    split_from = (provenance or {}).get("split_from")
-    parent_unit = str(split_from.get("analysis_unit_id") or "") if isinstance(split_from, dict) else ""
-    if record_unit and own_unit and record_unit not in {own_unit, parent_unit}:
-        report.add("CLS-3", stage, "The executed grouping was ratified", FAIL,
-                   f"The Class record was saved for unit {record_unit}, not for this unit ({own_unit}"
-                   + (f", split from {parent_unit}" if parent_unit else "") + "): it settles nothing here.",
-                   status=status, record_unit=record_unit, analysis_unit_id=own_unit, parent_unit=parent_unit)
-        return
-    if contrast.get("kind") == "abstention":
-        # Where the Catalog abstains, the decision is that no Class is defined: saved, and ratified,
-        # like a proposal (decided 2026-09-28), as every sample in one Class with no field selected.
-        assignments = [item for item in proposal.get("assignments") or [] if isinstance(item, dict)]
-        labels = sorted({str(item.get("class_label") or "") for item in assignments})
-        fields = list(proposal.get("selected_fields") or [])
-        problems = []
-        if fields:
-            problems.append(f"it selects {fields}")
-        if len(labels) != 1:
-            problems.append(f"it gives {len(labels)} Classes, not one" if assignments else "it assigns no sample")
-        elif labels[0] != str(contrast.get("class_label") or ""):
-            problems.append(f"its one Class {labels[0]!r} is not the Class it names "
-                            f"({str(contrast.get('class_label') or '') or 'none'!r})")
-        if problems:
+    before = len(report.checks)
+    try:
+        stage = "before-production"
+        proposal = _class_proposal(provenance)
+        if proposal is None:
+            report.add("CLS-3", stage, "The executed grouping was ratified", NOT_EVALUABLE,
+                       reason or "The manifest carries no Class proposal.", required=False)
+            return
+        status = str(proposal.get("status") or "").strip().casefold()
+        model = str(proposal.get("model") or "")
+        warnings = [str(item) for item in proposal.get("warnings") or []]
+        contrast = proposal.get("contrast_definition") if isinstance(proposal.get("contrast_definition"), dict) else {}
+        # A Class record saved for another unit settles nothing here, however it was ratified. A split
+        # part carries its parent's record, so the parent's id is this unit's too.
+        record_unit = str(proposal.get("unit_id") or "")
+        own_unit = str(((provenance or {}).get("project") or {}).get("analysis_unit_id") or "")
+        split_from = (provenance or {}).get("split_from")
+        parent_unit = str(split_from.get("analysis_unit_id") or "") if isinstance(split_from, dict) else ""
+        if record_unit and own_unit and record_unit not in {own_unit, parent_unit}:
             report.add("CLS-3", stage, "The executed grouping was ratified", FAIL,
-                       "The record says no Class was defined, but " + " and ".join(problems)
-                       + ": an abstention that groups the samples is a grouping nobody proposed.",
-                       status=status, abstention=True, labels=labels[:5], selected_fields=fields)
+                       f"The Class record was saved for unit {record_unit}, not for this unit ({own_unit}"
+                       + (f", split from {parent_unit}" if parent_unit else "") + "): it settles nothing here.",
+                       status=status, record_unit=record_unit, analysis_unit_id=own_unit, parent_unit=parent_unit)
             return
-        reason = str(contrast.get("reason") or "")
-        if status in RATIFIED_STATUSES and reason not in ABSTENTION_REASONS:
-            # Ratified, but not for a reason the Catalog's selection gives: the decision stands and
-            # the record does not say why no declared factor could be used.
-            report.add("CLS-3", stage, "The executed grouping was ratified", WARN,
-                       f"The Class decision is a ratified abstention, but its reason "
-                       f"({reason or 'none recorded'!r}) is not one the Catalog's selection gives "
-                       f"({', '.join(ABSTENTION_REASONS)}). Every sample is in Class {labels[0]!r}.",
-                       status=status, abstention=True, reason=reason, model=model, warnings=warnings[:4])
-            return
+        if contrast.get("kind") == "abstention":
+            # Where the Catalog abstains, the decision is that no Class is defined: saved, and ratified,
+            # like a proposal (decided 2026-09-28), as every sample in one Class with no field selected.
+            assignments = [item for item in proposal.get("assignments") or [] if isinstance(item, dict)]
+            labels = sorted({str(item.get("class_label") or "") for item in assignments})
+            fields = list(proposal.get("selected_fields") or [])
+            problems = []
+            if fields:
+                problems.append(f"it selects {fields}")
+            if len(labels) != 1:
+                problems.append(f"it gives {len(labels)} Classes, not one" if assignments else "it assigns no sample")
+            elif labels[0] != str(contrast.get("class_label") or ""):
+                problems.append(f"its one Class {labels[0]!r} is not the Class it names "
+                                f"({str(contrast.get('class_label') or '') or 'none'!r})")
+            if problems:
+                report.add("CLS-3", stage, "The executed grouping was ratified", FAIL,
+                           "The record says no Class was defined, but " + " and ".join(problems)
+                           + ": an abstention that groups the samples is a grouping nobody proposed.",
+                           status=status, abstention=True, labels=labels[:5], selected_fields=fields)
+                return
+            reason = str(contrast.get("reason") or "")
+            if status in RATIFIED_STATUSES and reason not in ABSTENTION_REASONS:
+                # Ratified, but not for a reason the Catalog's selection gives: the decision stands and
+                # the record does not say why no declared factor could be used.
+                report.add("CLS-3", stage, "The executed grouping was ratified", WARN,
+                           f"The Class decision is a ratified abstention, but its reason "
+                           f"({reason or 'none recorded'!r}) is not one the Catalog's selection gives "
+                           f"({', '.join(ABSTENTION_REASONS)}). Every sample is in Class {labels[0]!r}.",
+                           status=status, abstention=True, reason=reason, model=model, warnings=warnings[:4])
+                return
+            if status in RATIFIED_STATUSES:
+                report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
+                           f"The Class decision is a ratified abstention ({reason}): "
+                           f"no contrast, every sample in Class {labels[0]!r}. Status is {status!r}.",
+                           status=status, abstention=True, reason=reason, model=model,
+                           warnings=warnings[:4])
+                return
         if status in RATIFIED_STATUSES:
             report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
-                       f"The Class decision is a ratified abstention ({reason}): "
-                       f"no contrast, every sample in Class {labels[0]!r}. Status is {status!r}.",
-                       status=status, abstention=True, reason=reason, model=model,
+                       f"Class proposal status is {status!r}.", status=status, model=model,
                        warnings=warnings[:4])
             return
-    if status in RATIFIED_STATUSES:
-        report.add("CLS-3", stage, "The executed grouping was ratified", PASS,
-                   f"Class proposal status is {status!r}.", status=status, model=model,
-                   warnings=warnings[:4])
-        return
-    report.add(
-        "CLS-3", stage, "The executed grouping was ratified", FAIL,
-        f"Class proposal status is {status or 'absent'!r}, not an accepted one. The grouping was "
-        f"authored by {model or 'an unrecorded author'} and no artifact records that anyone "
-        "ratified it.",
-        status=status, model=model, warnings=warnings[:4],
-    )
+        report.add(
+            "CLS-3", stage, "The executed grouping was ratified", FAIL,
+            f"Class proposal status is {status or 'absent'!r}, not an accepted one. The grouping was "
+            f"authored by {model or 'an unrecorded author'} and no artifact records that anyone "
+            "ratified it.",
+            status=status, model=model, warnings=warnings[:4],
+        )
+    finally:
+        _unattributed_beside_the_decision(report, before, provenance)
+
+
+def _unattributed_beside_the_decision(report: Report, before: int, provenance: "dict | None") -> None:
+    """Make the PASS CLS-3 just added a WARN where unattributed archive members run beside the ratified decision."""
+    check = report.checks[-1] if len(report.checks) > before else None
+    unattributed = _unattributed_members(provenance)
+    if check is not None and check.status == PASS and unattributed and _class_proposal(provenance) is not None:
+        check.status = WARN
+        check.detail += " " + unattributed.sentence() + ", which no assignment of the ratified record covers."
+        check.evidence.update(unattributed.evidence())
 
 
 CHECKSUM_CLAIM = re.compile(
@@ -6330,6 +7473,254 @@ def _method_threshold(output: Path) -> "tuple[str | None, str, list[str]]":
     return (usable or stated)[-1], "", stated
 
 
+# The step rule for the peak-height threshold, as the user decided it on 2026-10-06: search in the
+# instrument-family step (100 for QTOF-type data, 1,000 for Fourier-transform data). Only when the
+# zero-threshold count is above the target's upper bound and no threshold at that step lands in the
+# target range, search again at a step ten times finer (10, or 100), and never finer than that. The
+# fallback is recorded, and so is a fine step that still misses the range. Interactive's estimate
+# records it (0.5.28): threshold_step is the step the threshold was taken at, coarse_threshold_step the
+# instrument-family step, step_fallback whether the finer step was used and fallback_reason why, and
+# within_target_range whether the estimated count is in the target. A diagnostic recorded before then
+# carries threshold_step and within_target_range alone, and is read as it is.
+FINE_STEP_DIVISOR = 10
+# The absolute floor of the step (the user's rule: never finer than 10 for QTOF-type data, 100 for Fourier-
+# transform data), and the instrument-family steps it is a tenth of. Judged against the unit's instrument,
+# never against the family step the diagnostic records: an estimate asked for at step 10 records 10 as its
+# family step and falls back to 1, at the noise floor.
+FAMILY_STEPS = {"qtof": 100, "fourier": 1000}
+STEP_FLOORS = {"qtof": 10, "fourier": 100}
+# Fourier-transform analysers in the Catalog's instrument text, read with the instrument tokens of Interactive
+# 0.5.28's own classifier (workflow.instrument_family_from_text: _ORBITRAP_INSTRUMENT, _FT_ICR_INSTRUMENT and
+# _FOURIER_GENERIC, msdial-interactive-app#61), so the gate calls a declared instrument Fourier-transform
+# exactly where Interactive does. The word boundaries keep HPLC column names out: "Zorbax Eclipse Plus C18"
+# and "Synergi Fusion-RP" are no Orbitrap Eclipse or Fusion, and a bare "LTQ" or "Velos" is an ion trap. The
+# campaign runner reads the same tokens (scripts/campaign/policy.py _FOURIER_INSTRUMENT; tests hold the
+# two equal). Read only where the diagnostic records no family from the file itself (_step_family): before
+# 0.5.28 Interactive labelled every mzML QTOF, and since then it reads the mzML header and lets a declared
+# instrument decide only over a format default.
+_ORBITRAP_INSTRUMENT = (
+    r"orbitrap|exactive|exploris|astral|\blumos\b|\bascend\b|tribrid|\bid-x\b|"
+    r"\bfusion\b(?![\s-]*rp)|(?<!zorbax )\beclipse\b(?![\s-]*(?:plus|xdb|c18|c8))"
+)
+_FT_ICR_INSTRUMENT = r"ft[\s-]?icr|fticr|cyclotron|solarix|scimax|mrms\b|\bapex(?![a-z])|\bltq[\s-]?ft(?![a-z])"
+_FOURIER_GENERIC = r"\bftms\b|fourier"
+FOURIER_INSTRUMENT = re.compile(
+    "|".join((_ORBITRAP_INSTRUMENT, _FT_ICR_INSTRUMENT, _FOURIER_GENERIC)), re.IGNORECASE)
+# Where Interactive (0.5.28, workflow.detect_raw_format) took a file's instrument family from the file itself:
+# its vendor format, or its mzML header. A family from these is evidence about the file, and a repository's
+# declared instrument does not overrule it; "format_default" (an mzML whose header names no instrument, a
+# Bruker or unrecognised .d) is no such evidence.
+FILE_FAMILY_SOURCES = ("vendor_format", "mzml_instrument_configuration")
+PKH1_TITLE = "The threshold was measured on this unit"
+STEP_RULE_FIELDS = ("coarse_threshold_step", "step_fallback", "fallback_reason")
+# What a production run actually kept (the user's decision of 2026-10-06), as Interactive records it after
+# each repository run: production_peak_counts, one record per run, appended (msdial-production-peak-counts.v1,
+# Interactive 0.5.28, msdial-interactive-app#61). Read where present, and only recorded: the estimate is read
+# off one file's zero-threshold diagnostic, and no rule yet says what a production count must be.
+PRODUCTION_PEAK_COUNTS = "production_peak_counts"
+PRODUCTION_PEAK_COUNT_FIELDS = (
+    "job_id", "run_complete", "minimum_peak_height", "diagnostic_matches_applied_threshold", "estimated_peak_count",
+    "representative_file_name", "representative_peak_count", "representative_to_estimate_ratio",
+    "representative_within_target_range", "file_count", "files_counted", "peak_count_min", "peak_count_median",
+    "peak_count_max", "peak_count_total",
+)
+
+
+def _production_peak_counts(provenance: dict, threshold: "float | None") -> "dict | None":
+    """The latest production_peak_counts record of a run at this threshold, else the latest, with its fields
+    as recorded (PRODUCTION_PEAK_COUNT_FIELDS) and whether its threshold is the one method.txt asks for."""
+    records = [item for item in provenance.get(PRODUCTION_PEAK_COUNTS) or [] if isinstance(item, dict)]
+    if not records:
+        return None
+    matching = [item for item in records if threshold is not None
+                and _as_number(item.get("minimum_peak_height")) == threshold]
+    record = (matching or records)[-1]
+    summary = {name: record.get(name) for name in PRODUCTION_PEAK_COUNT_FIELDS if name in record}
+    summary["records"] = len(records)
+    summary["matches_method_threshold"] = bool(matching)
+    return summary
+
+
+def _diagnostic_field(item: dict, name: str) -> object:
+    """A field of a recorded diagnostic: as its estimate recorded it (every field the estimator produced,
+    unedited), else as the record copied it beside the estimate."""
+    estimate = item.get("estimate") if isinstance(item.get("estimate"), dict) else {}
+    value = estimate.get(name)
+    return value if value is not None else item.get(name)
+
+
+def _as_number(value: object) -> "float | None":
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _figure(value: "float | None") -> str:
+    if value is None:
+        return "?"
+    return f"{int(value):,}" if value == int(value) else f"{value:,}"
+
+
+def _is_fourier_family(named: object) -> bool:
+    family = str(named or "").casefold()
+    return "fourier" in family or "ft-icr" in family or "fticr" in family
+
+
+def _recorded_family(item: dict) -> tuple[str, str]:
+    """(family, source): the instrument family a diagnostic records, its representative's first, and what
+    Interactive took it from ("" for either where nothing is recorded, as before 0.5.28 for the source)."""
+    representative = item.get("representative") if isinstance(item.get("representative"), dict) else {}
+    family = next((str(named).strip() for named in (representative.get("instrument_family"),
+                                                    _diagnostic_field(item, "instrument_family"))
+                   if str(named or "").strip()), "")
+    source = str(representative.get("instrument_family_source")
+                 or _diagnostic_field(item, "instrument_family_source") or "").strip()
+    return family, source
+
+
+def _step_family(item: dict, provenance: dict | None) -> tuple[str, str]:
+    """("fourier" or "qtof", why): the unit's instrument family for the step floor, read as Interactive reads
+    it (agent_workflow.representative_instrument_family, 0.5.28): the file first, the Catalog only where the
+    file says nothing.
+
+    1. Fourier-transform where the family the diagnostic recorded is (its representative's, or the record's).
+    2. The family the diagnostic recorded, where Interactive recorded it from the file itself
+       (instrument_family_source vendor_format or mzml_instrument_configuration: a SCIEX .wiff, a Waters
+       .raw folder, an mzML header naming a TOF). The Catalog's instrument text does not overrule it, as it
+       does not in Interactive: a multi-platform study's "Q Exactive; TripleTOF 6600" makes no .wiff FT data.
+    3. Else (no family recorded; a format default, an mzML whose header names no instrument; or a record
+       from before 0.5.28, which recorded no source and labelled every mzML QTOF), Fourier-transform where
+       the Catalog's instrument text names a Fourier-transform analyser, or where the diagnostic searched at
+       the Fourier-transform family step of 1,000; else QTOF-type."""
+    representative = item.get("representative") if isinstance(item.get("representative"), dict) else {}
+    recorded = [named for named in (representative.get("instrument_family"), _diagnostic_field(item, "instrument_family"))
+                if str(named or "").strip()]
+    source = str(representative.get("instrument_family_source")
+                 or _diagnostic_field(item, "instrument_family_source") or "").strip()
+    for named in recorded:
+        family = str(named).casefold()
+        if "fourier" in family or "ft-icr" in family or "fticr" in family:
+            return "fourier", f"the diagnostic's instrument family is {named}" + (f", from {source}" if source else "")
+    project = (provenance or {}).get("project") if isinstance((provenance or {}).get("project"), dict) else {}
+    handoff = ((project.get("repository_metadata") or {}).get("catalog_handoff") or {}) if isinstance(
+        project.get("repository_metadata"), dict) else {}
+    settings = handoff.get("technical_settings") if isinstance(handoff, dict) else None
+    instrument = str((settings or {}).get("instrument") or "") if isinstance(settings, dict) else ""
+    if recorded and source in FILE_FAMILY_SOURCES and str(recorded[0]).strip().casefold() != "unknown":
+        why = f"the diagnostic's instrument family is {recorded[0]}, from {source}"
+        if FOURIER_INSTRUMENT.search(instrument):
+            why += f", which the unit's declared instrument ({instrument}) does not overrule"
+        return "qtof", why
+    if FOURIER_INSTRUMENT.search(instrument):
+        return "fourier", f"the unit's instrument is {instrument}"
+    coarse = _as_number(_diagnostic_field(item, "coarse_threshold_step"))
+    step = _as_number(_diagnostic_field(item, "threshold_step"))
+    if (coarse if coarse is not None else step) == FAMILY_STEPS["fourier"]:
+        return "fourier", "the diagnostic searched at the Fourier-transform step of 1,000"
+    return "qtof", "no Fourier-transform analyser is recorded"
+
+
+def _step_rule(item: dict, provenance: dict | None = None) -> dict:
+    """What a diagnostic records of the step rule (2026-10-06), and what it breaks or leaves to be read.
+
+    Returns the recorded fields ("evidence"), the words that describe them ("said"), the departures
+    from the rule ("broken": a fallback to another step than the finer one, a fallback where the count
+    needed no threshold, a step other than the family's with no fallback recorded) and what a person
+    should read ("notes": a fallback that records no reason, an estimate outside the target range where
+    the zero-threshold count was above it). A diagnostic recorded before the rule carries none of its
+    fields, and only its step and within_target_range are read.
+
+    THE FLOOR is absolute (_step_family): a step finer than 10 for QTOF-type data or 100 for
+    Fourier-transform data breaks the rule, whatever family step the diagnostic records; and a recorded
+    family step other than 100 or 1,000 is no family step.
+    """
+    step = _as_number(_diagnostic_field(item, "threshold_step"))
+    coarse = _as_number(_diagnostic_field(item, "coarse_threshold_step"))
+    fallback = _diagnostic_field(item, "step_fallback")
+    reason = str(_diagnostic_field(item, "fallback_reason") or "").strip()
+    within = _diagnostic_field(item, "within_target_range")
+    count = _as_number(_diagnostic_field(item, "diagnostic_peak_count"))
+    estimated = _as_number(_diagnostic_field(item, "estimated_peak_count"))
+    lower = _as_number(_diagnostic_field(item, "target_peak_count_min"))
+    upper = _as_number(_diagnostic_field(item, "target_peak_count_max"))
+    recorded = any(_diagnostic_field(item, name) is not None for name in STEP_RULE_FIELDS)
+    target = f"{_figure(lower)}-{_figure(upper)}" if lower is not None and upper is not None else "the target range"
+    evidence: dict = {"step_rule_recorded": recorded, "threshold_step": _diagnostic_field(item, "threshold_step")}
+    if recorded:
+        evidence.update({"coarse_threshold_step": _diagnostic_field(item, "coarse_threshold_step"),
+                         "step_fallback": fallback, "fallback_reason": reason})
+    if within is not None:
+        evidence["within_target_range"] = within
+    for name in ("selection_rule", "fine_threshold_step", "instrument_family_source"):
+        if _diagnostic_field(item, name) is not None:
+            evidence[name] = _diagnostic_field(item, name)
+    if estimated is not None:
+        evidence["estimated_peak_count"] = _diagnostic_field(item, "estimated_peak_count")
+    broken: list[str] = []
+    notes: list[str] = []
+    family, family_why = _step_family(item, provenance)
+    floor = STEP_FLOORS[family]
+    evidence.update({"instrument_family_for_step": family, "step_floor": floor})
+    family_name = "Fourier-transform" if family == "fourier" else "QTOF-type"
+    if step is not None and step < floor - 1e-9:
+        broken.append(f"the threshold was taken at step {_figure(step)}, finer than the floor of {floor} for "
+                      f"{family_name} data ({family_why}), which no recorded family step lowers")
+    if recorded and coarse is not None and coarse not in FAMILY_STEPS.values():
+        broken.append(f"the instrument-family step recorded is {_figure(coarse)}, which is neither 100 (QTOF-type) "
+                      "nor 1,000 (Fourier-transform)")
+    elif recorded and coarse is not None and coarse != FAMILY_STEPS[family]:
+        note = (f"the diagnostic searched first at step {_figure(coarse)}, where {family_name} data "
+                f"({family_why}) take {FAMILY_STEPS[family]:,}")
+        own, source = _recorded_family(item)
+        own_step = FAMILY_STEPS["fourier" if _is_fourier_family(own) else "qtof"]
+        if own and source and coarse != own_step:
+            # Interactive 0.5.28 (msdial-interactive-app#61) always searches first the step of the family it
+            # records, and only records a requested step; the campaign runner asks for none. A record whose
+            # search began elsewhere came from a build that searched a requested step, not from the rule.
+            note += (f"; the diagnostic records the family {own}, from {source}, whose step is {own_step:,}, and "
+                     "Interactive 0.5.28 always searches that step first and never a requested one, so this "
+                     "search was not made by its rule")
+        notes.append(note)
+    if fallback is True:
+        fine = coarse / FINE_STEP_DIVISOR if coarse else None
+        said = (f"step {_figure(step)}, falling back from the instrument-family step {_figure(coarse)}"
+                + (f" ({reason})" if reason else ""))
+        if not coarse:
+            broken.append("the diagnostic records a step fallback but not the instrument-family step it fell "
+                          "back from")
+        elif step is None or abs(step - fine) > 1e-9:
+            broken.append(f"the fallback took step {_figure(step)}, where the rule's finer step for the "
+                          f"instrument-family step {_figure(coarse)} is {_figure(fine)} and nothing finer")
+        if count is not None and upper is not None and count <= upper:
+            broken.append(f"the fallback was taken although the zero-threshold count ({_figure(count)}) is not "
+                          f"above {_figure(upper)}, where the rule keeps the threshold at 0")
+        if not reason:
+            notes.append("the step fallback records no reason")
+    else:
+        said = f"step {_figure(step)}"
+        if recorded and coarse is not None and step is not None and abs(step - coarse) > 1e-9:
+            broken.append(f"the threshold was taken at step {_figure(step)}, not the instrument-family step "
+                          f"{_figure(coarse)}, and no step fallback is recorded")
+    if within is False and (count is None or upper is None or count > upper):
+        if fallback is True:
+            notes.append(f"even the finer step {_figure(step)} leaves the estimate ({_figure(estimated)} peaks) "
+                         f"outside {target}, and the threshold nearest the range was taken")
+        elif recorded:
+            notes.append(f"the estimate ({_figure(estimated)} peaks) is outside {target} at step {_figure(step)}, "
+                         "and no step fallback is recorded")
+        else:
+            notes.append(f"the estimate ({_figure(estimated)} peaks) is outside {target} at step {_figure(step)}; "
+                         "the diagnostic predates the step fallback of 2026-10-06 and records no step rule")
+    elif within is False:
+        said += (f"; the {_figure(count)} peaks at zero threshold are below {target}, which the contract leaves "
+                 "at threshold 0")
+    return {"evidence": evidence, "said": said, "broken": broken, "notes": notes}
+
+
 def check_threshold_was_measured_on_this_unit(
     report: Report, provenance: dict | None, reason: str, output: Path
 ) -> None:
@@ -6345,60 +7736,99 @@ def check_threshold_was_measured_on_this_unit(
     Compared as numbers, so 500 and 500.0 are the same threshold. Whether the Console can PARSE
     that literal is MTH-1's question, not this one.
 
+    THE STEP RULE (the user's decision of 2026-10-06, _step_rule) is read from the diagnostic that
+    produced the threshold, the latest where several did. A fallback to the finer step that lands in
+    the target range is the rule working, and passes with its reason stated. A fallback whose finer
+    step still misses the range, an estimate outside the range at the family step, or a fallback that
+    records no reason is a WARN, so a person reads it. A step the rule does not allow (a fallback to
+    anything but the family step divided by ten, a fallback where the zero-threshold count needed no
+    threshold, or another step than the family's with no fallback recorded) is a FAIL. A diagnostic
+    recorded before the rule records none of its fields; its step and within_target_range are read as
+    they are. The floor is absolute (_step_family): never finer than 10 for QTOF-type data or 100 for
+    Fourier-transform data, whatever family step the diagnostic itself records, and a recorded family step
+    is 100 or 1,000.
+
+    WHAT THE PRODUCTION RUN KEPT (production_peak_counts, Interactive 0.5.28) is reported where recorded,
+    against the estimate, and judged by nothing: the user asked that it be recorded (2026-10-06).
+
     RUN POLICY: record_only, as the user named it (2026-10-01). A threshold not measured here keeps
     more or fewer peaks; what it keeps is still this unit's data.
     """
     stage = "before-production"
     if provenance is None:
-        report.add("PKH-1", stage, "The threshold was measured on this unit", NOT_EVALUABLE, reason)
+        report.add("PKH-1", stage, PKH1_TITLE, NOT_EVALUABLE, reason)
         return
     diagnostics = provenance.get("peak_height_diagnostics")
     written, written_reason, stated = _method_threshold(output)
     if not isinstance(diagnostics, list) or not diagnostics:
         report.add(
-            "PKH-1", stage, "The threshold was measured on this unit", FAIL,
+            "PKH-1", stage, PKH1_TITLE, FAIL,
             "No peak-count diagnostic is recorded for this unit. The contract requires one before "
             f"every production run, and method.txt asks for {written or 'an unstated threshold'}.",
             method_threshold=written,
         )
         return
     if written is None:
-        report.add("PKH-1", stage, "The threshold was measured on this unit", NOT_EVALUABLE,
-                   written_reason)
+        report.add("PKH-1", stage, PKH1_TITLE, NOT_EVALUABLE, written_reason)
         return
     measured = []
+    measured_by: list[tuple[float, dict]] = []
     for item in diagnostics:
         if isinstance(item, dict) and item.get("minimum_peak_height") is not None:
             try:
-                measured.append(float(item["minimum_peak_height"]))
+                value = float(item["minimum_peak_height"])
             except (TypeError, ValueError):
                 continue
+            measured.append(value)
+            measured_by.append((value, item))
     try:
         executed = float(written)
     except ValueError:
-        report.add("PKH-1", stage, "The threshold was measured on this unit", FAIL,
+        report.add("PKH-1", stage, PKH1_TITLE, FAIL,
                    f"method.txt states a Minimum peak height of {written!r}, which is not a number.",
                    method_threshold=written, measured=measured)
         return
-    if any(abs(executed - value) < 1e-9 for value in measured):
-        latest = diagnostics[-1] if isinstance(diagnostics[-1], dict) else {}
+    producing = [item for value, item in measured_by if abs(executed - value) < 1e-9]
+    if producing:
+        # The diagnostic that produced the threshold, the latest where several did: re-running it with
+        # another step or representative is normal, and the step rule is read from the one that ran.
+        latest = producing[-1]
+        rule = _step_rule(latest, provenance)
         # Other stated values do not run, but a method file that asks for two thresholds was edited
         # by something that did not know which one the Console applies.
         differing = sorted({value for value in stated if value != written})
-        report.add(
-            "PKH-1", stage, "The threshold was measured on this unit", WARN if differing else PASS,
+        status = FAIL if rule["broken"] else WARN if differing or rule["notes"] else PASS
+        detail = (
             f"method.txt asks for {written}, which this unit's diagnostic measured "
             f"({latest.get('method', 'method unrecorded')}, "
-            f"{latest.get('diagnostic_peak_count', '?')} peaks at zero threshold, step "
-            f"{latest.get('threshold_step', '?')})."
+            f"{latest.get('diagnostic_peak_count', '?')} peaks at zero threshold, {rule['said']})."
             + (f" It also states {', '.join(differing)}, which the Console does not apply: it applies the last "
-               "value it can read." if differing else ""),
+               "value it can read." if differing else "")
+        )
+        if rule["broken"]:
+            detail += " The step is not one the rule of 2026-10-06 allows: " + "; ".join(rule["broken"]) + "."
+        if rule["notes"]:
+            detail += " To be read: " + "; ".join(rule["notes"]) + "."
+        production = _production_peak_counts(provenance, executed)
+        if production is not None:
+            kept = production.get("representative_peak_count")
+            detail += (f" The production run{'' if production['matches_method_threshold'] else ' recorded at another threshold'} "
+                       f"kept {kept if kept is not None else 'an unrecorded number of'} peaks in the representative "
+                       f"file against the estimate of {production.get('estimated_peak_count', '?')}, and "
+                       f"{production.get('peak_count_min', '?')}-{production.get('peak_count_max', '?')} across "
+                       f"{production.get('files_counted', '?')} file(s) (recorded, not judged).")
+        report.add(
+            "PKH-1", stage, PKH1_TITLE, status, detail,
+            **({"production_peak_counts": production} if production is not None else {}),
             method_threshold=written, measured=measured, stated=stated,
             representative=(latest.get("representative") or {}).get("file_name", ""),
+            **rule["evidence"],
+            **({"step_rule_broken": rule["broken"]} if rule["broken"] else {}),
+            **({"step_rule_notes": rule["notes"]} if rule["notes"] else {}),
         )
         return
     report.add(
-        "PKH-1", stage, "The threshold was measured on this unit", FAIL,
+        "PKH-1", stage, PKH1_TITLE, FAIL,
         f"method.txt asks for a Minimum peak height of {written}, and no diagnostic on this unit "
         f"produced it. Measured here: {', '.join(str(value) for value in measured) or 'nothing'}."
         + (f" (It states {len(stated)} values; the Console applies the last it can read.)" if len(stated) > 1 else ""),
@@ -6595,6 +8025,90 @@ def _release_parts(release: object) -> "list[str] | None":
     return [str(item.get("analysis_unit_id") or "") for item in release["parts"] if isinstance(item, dict)]
 
 
+# Where a run's outputs are. Interactive 0.5.29 (PR #62) prepares a new production run of a finished unit in a new
+# folder, <workspace>\output-run-<n>, named by the manifest's output_directory, and moves the finished run's records,
+# its output_directory among them, into an entry of superseded_runs; the old folder is left as it was. A manifest
+# written before then may name no output_directory, and its run's folder is <workspace>\output.
+DEFAULT_OUTPUT_DIRECTORY = "output"
+
+
+class OutputOutsideWorkspace(ValueError):
+    """A run's output_directory lies outside the unit workspace the gate judges: the gate reads nothing there.
+
+    main() exits 3, the workspace is unusable, as it does for a workspace that is not a directory.
+    """
+
+
+def _parts_inside(path: Path, root: Path) -> "tuple[str, ...] | None":
+    """The parts of `path` below `root` when `path` lies strictly inside it, compared as Windows compares paths
+    (case and separators aside); None otherwise, the root itself included."""
+    def plain(item: Path) -> str:
+        return os.path.normpath(os.path.abspath(str(item)))
+
+    target, base = plain(path), plain(root)
+    try:
+        relative = os.path.relpath(os.path.normcase(target), os.path.normcase(base))
+    except ValueError:  # another drive
+        return None
+    if relative in (os.curdir, os.pardir) or relative.startswith(os.pardir + os.sep) or os.path.isabs(relative):
+        return None
+    return Path(target).parts[len(Path(base).parts):]
+
+
+def _run_output(record: dict, workspace: Path, recorded_workspace: str = "") -> Path:
+    """The folder holding one run's outputs, inside `workspace`: the record's output_directory, else <workspace>\\output.
+
+    output_directory is an absolute path Interactive wrote. It is taken when it lies inside the workspace judged,
+    also once each is resolved (a short 8.3 name, a junction), or inside the workspace the manifest recorded, which
+    a copied or moved workspace no longer is: its place relative to that workspace is then read in this one. A
+    relative output_directory is read against the workspace. Anything else - another unit's folder, a folder
+    outside the analysis tree, the workspace itself - raises OutputOutsideWorkspace, and nothing is read from it.
+    """
+    declared = str(record.get("output_directory") or "").strip() if isinstance(record, dict) else ""
+    if not declared:
+        return workspace / DEFAULT_OUTPUT_DIRECTORY
+    path = Path(declared)
+    if not path.is_absolute():
+        path = workspace / path
+    candidates = [(path, workspace)]
+    try:
+        candidates.append((path.resolve(), workspace.resolve()))
+    except (OSError, RuntimeError):
+        pass
+    if recorded_workspace.strip():
+        candidates.append((path, Path(recorded_workspace.strip())))
+    for target, root in candidates:
+        parts = _parts_inside(target, root)
+        if parts:
+            return workspace.joinpath(*parts)
+    raise OutputOutsideWorkspace(
+        f"The manifest names output_directory {declared!r}, which is not inside the unit workspace {str(workspace)!r}"
+        + (f" or the workspace it recorded ({recorded_workspace.strip()!r})" if recorded_workspace.strip() else "")
+        + ". The gate reads a run's outputs only from within the workspace it judges.")
+
+
+def _superseded_runs(provenance: dict | None) -> list[dict]:
+    """The unit's earlier production runs, oldest first, as Interactive keeps them (superseded_runs)."""
+    runs = (provenance or {}).get("superseded_runs") if isinstance(provenance, dict) else None
+    return [item for item in runs if isinstance(item, dict)] if isinstance(runs, list) else []
+
+
+def _unit_runs(provenance: dict | None, workspace: Path) -> "list[tuple[str, dict, Path]]":
+    """Every production run of the unit, newest first: (which, its record, its output folder).
+
+    The current run is the manifest's top level; the superseded runs follow, the latest first. Raises
+    OutputOutsideWorkspace when any of them names a folder outside the workspace.
+    """
+    record = provenance if isinstance(provenance, dict) else {}
+    recorded = str(record.get("workspace") or "")
+    runs = [("its current run", record, _run_output(record, workspace, recorded))]
+    superseded = _superseded_runs(record)
+    for index in reversed(range(len(superseded))):
+        runs.append((f"its superseded run {index} (superseded_runs[{index}])", superseded[index],
+                     _run_output(superseded[index], workspace, recorded)))
+    return runs
+
+
 def _mztab_not_validated(provenance: dict, output: Path) -> str:
     """Why the unit's mzTab-M does not count as validated for deleting its raw data, or "" when it does.
 
@@ -6626,6 +8140,34 @@ def _outputs_incomplete(output: Path) -> "tuple[str, list[str]]":
     return "", []
 
 
+# A superseded run Interactive calls validated by its records (repository_reanalysis.superseded_validated_run,
+# PR #62 at 52b470b): its status cleanup-ready, or its cleanup allowed.
+CLEANUP_READY_STATUSES = frozenset({"mztab_validated", "completed", "cleanup_pending_confirmation"})
+# _deletion_justification's kind for a unit whose raw data are held for a new run that has not validated.
+HELD_FOR_NEW_RUN = "held_for_new_run"
+
+
+def _held_superseded_run(provenance: dict, workspace: Path) -> "dict | None":
+    """The newest superseded run that validated, for a unit whose current run has not; None when there is none.
+
+    Interactive PR #62 (52b470b): raw-data deletion is judged by the unit's current run, and while a new run
+    prepared after a validated run has not validated (prepared, running or failed) the raw data are held for
+    it - cleanup and discard both refuse. A superseded run counts as validated by its records as Interactive
+    reads them (a cleanup-ready status, or cleanup_allowed true) or by the gate's own fact, a validated mzTab-M
+    and every output in the folder that run's output_directory names. The caller has established that the
+    current run did not validate.
+    """
+    for which, record, output in _unit_runs(provenance, workspace)[1:]:
+        recorded = str(record.get("status") or "") in CLEANUP_READY_STATUSES or record.get("cleanup_allowed") is True
+        on_disk = not (_mztab_not_validated(record, output) or _outputs_incomplete(output)[0])
+        if recorded or on_disk:
+            return {"run": which, "status": str(record.get("status") or ""), "output": output.name,
+                    "finalized_at": record.get("finalized_at"), "superseded_at": record.get("superseded_at"),
+                    "validated_by": "its records and its output" if recorded and on_disk
+                    else "its records" if recorded else "its output"}
+    return None
+
+
 def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, str]":
     """What the campaign's deletion rule lets this unit's raw data go for: (kind, detail), or ("", "").
 
@@ -6636,12 +8178,26 @@ def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, st
     judged by the rest.
     The gate's own verdicts do not enter: the user decided that deletion follows the outputs, whatever
     the gate says of them.
+    A deletion is judged by the unit's current run only, read in the folder its output_directory names
+    (Interactive PR #62 at 52b470b). A superseded run's validated outputs never justify one: while a new run
+    prepared after a validated run has not validated - prepared, running or failed - the raw data are held for
+    it, and no cleanup or discard may delete them, approved or not, split part or not. That case is
+    HELD_FOR_NEW_RUN, ahead of a failure, a disposition or a runner's end, and RET-1 refuses the deletion.
     """
     status = str(provenance.get("status") or "")
-    output = workspace / "output"
-    if not (_mztab_not_validated(provenance, output) or _outputs_incomplete(output)[0]):
+    output = _unit_runs(provenance, workspace)[0][2]
+    unvalidated = _mztab_not_validated(provenance, output) or _outputs_incomplete(output)[0]
+    if not unvalidated:
         return "validated", ("its run was finalised, its mzTab-M validated and is in its output, and every export "
-                             "its run planned is there")
+                             "its run planned is there"
+                             + ("" if output.name == DEFAULT_OUTPUT_DIRECTORY else f" ({output.name})"))
+    held = _held_superseded_run(provenance, workspace)
+    if held is not None:
+        return HELD_FOR_NEW_RUN, (
+            f"{held['run']} validated (status {held['status'] or 'unrecorded'!r}, by {held['validated_by']}, in "
+            f"{held['output']}), and the new run prepared after it, its current run in {output.name}, has not "
+            f"({unvalidated}): its raw data are held for that new run, and no cleanup or discard may delete them "
+            "until it validates")
     failures = _run_failures(provenance)
     if failures:
         last = failures[-1]
@@ -6684,7 +8240,9 @@ def check_retention_policy_was_acted_on(
     manifest's record, from a validation that checked at least one file, with every export EXP-1 holds
     the run to and B6's .mdpeak on disk. RET-1 never calls a deletion justified by outputs the progress
     walk or EXP-1 says are not there, and a cleanup after validated output (raw_cleaned) that lacks them
-    is refused. A split part whose parent's release does not list it is a WARN: its tree went without its
+    is refused. Validated is the current run's, in the folder its output_directory names: a deletion while
+    a new run prepared after a validated run has not validated is refused whatever authorized it, naming
+    the superseded run the raw data were held for (Interactive PR #62). A split part whose parent's release does not list it is a WARN: its tree went without its
     own state being part of the decision. So is a deletion with no recorded authority in a unit that
     carries campaign crossings: the gate cannot tell a person's confirmation from a campaign component
     that deleted without recording its approval.
@@ -6711,6 +8269,8 @@ def check_retention_policy_was_acted_on(
         return
     policy = str(policy)
     status = str(provenance.get("status") or "")
+    # The current run's folder; verify() has refused a workspace whose runs name one outside it.
+    output = _unit_runs(provenance, workspace)[0][2]
     if policy not in ("keep", DELETE_RETENTION):
         report.add("RET-1", stage, RET1_TITLE, FAIL,
                    f"The manifest records a retention policy of {policy!r}, which is neither 'keep' "
@@ -6763,8 +8323,8 @@ def check_retention_policy_was_acted_on(
                           "the raw tree is still on disk: the release has not completed.")
             return
         if policy == DELETE_RETENTION and status in VALIDATED_STATUSES - {"raw_cleaned"}:
-            incomplete = _outputs_incomplete(workspace / "output")[0]
-            if incomplete and not _mztab_not_validated(provenance, workspace / "output"):
+            incomplete = _outputs_incomplete(output)[0]
+            if incomplete and not _mztab_not_validated(provenance, output):
                 verdict(WARN, f"Policy is delete_after_validated_output, the mzTab-M is validated, and {incomplete}: "
                               "the raw tree is still present, and the deletion is not yet due. A unit whose outputs "
                               "are incomplete has in effect failed, and its raw data go after its retries.")
@@ -6829,9 +8389,17 @@ def check_retention_policy_was_acted_on(
     else:
         kind, why = _deletion_justification(provenance, workspace)
         if kind != "validated":
-            unvalidated = _mztab_not_validated(provenance, workspace / "output")
-            incomplete, absent = ("", []) if unvalidated else _outputs_incomplete(workspace / "output")
+            unvalidated = _mztab_not_validated(provenance, output)
+            incomplete, absent = ("", []) if unvalidated else _outputs_incomplete(output)
     evidence.update(authority=authority, justification=kind)
+    if kind == HELD_FOR_NEW_RUN:
+        held = _held_superseded_run(provenance, workspace) or {}
+        evidence.update(unvalidated_because=unvalidated or incomplete, held_superseded_run=held.get("run"),
+                        held_superseded_output=held.get("output"), held_superseded_status=held.get("status"))
+        verdict(FAIL, f"The raw tree was deleted ({deleted_where}) on {authority}, and {why}. A raw deletion is "
+                      "judged by the unit's current run (Interactive PR #62): a superseded run's validated outputs "
+                      "justify no deletion, and the new run was left without the inputs it was prepared to read.")
+        return
     if deletion == "raw_cleaned" and kind != "validated":
         evidence["unvalidated_because"] = unvalidated or incomplete
         if absent:
@@ -7536,10 +9104,16 @@ def _readable_members(path: Path, unread: list[str] | None = None) -> list[tuple
 
 
 def verify(workspace: Path, stage: str) -> Report:
+    """Run `stage`'s checks (or every stage's) on one unit workspace.
+
+    The run's outputs are read in the folder the manifest's output_directory names, <workspace>\\output where
+    it names none (_run_output). Raises OutputOutsideWorkspace, before any check runs, when that folder or a
+    superseded run's lies outside the workspace.
+    """
     report = Report(workspace)
     provenance_path = workspace / "provenance" / "run-manifest.json"
-    output = workspace / "output"
     provenance, provenance_reason = _read_json(provenance_path)
+    output = _unit_runs(provenance, workspace)[0][2]
     csv_rows, csv_reason = _read_csv_rows(output / "analysis_files.csv")
     run_manifest, _ = _read_json(output / "run-manifest.json")
 
@@ -7555,15 +9129,16 @@ def verify(workspace: Path, stage: str) -> Report:
         check_execution_allowed(report, provenance, provenance_reason)
         check_preflight_claim(report, provenance, provenance_reason)
         check_extractor_identity(report, provenance, provenance_reason)
-        check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason)
+        check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason, run_manifest)
         check_checksum_coverage(report, provenance, provenance_reason, csv_rows)
         check_converted_inputs_are_their_conversions(report, provenance, provenance_reason, csv_rows, csv_reason)
-        check_class_distribution(report, csv_rows, csv_reason, "before-production")
+        check_class_distribution(report, csv_rows, csv_reason, "before-production", provenance)
         check_executed_class_matches_approved(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_class_proposal_was_accepted(report, provenance, provenance_reason)
         check_threshold_was_measured_on_this_unit(report, provenance, provenance_reason, output)
         check_analytical_order_is_real(report, csv_rows, csv_reason, "before-production", provenance)
         check_analysis_inputs_are_the_inputs(report, provenance, provenance_reason, csv_rows, csv_reason)
+        check_inferred_name_pairings_are_listed(report, provenance, provenance_reason)
         approved = check_sample_count_invariant(
             report, provenance, provenance_reason, csv_rows, csv_reason,
             run_manifest, output, "before-production",
@@ -7623,7 +9198,7 @@ COMPLETION_STAGES = (
     ("B1", "downloaded",
      "the raw owner's manifest lists its downloads, and every input is on disk or the raw tree was released "
      "by the confirmed cleanup (status raw_cleaned)",
-     ("SUM-1", "CONV-1")),
+     ("SUM-1", "CONV-1", "PAIR-1")),
     ("B2", "preflight_passed", "the manifest permits execution", ("ID-1", "SPL-1", "ELIG-1", "PRE-1", "PRE-2")),
     ("B3", "class_settled",
      "a ratified Class proposal, or where the Catalog abstains a ratified abstention (accepted, confirmed or approved)",
@@ -7789,7 +9364,11 @@ def main(argv: list[str]) -> int:
         print(f"not a directory: {workspace}", file=sys.stderr)
         return 3
 
-    report = verify(workspace, args.stage)
+    try:
+        report = verify(workspace, args.stage)
+    except OutputOutsideWorkspace as error:
+        print(f"unusable workspace: {error}", file=sys.stderr)
+        return 3
     # Details quote the artifacts, and a console code page such as cp932 has no "\u2264" in it: the
     # print would end the gate with no report at all. JSON escapes what it cannot print; text
     # replaces it.

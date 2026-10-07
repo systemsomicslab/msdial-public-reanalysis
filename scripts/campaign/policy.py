@@ -36,6 +36,21 @@ And two defaults the runner proposed and the user did not object to on 2026-10-0
   does not parse among them (UNREADABLE_REPLY_ERRORS), holds that unit, as a missing gate report does, and
   pauses nothing; a recheck makes the step again.
 
+And the AIF rule of 2026-10-07: a multi-collision-energy AIF unit is HELD until a patched Console exists, not
+run, its raw data kept, and not counted as a failure. Interactive 0.5.31 says so in the disposition itself:
+disposition "skip", hold true and the reason aif_multi_ce_awaiting_console (HOLD_FOR_CONSOLE). The runner
+holds such a unit (disposition_held) instead of skipping it, and the hold lifts only at an operator's
+explicit recheck-held (Disposition.held), or at the operator's skip, whose discard passes Interactive
+release_disposition_hold (DISPOSITION_HELD_BLOCKER).
+
+The patched Console is MsdialWorkbench #825. Interactive 0.5.34 decides a multi-energy AIF unit for the Console
+it is given, the pinned one (the runner passes it to the preflight): with #825 the disposition is "run", AIF, and
+records aif_multi_ce_run {"collision_energies", "rule": AIF_MULTI_CE_RULE} beside its probe of that Console
+(multi_energy_aif_console); without #825 the hold stays. So an operator's recheck-held of a held unit, once the
+pinned Console has #825, brings it through, and the unit's record says why (Disposition.aif_multi_ce_run). A
+unit whose AIF inputs record different energies, or one with no recorded energy, is still held with that
+Console (HOLD_CE_DIFFERS, HOLD_CE_UNRECORDED); the runner holds every hold alike, whatever its reason.
+
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
 msdial-campaign-disposition.v1); read_disposition only reads and checks it. A second mapping of
@@ -54,6 +69,19 @@ from typing import Any, Iterable, Mapping
 
 DISPOSITION_SCHEMA = "msdial-campaign-disposition.v1"
 DISPOSITIONS = ("run", "skip", "exclude", "split")
+# The hold Interactive 0.5.31 writes into a disposition (user decision, 2026-10-07): a multi-collision-energy AIF
+# unit waits for a Console that deconvolutes each energy (MsdialWorkbench #825), and is neither run nor skipped.
+# Interactive records it as disposition "skip", hold true, with this among its reasons.
+HOLD_FOR_CONSOLE = "aif_multi_ce_awaiting_console"
+# Interactive 0.5.34 (msdial-interactive-app #67): a multi-energy AIF unit decided for a Console with
+# MsdialWorkbench #825 runs as AIF under this rule, recorded as aif_multi_ce_run. The holds it keeps with that
+# Console: inputs whose energies differ from one another, and an input with no recorded energy.
+AIF_MULTI_CE_RULE = "multi_ce_aif_with_console_825"
+HOLD_CE_DIFFERS = "aif_collision_energies_differ_between_inputs"
+HOLD_CE_UNRECORDED = "aif_collision_energy_unrecorded"
+# The fields of Interactive's multi_energy_aif_console probe a record keeps: never its console_path, a local path.
+MULTI_ENERGY_AIF_PROBE_FIELDS = ("capability", "available", "probe", "console_source", "console_assembly",
+                                 "assembly_sha256")
 # The Console's AcquisitionType enum is {DDA, SWATH, AIF, None}, and an unparsable value silently becomes
 # DDA (review correction 3), so these are the only values a per-file record may carry.
 CONSOLE_ACQUISITION_TYPES = ("DDA", "SWATH", "AIF")
@@ -67,12 +95,19 @@ COMPLETED = "completed"
 VALIDATED_STATUSES = frozenset({"mztab_validated", "completed", "cleanup_pending_confirmation"})
 RAW_CLEANED_STATUS = "raw_cleaned"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-# Fourier-transform analysers, for the diagnostic's threshold step (1000 rather than 100). Read from the
-# catalog's instrument text, which is the submitter's own words: "Thermo Scientific Exactive" and "Exactive
-# Plus" name no Q, "IQ-X tribrid" no Orbitrap, and "Bruker APEX-Qe 9.4T" is an FT-ICR.
+# Fourier-transform analysers in the catalog's instrument text, which is the submitter's own words: "Thermo
+# Scientific Exactive" and "Exactive Plus" name no Q, "IQ-X tribrid" no Orbitrap, and "Bruker APEX-Qe 9.4T" is
+# an FT-ICR. The step asked of an Interactive before 0.5.28 (threshold_step); since 0.5.28 the family
+# Interactive reads from the file decides the step, and this text only leaves a note where it disagrees.
+# The tokens are Interactive 0.5.28's own (workflow.instrument_family_from_text: _ORBITRAP_INSTRUMENT,
+# _FT_ICR_INSTRUMENT, _FOURIER_GENERIC, msdial-interactive-app#61), with its word boundaries, so an HPLC column
+# beside the instrument ("Zorbax Eclipse Plus C18", "Synergi Fusion-RP") names no Fourier-transform analyser.
+# The gate reads the same (verify-run-invariants.py FOURIER_INSTRUMENT; tests hold the two equal).
 _FOURIER_INSTRUMENT = re.compile(
-    r"orbitrap|exactive|exploris|fusion|lumos|eclipse|astral|tribrid|ltq[\s-]?ft|ft[\s-]?icr|fticr|"
-    r"solarix|apex|fourier",
+    r"orbitrap|exactive|exploris|astral|\blumos\b|\bascend\b|tribrid|\bid-x\b|"
+    r"\bfusion\b(?![\s-]*rp)|(?<!zorbax )\beclipse\b(?![\s-]*(?:plus|xdb|c18|c8))"
+    r"|ft[\s-]?icr|fticr|cyclotron|solarix|scimax|mrms\b|\bapex(?![a-z])|\bltq[\s-]?ft(?![a-z])"
+    r"|\bftms\b|fourier",
     re.IGNORECASE,
 )
 # The before-production checks whose FAIL stops a unit's MS-DIAL run: the ones that break results, which the
@@ -111,6 +146,19 @@ class Disposition:
     # set execution_allowed, the status and each input's acquisition type. Outside a campaign it is advice,
     # and the runner acts on no disposition that is not applied.
     applied: bool = False
+    # Interactive 0.5.31: a skip that is a hold (the AIF rule of 2026-10-07): the unit waits, its raw data kept.
+    hold: bool = False
+    # Interactive 0.5.34: what runs a multi-energy AIF unit as AIF (aif_multi_ce_run: its energies and
+    # AIF_MULTI_CE_RULE), and the probe of the Console it was decided for (multi_energy_aif_console, its
+    # MULTI_ENERGY_AIF_PROBE_FIELDS only). Recorded as given; the gate's ACQ-1 is what holds a run to them.
+    aif_multi_ce_run: dict[str, Any] | None = None
+    multi_energy_aif_console: dict[str, Any] | None = None
+
+    @property
+    def held(self) -> bool:
+        """Whether the disposition holds the unit rather than ending it: a skip with hold true. A hold keeps the
+        raw data and counts nothing; only an operator's recheck-held asks Interactive again."""
+        return self.hold and self.disposition == "skip"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +171,10 @@ class Disposition:
             "decided_at": self.decided_at,
             "extractor": dict(self.extractor),
             "applied": self.applied,
+            "hold": self.hold,
+            **({"aif_multi_ce_run": dict(self.aif_multi_ce_run)} if self.aif_multi_ce_run is not None else {}),
+            **({"multi_energy_aif_console": dict(self.multi_energy_aif_console)}
+               if self.multi_energy_aif_console is not None else {}),
         }
 
 
@@ -171,8 +223,17 @@ def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
     applied = record.get("applied", False)
     if not isinstance(applied, bool):
         problems.append("applied is neither true nor false")
+    # A disposition before Interactive 0.5.31 says nothing of a hold. A hold is a skip that waits (2026-10-07);
+    # on any other disposition it is a record of another shape, which holds the unit as a contract result.
+    hold = record.get("hold", False)
+    if not isinstance(hold, bool):
+        problems.append("hold is neither true nor false")
+    elif hold and disposition != "skip":
+        problems.append(f"hold is true on a {disposition!r} disposition, where only a skip is held")
     if problems:
         raise DispositionError("campaign_disposition: " + "; ".join(problems) + ".")
+    multi = record.get("aif_multi_ce_run")
+    probe = record.get("multi_energy_aif_console")
     return Disposition(
         disposition=disposition,
         reasons=reasons,
@@ -182,6 +243,10 @@ def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
         decided_at=str(record.get("decided_at") or ""),
         extractor=dict(extractor),
         applied=applied is True,
+        hold=hold is True,
+        aif_multi_ce_run=dict(multi) if isinstance(multi, Mapping) else None,
+        multi_energy_aif_console=({key: probe[key] for key in MULTI_ENERGY_AIF_PROBE_FIELDS if key in probe}
+                                  if isinstance(probe, Mapping) else None),
     )
 
 
@@ -254,6 +319,18 @@ class CampaignPolicy:
     gate_points: tuple[str, ...] = ("before_production", "pre_cleanup", "final")
     peak_count_min: int = 3000
     peak_count_max: int = 6000
+    # Automatic alignment RT correction (decided 2026-10-07): MsdialWorkbench #826's local outlier test, with at
+    # most 12 anchors and the Console's own local window. The runner pins both answers over the profile, as it
+    # pins the peak-count targets, so a profile cannot leave them out and run at Interactive's default of 6
+    # anchors, or uncorrected. A policy recorded before these fields (a manifest approved before 2026-10-07)
+    # does not name them, and its runs are not pinned: automatic_rt_correction_pinned reads the record.
+    automatic_rt_correction: bool = True
+    automatic_rt_correction_maximum_anchors: int = 12
+    # A production run whose Console could not select anchors (AutomaticAlignmentRetentionTimeCorrection
+    # .Build: too few candidates, or too few anchors covering enough samples) ends at exit -1 with no output,
+    # and would end so again on every retry. With the fallback, the unit's next attempts run without the
+    # correction, and its record and status say so; without it, the unit is retried and ends as any failure.
+    automatic_rt_correction_fallback: bool = True
     runner_lock_stale_seconds: float = 600.0
     heartbeat_seconds: float = 30.0
     disk: DiskPolicy = field(default_factory=DiskPolicy)
@@ -298,6 +375,12 @@ class CampaignPolicy:
         if "pre_cleanup" not in self.gate_points:
             # The verdict recorded with every raw deletion is this one.
             raise ValueError("gate_points must include pre_cleanup.")
+        anchors = self.automatic_rt_correction_maximum_anchors
+        if isinstance(anchors, bool) or not isinstance(anchors, int) or anchors < AUTOMATIC_RT_MINIMUM_ANCHORS:
+            raise ValueError(f"automatic_rt_correction_maximum_anchors is a whole number of at least {AUTOMATIC_RT_MINIMUM_ANCHORS}.")
+        for name in ("automatic_rt_correction", "automatic_rt_correction_fallback"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} is true or false.")
         if "before_production" not in self.gate_points:
             # A unit runs only on a before-production report (the user's rule of 2026-10-02): without the
             # point, every unit would be held for want of one.
@@ -527,20 +610,74 @@ def fetch_completed(manifest: Mapping[str, Any] | None) -> bool:
 
 # ---- the diagnostic ---------------------------------------------------------------------------------
 
-def threshold_step(instrument: str, instrument_family: str = "", thermo_raw_inputs: int = 0) -> int:
-    """1000 for Fourier-transform data, 100 otherwise (the project contract's diagnostic rule).
-
-    Interactive labels every mzML QTOF (workflow.py), so the catalog's instrument text is read too: an
-    Orbitrap unit published as mzML is Fourier-transform data.
-    """
+def is_fourier_transform_family(instrument_family: str) -> bool:
+    """True for the labels Interactive gives Orbitrap and FT-ICR data ("Fourier-transform MS", "FT-ICR"), as
+    Interactive 0.5.28's agent_workflow.is_fourier_transform_family reads them."""
     family = str(instrument_family or "").casefold()
-    if "fourier" in family or "ft-icr" in family or "fticr" in family:
+    return "fourier" in family or "ft-icr" in family or "fticr" in family
+
+
+def family_step(instrument_family: str) -> int:
+    """The instrument family's step, as Interactive 0.5.28 gives it (agent_workflow.family_threshold_step,
+    msdial-interactive-app#61): 1,000 for a Fourier-transform family, 100 for every other (QTOF-type, GC-MS,
+    Unknown, none recorded). Interactive always searches this step first, whatever step it is asked for."""
+    return 1000 if is_fourier_transform_family(instrument_family) else 100
+
+
+def threshold_step(instrument: str, instrument_family: str = "", thermo_raw_inputs: int = 0) -> int:
+    """1000 for Fourier-transform data, 100 otherwise, from the Catalog's instrument text as well as the family.
+
+    Asked for only of an Interactive before 0.5.28, which searched the step it was asked for and labelled every
+    mzML QTOF, so the Catalog's text had to name an Orbitrap published as mzML. Interactive 0.5.28 decides the
+    step itself from the file (family_step), and a requested step is only recorded there, never searched: the
+    runner asks it for none (machine.Runner._estimate), and compares this step with Interactive's only to
+    leave a note.
+    """
+    if is_fourier_transform_family(instrument_family):
         return 1000
     if thermo_raw_inputs > 0:
         return 1000
     if _FOURIER_INSTRUMENT.search(str(instrument or "")):
         return 1000
     return 100
+
+
+def estimate_step(estimate: Mapping[str, Any], family: int) -> dict[str, Any] | str:
+    """The step an estimate used, read against the family step it should have searched first (the user's step
+    rule of 2026-10-06): {"threshold_step", "coarse_threshold_step", "step_fallback", "fallback_reason"}, or
+    what is wrong with it.
+
+    family is the family step of the instrument family the estimate itself records (family_step) for
+    Interactive 0.5.28, which records threshold_step (the step used), coarse_threshold_step (the family step it
+    searched first), step_fallback and fallback_reason; for an older one, which records threshold_step alone,
+    it is the step the runner asked for, with no fallback. The step used is the family step, or with a
+    fallback a tenth of it, never finer.
+    """
+    def number(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return int(result) if result == int(result) else None
+
+    used = number(estimate.get("threshold_step"))
+    coarse = number(estimate.get("coarse_threshold_step", estimate.get("threshold_step")))
+    fallback = estimate.get("step_fallback", False)
+    if used is None or coarse is None:
+        return "the estimate records no threshold step"
+    if fallback not in (True, False):
+        return f"the estimate's step_fallback is {fallback!r}, neither true nor false"
+    if coarse != family:
+        return f"the estimate searched first at step {coarse}, where its family step is {family}"
+    expected = family // 10 if fallback else family
+    if used != expected:
+        return (f"the estimate used step {used}, where {'a fallback from' if fallback else 'no fallback from'} the "
+                f"family step {family} gives {expected}")
+    reason = estimate.get("fallback_reason")
+    return {"threshold_step": used, "coarse_threshold_step": coarse, "step_fallback": bool(fallback),
+            "fallback_reason": str(reason) if reason else None}
 
 
 # ---- the disk --------------------------------------------------------------------------------------
@@ -639,7 +776,11 @@ def download_bound_gb(total: int, policy: DiskPolicy) -> float:
 # The permanent ones do not change by waiting: a validated run takes the normal cleanup instead, and a run
 # that left an mzTab-M it could not validate keeps its raw data until Interactive has a discard for it.
 # console_live is the port's own: a Console that may still read the raw tree (one a backend restart left
-# running) ends, or the runner stops it, so waiting mends it.
+# running) ends, or the runner stops it, so waiting mends it. disposition_held (Interactive 0.5.31): the unit's
+# campaign disposition holds it, and Interactive never discards a held unit or a held split part unless the
+# call passes release_disposition_hold, which only an operator's skip of the held unit does; waiting does not
+# mend it, and the machine keeps such raw data (the hold's own decision) rather than holding them for a recheck.
+DISPOSITION_HELD_BLOCKER = "disposition_held"
 DISCARD_BLOCKERS = {
     "console_live": False,
     "validated_status": True,
@@ -647,6 +788,7 @@ DISCARD_BLOCKERS = {
     "mztab_output_exists": True,
     "raw_outside_workspace": True,
     "finalisation_held": False,
+    DISPOSITION_HELD_BLOCKER: True,
 }
 
 
@@ -856,6 +998,57 @@ def run_policy_mismatches(report: Mapping[str, Any]) -> list[str]:
 
 
 # ---- pins ------------------------------------------------------------------------------------------
+
+# Which automatic alignment RT correction the pinned Console implements (ports.PinReader.console records it
+# as automatic_rt_correction). The campaign runs MsdialWorkbench #826's local outlier test (decided
+# 2026-10-07): a Console of #810 alone runs the run-wide test instead, silently, since Interactive does not
+# write the key #826 added; a Console of neither is refused by Interactive at every unit's run start, after
+# its download.
+AUTOMATIC_RT_LOCAL_SUPPORT = "local_support"
+AUTOMATIC_RT_RUN_WIDE = "run_wide"
+AUTOMATIC_RT_NONE = "none"
+# The Console's least anchor count (Interactive's automatic_rt_correction_minimum_anchors default), below which
+# CampaignPolicy refuses a maximum; and the local window the campaign runs with, #826's default, which the runner
+# does not send (Interactive writes the window only when the answers set it) and a profile may state only as is.
+AUTOMATIC_RT_MINIMUM_ANCHORS = 3
+AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW = 1.5
+# The line the Console writes when it could not select anchors (LcmsProcess: "Automatic alignment RT correction
+# failed: <reason>", then exit -1); Interactive keeps the Console's output in the job's log.
+AUTOMATIC_RT_FAILED_LINE = "Automatic alignment RT correction failed"
+# Blank files have no anchors of their own. With the answer below true (Interactive's default) the Console gives
+# each Blank a model interpolated between the non-Blank files beside it in the analytical order; false, a Blank
+# keeps its measured RTs (audit status BlankNotCorrected). The runner sends it per unit, true only where the order
+# the analysis CSV carries is one an injection sequence was recorded in: the acquisition start times of the raw
+# headers, or the order the repository's sample table declares (the two the gate's ORD-2 accepts). An order read
+# out of the file names or the listing, or one nobody recorded, is no injection order (decided 2026-09-29), and a
+# Blank model resting on it would be a guess the run's outputs could not show.
+AUTOMATIC_RT_BLANK_ANSWER = "automatic_rt_correction_interpolate_blanks_by_analytical_order"
+HEADER_ORDER_SOURCE = "raw_header_acquisition_start_time"
+DECLARED_ORDER_SOURCE = "repository_sample_table"
+AUTOMATIC_RT_BLANK_ORDER_SOURCES = (HEADER_ORDER_SOURCE, DECLARED_ORDER_SOURCE)
+
+
+def automatic_rt_correction_pinned(recorded: Mapping[str, Any] | None) -> bool:
+    """Whether a campaign's recorded policy pins automatic RT correction on: only a policy that names the field.
+    One recorded before 2026-10-07 does not, and its units run with what their profile says, as they did."""
+    return isinstance(recorded, Mapping) and recorded.get("automatic_rt_correction") is True
+
+
+def analytical_order_source(record: Mapping[str, Any] | None) -> str | None:
+    """What Interactive's analytical-order record (msdial_prepare_repository_reanalysis's preview.analytical_order,
+    also kept in the unit manifest) says the analysis CSV's order was taken from, or None. A header record from
+    before Interactive 0.5.4 names no order_source and reads as the header source, as the gate reads it."""
+    if not isinstance(record, Mapping):
+        return None
+    source = record.get("order_source") or (
+        HEADER_ORDER_SOURCE if record.get("derived_from") == HEADER_ORDER_SOURCE else None)
+    return source if isinstance(source, str) and source else None
+
+
+def blank_interpolation_allowed(order_source: str | None) -> bool:
+    """Whether a Blank's automatic RT-correction model may be interpolated by this analytical order."""
+    return order_source in AUTOMATIC_RT_BLANK_ORDER_SOURCES
+
 
 # What identifies each pinned thing. Paths are recorded but not compared: the Console and the extractor
 # may be reached by another spelling, and a library is named by file name only.

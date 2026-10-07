@@ -43,6 +43,45 @@ or deleted, and looked at again when the runner starts, every few hours and at a
 release-held, until Interactive's own deletion takes them. The runner never records a person's reading
 (boundary 6): READ-1 holding the gate at exit 4 is a state it stores, and such a unit is reported as
 "outputs produced", never "completed".
+
+A DISPOSITION THAT HOLDS (the AIF rule of 2026-10-07, Interactive 0.5.31). A multi-collision-energy AIF unit waits
+for a patched Console: Interactive's campaign_disposition says "skip" with hold true and the reason
+aif_multi_ce_awaiting_console. The runner holds the unit (disposition_held) instead of ending it as skipped: it
+has not run, its raw data are kept, nothing is counted against it, it is reported as held, and the other units
+go on. Unlike gate_held and contract_held, no recheck comes by itself, at a start or every few hours, since
+nothing changes until the Console does: only an operator's recheck-held (or retry) for the unit makes its
+preflight again, and Interactive decides it anew. A held unit does not keep run --until-idle running, nor
+make the hourly scheduled start a campaign with work left (remaining_work); a later campaign planned with
+--replan-from takes it up again (plan.NOT_REPLANNED does not name the state). An operator's skip of the unit is
+the explicit decision that lifts the hold (the agreed contract of 2026-10-07): its discard passes Interactive
+release_disposition_hold, which nothing else here passes. A split parent's release passes it only when every part
+its disposition holds has its own operator's skip: Interactive's release lifts the hold of every held part it is
+told to, so one part's skip must not lift another's. While a held part has none (it ended failed or stopped while
+held), the parent's raw tree is kept, and the parent is reported as waiting for that part. Interactive never
+discards a held unit or a held split part without it: a held unit's discard made otherwise keeps its raw data
+(kept), and an Interactive whose discard cannot take the release leaves them held.
+
+THE PATCHED CONSOLE (MsdialWorkbench #825, Interactive 0.5.34). The preflight and classify_preflight are sent the
+pinned Console's path, so Interactive decides a multi-energy AIF unit for the Console that will run it: with #825
+it runs as AIF under policy.AIF_MULTI_CE_RULE (the disposition records aif_multi_ce_run and its probe of the
+Console), without #825 it is held as above. An operator's recheck-held of such a unit, once the campaign's pinned
+Console has #825, therefore brings it through: the preflighted transition and a disposition_hold_lifted event say
+what held it and what now runs it, and status counts it under multi_energy_aif_runs. The gate's ACQ-1 refuses such
+a run where the Console the run manifest records lacks #825. An Interactive before 0.5.34 is not sent the path
+and holds every such unit, as before.
+
+AUTOMATIC RT CORRECTION (decided 2026-10-07). A campaign whose recorded policy pins it
+(policy.automatic_rt_correction_pinned) sends every Console start execute_automatic_rt_correction true and the
+policy's maximum anchors (12), over the profile, as it sends the peak-count targets; the zero-threshold
+diagnostic is sent them too, and Interactive turns the correction off for it. A production run whose Console
+could not select anchors writes policy.AUTOMATIC_RT_FAILED_LINE and exits -1 with no output, and would again on
+every retry: the failed attempt records automatic_rt_correction_failed, and with the policy's fallback the
+unit's next attempts run without the correction. Its campaign record (automatic_rt_correction) and its status
+row say so. Without the fallback the unit is retried and ends as any failure does. Each start is also sent
+policy.AUTOMATIC_RT_BLANK_ANSWER: true (a Blank's model interpolated by analytical order) only where the order
+Interactive recorded with the analysis CSV is the raw headers' or the repository sample table's, false (a Blank
+keeps its measured RTs) for an order read from the file names or the listing, or none; the campaign record says
+which, and the prepare_run attempt keeps Interactive's plan warnings.
 """
 
 from __future__ import annotations
@@ -100,6 +139,29 @@ CONTRACT_HELD_WARNING = (
     "unit goes no further, its raw data are kept and nothing is counted against it. The step it was held at "
     "is made again at the runner's next start, every few hours while it runs and at an operator's recheck-held"
 )
+# The flag on a failed production attempt whose Console could not select anchors for automatic RT correction,
+# and what the status export says of a unit whose later attempts therefore ran without it.
+AUTOMATIC_RT_FAILED = "automatic_rt_correction_failed"
+AUTOMATIC_RT_FALLBACK_WARNING = (
+    "automatic RT correction off: the Console could not select anchors for this unit's alignment, so its later "
+    "attempts ran without the correction the campaign pins (automatic_rt_correction_fallback)"
+)
+# What the status export says of a unit in disposition_held (the AIF rule of 2026-10-07).
+DISPOSITION_HELD = ledger_module.DISPOSITION_HELD
+# The flag an operator's skip of a disposition_held unit carries (terminal_detail), and the argument of
+# Interactive's discard and split-parent release that lifts a disposition hold (the agreed contract of
+# 2026-10-07): without it Interactive never discards a held unit or a held split part, approval or not.
+RELEASE_HOLD = "release_disposition_hold"
+DISPOSITION_HELD_WARNING = (
+    "held: Interactive's campaign disposition holds this unit (a multi-collision-energy AIF unit waits for a "
+    "patched Console, one with MsdialWorkbench#825, or its AIF inputs' collision energies differ or are "
+    "unrecorded), so it has "
+    "not run, its raw data are kept and nothing is counted against it. Only an operator's recheck-held for the "
+    "unit makes its preflight again, decided for the pinned Console; nothing rechecks it by itself"
+)
+# The event a recheck writes when a unit Interactive's disposition held is decided anew and no longer held (with
+# Interactive 0.5.34 and a pinned Console that has #825, a multi-energy AIF unit then runs as AIF).
+DISPOSITION_HOLD_LIFTED = "disposition_hold_lifted"
 
 
 @dataclass
@@ -117,12 +179,36 @@ class Ports:
     backend: Any = None
 
 
+def _releases_hold(unit: Mapping[str, Any]) -> bool:
+    """Whether the unit ended by an operator's skip of its disposition hold (RELEASE_HOLD in terminal_detail)."""
+    return _loads(unit.get("terminal_detail")).get(RELEASE_HOLD) is True
+
+
+def _held_by_disposition(unit: Mapping[str, Any]) -> bool:
+    """Whether the last disposition the runner read for the unit holds it (a skip with hold true), as Interactive's
+    held_by_disposition reads the manifest's. A recheck whose preflight decided anew replaces the record; one
+    whose preflight never answered leaves it, as it leaves Interactive's hold."""
+    record = _loads(unit.get("disposition_json"))
+    return record.get("disposition") == "skip" and record.get("hold") is True
+
+
+def _parts_still_held(parts: Iterable[Mapping[str, Any]]) -> list[str]:
+    """The split parts their disposition holds that no operator's skip released: each keeps its parent's raw
+    tree (the agreed contract of 2026-10-07; review r9-32 of PR #32)."""
+    return [str(item["unit_key"]) for item in parts if _held_by_disposition(item) and not _releases_hold(item)]
+
+
 def _loads(text: str | None) -> dict[str, Any]:
     try:
         value = json.loads(text or "{}")
     except ValueError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _flag(value: Any) -> bool | None:
+    """A ledger 0/1 column as a record's true or false, and NULL as null."""
+    return None if value is None else bool(value)
 
 
 def _merge(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -241,6 +327,9 @@ class Runner:
         self.policy = policy.CampaignPolicy.from_dict(self.campaign["policy"])
         self.pins = self.campaign["pins"]
         self.profile = self.campaign["profile"]
+        self.pins_automatic_rt = policy.automatic_rt_correction_pinned(self.campaign["policy"]) and bool(
+            self.policy.automatic_rt_correction
+        )
         self.libraries = dict((resources or {}).get("libraries") or {})
         self.redact = policy.redactor(self.libraries)
         self.directory = Path(self.campaign["manifest_path"]).parent
@@ -360,9 +449,15 @@ class Runner:
         comes by itself every held_recheck_seconds, so the runner stays and sleeps until it is due, as it
         does for a retry. Were it idle, run --until-idle would return and the rechecks every few hours that
         the user's rule of 2026-10-02 promises would wait for the next start. A unit that stays held keeps
-        the runner going until a recheck gives what it lacked or an operator skips it."""
+        the runner going until a recheck gives what it lacked or an operator skips it.
+
+        A unit Interactive's disposition holds (disposition_held, 2026-10-07) waits for nothing the runner can
+        bring, so it is idle until an operator's recheck-held makes it due, and so is a split parent whose parts
+        that have not ended are all held so."""
         for unit in self.ledger.units():
             if unit["state"] in ledger_module.TERMINAL_STATES or unit["state"] in ("deferred_disk", "pending"):
+                continue
+            if _waits_for_an_operator(unit, self.ledger):
                 continue
             return False
         return self._next_candidate() is None
@@ -455,6 +550,10 @@ class Runner:
                 # back here, and one whose step is a download meets the disk guard there (handoff_ready).
                 due = policy.parse_iso(unit["next_attempt_at"])
                 candidate = due is None or due <= now
+            elif state == DISPOSITION_HELD:
+                # Held by Interactive's disposition: due only once an operator's recheck-held set when.
+                due = policy.parse_iso(unit["next_attempt_at"])
+                candidate = due is not None and due <= now
             elif state == "deferred_disk":
                 verdict = self._disk_verdict(unit)
                 if verdict.never_fits:
@@ -762,13 +861,20 @@ class Runner:
                 elif state == "split_parent":
                     detail = "not skipped: skip the split parts one by one"
                 else:
+                    # An operator's skip of a unit Interactive's disposition holds is the explicit decision that
+                    # lifts the hold (the agreed contract of 2026-10-07): its discard, and its split parent's
+                    # release, pass release_disposition_hold, which nothing else here ever does. The unit need not
+                    # be disposition_held at that moment: a recheck whose preflight never answered moves it to
+                    # waiting_retry or contract_held while Interactive's hold stands (review r10-32 of PR #32).
+                    released = state == DISPOSITION_HELD or _held_by_disposition(unit)
                     self._move(
                         unit, "discarding", pending_terminal="skipped",
-                        terminal_detail=json.dumps({"reason": "operator_skip", "detail": request["reason"]}),
-                        detail={"request_id": request["request_id"]},
+                        terminal_detail=json.dumps({"reason": "operator_skip", "detail": request["reason"],
+                                                    **({RELEASE_HOLD: True} if released else {})}),
+                        detail={"request_id": request["request_id"], **({RELEASE_HOLD: True} if released else {})},
                         end_console_run=self._open_console_end(unit, "skipped"),
                     )
-                    detail = "skipped"
+                    detail = "skipped; the disposition hold is released (operator_skip)" if released else "skipped"
             elif request["action"] == "release_held":
                 # Only the unit's raw data, under boundary 5, through Interactive's own deletion: the unit keeps
                 # how it ended. A retry would run it again from its Class decision.
@@ -780,8 +886,9 @@ class Runner:
                     raw, why = self._release_held(unit)
                     detail = f"released ({raw}): {why}" if raw in ("released", "discarded") else f"still held: {why}"
             elif request["action"] == "recheck_held":
-                # The step a held unit was held at, made again now: for gate_held, the before-production gate.
-                if state in HELD_STATES:
+                # The step a held unit was held at, made again now: for gate_held, the before-production gate; for
+                # disposition_held, the preflight, which only this request (or a retry) brings.
+                if state in HELD_STATES or state == DISPOSITION_HELD:
                     detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
                 else:
                     detail = f"nothing held for a recheck: the unit is {state}"
@@ -791,7 +898,7 @@ class Runner:
                                pending_terminal=unit.get("pending_terminal"), terminal_detail=unit.get("terminal_detail"),
                                detail={"request_id": request["request_id"]})
                     detail = "retry brought forward"
-                elif state in HELD_STATES:
+                elif state in HELD_STATES or state == DISPOSITION_HELD:
                     detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
                 elif state == "deferred_disk":
                     self._move(unit, unit["resume_state"] or "handoff_ready", detail={"request_id": request["request_id"]})
@@ -831,10 +938,16 @@ class Runner:
         if self.ports.backend is None:
             return True
         result = self.ports.backend.ensure()
+        # The backend's process id, creation time and how it was started (ports.BackendSupervisor): through WMI,
+        # outside the runner's job, or as the runner's child; for a backend found running, what is knowable of it.
         if not result.get("ok"):
-            self._event("backend_unavailable", {"detail": result.get("detail")})
+            self._event("backend_unavailable", {key: result[key] for key in (
+                "detail", "pid", "process_created_at", "method", "start_failures", "retry_at", "origin") if result.get(key) is not None})
         elif result.get("started"):
-            self._event("backend_started", {"pid": result.get("pid")})
+            self._event("backend_started", {key: result[key] for key in (
+                "pid", "process_created_at", "launcher_pid", "method", "in_job", "seconds", "wmi_failure") if result.get(key) is not None})
+        elif result.get("origin_new"):
+            self._event("backend_reused", {"pid": result.get("pid"), "origin": result.get("origin")})
         return bool(result.get("ok"))
 
     def _observations(self) -> list[float]:
@@ -1291,8 +1404,12 @@ class Runner:
         """The raw-header preflight; then Interactive's campaign_disposition says what the unit does."""
         extractor = str((self.pins.get("extractor") or {}).get("path") or "")
         attempt = self.ledger.open_attempt(unit["unit_key"], "preflight", self.stamp(), tool="msdial_repository_raw_metadata_preflight")
+        # The pinned Console, the one that will run the unit: Interactive 0.5.34 decides a multi-energy AIF unit
+        # for it (run as AIF with MsdialWorkbench #825, held without).
+        console = str((self.pins.get("console") or {}).get("path") or "")
         result = self.ports.interactive.preflight(
-            manifest_path=unit["manifest_path"], extractor_path=extractor, authorization_path=self._authorization(unit)
+            manifest_path=unit["manifest_path"], extractor_path=extractor, authorization_path=self._authorization(unit),
+            console_path=console,
         )
         if result.get("ok") is False:
             # An extractor Interactive refuses as unverified or unpinned (0.5.17) is no failure of this unit:
@@ -1318,7 +1435,8 @@ class Runner:
                 # Recorded as advice (the unit was no campaign unit as it was decided): classify_preflight
                 # decides it again under the approval and applies it, without reading a header again.
                 classified = self.ports.interactive.classify(
-                    manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit)
+                    manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+                    console_path=console,
                 )
                 if classified.get("ok") is False:
                     self._fail(unit, step="classify", result=classified, retry_state="downloaded", attempt_id=attempt)
@@ -1357,7 +1475,22 @@ class Runner:
             )
         record = disposition.as_dict()
         close = (attempt, "ok", False, {"disposition": disposition.disposition, "reasons": list(disposition.reasons),
-                                        "warnings": list(disposition.warnings)})
+                                        "warnings": list(disposition.warnings),
+                                        **({"aif_multi_ce_run": dict(disposition.aif_multi_ce_run)}
+                                           if disposition.aif_multi_ce_run is not None else {})})
+        if disposition.held:
+            return self._disposition_hold(unit, record, close)
+        if _held_by_disposition(unit):
+            # A recheck of a unit Interactive's disposition held, decided anew and no longer held: say what held
+            # it and what now sends it on (for a multi-energy AIF unit, #825 in the pinned Console).
+            probe = disposition.multi_energy_aif_console or {}
+            self._event(DISPOSITION_HOLD_LIFTED, {
+                "held_for": list(_loads(unit.get("disposition_json")).get("reasons") or []),
+                "disposition": disposition.disposition,
+                "aif_multi_ce_run": disposition.aif_multi_ce_run,
+                "console_multi_energy_aif": ({key: probe.get(key) for key in ("available", "probe", "assembly_sha256")}
+                                             if probe else None),
+            }, unit["unit_key"])
         if disposition.disposition == "run":
             self._move(unit, "preflighted", disposition_json=json.dumps(record, sort_keys=True), close_attempt=close)
         elif disposition.disposition == "split":
@@ -1369,6 +1502,34 @@ class Runner:
                 terminal_detail=json.dumps({"reason": "preflight_" + disposition.disposition, "codes": list(disposition.reasons)}),
                 close_attempt=close,
             )
+        return True
+
+    def _disposition_hold(self, unit: dict[str, Any], record: Mapping[str, Any], close: tuple) -> bool:
+        """Interactive's disposition holds the unit (hold true; the AIF rule of 2026-10-07: a multi-collision-energy
+        AIF unit waits for a patched Console). Not run, not skipped and not failed: its raw data are kept,
+        nothing is counted, and it leaves the hand so the other units go on, with a warning in the ledger (the
+        transition, a disposition_held event) and in the status export. No recheck is scheduled: only an
+        operator's recheck-held makes the preflight again."""
+        reasons = [str(item) for item in record.get("reasons") or []]
+        self._move(
+            unit, DISPOSITION_HELD, resume_state="downloaded", next_attempt_at=None,
+            disposition_json=json.dumps(dict(record), sort_keys=True),
+            detail={DISPOSITION_HELD: ", ".join(reasons) or "hold", "awaiting": policy.HOLD_FOR_CONSOLE
+                    if policy.HOLD_FOR_CONSOLE in reasons else None,
+                    **({"console_multi_energy_aif": record["multi_energy_aif_console"].get("probe")}
+                       if isinstance(record.get("multi_energy_aif_console"), Mapping) else {})},
+            close_attempt=close,
+        )
+        self._event(DISPOSITION_HELD, {"reasons": reasons, "warning": DISPOSITION_HELD_WARNING}, unit["unit_key"])
+        return True
+
+    def _state_disposition_held(self, unit: dict[str, Any]) -> bool:
+        """Once an operator's recheck-held made it due, the unit goes back to downloaded, whose step makes the
+        preflight again: Interactive's new disposition then sends it on, or holds it again."""
+        due = policy.parse_iso(unit["next_attempt_at"])
+        if due is None or due > self.now():
+            return False
+        self._move(unit, unit["resume_state"] or "downloaded", detail={"disposition_recheck": True})
         return True
 
     def _preflight_held(self, unit: dict[str, Any], held: Mapping[str, Any], attempt: int) -> bool:
@@ -1440,9 +1601,21 @@ class Runner:
             return "kept", "the campaign keeps raw data", None
         if not self._live("5"):
             return "kept", "no live approval covers boundary 5", None
+        # Interactive's release with release_disposition_hold lifts the hold of EVERY part its disposition holds
+        # (cleanup_split_parent, _part_end), so it is passed only when every such part has its own operator's
+        # skip (review r9-32 of PR #32). A held part without one - it ended failed or stopped while held - keeps
+        # the parent's raw tree: nothing is asked of Interactive, and the parent waits for that part. Kept, not
+        # held: only that part's release would change the answer, and no recheck can make it.
+        waiting = _parts_still_held(parts)
+        if waiting:
+            self._event("split_parent_waits_for_held_part", {"parts": waiting}, unit["unit_key"])
+            return ("kept", f"kept: waiting for part {', '.join(waiting)}, which Interactive's campaign disposition "
+                    "holds and no operator's skip released", None)
+        release = any(_held_by_disposition(item) for item in parts)
         if any(item["outputs_produced"] for item in parts):
             result = self.ports.interactive.release_split_parent(
-                manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit)
+                manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+                release_disposition_hold=release,
             )
             if result.get("ok") is not False and result.get("deleted"):
                 return "released", "released after its parts' validated outputs", "5"
@@ -1450,7 +1623,7 @@ class Runner:
             return raw, str(result.get("detail") or result.get("reason") or "not released"), None
         result = self.ports.interactive.discard(
             manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
-            unit_id=unit["unit_key"],
+            unit_id=unit["unit_key"], release_disposition_hold=release,
         )
         if result.get("ok") is not False and result.get("deleted"):
             return "discarded", "no part produced validated outputs", "5"
@@ -1471,9 +1644,13 @@ class Runner:
         directory = self._unit_directory(unit)
         directory.mkdir(parents=True, exist_ok=True)
         _write_json(directory / "answer-seed.json", seed)
+        # What the CSV's analytical order was taken from, as Interactive recorded it with the CSV: read by
+        # blank_interpolation, since a Blank's RT model may be interpolated only by a recorded injection order.
+        order_source = policy.analytical_order_source((result.get("preview") or {}).get("analytical_order"))
         self._move(
             unit, "metadata_prepared", boundary="3", input_path=str(result["input_path"]),
-            close_attempt=(attempt, "ok", False, {"input_path": result["input_path"]}),
+            close_attempt=(attempt, "ok", False, {"input_path": result["input_path"],
+                                                  "analytical_order_source": order_source}),
         )
         return True
 
@@ -1492,9 +1669,54 @@ class Runner:
         answers["smoothing_method"] = "TimeBasedLinearWeightedMovingAverage"
         answers["target_peak_count_min"] = int(self.policy.peak_count_min)
         answers["target_peak_count_max"] = int(self.policy.peak_count_max)
+        if self.pins_automatic_rt:
+            answers["execute_automatic_rt_correction"] = not self.automatic_rt_fallback(unit["unit_key"])
+            answers["automatic_rt_correction_maximum_anchors"] = int(self.policy.automatic_rt_correction_maximum_anchors)
+            answers[policy.AUTOMATIC_RT_BLANK_ANSWER] = self.blank_interpolation(unit["unit_key"])
         if minimum_peak_height is not None:
             answers["minimum_peak_height"] = float(minimum_peak_height)
         return answers
+
+    def analytical_order_source(self, unit_key: str) -> str | None:
+        """What the unit's analysis CSV took its analytical order from, as its last prepared metadata recorded it
+        (policy.analytical_order_source); None where nothing recorded it."""
+        prepared = [item for item in self.ledger.attempts(unit_key)
+                    if item["step"] == "prepare_metadata" and item["outcome"] == "ok"]
+        return _loads(prepared[-1]["detail_json"]).get("analytical_order_source") if prepared else None
+
+    def blank_interpolation(self, unit_key: str) -> bool:
+        """Whether the unit's Blank files take an RT model interpolated by analytical order (Interactive's default),
+        or keep their measured RTs: interpolated only by an order the raw headers record or the repository's
+        sample table declares (policy.blank_interpolation_allowed). Interactive warns of the other case only in a
+        plan the runner does not stop on, so the runner decides it here."""
+        return policy.blank_interpolation_allowed(self.analytical_order_source(unit_key))
+
+    def _automatic_rt_selection_failed(self, unit_key: str) -> bool:
+        """Whether a production run of the unit failed because its Console could not select anchors."""
+        return any(item["step"] == "run" and _loads(item["detail_json"]).get(AUTOMATIC_RT_FAILED) is True
+                   for item in self.ledger.attempts(unit_key))
+
+    def automatic_rt_fallback(self, unit_key: str) -> bool:
+        """Whether the unit's production runs go on without the automatic RT correction the campaign pins: a run
+        of it failed for want of anchors, and the policy falls back."""
+        return bool(self.pins_automatic_rt and self.policy.automatic_rt_correction_fallback
+                    and self._automatic_rt_selection_failed(unit_key))
+
+    def _automatic_rt_failed(self, job: Mapping[str, Any]) -> bool:
+        """Whether a production run that ended failed did so because its Console could not select anchors: the
+        Console's line is in the job's error or log tail, or else in the job's whole kept log, read once."""
+        def said(lines: Iterable[Any]) -> bool:
+            return any(policy.AUTOMATIC_RT_FAILED_LINE in str(line) for line in lines)
+        if said([job.get("error") or "", *(job.get("log_tail") or [])]):
+            return True
+        reader = getattr(self.ports.interactive, "job_log", None)
+        job_id = str(job.get("id") or job.get("job_id") or "")
+        if reader is None or not job_id:
+            return False
+        try:
+            return said(reader(job_id) or [])
+        except Exception:  # noqa: BLE001 - a log that cannot be read leaves the failure an ordinary one
+            return False
 
     def _console_start(self, unit: dict[str, Any], kind: str) -> bool:
         """One Console start, recorded before the call (the Console run and its attempt) and adopted
@@ -1590,6 +1812,9 @@ class Runner:
                               console_run=(run[0], "interrupted") if run else None)
             return True
         outcome = "timeout" if exit_code == -3 else "cancelled" if exit_code == -4 else "failed"
+        if step == "run" and outcome == "failed" and self.pins_automatic_rt and self._automatic_rt_failed(job):
+            # Read by automatic_rt_fallback: the unit's next attempts run without the correction, if the policy says.
+            detail[AUTOMATIC_RT_FAILED] = True
         self._production_ended(unit, {"timeout": "timed_out"}.get(outcome, outcome))
         self._fail(unit, step=step, result={"ok": False, "reason": outcome, **detail}, retry_state=retry_state,
                    outcome=outcome, console_run=(run[0], outcome) if run else None, job_id=job_id)
@@ -1741,9 +1966,27 @@ class Runner:
 
     def _estimate(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
         """The stepped threshold from the diagnostic, with the campaign's step rule applied: {"estimate",
-        "representative", "threshold_step"}. None where Interactive answered that no estimate is ready; its
-        ok:false reply where a call did not give one, for the caller to classify (a backend that does not answer
-        is not the unit's failure)."""
+        "representative", "step", "family"}, the step being policy.estimate_step's record of the step the
+        estimate used, the family step it searched first and whether and why it fell back (the user's rule of
+        2026-10-06), and "family" the instrument family Interactive read, with its source. None where
+        Interactive answered that no estimate is ready; its ok:false reply where a call did not give one, for the
+        caller to classify (a backend that does not answer is not the unit's failure). An estimate whose step the
+        rule does not give is a reply the runner cannot read (reason malformed): the unit is held, not run at a
+        step nobody chose.
+
+        INTERACTIVE DECIDES THE STEP (0.5.28, msdial-interactive-app#61). It reads the instrument family from
+        the representative file (its vendor format or mzML header; the repository's declared instrument only
+        over a format default), always searches that family's step first, and only records a requested step,
+        never searching it. So the runner asks once, with no step, and reads the estimate against the family
+        step of the family the estimate itself records (policy.family_step): it never asks again at a step of
+        its own, which would come back unsearched and hold the unit for a step nobody searched (a multi-
+        platform study's "Q Exactive; TripleTOF 6600" on a SCIEX .wiff; review of #61, 2026-10-07). Where the
+        Catalog's instrument text would give another step, a note says so, and the unit runs at
+        Interactive's.
+
+        An Interactive before 0.5.28 records threshold_step alone, the step it was asked for, and labelled every
+        mzML QTOF: for it alone the runner asks again at policy.threshold_step's step, which that build
+        searches."""
         arguments = {"job_id": unit["diagnostic_job_id"], "manifest_path": unit["manifest_path"],
                      "minimum": self.policy.peak_count_min, "maximum": self.policy.peak_count_max}
         first = self.ports.interactive.estimate(**arguments, step=0)
@@ -1752,19 +1995,38 @@ class Runner:
         if not first.get("ready"):
             return None
         representative = dict(first.get("representative") or {})
-        step = policy.threshold_step(
-            unit["instrument"], str(representative.get("instrument_family") or ""),
-            thermo_raw_inputs(self._manifest(unit)),
-        )
         estimate = dict(first.get("estimate") or {})
-        if int(estimate.get("threshold_step") or 0) != step:
-            second = self.ports.interactive.estimate(**arguments, step=step)
-            if second.get("ok") is False:
-                return dict(second)
-            if not second.get("ready"):
-                return None
-            estimate = dict(second.get("estimate") or {})
-        return {"estimate": estimate, "representative": representative, "threshold_step": step}
+        if "coarse_threshold_step" not in estimate:
+            asked = policy.threshold_step(
+                unit["instrument"], str(representative.get("instrument_family") or ""),
+                thermo_raw_inputs(self._manifest(unit)),
+            )
+            if int(estimate.get("threshold_step") or 0) != asked:
+                second = self.ports.interactive.estimate(**arguments, step=asked)
+                if second.get("ok") is False:
+                    return dict(second)
+                if not second.get("ready"):
+                    return None
+                estimate = dict(second.get("estimate") or {})
+        family = {"instrument_family": str(estimate["instrument_family"] if "instrument_family" in estimate
+                                           else representative.get("instrument_family") or ""),
+                  "instrument_family_source": str(representative.get("instrument_family_source") or "")}
+        if "coarse_threshold_step" in estimate:
+            step = policy.family_step(family["instrument_family"])
+            catalog = policy.threshold_step(unit["instrument"])
+            if catalog != step:
+                family["note"] = (
+                    f"Interactive searched the {family['instrument_family'] or 'unrecorded'} family's step {step}"
+                    + (f" (from {family['instrument_family_source']})" if family["instrument_family_source"] else "")
+                    + f", where the Catalog's instrument text ({unit['instrument']}) would give {catalog}; the "
+                    "family Interactive read from the file decides.")
+        else:
+            step = asked
+        used = policy.estimate_step(estimate, step)
+        if isinstance(used, str):
+            return {"ok": False, "reason": "malformed", "detail": f"The peak-height estimate's step is not one the "
+                    f"step rule gives: {used}.", "estimate": estimate}
+        return {"estimate": estimate, "representative": representative, "step": used, "family": family}
 
     def _diagnosed(self, unit: dict[str, Any], estimate: Mapping[str, Any]) -> bool:
         values = estimate["estimate"]
@@ -1772,11 +2034,15 @@ class Runner:
         self._move(
             unit, "diagnosed", minimum_peak_height=float(values.get("minimum_peak_height") or 0),
             diagnostic_peak_count=int(values.get("diagnostic_peak_count") or 0),
-            threshold_step=int(estimate["threshold_step"]),
+            threshold_step=int(estimate["step"]["threshold_step"]),
+            coarse_threshold_step=int(estimate["step"]["coarse_threshold_step"]),
+            step_fallback=int(estimate["step"]["step_fallback"]),
+            fallback_reason=estimate["step"]["fallback_reason"],
             representative_file=str(representative.get("file_name") or representative.get("file_path") or ""),
             order_source=str(representative.get("selection_reason") or ""),
             end_console_run=self._open_console_end(unit, "completed"),
-            detail={"estimate": dict(values), "representative_reason": representative.get("selection_reason")},
+            detail={"estimate": dict(values), "representative_reason": representative.get("selection_reason"),
+                    "instrument_family": dict(estimate.get("family") or {})},
         )
         return True
 
@@ -1795,6 +2061,12 @@ class Runner:
         if result.get("ok") is False:
             self._fail(unit, step="prepare_run", result=result, retry_state="diagnosed", attempt_id=attempt)
             return True
+        # Interactive's plan warnings stop nothing (only its errors do), so the attempt keeps them: otherwise a
+        # warning such as Blank interpolation on an inferred order would leave no trace once the unit ran.
+        plan_warnings = self.redact({"plan_warnings": [
+            str(item.get("message") or "") for item in ((result.get("plan") or {}).get("validation") or [])
+            if isinstance(item, Mapping) and item.get("level") == "warning"
+        ]})
         verdict = self._gate(unit, "before_production")
         problem = policy.gate_report_problem(verdict)
         if problem is not None:
@@ -1809,11 +2081,12 @@ class Runner:
             self._fail(
                 unit, step="before_production_gate", attempt_id=attempt, retry_state="diagnosed",
                 result={"ok": False, "reason": "gate_blocks_run", "blocking_fail_ids": blocking,
-                        "blocking_unevaluated_ids": unevaluated, "run_policy_source": verdict.get("run_policy_source")},
+                        "blocking_unevaluated_ids": unevaluated, "run_policy_source": verdict.get("run_policy_source"),
+                        **plan_warnings},
                 gate=("before_production", verdict),
             )
             return True
-        self._move(unit, "prepared", close_attempt=(attempt, "ok", False, {}), gate=("before_production", verdict))
+        self._move(unit, "prepared", close_attempt=(attempt, "ok", False, plan_warnings), gate=("before_production", verdict))
         return True
 
     def _gate_hold(self, unit: dict[str, Any], attempt: int, verdict: dict[str, Any] | None, problem: str) -> bool:
@@ -1895,12 +2168,13 @@ class Runner:
     def _bring_recheck_forward(self, unit: Mapping[str, Any], source: str, request_id: int | None = None) -> str:
         """Make a held unit's recheck due now. Says what was done, for the operator's request."""
         gate = unit["state"] == "gate_held"
-        detail: dict[str, Any] = {"gate_recheck" if gate else "contract_recheck": source}
+        kind = "gate" if gate else "disposition" if unit["state"] == DISPOSITION_HELD else "contract"
+        detail: dict[str, Any] = {f"{kind}_recheck": source}
         if request_id is not None:
             detail["request_id"] = request_id
         self._move(unit, unit["state"], resume_state=unit["resume_state"] or ("diagnosed" if gate else "downloaded"),
                    next_attempt_at=self.stamp(), detail=detail)
-        return "gate recheck brought forward" if gate else "contract recheck brought forward"
+        return f"{kind} recheck brought forward"
 
     def _held_units_recheck(self) -> bool:
         """When the runner starts, make the step of every held unit (HELD_STATES) again: their recheck is brought
@@ -2114,7 +2388,10 @@ class Runner:
         manifest = self._manifest(unit) if unit["manifest_path"] else None
         if manifest is None:
             return "none", "no raw data were downloaded", None
+        release = _releases_hold(unit)
         if unit["role"] == "split_part":
+            if release:
+                return self._release_part_hold(unit)
             return "deferred_to_parent", "deleted with the split parent once every part has ended", None
         if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
             return "kept", "the campaign keeps raw data", None
@@ -2139,21 +2416,51 @@ class Runner:
         result = self.ports.interactive.discard(
             manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
             unit_id=unit["unit_key"], parent_unit_id=unit["parent_unit_key"] or "",
+            release_disposition_hold=release,
         )
         if result.get("ok") is not False and result.get("deleted"):
-            return "discarded", f"deleted: the unit {ending}", "5"
+            return "discarded", f"deleted: the unit {ending}" + (
+                ", its disposition hold released by the operator's skip" if release else ""), "5"
         if policy.classify_result(result) == policy.REFUSED:
             return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
         if policy.classify_result(result) == policy.CONTRACT:
             return "held", f"not deleted: {result.get('reason')}: {result.get('detail')}", None
         blockers = [str(code) for code in result.get("blockers") or []]
         detail = str(result.get("detail") or result.get("reason") or "not deleted")
+        if policy.DISPOSITION_HELD_BLOCKER in blockers and not release:
+            # Interactive's disposition holds the unit, and no operator released it: its raw data are kept by
+            # that decision, not held for a recheck, which would ask for the same refused discard forever.
+            return "kept", f"kept: Interactive's campaign disposition holds the unit ({detail})", None
         if policy.discard_blocked_for_good(blockers):
             # A failed run that left an mzTab-M: Interactive discards no such unit's raw data, and asking
             # again changes nothing. Nothing here works around that by touching the unit's output: the raw
             # data are held, counted apart, until Interactive's own discard deletes them (plan item 14).
             return "held", f"not deleted ({', '.join(blockers)}): {detail}", None
         return "wait", detail, None
+
+    def _release_part_hold(self, unit: Mapping[str, Any]) -> tuple[str, str, str | None]:
+        """An operator's skip of a split part Interactive's disposition holds: the part's own discard, with
+        release_disposition_hold, records that it has ended (deleting nothing; its raw data are its parent's),
+        so the parent's release no longer waits for it. Until it is released, a held part keeps its parent's raw
+        data. Under the campaign's retention and a live boundary 5 only, as any deletion."""
+        if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
+            return "deferred_to_parent", "the campaign keeps raw data", None
+        if not self._live("5"):
+            return ("deferred_to_parent", "no live approval covers boundary 5; the parent's release passes the "
+                    "operator's release of the part's disposition hold", None)
+        result = self.ports.interactive.discard(
+            manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+            unit_id=unit["unit_key"], parent_unit_id=unit["parent_unit_key"] or "", release_disposition_hold=True,
+        )
+        if result.get("ok") is not False and (result.get("part_ended") or result.get("deleted")):
+            return ("deferred_to_parent", "the part's disposition hold released by the operator's skip; its raw data "
+                    "go with the split parent's once every part has ended", "5")
+        if policy.classify_result(result) == policy.REFUSED:
+            return "kept", f"hold release refused: {result.get('codes') or result.get('detail')}", None
+        if policy.classify_result(result) == policy.CONTRACT:
+            return ("deferred_to_parent", f"the part's hold was not released here ({result.get('reason')}: "
+                    f"{result.get('detail')}); the parent's release passes the operator's release", None)
+        return "wait", str(result.get("blockers") or result.get("detail") or result.get("reason") or "not released"), None
 
     def _held_recheck(self) -> bool:
         """Look again at every unit whose raw data are held, when the runner starts and every
@@ -2263,6 +2570,8 @@ class Runner:
                 "extractor_sha256": str((self.pins.get("extractor") or {}).get("binary_sha256") or ""),
                 "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
                 "minimum_peak_height": unit.get("minimum_peak_height"), "threshold_step": unit.get("threshold_step"),
+                "coarse_threshold_step": unit.get("coarse_threshold_step"), "step_fallback": _flag(unit.get("step_fallback")),
+                "fallback_reason": unit.get("fallback_reason"),
                 "attempt_status": status.replace(" ", "_") if not final else None,
             },
         }
@@ -2323,8 +2632,23 @@ class Runner:
             "jobs": {"download": unit.get("download_job_id"), "diagnostic": unit.get("diagnostic_job_id"),
                      "run": unit.get("run_job_id")},
             "minimum_peak_height": unit.get("minimum_peak_height"),
+            # The step the threshold was taken at, the instrument-family step searched first, and whether and why
+            # it fell back to the finer one (2026-10-06); the last three are null for a unit diagnosed before.
             "threshold_step": unit.get("threshold_step"),
+            "coarse_threshold_step": unit.get("coarse_threshold_step"),
+            "step_fallback": _flag(unit.get("step_fallback")),
+            "fallback_reason": unit.get("fallback_reason"),
             "diagnostic_peak_count": unit.get("diagnostic_peak_count"),
+            # What the campaign pinned of automatic RT correction, and whether this unit's runs went on without it
+            # (null for a campaign whose policy pins none of it); whether its Blanks took a model interpolated by
+            # analytical order, and the order source that decided it (blank_interpolation).
+            "automatic_rt_correction": {
+                "maximum_anchors": int(self.policy.automatic_rt_correction_maximum_anchors),
+                "anchor_selection_failed": self._automatic_rt_selection_failed(unit["unit_key"]),
+                "fallback_uncorrected": self.automatic_rt_fallback(unit["unit_key"]),
+                "blank_interpolation_by_analytical_order": self.blank_interpolation(unit["unit_key"]),
+                "analytical_order_source": self.analytical_order_source(unit["unit_key"]),
+            } if self.pins_automatic_rt else None,
             "pins": {
                 "console_sha256": (self.pins.get("console") or {}).get("binary_sha256"),
                 "extractor_sha256": (self.pins.get("extractor") or {}).get("binary_sha256"),
@@ -2343,7 +2667,7 @@ def _write_json(path: Path, value: Any) -> None:
 
 # ---- status, for the operator and for the later verification work ----------------------------------
 
-def unit_status(unit: Mapping[str, Any], hold: str | None = None) -> dict[str, Any]:
+def unit_status(unit: Mapping[str, Any], hold: str | None = None, automatic_rt_fallback: bool = False) -> dict[str, Any]:
     """One unit's status row. `hold` is why a held unit is held, as its hold recorded it (_hold_reasons): for
     gate_held what the gate gave instead of a report (policy.gate_report_problem), for contract_held what
     the runner could not read."""
@@ -2353,6 +2677,10 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None) -> dict[str, A
         warnings.append(GATE_HELD_WARNING + (f" (no report: {hold})" if hold else ""))
     elif unit["state"] == "contract_held":
         warnings.append(CONTRACT_HELD_WARNING + (f" (contract: {hold})" if hold else ""))
+    elif unit["state"] == DISPOSITION_HELD:
+        warnings.append(DISPOSITION_HELD_WARNING + (f" (disposition: {hold})" if hold else ""))
+    if automatic_rt_fallback:
+        warnings.append(AUTOMATIC_RT_FALLBACK_WARNING)
     return {
         **{key: unit.get(key) for key in TSV_COLUMNS if key not in ("report_terms", "warnings")},
         "report_terms": terms,
@@ -2367,17 +2695,72 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None) -> dict[str, A
 
 
 def _hold_reasons(ledger: ledger_module.Ledger, units: Iterable[Mapping[str, Any]]) -> dict[str, str]:
-    """For each held unit (HELD_STATES), why its last hold was made, read from the transition that made it."""
+    """For each held unit (HELD_STATES, DISPOSITION_HELD), why its last hold was made, read from the transition
+    that made it."""
     reasons = {}
     for unit in units:
         state = unit["state"]
-        if state not in HELD_STATES:
+        if state not in HELD_STATES and state != DISPOSITION_HELD:
             continue
         for row in reversed(ledger.transitions(unit["unit_key"])):
             held = _loads(row["detail_json"]).get(state)
             if row["to_state"] == state and held:
                 reasons[unit["unit_key"]] = str(held)
                 break
+    return reasons
+
+
+def _automatic_rt_fallbacks(ledger: ledger_module.Ledger, campaign: Mapping[str, Any]) -> set[str]:
+    """The units whose production runs went on without the automatic RT correction the campaign pins, as
+    Runner.automatic_rt_fallback reads each one."""
+    recorded = campaign.get("policy")
+    if not policy.automatic_rt_correction_pinned(recorded):
+        return set()
+    rules = policy.CampaignPolicy.from_dict(recorded)
+    if not (rules.automatic_rt_correction and rules.automatic_rt_correction_fallback):
+        return set()
+    return {str(item["unit_key"]) for item in ledger.attempts()
+            if item["step"] == "run" and _loads(item["detail_json"]).get(AUTOMATIC_RT_FAILED) is True}
+
+
+def _waits_for_an_operator(unit: Mapping[str, Any], ledger: ledger_module.Ledger) -> bool:
+    """Whether a unit that has not ended waits only for an operator: held by Interactive's disposition with no
+    recheck asked for (next_attempt_at unset), or a split parent whose parts that have not ended all do."""
+    if unit["state"] == DISPOSITION_HELD:
+        return unit["next_attempt_at"] is None
+    if unit["state"] == "split_parent":
+        open_parts = [part for part in ledger.units() if part["parent_unit_key"] == unit["unit_key"]
+                      and part["state"] not in ledger_module.TERMINAL_STATES]
+        return bool(open_parts) and all(_waits_for_an_operator(part, ledger) for part in open_parts)
+    return False
+
+
+def remaining_work(ledger: ledger_module.Ledger) -> list[str]:
+    """What a runner started now could still do, read from the ledger alone; empty when the campaign has no
+    work left.
+
+    run checks this before it takes the runner lock, locks the Catalog or starts a backend (2026-10-07 review
+    of PR #30): the scheduled task starts a runner every hour, and on a finished campaign each one used to lock
+    the Catalog and start an Interactive backend, outside any job, that nothing then stopped. Work is a unit
+    that has not ended (a unit waiting for disk or held for a recheck among them), an operator request no
+    runner has handled, or an ended unit holding raw data the rules delete, which the runner looks at again
+    while a live approval covers boundary 5 (_held_recheck)."""
+    units = ledger.units()
+    reasons = []
+    # A unit Interactive's disposition holds waits for an operator's recheck-held, which is a request, and so is
+    # work then; until one is made, a runner started for it would do nothing (2026-10-07).
+    open_units = [unit for unit in units if unit["state"] not in ledger_module.TERMINAL_STATES
+                  and not _waits_for_an_operator(unit, ledger)]
+    if open_units:
+        reasons.append(f"{len(open_units)} unit(s) have not ended")
+    requests = ledger.pending_requests()
+    if requests:
+        reasons.append(f"{len(requests)} operator request(s) wait for a runner")
+    held = [unit for unit in units
+            if unit["state"] in ledger_module.TERMINAL_STATES and unit["raw_disposition"] == "held"]
+    if held and ledger.campaign()["raw_retention_policy"] == "delete_after_validated_output" \
+            and ledger.live_approval("5") is not None:
+        reasons.append(f"{len(held)} ended unit(s) hold raw data the runner looks at again")
     return reasons
 
 
@@ -2393,6 +2776,13 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     held = [unit for unit in units if unit["raw_disposition"] == "held"]
     gate_held = [unit for unit in units if unit["state"] == "gate_held"]
     contract_held = [unit for unit in units if unit["state"] == "contract_held"]
+    disposition_held = [unit for unit in units if unit["state"] == DISPOSITION_HELD]
+    held_for = {}
+    for unit in disposition_held:
+        for code in _loads(unit.get("disposition_json")).get("reasons") or ["unrecorded"]:
+            held_for[str(code)] = held_for.get(str(code), 0) + 1
+    # Decided to run as multi-energy AIF with a Console that has MsdialWorkbench #825 (Interactive 0.5.34).
+    multi_energy = [unit for unit in units if isinstance(_loads(unit.get("disposition_json")).get("aif_multi_ce_run"), dict)]
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
@@ -2410,6 +2800,16 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         # never a pause of the campaign ("stop" is per unit, 2026-10-02).
         "contract_held": {"units": len(contract_held), "unit_keys": [unit["unit_key"] for unit in contract_held],
                           "warning": CONTRACT_HELD_WARNING if contract_held else None},
+        # Held by Interactive's disposition (the AIF rule of 2026-10-07: a multi-collision-energy AIF unit waits for a
+        # patched Console): not run, raw data kept, never a failure, lifted only by an operator's recheck-held.
+        "disposition_held": {"units": len(disposition_held),
+                             "unit_keys": [unit["unit_key"] for unit in disposition_held],
+                             "reasons": dict(sorted(held_for.items())),
+                             "recheck_asked": sum(1 for unit in disposition_held if unit["next_attempt_at"]),
+                             "warning": DISPOSITION_HELD_WARNING if disposition_held else None},
+        # Run as multi-energy AIF under policy.AIF_MULTI_CE_RULE: their disposition records aif_multi_ce_run.
+        "multi_energy_aif_runs": {"units": len(multi_energy), "unit_keys": [unit["unit_key"] for unit in multi_energy],
+                                  "rule": policy.AIF_MULTI_CE_RULE},
         # The pause in force, named: one of the four pauses of the whole campaign, each lifting by itself, or
         # an operator's own (or a contract pause an earlier runner left), which waits for an operator's resume.
         "paused": {"kind": runner["pause_kind"], "name": policy.pause_name(runner["pause_kind"]),
@@ -2429,7 +2829,8 @@ def export_status(ledger: ledger_module.Ledger) -> tuple[dict[str, Any], str]:
     campaign = ledger.campaign()
     units = ledger.units()
     reasons = _hold_reasons(ledger, units)
-    rows = [unit_status(unit, reasons.get(unit["unit_key"])) for unit in units]
+    fallbacks = _automatic_rt_fallbacks(ledger, campaign)
+    rows = [unit_status(unit, reasons.get(unit["unit_key"]), unit["unit_key"] in fallbacks) for unit in units]
     document = {
         "schema": STATUS_SCHEMA,
         "campaign_id": campaign["campaign_id"],

@@ -648,27 +648,27 @@ class AcquisitionTypeTests(unittest.TestCase):
             unit.csv(unit.rows([csv_type]))
             return _check(verifier.verify(unit.write(), "before-production"), "ACQ-1")
 
-    def test_a_weak_header_the_disposition_kept_the_declaration_over_is_a_warning(self) -> None:
-        """classify_preflight keeps the repository's declaration over a header below 0.8 that contradicts it,
-        and Interactive's execution gate admits the decided type. Whether a weak header should outrank the
-        declaration is a scientific decision; ACQ-1 names it, and refused every such unit."""
-        for header, confidence, console, declared, windows in (("DIA", 0.5, "DDA", "DDA", 22),
-                                                               ("DDA", 0.75, "SWATH", "DIA", None)):
+    def test_a_weak_header_the_disposition_kept_the_declaration_over_is_refused(self) -> None:
+        """Rule B2 (2026-10-06): a header that gives a Console type decides at any confidence. A disposition
+        written before it kept the declaration over a header below 0.8 that contradicts it (MTBLS1572's six DDA
+        files recorded as SWATH); that row runs as a type its header contradicts, and is refused."""
+        for header, confidence, console, declared, windows, said in (
+                ("DIA", 0.5, "DDA", "DDA", 22, "S0: its header says DIA, and the Console will deconvolute it as DDA"),
+                ("DDA", 0.75, "SWATH", "DIA", None,
+                 "S0: its header gives DDA, and the Console will deconvolute it as SWATH (decided on the basis "
+                 "'declaration')")):
             with self.subTest(header=header):
                 check = self._decided(header, confidence, console, console, windows=windows, declared=declared)
 
-                self.assertEqual(verifier.WARN, check.status, check.detail)
-                self.assertIn(f"S0: its header says {header}, and the Console will deconvolute it as {console}, at "
-                              f"confidence {confidence:.2f}, below the 0.8 at which a header replaces the repository's "
-                              f"declaration, so the campaign disposition kept the declared {declared}", check.detail)
-                self.assertEqual({"declaration": 1}, check.evidence["sources"])
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn(said, check.detail)
 
-    def test_a_contradicting_header_of_no_recorded_confidence_does_not_outrank_the_declaration(self) -> None:
-        """classify_preflight reads a missing confidence as 0, so the declaration it kept is named, not refused."""
+    def test_a_contradicting_header_of_no_recorded_confidence_is_refused(self) -> None:
+        """No confidence threshold stands between a header and the row any more (rule B2)."""
         check = self._decided("DIA", None, "DDA", "DDA", declared="DDA")
 
-        self.assertEqual(verifier.WARN, check.status, check.detail)
-        self.assertIn("at no recorded confidence, short of the 0.8", check.detail)
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("S0: its header says DIA, and the Console will deconvolute it as DDA", check.detail)
 
     def test_a_confident_header_the_declaration_contradicts_is_refused(self) -> None:
         check = self._decided("DIA", 0.9, "DDA", "DDA", declared="DDA")
@@ -688,8 +688,8 @@ class AcquisitionTypeTests(unittest.TestCase):
         check = self._decided("Unknown", 0.3, "DDA", "DDA")
 
         self.assertEqual(verifier.WARN, check.status)
-        self.assertIn("S0: its DDA is the repository's declaration, which the campaign disposition kept where its "
-                      "header gives Unknown at confidence 0.30", check.detail)
+        self.assertIn("S0: its DDA is the repository's declaration, which the campaign disposition took where its "
+                      "header gives Unknown at confidence 0.30 and no Console acquisition type", check.detail)
         self.assertIn("1 from the repository declaration", check.detail)
         self.assertEqual({"declaration": 1}, check.evidence["sources"])
 

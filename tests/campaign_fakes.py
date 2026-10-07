@@ -72,7 +72,11 @@ class UnitScript:
     # arriving and the job never ends until it is cancelled); blocked; interrupt; shared (waiting for another
     # unit's lease to fetch a shared object, no bytes of its own, then ok)
     downloads: list[str] = field(default_factory=lambda: ["ok"])
-    disposition: str = "run"  # run, split, skip, exclude, none, malformed
+    # run, split, skip, exclude, none, malformed; aif_hold (Interactive 0.5.31: a skip with hold true for a
+    # multi-collision-energy AIF unit, aif_multi_ce_awaiting_console); aif_multi_ce (Interactive 0.5.34: such a unit
+    # decided for the Console the preflight is given, else the saved one (World.saved_console): run as AIF under
+    # multi_ce_aif_with_console_825 where that Console is in World.consoles_825, held as aif_hold otherwise)
+    disposition: str = "run"
     # Whether the preflight applies its disposition (a campaign unit, Interactive 0.5.17), and whether
     # classify_preflight then does; held: what disposition_hold holds the unit for, if anything.
     applied: bool = True
@@ -81,7 +85,8 @@ class UnitScript:
     split_modes: tuple[str, ...] = ("DDA", "SWATH")
     diagnostics: list[str] = field(default_factory=lambda: ["ok"])  # ok, timeout, fail, lose_reply
     # ok, timeout, fail, invalid (an mzTab-M that does not validate), late_fail (the mzTab-M validated and
-    # the job failed after), hold, lose_reply, busy_reply
+    # the job failed after), hold, lose_reply, busy_reply; rt_fail (the Console could not select anchors for
+    # automatic RT correction: exit -1, no output, its line in the job's log above finalisation's)
     runs: list[str] = field(default_factory=lambda: ["ok"])
     cleanup: str = "ok"  # ok, blocked, unsupported (an Interactive whose cleanup takes no approval)
     # How long each job runs, in 30-second polls of fake time. A job ends when its time is up, whether or
@@ -91,6 +96,12 @@ class UnitScript:
     # maximum_gb) and the bytes the lease streams (it stops past maximum_gb). 0 is small.
     required_bytes: int = 0
     remote_bytes: int = 0
+    # The analytical-order record the prepared metadata's preview carries (Interactive's with_order_source): its
+    # order_source, or None for a record that names none; the key is left out when no_order_record.
+    order_source: str | None = None
+    no_order_record: bool = False
+    # The warnings Interactive's guided plan validation raises (level warning; they stop nothing).
+    plan_warnings: list[str] = field(default_factory=list)
 
 
 def _write(path: Path, value: Any) -> None:
@@ -138,6 +149,10 @@ class FakeInteractive:
         self.console_starts: list[tuple[str, str]] = []
         self.cancels: list[tuple[str, str]] = []
         self.split_release_supported = False
+        # Whether discard and release_split_parent take release_disposition_hold (the agreed contract of
+        # 2026-10-07); False plays an Interactive 0.5.31 before it, which has the hold and no way to release it.
+        self.release_hold_supported = True
+        self.split_parts: dict[str, list[str]] = {}
         self.store = ManifestStore()
         self._counter = 0
         self._tries: dict[tuple[str, str], int] = {}
@@ -150,6 +165,16 @@ class FakeInteractive:
         self.orphan_unkillable = False
         self.kills: list[str] = []
         self.overlapping_starts: list[tuple[str, list[str]]] = []
+        # Interactive 0.5.28's step rule (2026-10-06, msdial-interactive-app#61): the family step of the
+        # instrument family it reads from the file (world.instrument_family) is always the coarse step, and a
+        # requested step is only recorded (requested_threshold_step), never searched. step_fallback: no multiple
+        # of the family step lands in range, and the estimate falls back to a tenth of it (threshold_step the
+        # step used, coarse_threshold_step the family step searched first). legacy_estimate: an Interactive
+        # before 0.5.28, which searches the step it is asked for (100 unasked) and records threshold_step
+        # alone. estimate_patch overrides fields of every estimate.
+        self.step_fallback = False
+        self.legacy_estimate = False
+        self.estimate_patch: dict[str, Any] = {}
 
     # ---- helpers ----
     def _job_id(self, prefix: str) -> str:
@@ -247,7 +272,12 @@ class FakeInteractive:
         if job["outcome"] == "shared" and job["status"] in ("queued", "running"):
             return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome")},
                     "status": "waiting_for_shared_download"}
-        return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome")}}
+        return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome", "logs")}}
+
+    def job_log(self, job_id: str) -> list[str]:
+        """The job's kept log, as InteractivePort.job_log reads it; the poll carries none of it."""
+        self.calls.append(("job_log", {"job_id": job_id}))
+        return list((self.jobs.get(job_id) or {}).get("logs") or [])
 
     def _advance(self, job: dict[str, Any]) -> None:
         if job.get("cancel"):
@@ -303,7 +333,7 @@ class FakeInteractive:
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
                 job.update(status="failed", error=self.world.network_error["job"])
             return
-        exit_code = {"ok": 0, "invalid": 0, "timeout": -3, "cancelled": -4}.get(outcome, 1)
+        exit_code = {"ok": 0, "invalid": 0, "timeout": -3, "cancelled": -4, "rt_fail": -1}.get(outcome, 1)
         kind = "tuning" if job["kind"] == "diagnostic" else "run"
 
         def close(manifest: dict[str, Any]) -> None:
@@ -325,6 +355,12 @@ class FakeInteractive:
                 manifest.update(status="validation_failed", cleanup_allowed=False)
 
         self._update(manifest_path, close)
+        if outcome == "rt_fail":
+            job["logs"] = (["Automatic alignment RT correction: selecting anchors after peak picking and annotation.",
+                            "Automatic alignment RT correction failed: Fewer than 3 anchors were found in at least "
+                            "50% of the non-blank samples."]
+                           + [f"Moved intermediate {index}." for index in range(40)])
+            job["error"] = "MS-DIAL Console exited with code -1."
         job.update(status="completed" if exit_code == 0 else "failed", exit_code=exit_code,
                    stop_reason="cancelled" if outcome == "cancelled" else None)
 
@@ -334,9 +370,10 @@ class FakeInteractive:
             self.jobs[job_id]["cancel"] = True
         return {"ok": True, "cancel_requested": True}
 
-    def preflight(self, *, manifest_path: str, extractor_path: str, authorization_path: str) -> dict[str, Any]:
+    def preflight(self, *, manifest_path: str, extractor_path: str, authorization_path: str,
+                  console_path: str = "") -> dict[str, Any]:
         self.calls.append(("preflight", {"manifest_path": manifest_path, "extractor_path": extractor_path,
-                                         "authorization_path": authorization_path}))
+                                         "authorization_path": authorization_path, "console_path": console_path}))
         if self.world.extractor_refused:
             return {"ok": False, "reason": "raw_metadata_extractor_refused", "codes": ["extractor_not_pinned"],
                     "detail": "raw_metadata_extractor_refused [extractor_not_pinned]: not a pinned build."}
@@ -346,24 +383,44 @@ class FakeInteractive:
             # disposition_hold: nothing is read, and the unit keeps whatever disposition it carries.
             return {"completed": False, "extractor_found": True, "preflight_held": {"reason": script.held, "detail": "held"}}
         disposition = script.disposition
+        multi = {}
+        if disposition == "aif_multi_ce":
+            # Interactive 0.5.34: decided for console_path, else the saved setting, and probed for #825.
+            console = (console_path if self.world.preflight_takes_console else "") or self.world.saved_console
+            ready = bool(console) and console in self.world.consoles_825
+            probe = {"capability": "multi_energy_aif_representative_collision_energy", "available": ready,
+                     "console_path": console, "console_source": "argument" if console_path else "setting",
+                     "console_assembly": "MSDIALCUI.exe", "assembly_sha256": SHA["console"] if ready else "",
+                     "probe": "multi_energy_aif_marker" if ready else ("marker_absent" if console else "no_console_configured")}
+            multi = {"multi_energy_aif_console": probe}
+            if ready:
+                multi["aif_multi_ce_run"] = {"collision_energies": [10.0, 20.0], "rule": "multi_ce_aif_with_console_825"}
+            disposition = "run" if ready else "aif_hold"
+        hold = disposition == "aif_hold"
+        if hold:
+            disposition = "skip"
         if disposition != "none":
             record = {
                 "schema": policy.DISPOSITION_SCHEMA, "disposition": disposition,
-                "reasons": [] if disposition in ("run", "split") else [f"test_{disposition}"],
+                "reasons": [] if disposition in ("run", "split") else
+                ["aif_multi_ce_awaiting_console"] if hold else [f"test_{disposition}"],
                 "warnings": [], "excluded_inputs": [], "split_key": {"acquisition": True} if disposition == "split" else None,
                 "decided_at": self._stamp(),
                 "extractor": {"sha256": self.world.extractor_sha, "inventory_sha256": SHA["extractor"],
                               "provenance_status": "verified", "pinned": True},
                 "applied": script.applied,
+                **({"hold": True} if hold else {}),
+                **multi,
             }
             if disposition == "malformed":
                 record = {"schema": "other", "disposition": "maybe"}
             self._update(manifest_path, lambda manifest: manifest.update(campaign_disposition=record, status="preflight_passed"))
         return {"completed": True, "extractor_found": True, "status": "preflight_passed"}
 
-    def classify(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+    def classify(self, *, manifest_path: str, authorization_path: str, console_path: str = "") -> dict[str, Any]:
         """classify_preflight: the recorded preflight decided again under the approval, and applied."""
-        self.calls.append(("classify", {"manifest_path": manifest_path, "authorization_path": authorization_path}))
+        self.calls.append(("classify", {"manifest_path": manifest_path, "authorization_path": authorization_path,
+                                        "console_path": console_path}))
         unit = self._unit_of_manifest(manifest_path)
         script = self.world.scripts.setdefault(unit, UnitScript())
         if script.classify_applies:
@@ -391,6 +448,9 @@ class FakeInteractive:
             self.world.scripts.setdefault(part, UnitScript())
             parts.append({"analysis_unit_id": part, "workspace": str(part_workspace), "manifest_path": str(part_manifest),
                           "acquisition_mode": mode})
+            self.split_parts.setdefault(manifest_path, [])
+            if str(part_manifest) not in self.split_parts[manifest_path]:
+                self.split_parts[manifest_path].append(str(part_manifest))
         self._update(manifest_path, lambda manifest: manifest.update(status="split_by_acquisition"))
         return {"written": not already, "already_split": already, "parts": parts}
 
@@ -403,7 +463,13 @@ class FakeInteractive:
         csv.write_text("file_path,acquisition_type\nS1.mzML,DDA\n", encoding="ascii")
         seed = {"parameter_strategy": "auto_peak_range", "project_type": "lcms", "ion_mode": "Positive",
                 "output_root": str(output), "workflow_overrides": {"repository_run_manifest": manifest_path}}
-        return {"prepared": True, "input_path": str(csv), "preview": {"answer_seed": seed}}
+        script = self.world.scripts.get(self._unit_of_manifest(manifest_path)) or UnitScript()
+        preview: dict[str, Any] = {"answer_seed": seed}
+        if not script.no_order_record:
+            header = script.order_source == "raw_header_acquisition_start_time"
+            preview["analytical_order"] = {"derived_from": script.order_source if header else None,
+                                           "order_source": script.order_source, "files_recorded": 1}
+        return {"prepared": True, "input_path": str(csv), "preview": preview}
 
     def _console(self, kind: str, *, input_path: str, answers: dict[str, Any], authorization_path: str,
                  timeout_seconds: float, idle_timeout_seconds: float) -> dict[str, Any]:
@@ -459,14 +525,36 @@ class FakeInteractive:
         job = self.jobs.get(job_id)
         if job is None or job["status"] != "completed":
             return {"ready": False}
-        chosen = step or 100
-        return {"ready": True, "representative": {"instrument_family": self.world.instrument_family,
+        family = self.world.instrument_family
+        if self.legacy_estimate:
+            chosen = step or 100
+            estimate = {"minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen}
+        else:
+            named = family.casefold()
+            chosen = 1000 if "fourier" in named or "ft-icr" in named or "fticr" in named else 100
+            requested = step or None
+            estimate = {
+                "minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen,
+                "coarse_threshold_step": chosen, "fine_threshold_step": chosen // 10, "step_fallback": False,
+                "fallback_reason": None, "instrument_family": family, "requested_threshold_step": requested,
+                "requested_step_disposition": (None if requested is None else "family_step" if requested == chosen
+                                               else "recorded_only"),
+            }
+        if self.step_fallback:
+            estimate.update(minimum_peak_height=12 * (chosen // 10), threshold_step=chosen // 10,
+                            coarse_threshold_step=chosen, step_fallback=True, fallback_reason="no_coarse_step_in_range")
+        estimate.update(self.estimate_patch)
+        return {"ready": True, "representative": {"instrument_family": family,
+                                                  "instrument_family_source": self.world.instrument_family_source,
                                                   "file_name": "QC_05.mzML", "selection_reason": "QC-nearest-run-midpoint"},
-                "estimate": {"minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen}}
+                "estimate": estimate}
 
     def prepare_guided(self, *, input_path: str, answers: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("prepare_guided", {"answers": answers}))
-        return {"prepared": True}
+        manifest_path = (answers.get("workflow_overrides") or {}).get("repository_run_manifest") or ""
+        script = self.world.scripts.get(self._unit_of_manifest(manifest_path)) or UnitScript()
+        validation = [{"level": "warning", "message": message} for message in script.plan_warnings]
+        return {"plan": {"validation": validation, "ready_to_prepare": True}, "preparation": {}, "messages": []}
 
     def qa(self, *, manifest_path: str) -> dict[str, Any]:
         return {"ok": True}
@@ -514,20 +602,82 @@ class FakeInteractive:
         return attempt.get("job_id") in self.orphans or (
             not attempt.get("ended_at") and job is not None and job["status"] in ("queued", "running"))
 
-    def discard(self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "") -> dict[str, Any]:
-        self.calls.append(("discard", {"manifest_path": manifest_path, "unit_id": unit_id}))
+    @staticmethod
+    def held_by_disposition(manifest: dict[str, Any]) -> bool:
+        """Interactive f225e9b's unreleased_disposition_hold: an applied skip with hold true, unless an operator's
+        skip lifted it (disposition_hold_released_by operator_skip). A discard that did not record the release
+        leaves it held, discarded or not (review r9-64)."""
+        record = manifest.get("campaign_disposition") or {}
+        return (manifest.get("disposition_hold_released_by") != "operator_skip" and record.get("applied") is True
+                and record.get("disposition") == "skip" and record.get("hold") is True)
+
+    def _held_parts(self, parent_path: str) -> list[str]:
+        return [path for path in self.split_parts.get(parent_path, [])
+                if self.held_by_disposition(self.store.read(path) or {})]
+
+    def _unsupported_release(self, release: bool) -> dict[str, Any] | None:
+        if release and not self.release_hold_supported:
+            return {"ok": False, "reason": "unsupported", "detail": "takes no release_disposition_hold"}
+        return None
+
+    def discard(self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "",
+                release_disposition_hold: bool = False) -> dict[str, Any]:
+        """As Interactive discards under the agreed contract of 2026-10-07: a unit or split part its campaign
+        disposition holds is never discarded without release_disposition_hold, approval or not; with it the
+        discard proceeds and records disposition_hold_released_by operator_skip. A split part's discard deletes
+        nothing (its raw data are its parent's) and answers part_ended; a split parent's is its release."""
+        self.calls.append(("discard", {"manifest_path": manifest_path, "unit_id": unit_id,
+                                       "release_disposition_hold": release_disposition_hold}))
+        unsupported = self._unsupported_release(release_disposition_hold)
+        if unsupported:
+            return unsupported
         manifest = self.store.read(manifest_path) or {}
+        if manifest_path in self.split_parts:
+            result = self._release_parent(manifest_path, release_disposition_hold)
+            if result.get("deleted"):
+                self._update(manifest_path, lambda current: current.update(status="discarded"))
+            return result
         blockers = self.discard_blockers(manifest)
+        held = self.held_by_disposition(manifest)
+        if held and not release_disposition_hold:
+            blockers.append("disposition_held")
         if blockers:
             return {"ok": True, "deleted": False, "blockers": blockers, "detail": "Interactive would refuse: " + ", ".join(blockers)}
+
+        def ended(current: dict[str, Any]) -> None:
+            current["status"] = "discarded"
+            if held:
+                current["disposition_hold_released_by"] = "operator_skip"
+
+        if manifest.get("split_from"):
+            self._update(manifest_path, ended)
+            return {"ok": True, "deleted": False, "part_ended": True, "raw_release_deferred_to": manifest["split_from"]["manifest_path"]}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
-        self._update(manifest_path, lambda current: current.update(status="discarded"))
+        self._update(manifest_path, ended)
         return {"ok": True, "deleted": True}
 
-    def release_split_parent(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
-        self.calls.append(("release_split_parent", {"manifest_path": manifest_path}))
+    def release_split_parent(self, *, manifest_path: str, authorization_path: str,
+                             release_disposition_hold: bool = False) -> dict[str, Any]:
+        self.calls.append(("release_split_parent", {"manifest_path": manifest_path,
+                                                    "release_disposition_hold": release_disposition_hold}))
         if not self.split_release_supported:
             return {"ok": False, "reason": "unsupported", "detail": "no split-parent release"}
+        unsupported = self._unsupported_release(release_disposition_hold)
+        if unsupported:
+            return unsupported
+        return self._release_parent(manifest_path, release_disposition_hold)
+
+    def _release_parent(self, manifest_path: str, release: bool) -> dict[str, Any]:
+        """A held split part keeps its parent's raw data until it is released or run. As Interactive f225e9b's
+        cleanup_split_parent and _part_end do, a release with release_disposition_hold lifts the hold of EVERY
+        part still held (hold_released), recording disposition_hold_released_by operator_skip on each, whether
+        or not an operator skipped that part; without it, any part still held refuses the release."""
+        held = self._held_parts(manifest_path)
+        if held and not release:
+            return {"ok": True, "deleted": False, "blockers": ["disposition_held"],
+                    "detail": f"{len(held)} part(s): its campaign disposition holds it"}
+        for path in held:
+            self._update(path, lambda current: current.update(status="discarded", disposition_hold_released_by="operator_skip"))
         manifest = self.store.read(manifest_path) or {}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
         return {"ok": True, "deleted": True}
@@ -657,7 +807,7 @@ class World:
 
     def __init__(self, root: Path, unit_ids: list[str], *, policy_values: dict[str, Any] | None = None,
                  retention: str = "delete_after_validated_output", covers: tuple[str, ...] = ("1", "3", "4", "5", "split"),
-                 known_bytes: int = 10 * 1000**3, size_known: bool = True) -> None:
+                 known_bytes: int = 10 * 1000**3, size_known: bool = True, legacy_policy: bool = False) -> None:
         self.root = root
         self.workspace_root = root / "analysis"
         self.directory = self.workspace_root / "_campaigns" / "test-campaign"
@@ -676,8 +826,16 @@ class World:
         }
         # While set, Interactive refuses every campaign preflight: the extractor is not a verified, pinned build.
         self.extractor_refused = False
+        # The Consoles with MsdialWorkbench #825 (Interactive 0.5.34's probe finds its markers), and the Console
+        # Interactive's saved setting names, which a preflight given no console_path decides for.
+        self.consoles_825: set[str] = set()
+        self.saved_console = ""
+        # While false, a preflight decides for the saved Console whatever console_path it is sent, as Interactive
+        # did for a runner that sent none.
+        self.preflight_takes_console = True
         self.extractor_sha = SHA["extractor"]
         self.instrument_family = "QTOF"
+        self.instrument_family_source = "mzml_instrument_configuration"
         self.private_directory = root / "private libraries" / "vault"
         self.private_directory.mkdir(parents=True)
         self.libraries = {}
@@ -708,7 +866,11 @@ class World:
             "manifest_digest": self.digest, "analysis_purpose": "annotation of every experimental spectrum",
             "workspace_root": str(self.workspace_root), "raw_retention_policy": retention,
             "catalog_database": str(root / "catalog.sqlite"), "authorization_path": str(authorization),
-            "authorization_sha256": SHA["auth"], "policy": policy.CampaignPolicy.from_dict(values).as_dict(),
+            "authorization_sha256": SHA["auth"], "policy": {
+                key: value for key, value in policy.CampaignPolicy.from_dict(values).as_dict().items()
+                # legacy_policy: a policy recorded before the automatic RT correction fields (2026-10-07).
+                if not (legacy_policy and key.startswith("automatic_rt_correction"))
+            },
             "profile": {
                 "schema": "msdial-campaign-profile.v1",
                 "answers": {"library_strategy": "existing", "use_retention_time_for_annotation": False},

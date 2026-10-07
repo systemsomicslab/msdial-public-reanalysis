@@ -64,7 +64,8 @@
         "artifacts": "every input candidate on disk, or the raw tree released by the confirmed cleanup (status raw_cleaned); the raw owner's manifest lists its downloads",
         "judged_by": [
           "SUM-1",
-          "CONV-1"
+          "CONV-1",
+          "PAIR-1"
         ],
         "boundary": 1
       },

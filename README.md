@@ -149,7 +149,62 @@ runs. The user decided it: a FAIL stops the run only for the checks that break
 the MS-DIAL results (2026-10-01), and every before-production check is placed
 (2026-10-02). ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1 are
 `blocks_run`. CLS-1, CLS-2, CLS-3, ORD-1, PKH-1 and SPL-1 are `record_only`,
-and so is PRE-1, which never FAILs. A `blocks_run` check left not evaluable on
+and so are PRE-1, which never FAILs, and PAIR-1 (2026-10-06), which lists as a
+WARN every input the lease paired with a declared raw file by inference
+(`input_names_paired_by_inference`), so each such pairing is on record; a split
+part lists only its own inputs' pairings. ACQ-1 follows rule B2 (2026-10-06): a
+row FAILs where it runs as another type than its file's header alone gives
+(`header_console_acquisition_type`), at any confidence, and where an MS1-only
+file was folded into DDA in a unit declared DIA, AIF or SWATH. Its table of
+sanctioned header-to-row mappings holds one entry (2026-10-07): an AIF header
+may run as SWATH where the binding disposition's `aif_run_as_swath` names the
+rule `single_ce_aif_as_swath_2026_10_07` and exactly one collision energy, and
+the file's record says that rule decided it (`console_acquisition_basis`
+`aif_single_ce_as_swath`); such a row is a WARN naming the rule, and a record of
+more than one energy sanctions nothing. A multi-energy AIF unit runs as AIF, not
+as SWATH, on a Console with MsdialWorkbench #825 (Interactive 0.5.34), which
+deconvolutes each energy and represents each peak by the energy of its MS/MS
+reference-spectrum match, else the energy with the most product ions. ACQ-1
+PASSes such rows only where the binding disposition records `aif_multi_ce_run`
+under the rule `multi_ce_aif_with_console_825` with two or more energies, each
+row's record carries `console_acquisition_basis` `aif_multi_ce_console_825` and
+those same `ms2_collision_energies`, and the Console the run manifest records
+(`output/run-manifest.json`, `console.assembly_sha256`) is shown to have #825:
+the disposition's `multi_energy_aif_console` probe found it in that assembly, or
+the gate finds both of #825's markers there itself. A multi-energy AIF row on a
+Console without #825, one whose disposition holds the unit or records no such
+run, and one whose energies differ from the unit's or are unrecorded, FAIL. A
+single-energy AIF unit is still expected as SWATH whatever the Console.
+Archive members of a unit-scoped
+archive that no sample row pairs with, which Interactive 0.5.31 includes as
+inputs of their own (`name_pairing.paired_by` `unattributed_member`, rule
+`unit_scoped_archive_2026_10_07`), are explained inputs to INP-1, CLS-1, CLS-2,
+CLS-3 and PAIR-1: each WARNs listing them with
+`manifest.unattributed_members.count`, their rows carry the abstention Class or
+`Unattributed`, and CLS-2 counts them as no approved sample (an approved sample
+with no attributed input beside them is listed under
+`samples_without_attributed_input`, not as missing or undelivered). INP-1 FAILs
+them only from a download shared with other units, and PAIR-1 FAILs where their
+record falls short of the rule. CLS-2 reads what the download
+delivered from the archive member listings and the downloads, counting a
+vendor folder fetched file by file (a Waters `.raw`) as one input and a
+companion file (`.wiff.scan`) as none: an approved sample whose file was
+delivered and left unpaired is a FAIL (`delivered_unpaired_samples`), one never
+delivered a WARN (`undelivered_samples`). PKH-1 holds the step floor, never
+finer than 10 for QTOF-type or 100 for Fourier-transform data, whatever family
+step a diagnostic records. It takes the family from the file first, as
+Interactive does: a family the diagnostic records from the vendor format or the
+mzML header stands, and the Catalog's instrument text decides only where none
+is recorded. It also reports the production run's `production_peak_counts` where
+Interactive records them. The campaign ledger (schema 3 on) records the step an
+estimate used (`threshold_step`), the family step it searched first
+(`coarse_threshold_step`) and the fallback (`step_fallback`,
+`fallback_reason`). The runner asks Interactive 0.5.28 for no step: the
+family Interactive reads from the file decides it, the estimate is read against
+that family's step, and a Catalog instrument text that would give another step
+is a note on the `diagnosed` transition, never a hold. Only an Interactive
+before 0.5.28, which searched the step it was asked for, is still asked at the
+Catalog's step. A `blocks_run` check left not evaluable on
 an artifact its stage owed, which `strict_failures` names, stops the run as its
 FAIL does; one not evaluable where the stage owed nothing, such as INP-1 for a
 unit that declares no analysis inputs, never does. Each check's docstring gives
@@ -158,7 +213,33 @@ Checks of the later stages state no `run_policy`. `run_blocked_by` lists the
 checks that stop the run, FAILed or unevaluated where owed. The campaign runner
 reads these fields, and holds a unit unrun, its raw data kept and nothing
 counted against it, while the gate gives it no report it can read before
-production (`scripts/campaign/machine.py`).
+production (`scripts/campaign/machine.py`). It holds a unit the same way where
+Interactive's campaign disposition holds it (`hold` true; the AIF rule of
+2026-10-07: a multi-collision-energy AIF unit, `aif_multi_ce_awaiting_console`,
+waits for a patched Console). That hold (`disposition_held`, ledger schema 4)
+is counted apart in `status`, is never rechecked by itself and keeps no runner
+running; only `recheck-held --unit KEY` (or `--disposition-held` for all of
+them) makes its preflight again. The patched Console is MsdialWorkbench #825.
+The runner sends the preflight the pinned Console's path, and Interactive 0.5.34
+decides for it: with #825 a multi-energy AIF unit runs as AIF
+(`multi_ce_aif_with_console_825`; its disposition records `aif_multi_ce_run`
+and the probe), without it the unit is held as before. A recheck that releases a
+held unit writes a `disposition_hold_lifted` event, and `status` counts such
+runs under `multi_energy_aif_runs`. Inputs whose energies differ, or an input
+with no recorded energy, still hold the unit with that Console. The plan records
+Interactive's probe in the Console pin (`multi_energy_aif`) and prints what it
+means, and refuses neither, since a Console without #825 only holds such units.
+A campaign pinned to a Console without #825 cannot change it in place (a changed
+pin pauses the campaign); a new campaign planned with `--replan-from`, pinning
+the #825 Console, takes its `disposition_held` units again. `skip --unit KEY` is the operator's explicit
+decision that lifts the hold: its discard passes Interactive
+`release_disposition_hold`, which records `disposition_hold_released_by`
+`operator_skip`. A split parent's release passes it only when every part its
+disposition holds was skipped that way, since Interactive's release lifts the
+hold of every held part; while a held part has no skip (it ended failed or
+stopped while held), the parent's raw data are kept and its `raw_detail` names
+the part it waits for. Interactive never discards a held unit or a held split
+part without it, and the runner passes it nowhere else.
 
 The report also prints a `PROGRESS` line: the furthest stage, B1-B10, whose
 artifacts exist. It is derived from the artifacts on disk and from fields the
@@ -189,6 +270,123 @@ and so is a released unit's claim whose release is under way (its lock fresh,
 released as it was read, or a deletion recorded within a lock's heartbeat
 window), and its output escapes what the console code page cannot print rather
 than ending without a verdict.
+
+The campaign's run answers come from its approved profile
+(`msdial-campaign-profile.v1`); the runner pins the Console path, the smoothing
+method, the target peak counts and automatic alignment RT correction on top of
+them. Automatic RT correction is decided for the campaign (2026-10-07):
+MsdialWorkbench #826's local outlier test at its default window, with 12
+anchors. The campaign policy records it (`automatic_rt_correction` true,
+`automatic_rt_correction_maximum_anchors` 12), and every Console start is sent
+`execute_automatic_rt_correction` true and those anchors, so a profile cannot
+leave them out and run at Interactive's default of 6, or uncorrected. A manifest
+is approvable only if its profile does not say otherwise (correction off,
+another anchor count, the anchor-library correction, or a local window other
+than 1.5 min), and its Console pin records `automatic_rt_correction`
+`local_support`, read from the method keys in the Console assembly. A Console of
+#810 alone (`run_wide`) would run the run-wide test without a word, and one with
+neither (`none`) is refused by Interactive at every unit's run start, after its
+download. A manifest approved before the decision names none of these fields;
+its units run as its profile says.
+
+When the Console cannot select anchors (too few candidates, or too few anchors
+in enough samples), it exits -1 before alignment with no output, and every
+retry would do the same. The runner finds the Console's line in the job's log,
+marks the failed attempt `automatic_rt_correction_failed`, and, with the
+policy's `automatic_rt_correction_fallback` (on by default), runs the unit's
+next attempts without the correction. The failed run still counts as an
+attempt. The unit's `campaign-record.json` (`automatic_rt_correction`) and its
+status row say so. With the fallback off, the unit is retried and ends as any
+failure does.
+
+Blank files have no anchors of their own. By default the Console gives each
+Blank a model interpolated between the non-Blank files beside it in the
+analytical order. The runner allows that only where the order Interactive
+recorded with the analysis CSV is an injection order: the raw headers'
+acquisition start times, or the order the repository's sample table declares
+(the two ORD-2 accepts). For an order read out of the file names or the
+listing, or none recorded, it sends
+`automatic_rt_correction_interpolate_blanks_by_analytical_order` false, and the
+Blanks keep their measured RTs (audit status `BlankNotCorrected`; the Methods
+paragraph counts them among the files that kept their original RTs). A profile
+may not set this answer. The unit's `campaign-record.json` records the choice
+and the order source, and the `prepare_run` attempt in the ledger keeps
+Interactive's plan warnings, which stop nothing. For a declared order,
+Interactive may still warn about Blank interpolation, because its plan adopts
+only a header order.
+
+The zero-threshold diagnostic never corrects: Interactive turns the correction
+off for it. The gate needs nothing more. EXP-1 requires the two audit TSVs that
+Interactive adds to `expected_analysis_exports` when the correction is on.
+CNT-1 does not count them as samples, MTH-1 reads the correction's method keys
+like any other, and QA-1 sets aside the reference file the Methods paragraph
+names. The gate reads no column or status of the audit TSVs. A unit that fell
+back has no audit TSVs and none expected, since Interactive lists them only for
+a run with the correction on.
+
+## Running a campaign unattended
+
+Launch `scripts/campaign-runner.py run` for an unattended campaign through Task
+Scheduler, not from a Claude session. A process started from Claude Code or the
+Claude desktop app, `Start-Process` included, sits in the app's Windows job
+object. That job allows no breakaway, and the app is force-closed when it updates
+(it was on 2026-10-02 and 2026-10-06), so a runner started there ends with the
+app. `campaign-runner.py schedule-command --campaign ID [--xml-out FILE]` prints
+the task definition and the `schtasks` lines, and registers nothing: the task is
+persistent system configuration, so registering it is the user's step. The task
+has no execution time limit (a task made with `schtasks /SC` alone is stopped
+after 72 hours), runs one instance, restarts on failure, and starts again every
+hour, so a runner that ended comes back. It runs the runner with `pythonw.exe`,
+which runs itself again in a console with no window, and writes the runner's
+output to the campaign's `logs\runner.log`.
+
+The runner starts the Interactive backend through WMI (`Win32_Process.Create`):
+a broker (`scripts/campaign/backend_launch.py`) starts the backend and exits. The
+backend is then neither the runner's child nor in the runner's job, so a tree
+kill of the runner, or the end of its task or of the Claude app, leaves the
+backend and a running Console alone, and the next runner reattaches. It has a
+console of its own with no window, which git, the Console, 7-Zip and the
+extractor inherit. `run --backend-launch child` starts it as the runner's child,
+the way it was started before 2026-10-06. A backend already answering on the
+campaign port is reused, and the runner says how it was started where that is
+knowable (`backend-launch.json` beside the campaign's job registry). The runner
+knows its own backend by the process tree: when its Python is a launcher (a
+venv's `python.exe`, `py.exe`), the process holding the port is the launcher's
+child, and the launch record names it, with the launcher as `launcher_pid`.
+Where the tree breaks at a process that has exited (under a venv Python, the
+broker's own interpreter exits after starting the backend), the listener's
+command line and creation time identify it instead.
+
+Three failed backend starts in a row pause starting for an hour. The failures,
+the pause and a start still waited for are kept in the campaign ledger, so a
+runner the task starts after another one exited honours them. A start is waited
+for until `--backend-start-timeout` from its launch, by that runner or the next.
+A backend still running past that deadline without answering counts as a failed
+start at every check, so the pause applies; no second backend is started beside
+it, and the failure names the process to end, with its creation time. When the
+WMI broker never reported, the backend has no recorded process id: past the
+deadline it is found by the port it holds, or by its command line and creation
+time, and a broker that still runs is named in its place; only a start of which
+nothing is found running is given up. Whether a named process still runs is read
+again each time it is named, the pause's refusal included, so a process that has
+ended since gets no `taskkill` line. Once the backend
+answers its status, `/api/config` has `--backend-config-timeout` of its own, and
+a backend that answers the status but not `/api/config` is reported as that.
+
+When the campaign has no work left (every unit has ended, no request waits for
+a runner, and no ended unit holds raw data the runner would look at again),
+`run` exits at once, before it takes the campaign, locks the Catalog or starts a
+backend, and prints how to end the task. The one thing it still does is release
+a Catalog campaign lock that this campaign's approval holds and whose owner has
+died (a runner killed after the last unit ended), as `run` does before it locks
+the Catalog; a lock of another approval, or with a live owner, is left alone.
+A lock it cannot check (the Catalog cannot be imported, or the lock file cannot
+be read or is not a lock record) makes `run` exit with code 3 and say so.
+The task keeps starting it every hour
+until you do: disable it with `schtasks /Change /TN "MSDIAL-campaign-ID"
+/Disable` or delete it with `schtasks /Delete /TN "MSDIAL-campaign-ID" /F`. The
+runner changes no task itself. Neither command stops the backend the last runner
+started; stop it yourself once no job runs in it.
 
 ## Codex pre-audit
 
