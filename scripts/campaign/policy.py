@@ -71,9 +71,15 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 # Scientific Exactive" and "Exactive Plus" name no Q, "IQ-X tribrid" no Orbitrap, and "Bruker APEX-Qe 9.4T" is
 # an FT-ICR. The step asked of an Interactive before 0.5.28 (threshold_step); since 0.5.28 the family
 # Interactive reads from the file decides the step, and this text only leaves a note where it disagrees.
+# The tokens are Interactive 0.5.28's own (workflow.instrument_family_from_text: _ORBITRAP_INSTRUMENT,
+# _FT_ICR_INSTRUMENT, _FOURIER_GENERIC, msdial-interactive-app#61), with its word boundaries, so an HPLC column
+# beside the instrument ("Zorbax Eclipse Plus C18", "Synergi Fusion-RP") names no Fourier-transform analyser.
+# The gate reads the same (verify-run-invariants.py FOURIER_INSTRUMENT; tests hold the two equal).
 _FOURIER_INSTRUMENT = re.compile(
-    r"orbitrap|exactive|exploris|fusion|lumos|eclipse|astral|tribrid|ltq[\s-]?ft|ft[\s-]?icr|fticr|"
-    r"solarix|apex|fourier",
+    r"orbitrap|exactive|exploris|astral|\blumos\b|\bascend\b|tribrid|\bid-x\b|"
+    r"\bfusion\b(?![\s-]*rp)|(?<!zorbax )\beclipse\b(?![\s-]*(?:plus|xdb|c18|c8))"
+    r"|ft[\s-]?icr|fticr|cyclotron|solarix|scimax|mrms\b|\bapex(?![a-z])|\bltq[\s-]?ft(?![a-z])"
+    r"|\bftms\b|fourier",
     re.IGNORECASE,
 )
 # The before-production checks whose FAIL stops a unit's MS-DIAL run: the ones that break results, which the

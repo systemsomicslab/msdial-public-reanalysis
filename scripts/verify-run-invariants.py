@@ -6833,16 +6833,23 @@ FINE_STEP_DIVISOR = 10
 # family step and falls back to 1, at the noise floor.
 FAMILY_STEPS = {"qtof": 100, "fourier": 1000}
 STEP_FLOORS = {"qtof": 10, "fourier": 100}
-# Fourier-transform analysers in the Catalog's instrument text, as the campaign runner reads them
-# (scripts/campaign/policy.py _FOURIER_INSTRUMENT; since Interactive 0.5.28 the runner asks for no step, and
-# Interactive's family decides it, msdial-interactive-app#61). Read only where the diagnostic records
-# no family from the file itself (_step_family): before 0.5.28 Interactive labelled every mzML QTOF, and
-# since then it reads the mzML header and lets a declared instrument decide only over a format default.
-FOURIER_INSTRUMENT = re.compile(
-    r"orbitrap|exactive|exploris|fusion|lumos|eclipse|astral|tribrid|ltq[\s-]?ft|ft[\s-]?icr|fticr|"
-    r"solarix|apex|fourier",
-    re.IGNORECASE,
+# Fourier-transform analysers in the Catalog's instrument text, read with the instrument tokens of Interactive
+# 0.5.28's own classifier (workflow.instrument_family_from_text: _ORBITRAP_INSTRUMENT, _FT_ICR_INSTRUMENT and
+# _FOURIER_GENERIC, msdial-interactive-app#61), so the gate calls a declared instrument Fourier-transform
+# exactly where Interactive does. The word boundaries keep HPLC column names out: "Zorbax Eclipse Plus C18"
+# and "Synergi Fusion-RP" are no Orbitrap Eclipse or Fusion, and a bare "LTQ" or "Velos" is an ion trap. The
+# campaign runner reads the same tokens (scripts/campaign/policy.py _FOURIER_INSTRUMENT; tests hold the
+# two equal). Read only where the diagnostic records no family from the file itself (_step_family): before
+# 0.5.28 Interactive labelled every mzML QTOF, and since then it reads the mzML header and lets a declared
+# instrument decide only over a format default.
+_ORBITRAP_INSTRUMENT = (
+    r"orbitrap|exactive|exploris|astral|\blumos\b|\bascend\b|tribrid|\bid-x\b|"
+    r"\bfusion\b(?![\s-]*rp)|(?<!zorbax )\beclipse\b(?![\s-]*(?:plus|xdb|c18|c8))"
 )
+_FT_ICR_INSTRUMENT = r"ft[\s-]?icr|fticr|cyclotron|solarix|scimax|mrms\b|\bapex(?![a-z])|\bltq[\s-]?ft(?![a-z])"
+_FOURIER_GENERIC = r"\bftms\b|fourier"
+FOURIER_INSTRUMENT = re.compile(
+    "|".join((_ORBITRAP_INSTRUMENT, _FT_ICR_INSTRUMENT, _FOURIER_GENERIC)), re.IGNORECASE)
 # Where Interactive (0.5.28, workflow.detect_raw_format) took a file's instrument family from the file itself:
 # its vendor format, or its mzML header. A family from these is evidence about the file, and a repository's
 # declared instrument does not overrule it; "format_default" (an mzML whose header names no instrument, a

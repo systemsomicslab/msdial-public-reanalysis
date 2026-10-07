@@ -181,6 +181,16 @@ class DiagnosticTests(unittest.TestCase):
         for instrument in ("SCIEX TripleTOF 6600", "Agilent 6546 LC/Q-TOF", "Waters Synapt G2-Si", "Bruker impact II"):
             with self.subTest(instrument):
                 self.assertEqual(policy.threshold_step(instrument, "QTOF"), 100)
+        # Interactive 0.5.28's tokens, word boundaries included (review of gate PR #31, round 5): an HPLC column
+        # beside a QTOF names no Orbitrap, and an Orbitrap beside a column is still one.
+        for instrument in ("Agilent 6545 Q-TOF; Zorbax Eclipse Plus C18", "Agilent 6545 Q-TOF; Phenomenex Synergi Fusion-RP",
+                           "SCIEX TripleTOF 6600, Zorbax Eclipse XDB-C18", "LTQ Velos"):
+            with self.subTest(instrument):
+                self.assertEqual(policy.threshold_step(instrument, "QTOF"), 100)
+        for instrument in ("Orbitrap Fusion Lumos; Zorbax Eclipse Plus C18", "Thermo Fusion Lumos", "Orbitrap Ascend",
+                           "Orbitrap ID-X", "scimaX", "Thermo LTQ FT Ultra"):
+            with self.subTest(instrument):
+                self.assertEqual(policy.threshold_step(instrument, "QTOF"), 1000)
 
     def test_the_family_step_is_interactives(self) -> None:
         """Interactive 0.5.28's family_threshold_step (msdial-interactive-app#61): 1,000 for a Fourier-transform

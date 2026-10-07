@@ -852,10 +852,12 @@ class FamilyFromTheFileTests(unittest.TestCase):
         self.assertIn("not made by its rule", check.detail)
 
     def test_a_search_at_the_recorded_familys_step_is_not_called_off_rule(self) -> None:
-        """A format default that Interactive kept QTOF and searched at its own family's 100, where the gate's
-        reading of the Catalog's text makes it Fourier-transform data for the floor (the two read that text with
-        different patterns; synthetic here). The note says 1,000 is the step for that data, and does not call the
-        search one Interactive's rule did not make: the search was the rule's for the family recorded."""
+        """A format default kept QTOF and searched at its own family's 100, where the gate's reading of the
+        Catalog's text makes it Fourier-transform data for the floor. Interactive 0.5.28 reads that text with the
+        same tokens and would have named the family Fourier-transform from it, so this record comes from a
+        diagnostic that saw no such text (synthetic here). The note says 1,000 is the step for that data, and
+        does not call the search one Interactive's rule did not make: the search was the rule's for the family
+        recorded."""
         check = self._pkh1(_with_family(_diagnostic(200, count=35678, estimated=3517, step=100, within=True,
                                                     coarse_threshold_step=100, step_fallback=False,
                                                     fallback_reason=None),
@@ -866,6 +868,118 @@ class FamilyFromTheFileTests(unittest.TestCase):
         self.assertEqual("fourier", check.evidence["instrument_family_for_step"])
         self.assertIn("searched first at step 100, where Fourier-transform data", check.detail)
         self.assertNotIn("not made by its rule", check.detail)
+
+
+class InstrumentTextAsInteractiveReadsItTests(unittest.TestCase):
+    """PKH-1 reads the Catalog's instrument text with Interactive 0.5.28's own tokens
+    (workflow.instrument_family_from_text, msdial-interactive-app#61), word boundaries included, so an HPLC
+    column beside the instrument names no Fourier-transform analyser (review of gate PR #31, round 5).
+
+    The name lists are Interactive's own (tests/test_instrument_family.py at origin/feat/threshold-step-fallback
+    f3df524): every name it calls Fourier-transform or FT-ICR the gate calls Fourier-transform, and every name it
+    calls neither the gate does not."""
+
+    _pkh1 = StepFloorTests._pkh1
+    FOURIER = [
+        "Q Exactive", "Q Exactive HF", "Q Exactive HF-X", "Q Exactive Plus", "Exactive", "Exactive Plus",
+        "Orbitrap Exploris 480", "Orbitrap Fusion", "Orbitrap Fusion Lumos", "Orbitrap Eclipse", "Orbitrap Ascend",
+        "Orbitrap Astral", "LTQ Orbitrap", "LTQ Orbitrap XL", "LTQ Orbitrap Velos", "Orbitrap Velos Pro",
+        "Orbitrap Elite", "Orbitrap ID-X", "Orbitrap IQ-X", "orbitrap",
+        "Thermo Fusion Tribrid Orbitrap", "Thermo Q Exactive HF hybrid Orbitrap", "Thermo Q Exactive Orbitrap",
+        "LC, Nexera X2 (Shimadzu Co.); MS, Q Exactive HF (Thermo Fisher Scientific Inc.)",
+        "Thermo Scientific Orbitrap ID-X Tribrid", "Thermo Exploris 240", "Thermo IQ-X tribrid",
+    ]
+    FT_ICR = ["solariX", "solariX XR", "apex ultra", "APEX-Qe", "Bruker APEX-Qe 9.4T", "scimaX", "LTQ FT",
+              "LTQ FT Ultra", "fourier transform ion cyclotron resonance mass spectrometer"]
+    NOT_FOURIER = [
+        "LTQ", "LTQ Velos", "Velos Plus", "Velos Pro", "LTQ XL", "TSQ Altis", "TSQ Quantiva", "ISQ", "Stellar",
+        "EVOQ Elite", "maXis", "impact II", "timsTOF Pro", "Xevo G2-XS QTof", "Synapt G2-Si", "TripleTOF 5600",
+        "QTRAP 6500", "6545 Q-TOF LC/MS", "LCMS-9030", "time-of-flight",
+        "Bruker maXis UHR-ToF", "Bruker impact II UHR-TOF", "Waters Xevo G2 QTof", "AB SCIEX TripleTOF 5600+",
+        "Waters Acquity UPLC", "Nexera X2 (Shimadzu)", "Agilent 1100 HPLC (Agilent Technologies)",
+        "Bruker Elute UHPLC system",
+        "Agilent Zorbax Eclipse Plus C18", "Phenomenex Synergi Fusion-RP",
+    ]
+    # Column names in the forms a submitter writes them, beside a QTOF.
+    COLUMNS_BESIDE_A_QTOF = [
+        "Agilent 6545 Q-TOF; Zorbax Eclipse Plus C18", "Agilent 6545 Q-TOF; Phenomenex Synergi Fusion-RP",
+        "SCIEX TripleTOF 6600, Zorbax Eclipse XDB-C18", "Waters Xevo G2-XS QTof (Eclipse Plus C8 column)",
+        "Bruker impact II; Synergi 4 um Fusion RP 80A", "Agilent 6550 iFunnel Q-TOF; ZORBAX ECLIPSE PLUS",
+    ]
+
+    def test_interactives_fourier_transform_and_ft_icr_names_are_fourier_transform(self) -> None:
+        for name in self.FOURIER + self.FT_ICR:
+            with self.subTest(name=name):
+                self.assertIsNotNone(verifier.FOURIER_INSTRUMENT.search(name))
+
+    def test_interactives_other_names_and_column_names_are_not(self) -> None:
+        for name in self.NOT_FOURIER + self.COLUMNS_BESIDE_A_QTOF:
+            with self.subTest(name=name):
+                self.assertIsNone(verifier.FOURIER_INSTRUMENT.search(name))
+
+    def test_a_fourier_transform_instrument_beside_a_column_is_still_one(self) -> None:
+        for name in ("Orbitrap Fusion Lumos; Zorbax Eclipse Plus C18", "Q Exactive HF; Synergi Fusion-RP",
+                     "Orbitrap Eclipse Tribrid", "Thermo Fusion Lumos", "Bruker solariX; Eclipse Plus C18"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(verifier.FOURIER_INSTRUMENT.search(name))
+
+    def test_the_runner_reads_the_same_tokens(self) -> None:
+        import campaign_fakes  # noqa: F401  (puts scripts/ on the path)
+        from campaign import policy
+
+        self.assertEqual(verifier.FOURIER_INSTRUMENT.pattern, policy._FOURIER_INSTRUMENT.pattern)
+        self.assertEqual(verifier.FOURIER_INSTRUMENT.flags, policy._FOURIER_INSTRUMENT.flags)
+
+    def test_the_reviewers_case_a_format_default_qtof_falling_back_to_10_passes(self) -> None:
+        """Round 5's probe: a Bruker .d or an mzML whose header names no instrument, Catalog text "Agilent 6545
+        Q-TOF; Zorbax Eclipse Plus C18". Interactive keeps it QTOF, searches 100 and falls back to 10. The gate
+        read "eclipse" as an Orbitrap, held a floor of 100 and called the fallback broken: a FAIL."""
+        for instrument in ("Agilent 6545 Q-TOF; Zorbax Eclipse Plus C18",
+                           "Agilent 6545 Q-TOF; Phenomenex Synergi Fusion-RP"):
+            with self.subTest(instrument=instrument):
+                check = self._pkh1(_with_family(_diagnostic(30, count=10168, estimated=4722, step=10, within=True,
+                                                            coarse_threshold_step=100, step_fallback=True,
+                                                            fallback_reason="no_coarse_step_in_range"),
+                                                "QTOF", "format_default"),
+                                   instrument=instrument)
+
+                self.assertEqual(verifier.PASS, check.status, check.detail)
+                self.assertEqual("qtof", check.evidence["instrument_family_for_step"])
+                self.assertEqual(10, check.evidence["step_floor"])
+                self.assertNotIn("step_rule_broken", check.evidence)
+
+    def test_the_reviewers_case_at_step_100_leaves_nothing_to_read(self) -> None:
+        """The same unit with no fallback: it was a WARN note ("where Fourier-transform data take 1,000")."""
+        check = self._pkh1(_with_family(_diagnostic(200, count=35678, estimated=3517, step=100, within=True,
+                                                    coarse_threshold_step=100, step_fallback=False,
+                                                    fallback_reason=None),
+                                        "QTOF", "format_default"),
+                           instrument="Agilent 6545 Q-TOF; Zorbax Eclipse Plus C18")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertNotIn("step_rule_notes", check.evidence)
+        self.assertNotIn("take 1,000", check.detail)
+
+    def test_a_record_with_no_family_beside_a_column_is_qtof_type_too(self) -> None:
+        """A diagnostic from before 0.5.28 records no family source; the Catalog's text decides, and a column
+        name in it decides nothing."""
+        check = self._pkh1(_diagnostic(30, count=10168, estimated=4722, step=10, within=True,
+                                       coarse_threshold_step=100, step_fallback=True, fallback_reason="r"),
+                           instrument="SCIEX TripleTOF 6600, Zorbax Eclipse XDB-C18")
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual("qtof", check.evidence["instrument_family_for_step"])
+
+    def test_a_format_default_beside_an_orbitrap_named_with_a_column_still_takes_the_ft_floor(self) -> None:
+        check = self._pkh1(_with_family(_diagnostic(30, count=10168, estimated=4722, step=10, within=True,
+                                                    coarse_threshold_step=100, step_fallback=True,
+                                                    fallback_reason="no_coarse_step_in_range"),
+                                        "QTOF", "format_default"),
+                           instrument="Orbitrap Fusion Lumos; Zorbax Eclipse Plus C18")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual("fourier", check.evidence["instrument_family_for_step"])
+        self.assertIn("finer than the floor of 100", " ".join(check.evidence["step_rule_broken"]))
 
 
 class SplitPartPairingTests(unittest.TestCase):
