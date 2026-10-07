@@ -1100,27 +1100,26 @@ class HeaderFirstAcquisitionTests(unittest.TestCase):
 
         self.assertEqual(self.verifier.PASS, check.status, check.detail)
 
-    def test_an_aif_header_run_as_swath_is_refused_while_no_mapping_is_sanctioned(self) -> None:
+    def test_an_aif_header_run_as_swath_is_refused_without_the_sanctioned_rules_record(self) -> None:
+        """A field the gate does not read sanctions nothing: only aif_run_as_swath does (2026-10-07; the
+        sanctioned mapping itself is tested in test_verify_gate_decisions_2026_10_07)."""
         check = self._acq1("AIF", "AIF", "SWATH", "SWATH", basis="declaration", declared="DIA",
                            disposition_extra={"sanctioned_acquisition_mappings": [
                                {"file": "S0", "header": "AIF", "runs_as": "SWATH"}]})
 
-        self.assertEqual({}, self.verifier.SANCTIONED_ACQUISITION_MAPPINGS, "nothing is sanctioned yet")
+        self.assertEqual({("AIF", "SWATH"): "aif_run_as_swath"}, self.verifier.SANCTIONED_ACQUISITION_MAPPINGS)
         self.assertEqual(self.verifier.FAIL, check.status, check.detail)
         self.assertIn("its header gives AIF, and the Console will deconvolute it as SWATH", check.detail)
+        self.assertIn("the campaign disposition records no aif_run_as_swath", check.detail)
 
-    def test_a_sanctioned_mapping_is_accepted_only_where_the_disposition_records_it_for_the_file(self) -> None:
-        """The table a later rule (AIF run as SWATH, pending with the user) will fill; its field is that rule's."""
-        with mock.patch.dict(self.verifier.SANCTIONED_ACQUISITION_MAPPINGS,
-                             {("AIF", "SWATH"): "sanctioned_acquisition_mappings"}):
-            for file, status in ((None, self.verifier.PASS), ("elsewhere.mzML", self.verifier.FAIL)):
-                with self.subTest(file=file):
-                    check = self._acq1("AIF", "AIF", "SWATH", "SWATH", basis="declaration", declared="AIF",
-                                       disposition_extra=lambda path, file=file: {"sanctioned_acquisition_mappings": [
-                                           {"file": file or path, "header": "AIF", "runs_as": "SWATH"}]})
-                    self.assertEqual(status, check.status, check.detail)
-                    if status == self.verifier.PASS:
-                        self.assertEqual(1, check.evidence["sanctioned_mappings"])
+    def test_no_other_mapping_than_aif_as_swath_is_sanctioned(self) -> None:
+        """A DDA header run as SWATH has no rule to sanction it, whatever the disposition records."""
+        check = self._acq1("DDA", "DDA", "SWATH", "SWATH", basis="aif_single_ce_as_swath", declared="DDA",
+                           disposition_extra={"aif_run_as_swath": {"collision_energies": [30.0],
+                                                                   "rule": "single_ce_aif_as_swath_2026_10_07"}})
+
+        self.assertEqual(self.verifier.FAIL, check.status, check.detail)
+        self.assertIn("its header gives DDA, and the Console will deconvolute it as SWATH", check.detail)
 
     def test_an_ms1_only_file_folded_into_dda_in_a_declared_dia_unit_is_refused(self) -> None:
         """MTBKS217's z_014nn under its old disposition: rule B2 excludes such files."""

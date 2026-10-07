@@ -43,6 +43,16 @@ or deleted, and looked at again when the runner starts, every few hours and at a
 release-held, until Interactive's own deletion takes them. The runner never records a person's reading
 (boundary 6): READ-1 holding the gate at exit 4 is a state it stores, and such a unit is reported as
 "outputs produced", never "completed".
+
+A DISPOSITION THAT HOLDS (the AIF rule of 2026-10-07, Interactive 0.5.31). A multi-collision-energy AIF unit waits
+for a patched Console: Interactive's campaign_disposition says "skip" with hold true and the reason
+aif_multi_ce_awaiting_console. The runner holds the unit (disposition_held) instead of ending it as skipped: it
+has not run, its raw data are kept, nothing is counted against it, it is reported as held, and the other units
+go on. Unlike gate_held and contract_held, no recheck comes by itself, at a start or every few hours, since
+nothing changes until the Console does: only an operator's recheck-held (or retry) for the unit makes its
+preflight again, and Interactive decides it anew. A held unit does not keep run --until-idle running, nor
+make the hourly scheduled start a campaign with work left (remaining_work); a later campaign planned with
+--replan-from takes it up again (plan.NOT_REPLANNED does not name the state).
 """
 
 from __future__ import annotations
@@ -99,6 +109,13 @@ CONTRACT_HELD_WARNING = (
     "held: Interactive gave a reply or a record for this unit that the runner cannot read or act on, so the "
     "unit goes no further, its raw data are kept and nothing is counted against it. The step it was held at "
     "is made again at the runner's next start, every few hours while it runs and at an operator's recheck-held"
+)
+# What the status export says of a unit in disposition_held (the AIF rule of 2026-10-07).
+DISPOSITION_HELD = ledger_module.DISPOSITION_HELD
+DISPOSITION_HELD_WARNING = (
+    "held: Interactive's campaign disposition holds this unit (a multi-collision-energy AIF unit waits for a "
+    "patched Console), so it has not run, its raw data are kept and nothing is counted against it. Only an "
+    "operator's recheck-held for the unit makes its preflight again; nothing rechecks it by itself"
 )
 
 
@@ -365,9 +382,15 @@ class Runner:
         comes by itself every held_recheck_seconds, so the runner stays and sleeps until it is due, as it
         does for a retry. Were it idle, run --until-idle would return and the rechecks every few hours that
         the user's rule of 2026-10-02 promises would wait for the next start. A unit that stays held keeps
-        the runner going until a recheck gives what it lacked or an operator skips it."""
+        the runner going until a recheck gives what it lacked or an operator skips it.
+
+        A unit Interactive's disposition holds (disposition_held, 2026-10-07) waits for nothing the runner can
+        bring, so it is idle until an operator's recheck-held makes it due, and so is a split parent whose parts
+        that have not ended are all held so."""
         for unit in self.ledger.units():
             if unit["state"] in ledger_module.TERMINAL_STATES or unit["state"] in ("deferred_disk", "pending"):
+                continue
+            if _waits_for_an_operator(unit, self.ledger):
                 continue
             return False
         return self._next_candidate() is None
@@ -460,6 +483,10 @@ class Runner:
                 # back here, and one whose step is a download meets the disk guard there (handoff_ready).
                 due = policy.parse_iso(unit["next_attempt_at"])
                 candidate = due is None or due <= now
+            elif state == DISPOSITION_HELD:
+                # Held by Interactive's disposition: due only once an operator's recheck-held set when.
+                due = policy.parse_iso(unit["next_attempt_at"])
+                candidate = due is not None and due <= now
             elif state == "deferred_disk":
                 verdict = self._disk_verdict(unit)
                 if verdict.never_fits:
@@ -785,8 +812,9 @@ class Runner:
                     raw, why = self._release_held(unit)
                     detail = f"released ({raw}): {why}" if raw in ("released", "discarded") else f"still held: {why}"
             elif request["action"] == "recheck_held":
-                # The step a held unit was held at, made again now: for gate_held, the before-production gate.
-                if state in HELD_STATES:
+                # The step a held unit was held at, made again now: for gate_held, the before-production gate; for
+                # disposition_held, the preflight, which only this request (or a retry) brings.
+                if state in HELD_STATES or state == DISPOSITION_HELD:
                     detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
                 else:
                     detail = f"nothing held for a recheck: the unit is {state}"
@@ -796,7 +824,7 @@ class Runner:
                                pending_terminal=unit.get("pending_terminal"), terminal_detail=unit.get("terminal_detail"),
                                detail={"request_id": request["request_id"]})
                     detail = "retry brought forward"
-                elif state in HELD_STATES:
+                elif state in HELD_STATES or state == DISPOSITION_HELD:
                     detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
                 elif state == "deferred_disk":
                     self._move(unit, unit["resume_state"] or "handoff_ready", detail={"request_id": request["request_id"]})
@@ -1369,6 +1397,8 @@ class Runner:
         record = disposition.as_dict()
         close = (attempt, "ok", False, {"disposition": disposition.disposition, "reasons": list(disposition.reasons),
                                         "warnings": list(disposition.warnings)})
+        if disposition.held:
+            return self._disposition_hold(unit, record, close)
         if disposition.disposition == "run":
             self._move(unit, "preflighted", disposition_json=json.dumps(record, sort_keys=True), close_attempt=close)
         elif disposition.disposition == "split":
@@ -1380,6 +1410,32 @@ class Runner:
                 terminal_detail=json.dumps({"reason": "preflight_" + disposition.disposition, "codes": list(disposition.reasons)}),
                 close_attempt=close,
             )
+        return True
+
+    def _disposition_hold(self, unit: dict[str, Any], record: Mapping[str, Any], close: tuple) -> bool:
+        """Interactive's disposition holds the unit (hold true; the AIF rule of 2026-10-07: a multi-collision-energy
+        AIF unit waits for a patched Console). Not run, not skipped and not failed: its raw data are kept,
+        nothing is counted, and it leaves the hand so the other units go on, with a warning in the ledger (the
+        transition, a disposition_held event) and in the status export. No recheck is scheduled: only an
+        operator's recheck-held makes the preflight again."""
+        reasons = [str(item) for item in record.get("reasons") or []]
+        self._move(
+            unit, DISPOSITION_HELD, resume_state="downloaded", next_attempt_at=None,
+            disposition_json=json.dumps(dict(record), sort_keys=True),
+            detail={DISPOSITION_HELD: ", ".join(reasons) or "hold", "awaiting": policy.HOLD_FOR_CONSOLE
+                    if policy.HOLD_FOR_CONSOLE in reasons else None},
+            close_attempt=close,
+        )
+        self._event(DISPOSITION_HELD, {"reasons": reasons, "warning": DISPOSITION_HELD_WARNING}, unit["unit_key"])
+        return True
+
+    def _state_disposition_held(self, unit: dict[str, Any]) -> bool:
+        """Once an operator's recheck-held made it due, the unit goes back to downloaded, whose step makes the
+        preflight again: Interactive's new disposition then sends it on, or holds it again."""
+        due = policy.parse_iso(unit["next_attempt_at"])
+        if due is None or due > self.now():
+            return False
+        self._move(unit, unit["resume_state"] or "downloaded", detail={"disposition_recheck": True})
         return True
 
     def _preflight_held(self, unit: dict[str, Any], held: Mapping[str, Any], attempt: int) -> bool:
@@ -1947,12 +2003,13 @@ class Runner:
     def _bring_recheck_forward(self, unit: Mapping[str, Any], source: str, request_id: int | None = None) -> str:
         """Make a held unit's recheck due now. Says what was done, for the operator's request."""
         gate = unit["state"] == "gate_held"
-        detail: dict[str, Any] = {"gate_recheck" if gate else "contract_recheck": source}
+        kind = "gate" if gate else "disposition" if unit["state"] == DISPOSITION_HELD else "contract"
+        detail: dict[str, Any] = {f"{kind}_recheck": source}
         if request_id is not None:
             detail["request_id"] = request_id
         self._move(unit, unit["state"], resume_state=unit["resume_state"] or ("diagnosed" if gate else "downloaded"),
                    next_attempt_at=self.stamp(), detail=detail)
-        return "gate recheck brought forward" if gate else "contract recheck brought forward"
+        return f"{kind} recheck brought forward"
 
     def _held_units_recheck(self) -> bool:
         """When the runner starts, make the step of every held unit (HELD_STATES) again: their recheck is brought
@@ -2412,6 +2469,8 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None) -> dict[str, A
         warnings.append(GATE_HELD_WARNING + (f" (no report: {hold})" if hold else ""))
     elif unit["state"] == "contract_held":
         warnings.append(CONTRACT_HELD_WARNING + (f" (contract: {hold})" if hold else ""))
+    elif unit["state"] == DISPOSITION_HELD:
+        warnings.append(DISPOSITION_HELD_WARNING + (f" (disposition: {hold})" if hold else ""))
     return {
         **{key: unit.get(key) for key in TSV_COLUMNS if key not in ("report_terms", "warnings")},
         "report_terms": terms,
@@ -2426,11 +2485,12 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None) -> dict[str, A
 
 
 def _hold_reasons(ledger: ledger_module.Ledger, units: Iterable[Mapping[str, Any]]) -> dict[str, str]:
-    """For each held unit (HELD_STATES), why its last hold was made, read from the transition that made it."""
+    """For each held unit (HELD_STATES, DISPOSITION_HELD), why its last hold was made, read from the transition
+    that made it."""
     reasons = {}
     for unit in units:
         state = unit["state"]
-        if state not in HELD_STATES:
+        if state not in HELD_STATES and state != DISPOSITION_HELD:
             continue
         for row in reversed(ledger.transitions(unit["unit_key"])):
             held = _loads(row["detail_json"]).get(state)
@@ -2438,6 +2498,18 @@ def _hold_reasons(ledger: ledger_module.Ledger, units: Iterable[Mapping[str, Any
                 reasons[unit["unit_key"]] = str(held)
                 break
     return reasons
+
+
+def _waits_for_an_operator(unit: Mapping[str, Any], ledger: ledger_module.Ledger) -> bool:
+    """Whether a unit that has not ended waits only for an operator: held by Interactive's disposition with no
+    recheck asked for (next_attempt_at unset), or a split parent whose parts that have not ended all do."""
+    if unit["state"] == DISPOSITION_HELD:
+        return unit["next_attempt_at"] is None
+    if unit["state"] == "split_parent":
+        open_parts = [part for part in ledger.units() if part["parent_unit_key"] == unit["unit_key"]
+                      and part["state"] not in ledger_module.TERMINAL_STATES]
+        return bool(open_parts) and all(_waits_for_an_operator(part, ledger) for part in open_parts)
+    return False
 
 
 def remaining_work(ledger: ledger_module.Ledger) -> list[str]:
@@ -2452,7 +2524,10 @@ def remaining_work(ledger: ledger_module.Ledger) -> list[str]:
     while a live approval covers boundary 5 (_held_recheck)."""
     units = ledger.units()
     reasons = []
-    open_units = [unit for unit in units if unit["state"] not in ledger_module.TERMINAL_STATES]
+    # A unit Interactive's disposition holds waits for an operator's recheck-held, which is a request, and so is
+    # work then; until one is made, a runner started for it would do nothing (2026-10-07).
+    open_units = [unit for unit in units if unit["state"] not in ledger_module.TERMINAL_STATES
+                  and not _waits_for_an_operator(unit, ledger)]
     if open_units:
         reasons.append(f"{len(open_units)} unit(s) have not ended")
     requests = ledger.pending_requests()
@@ -2478,6 +2553,11 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     held = [unit for unit in units if unit["raw_disposition"] == "held"]
     gate_held = [unit for unit in units if unit["state"] == "gate_held"]
     contract_held = [unit for unit in units if unit["state"] == "contract_held"]
+    disposition_held = [unit for unit in units if unit["state"] == DISPOSITION_HELD]
+    held_for = {}
+    for unit in disposition_held:
+        for code in _loads(unit.get("disposition_json")).get("reasons") or ["unrecorded"]:
+            held_for[str(code)] = held_for.get(str(code), 0) + 1
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
@@ -2495,6 +2575,13 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         # never a pause of the campaign ("stop" is per unit, 2026-10-02).
         "contract_held": {"units": len(contract_held), "unit_keys": [unit["unit_key"] for unit in contract_held],
                           "warning": CONTRACT_HELD_WARNING if contract_held else None},
+        # Held by Interactive's disposition (the AIF rule of 2026-10-07: a multi-collision-energy AIF unit waits for a
+        # patched Console): not run, raw data kept, never a failure, lifted only by an operator's recheck-held.
+        "disposition_held": {"units": len(disposition_held),
+                             "unit_keys": [unit["unit_key"] for unit in disposition_held],
+                             "reasons": dict(sorted(held_for.items())),
+                             "recheck_asked": sum(1 for unit in disposition_held if unit["next_attempt_at"]),
+                             "warning": DISPOSITION_HELD_WARNING if disposition_held else None},
         # The pause in force, named: one of the four pauses of the whole campaign, each lifting by itself, or
         # an operator's own (or a contract pause an earlier runner left), which waits for an operator's resume.
         "paused": {"kind": runner["pause_kind"], "name": policy.pause_name(runner["pause_kind"]),

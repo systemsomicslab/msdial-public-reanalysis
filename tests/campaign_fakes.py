@@ -72,7 +72,9 @@ class UnitScript:
     # arriving and the job never ends until it is cancelled); blocked; interrupt; shared (waiting for another
     # unit's lease to fetch a shared object, no bytes of its own, then ok)
     downloads: list[str] = field(default_factory=lambda: ["ok"])
-    disposition: str = "run"  # run, split, skip, exclude, none, malformed
+    # run, split, skip, exclude, none, malformed; aif_hold (Interactive 0.5.31: a skip with hold true for a
+    # multi-collision-energy AIF unit, aif_multi_ce_awaiting_console)
+    disposition: str = "run"
     # Whether the preflight applies its disposition (a campaign unit, Interactive 0.5.17), and whether
     # classify_preflight then does; held: what disposition_hold holds the unit for, if anything.
     applied: bool = True
@@ -356,15 +358,20 @@ class FakeInteractive:
             # disposition_hold: nothing is read, and the unit keeps whatever disposition it carries.
             return {"completed": False, "extractor_found": True, "preflight_held": {"reason": script.held, "detail": "held"}}
         disposition = script.disposition
+        hold = disposition == "aif_hold"
+        if hold:
+            disposition = "skip"
         if disposition != "none":
             record = {
                 "schema": policy.DISPOSITION_SCHEMA, "disposition": disposition,
-                "reasons": [] if disposition in ("run", "split") else [f"test_{disposition}"],
+                "reasons": [] if disposition in ("run", "split") else
+                ["aif_multi_ce_awaiting_console"] if hold else [f"test_{disposition}"],
                 "warnings": [], "excluded_inputs": [], "split_key": {"acquisition": True} if disposition == "split" else None,
                 "decided_at": self._stamp(),
                 "extractor": {"sha256": self.world.extractor_sha, "inventory_sha256": SHA["extractor"],
                               "provenance_status": "verified", "pinned": True},
                 "applied": script.applied,
+                **({"hold": True} if hold else {}),
             }
             if disposition == "malformed":
                 record = {"schema": "other", "disposition": "maybe"}

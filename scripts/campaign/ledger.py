@@ -36,8 +36,11 @@ from typing import Any, Callable, Iterable, Iterator, Mapping
 # instrument-family step it searched first (coarse_threshold_step) and whether and why it fell back to the finer
 # one (step_fallback, fallback_reason), the user's step rule of 2026-10-06. A ledger of schema 1 or 2 is brought
 # to 3 when it is opened (Ledger._migrate); its campaign row is already written, so its pool's CHECK is left as
-# it is, and a unit diagnosed before 3 keeps no record of the step it searched first (NULL).
-SCHEMA_VERSION = 3
+# it is, and a unit diagnosed before 3 keeps no record of the step it searched first (NULL). 4 (2026-10-07): the
+# state disposition_held, a unit whose campaign disposition holds it (a multi-collision-energy AIF unit waiting for
+# a patched Console). A ledger of schema 3 is brought to 4 when it is opened, its unit and transition tables made
+# anew with the wider list of states.
+SCHEMA_VERSION = 4
 
 ACTIVE_STATES = (
     "pending", "class_settled", "handoff_ready",
@@ -54,9 +57,15 @@ ACTIVE_STATES = (
 # campaign_disposition, a malformed one, one another extractor made, a reply of another shape). "Stop" is
 # per unit (2026-10-02), so it is held as gate_held is, never the campaign paused for it, and the step it
 # was held at is made again at the same rechecks.
-WAITING_STATES = ("waiting_retry", "deferred_disk", "queued", "gate_held", "contract_held")
+# disposition_held: a unit Interactive's campaign_disposition holds (hold true; the AIF rule of 2026-10-07: a
+# multi-collision-energy AIF unit waits for a patched Console). It has not run, keeps its raw data and is counted
+# nothing, and the other units go on. No recheck comes by itself: only an operator's recheck-held (or retry) for
+# the unit makes its preflight again, and Interactive then decides it anew.
+WAITING_STATES = ("waiting_retry", "deferred_disk", "queued", "gate_held", "contract_held", "disposition_held")
 # The waiting states a recheck releases, by itself or at an operator's recheck-held.
 HELD_STATES = ("gate_held", "contract_held")
+# The waiting state an operator's recheck-held alone releases.
+DISPOSITION_HELD = "disposition_held"
 TERMINAL_STATES = (
     "done", "skipped", "excluded", "failed", "split_done", "stopped_no_approval", "stopped_policy_drift",
 )
@@ -82,7 +91,8 @@ FAULT_PAUSES = ("backend", "outage", "fault")
 # A pause never gives way to a lesser one: a disk that runs short while the operator has paused the
 # campaign must not lift the operator's pause by replacing it.
 PAUSE_RANK = {kind: len(PAUSE_KINDS) - index for index, kind in enumerate(PAUSE_KINDS)}
-# recheck_held: make the step a held unit (HELD_STATES) was held at again now: for gate_held, the gate.
+# recheck_held: make the step a held unit (HELD_STATES, or DISPOSITION_HELD) was held at again now: for gate_held,
+# the gate; for disposition_held, the preflight.
 REQUEST_ACTIONS = ("skip", "retry", "release_held", "recheck_held")
 
 
@@ -458,11 +468,11 @@ class Ledger:
     # The tables each schema rebuilt, by the schema a ledger is brought from: 2 widened the CHECK lists of
     # unit and transition (the states gate_held, contract_held), request (the action recheck_held) and runner
     # (the pauses backend, outage); 3 widened unit's threshold_step to the finer step and added the step rule's
-    # columns.
-    _REBUILT = {1: ("unit", "transition", "request", "runner"), 2: ("unit",)}
+    # columns; 4 widened the states of unit and transition (disposition_held).
+    _REBUILT = {1: ("unit", "transition", "request", "runner"), 2: ("unit",), 3: ("unit", "transition")}
 
     def _migrate(self, version: int) -> None:
-        """Bring a schema 1 or 2 ledger to SCHEMA_VERSION, in one transaction, keeping every row it holds.
+        """Bring a schema 1, 2 or 3 ledger to SCHEMA_VERSION, in one transaction, keeping every row it holds.
 
         SQLite cannot widen a CHECK constraint in place, so each table whose CHECK names a widened list is
         made anew from SCHEMA, filled from the old one by the old one's columns (a column a later schema
