@@ -28,7 +28,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 # 2 (2026-10-02): the gate_held and contract_held states, the recheck_held request and the gate verdict's
 # blocking unevaluated checks; and (2026-10-03) the backend and outage pauses and a pilot's pool. A ledger of
@@ -908,6 +908,39 @@ class Ledger:
         else:
             rows = self.connection.execute("SELECT * FROM campaign_event WHERE kind = ? ORDER BY seq", (kind,))
         return [dict(row) for row in rows]
+
+    def last_event(self, kinds: Iterable[str]) -> dict[str, Any] | None:
+        """The newest event of any of these kinds, or None."""
+        kinds = list(kinds)
+        row = self.connection.execute(
+            f"SELECT * FROM campaign_event WHERE kind IN ({', '.join('?' for _ in kinds)}) ORDER BY seq DESC LIMIT 1", kinds
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    # ---- the backend's start state ----------------------------------------------------------------
+    # BackendSupervisor's consecutive start failures, the time before which it starts no backend, and the start
+    # it is still waiting for (ports.LedgerStartState). Kept here, not in the runner's memory, because the
+    # scheduled task starts a new runner process after each one that exits (2026-10-07 review of PR #30): a
+    # pause or a pending start held in memory was forgotten at every restart. A meta row, so no schema change.
+
+    BACKEND_START_KEY = "backend_start"
+
+    def backend_start_state(self) -> dict[str, Any]:
+        row = self.connection.execute("SELECT value FROM meta WHERE key = ?", (self.BACKEND_START_KEY,)).fetchone()
+        if row is None:
+            return {}
+        try:
+            value = json.loads(row["value"])
+        except ValueError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def set_backend_start_state(self, value: Mapping[str, Any]) -> None:
+        with self.transaction() as db:
+            db.execute(
+                "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (self.BACKEND_START_KEY, _json(dict(value))),
+            )
 
     # ---- the runner: lock, heartbeat, pause ------------------------------------------------------
 

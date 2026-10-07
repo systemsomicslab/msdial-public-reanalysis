@@ -687,11 +687,18 @@ class PlanTests(unittest.TestCase):
             self.assertGreater(book.add_request("release_held", "u1", "why", "Test", "now"), 0, "the ledger takes it")
             book.close()
 
-    def test_the_scheduled_command_keeps_a_path_with_a_space_one_word(self) -> None:
-        line = runner_cli.schedule_task_command(r"C:\Program Files\Python314\python.exe", r"D:\code\scripts\campaign-runner.py", "c1")
-        self.assertIn(r'/TR "\"C:\Program Files\Python314\python.exe\" \"D:\code\scripts\campaign-runner.py\" run --campaign c1 --until-idle"', line)
-        self.assertIn("/SC ONLOGON", line)
-        self.assertNotIn('""', line, "no unescaped quote inside /TR")
+    def test_the_scheduled_task_keeps_a_path_with_a_space_one_word(self) -> None:
+        """The task is registered from its XML definition (2026-10-06), whose Command and Arguments are separate
+        elements: a path with a space is quoted inside Arguments and needs no escaping for schtasks."""
+        line = runner_cli.schedule_task_command("c1", r"D:\an analysis\task.xml")
+        self.assertEqual(line, r'schtasks /Create /TN "MSDIAL-campaign-c1" /XML "D:\an analysis\task.xml" /F')
+        definition = runner_cli.schedule_task_xml(
+            python=r"C:\Program Files\Python314\python.exe", script=r"D:\code\scripts\campaign-runner.py", campaign="c1",
+            user="HOST\\someone", workspace_root=r"D:\analysis", interactive_root=r"D:\i", catalog_root=r"D:\c",
+            start="2026-10-06T00:00:00")
+        self.assertIn(r"<Command>C:\Program Files\Python314\python.exe</Command>", definition)
+        self.assertIn(r'<Arguments>"D:\code\scripts\campaign-runner.py" --workspace-root "D:\analysis"', definition)
+        self.assertIn("run --campaign c1 --until-idle", definition)
 
     def test_a_manifest_without_libraries_or_profile_is_not_approvable(self) -> None:
         code, _out, err = self.cli(

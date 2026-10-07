@@ -182,6 +182,70 @@ released as it was read, or a deletion recorded within a lock's heartbeat
 window), and its output escapes what the console code page cannot print rather
 than ending without a verdict.
 
+## Running a campaign unattended
+
+Launch `scripts/campaign-runner.py run` for an unattended campaign through Task
+Scheduler, not from a Claude session. A process started from Claude Code or the
+Claude desktop app, `Start-Process` included, sits in the app's Windows job
+object. That job allows no breakaway, and the app is force-closed when it updates
+(it was on 2026-10-02 and 2026-10-06), so a runner started there ends with the
+app. `campaign-runner.py schedule-command --campaign ID [--xml-out FILE]` prints
+the task definition and the `schtasks` lines, and registers nothing: the task is
+persistent system configuration, so registering it is the user's step. The task
+has no execution time limit (a task made with `schtasks /SC` alone is stopped
+after 72 hours), runs one instance, restarts on failure, and starts again every
+hour, so a runner that ended comes back. It runs the runner with `pythonw.exe`,
+which runs itself again in a console with no window, and writes the runner's
+output to the campaign's `logs\runner.log`.
+
+The runner starts the Interactive backend through WMI (`Win32_Process.Create`):
+a broker (`scripts/campaign/backend_launch.py`) starts the backend and exits. The
+backend is then neither the runner's child nor in the runner's job, so a tree
+kill of the runner, or the end of its task or of the Claude app, leaves the
+backend and a running Console alone, and the next runner reattaches. It has a
+console of its own with no window, which git, the Console, 7-Zip and the
+extractor inherit. `run --backend-launch child` starts it as the runner's child,
+the way it was started before 2026-10-06. A backend already answering on the
+campaign port is reused, and the runner says how it was started where that is
+knowable (`backend-launch.json` beside the campaign's job registry). The runner
+knows its own backend by the process tree: when its Python is a launcher (a
+venv's `python.exe`, `py.exe`), the process holding the port is the launcher's
+child, and the launch record names it, with the launcher as `launcher_pid`.
+Where the tree breaks at a process that has exited (under a venv Python, the
+broker's own interpreter exits after starting the backend), the listener's
+command line and creation time identify it instead.
+
+Three failed backend starts in a row pause starting for an hour. The failures,
+the pause and a start still waited for are kept in the campaign ledger, so a
+runner the task starts after another one exited honours them. A start is waited
+for until `--backend-start-timeout` from its launch, by that runner or the next.
+A backend still running past that deadline without answering counts as a failed
+start at every check, so the pause applies; no second backend is started beside
+it, and the failure names the process to end, with its creation time. When the
+WMI broker never reported, the backend has no recorded process id: past the
+deadline it is found by the port it holds, or by its command line and creation
+time, and a broker that still runs is named in its place; only a start of which
+nothing is found running is given up. Whether a named process still runs is read
+again each time it is named, the pause's refusal included, so a process that has
+ended since gets no `taskkill` line. Once the backend
+answers its status, `/api/config` has `--backend-config-timeout` of its own, and
+a backend that answers the status but not `/api/config` is reported as that.
+
+When the campaign has no work left (every unit has ended, no request waits for
+a runner, and no ended unit holds raw data the runner would look at again),
+`run` exits at once, before it takes the campaign, locks the Catalog or starts a
+backend, and prints how to end the task. The one thing it still does is release
+a Catalog campaign lock that this campaign's approval holds and whose owner has
+died (a runner killed after the last unit ended), as `run` does before it locks
+the Catalog; a lock of another approval, or with a live owner, is left alone.
+A lock it cannot check (the Catalog cannot be imported, or the lock file cannot
+be read or is not a lock record) makes `run` exit with code 3 and say so.
+The task keeps starting it every hour
+until you do: disable it with `schtasks /Change /TN "MSDIAL-campaign-ID"
+/Disable` or delete it with `schtasks /Delete /TN "MSDIAL-campaign-ID" /F`. The
+runner changes no task itself. Neither command stops the backend the last runner
+started; stop it yourself once no job runs in it.
+
 ## Codex pre-audit
 
 The local Python test suites passed on 2026-09-02 after the re-audit fixes:

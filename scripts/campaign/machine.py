@@ -831,10 +831,16 @@ class Runner:
         if self.ports.backend is None:
             return True
         result = self.ports.backend.ensure()
+        # The backend's process id, creation time and how it was started (ports.BackendSupervisor): through WMI,
+        # outside the runner's job, or as the runner's child; for a backend found running, what is knowable of it.
         if not result.get("ok"):
-            self._event("backend_unavailable", {"detail": result.get("detail")})
+            self._event("backend_unavailable", {key: result[key] for key in (
+                "detail", "pid", "process_created_at", "method", "start_failures", "retry_at", "origin") if result.get(key) is not None})
         elif result.get("started"):
-            self._event("backend_started", {"pid": result.get("pid")})
+            self._event("backend_started", {key: result[key] for key in (
+                "pid", "process_created_at", "launcher_pid", "method", "in_job", "seconds", "wmi_failure") if result.get(key) is not None})
+        elif result.get("origin_new"):
+            self._event("backend_reused", {"pid": result.get("pid"), "origin": result.get("origin")})
         return bool(result.get("ok"))
 
     def _observations(self) -> list[float]:
@@ -2378,6 +2384,32 @@ def _hold_reasons(ledger: ledger_module.Ledger, units: Iterable[Mapping[str, Any
             if row["to_state"] == state and held:
                 reasons[unit["unit_key"]] = str(held)
                 break
+    return reasons
+
+
+def remaining_work(ledger: ledger_module.Ledger) -> list[str]:
+    """What a runner started now could still do, read from the ledger alone; empty when the campaign has no
+    work left.
+
+    run checks this before it takes the runner lock, locks the Catalog or starts a backend (2026-10-07 review
+    of PR #30): the scheduled task starts a runner every hour, and on a finished campaign each one used to lock
+    the Catalog and start an Interactive backend, outside any job, that nothing then stopped. Work is a unit
+    that has not ended (a unit waiting for disk or held for a recheck among them), an operator request no
+    runner has handled, or an ended unit holding raw data the rules delete, which the runner looks at again
+    while a live approval covers boundary 5 (_held_recheck)."""
+    units = ledger.units()
+    reasons = []
+    open_units = [unit for unit in units if unit["state"] not in ledger_module.TERMINAL_STATES]
+    if open_units:
+        reasons.append(f"{len(open_units)} unit(s) have not ended")
+    requests = ledger.pending_requests()
+    if requests:
+        reasons.append(f"{len(requests)} operator request(s) wait for a runner")
+    held = [unit for unit in units
+            if unit["state"] in ledger_module.TERMINAL_STATES and unit["raw_disposition"] == "held"]
+    if held and ledger.campaign()["raw_retention_policy"] == "delete_after_validated_output" \
+            and ledger.live_approval("5") is not None:
+        reasons.append(f"{len(held)} ended unit(s) hold raw data the runner looks at again")
     return reasons
 
 
