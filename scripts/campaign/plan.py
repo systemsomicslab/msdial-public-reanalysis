@@ -1016,5 +1016,21 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
             f"  planned beside an earlier accession-level workspace, left as it is: {len(legacy)} accessions "
             f"({', '.join(legacy[:5])}{', ...' if len(legacy) > 5 else ''})"
         )
+    lines.append(multi_energy_aif_text((manifest.get("pins") or {}).get("console") or {}))
     lines.append(f"  manifest digest {digest}")
     return "\n".join(lines)
+
+
+def multi_energy_aif_text(console: Mapping[str, Any]) -> str:
+    """What the pinned Console means for a multi-energy AIF unit, as its pin records Interactive's probe for
+    MsdialWorkbench #825 (ports.PinReader, multi_energy_aif). Never a reason to refuse the plan: without #825
+    Interactive holds such a unit, which is correct, and with it Interactive runs it as AIF."""
+    record = console.get("multi_energy_aif")
+    if not isinstance(record, Mapping):
+        return ("  multi-energy AIF: not probed (the pinned Interactive predates 0.5.34), so such units are held "
+                f"({policy.HOLD_FOR_CONSOLE})")
+    if record.get("available") is True:
+        return ("  multi-energy AIF: the pinned Console has MsdialWorkbench #825, so a unit whose AIF inputs record the "
+                f"same energies, more than one, runs as AIF ({policy.AIF_MULTI_CE_RULE})")
+    return (f"  multi-energy AIF: the pinned Console has no MsdialWorkbench #825 (probe {record.get('probe') or 'none'}), "
+            f"so such units are held ({policy.HOLD_FOR_CONSOLE})")

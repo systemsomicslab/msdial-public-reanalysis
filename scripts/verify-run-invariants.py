@@ -3290,6 +3290,29 @@ DECLARED_DIA_FAMILY = ("DIA", "AIF", "SWATH")
 AIF_AS_SWATH_FIELD = "aif_run_as_swath"
 AIF_AS_SWATH_RULE = "single_ce_aif_as_swath_2026_10_07"
 AIF_AS_SWATH_BASIS = "aif_single_ce_as_swath"
+#
+# MULTI-ENERGY AIF WITH #825 (Interactive 0.5.34, msdial-interactive-app#67). The patched Console is MsdialWorkbench
+# #825: it deconvolutes a multi-energy AIF file once per energy and represents each peak by the energy of its MS/MS
+# reference-spectrum match, else the energy with the most product ions. Where the Console Interactive decided for
+# has it, a unit whose AIF inputs all record the same MS2 collision energies, more than one, runs as AIF (header
+# type AIF, row AIF, so no mapping is involved): the disposition records aif_multi_ce_run = {"collision_energies",
+# "rule": AIF_MULTI_CE_RULE} beside its probe of that Console (multi_energy_aif_console: capability, available,
+# probe, assembly_sha256), and each input's record carries console_acquisition_basis AIF_MULTI_CE_BASIS and its own
+# ms2_collision_energies. Without #825 the unit is held as before; with it, inputs whose energies differ from one
+# another are held too (#825 chooses among one file's energies, never across files). ACQ-1 reads those records:
+# a multi-energy AIF row passes only where they say so and the Console the run manifest names is the one the probe
+# found #825 in (or, where it is another, the gate finds #825's markers in that Console's assembly itself).
+AIF_MULTI_CE_FIELD = "aif_multi_ce_run"
+AIF_MULTI_CE_RULE = "multi_ce_aif_with_console_825"
+AIF_MULTI_CE_BASIS = "aif_multi_ce_console_825"
+MULTI_ENERGY_AIF_PROBE_FIELD = "multi_energy_aif_console"
+# Mirrored from Interactive's workflow.MULTI_ENERGY_AIF_CAPABILITY and MULTI_ENERGY_AIF_CONSOLE_MARKERS: two messages
+# of #825's RepresentativeDeconvolutionReader, .NET literals in the Console assembly (UTF-16LE). Both are required:
+# a local AIF patch build from before #825's representative-energy rule carries the second only.
+MULTI_ENERGY_AIF_CAPABILITY = "multi_energy_aif_representative_collision_energy"
+MULTI_ENERGY_AIF_CONSOLE_MARKERS = ("The collision-energy files of ", " nor a collision-energy file exists.")
+# Interactive compares collision energies to 0.1 eV (raw_metadata_preflight.COLLISION_ENERGY_DECIMALS).
+COLLISION_ENERGY_DECIMALS = 1
 SANCTIONED_ACQUISITION_MAPPINGS: dict[tuple[str, str], str] = {("AIF", "SWATH"): AIF_AS_SWATH_FIELD}
 ACQ1_SOURCES = {
     "header": "from headers", "declaration": "from the repository declaration",
@@ -3358,8 +3381,153 @@ def _aif_as_swath_energies(entry: object) -> "tuple[list[float] | None, str]":
     energies = sorted({round(float(item), 2) for item in values})
     if len(energies) != 1:
         return None, (f"its {AIF_AS_SWATH_FIELD} records {len(energies)} collision energies, and only a single-energy "
-                      "AIF unit runs as SWATH (a multi-energy one is held for a patched Console)")
+                      f"AIF unit runs as SWATH (a multi-energy one runs as AIF under {AIF_MULTI_CE_RULE} on a Console "
+                      "with MsdialWorkbench#825, and is held otherwise)")
     return energies, ""
+
+
+def _energy_set(values: object) -> "tuple[float, ...] | None":
+    """The distinct collision energies a recorded list gives, to 0.1 eV as Interactive compares them; None where
+    nothing is recorded (no list)."""
+    if not isinstance(values, list):
+        return None
+    return tuple(sorted({round(float(item), COLLISION_ENERGY_DECIMALS) for item in values
+                         if isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item)}))
+
+
+def _energies_text(energies: "tuple[float, ...] | list[float] | None") -> str:
+    return ", ".join(f"{value:g}" for value in energies) + " eV" if energies else "no energy"
+
+
+def _aif_multi_ce_record(dispositions: list[dict]) -> "tuple[dict | None, tuple[float, ...], str]":
+    """(the binding disposition whose aif_multi_ce_run names AIF_MULTI_CE_RULE and two or more energies, those
+    energies, ""); or (None, (), why no binding disposition sanctions a multi-energy AIF run)."""
+    reasons = []
+    for disposition in dispositions:
+        entry = disposition.get(AIF_MULTI_CE_FIELD)
+        if not isinstance(entry, dict):
+            held = ", ".join(str(item) for item in disposition.get("reasons") or [])
+            reasons.append(f"the campaign disposition records no {AIF_MULTI_CE_FIELD}"
+                           + (f" (it holds the unit: {held})" if disposition.get("hold") is True and held else ""))
+            continue
+        if str(entry.get("rule") or "") != AIF_MULTI_CE_RULE:
+            reasons.append(f"its {AIF_MULTI_CE_FIELD} names the rule {str(entry.get('rule') or '') or 'none'!r}, not "
+                           f"{AIF_MULTI_CE_RULE}")
+            continue
+        energies = _energy_set(entry.get("collision_energies")) or ()
+        if len(energies) < 2:
+            reasons.append(f"its {AIF_MULTI_CE_FIELD} records {len(energies)} collision energies, not two or more")
+            continue
+        return disposition, energies, ""
+    return None, (), "; ".join(dict.fromkeys(reasons)) or f"no binding campaign disposition records {AIF_MULTI_CE_FIELD}"
+
+
+def _probe_ready(probe: object) -> bool:
+    """Whether a multi_energy_aif_console record shows #825 in the Console it read, as Interactive's
+    raw_metadata_preflight.multi_energy_aif_ready reads it."""
+    return (isinstance(probe, dict) and probe.get("capability") == MULTI_ENERGY_AIF_CAPABILITY
+            and probe.get("available") is True)
+
+
+def _assembly_markers(path: Path) -> "tuple[bool | None, str]":
+    """Whether a Console assembly carries every #825 marker (True, False), or None and why it was not read."""
+    try:
+        binary = path.read_bytes()
+    except OSError as error:
+        return None, f"its assembly could not be read ({type(error).__name__})"
+    present = [marker.encode("utf-16-le") in binary or marker.encode("utf-8") in binary
+               for marker in MULTI_ENERGY_AIF_CONSOLE_MARKERS]
+    if all(present):
+        return True, ""
+    return False, "its assembly carries only some of #825's markers" if any(present) else "its assembly carries none of #825's markers"
+
+
+def _multi_energy_aif_console(probe: object, run_manifest: "dict | None") -> "tuple[bool, str, dict]":
+    """Whether the Console the run manifest names has MsdialWorkbench#825: (shown, how or why not, evidence).
+
+    Shown where the disposition's probe found #825 in an assembly whose sha256 is the one the run manifest records
+    for the Console that runs; or, where the probe read another Console or none, where the gate finds every #825
+    marker in the assembly the run manifest names, whose sha256 is still the one recorded."""
+    console = (run_manifest or {}).get("console") if isinstance(run_manifest, dict) else None
+    console = console if isinstance(console, dict) else {}
+    recorded = str(console.get("assembly_sha256") or console.get("binary_sha256") or "").strip().casefold()
+    probed = str(probe.get("assembly_sha256") or "").strip().casefold() if isinstance(probe, dict) else ""
+    evidence = {"run_console_assembly_sha256": recorded or None,
+                "probe": probe.get("probe") if isinstance(probe, dict) else None,
+                "probe_available": _probe_ready(probe), "probe_assembly_sha256": probed or None}
+    if not isinstance(run_manifest, dict):
+        return False, "no run manifest records the Console that runs it", evidence
+    if not recorded:
+        return False, "the run manifest records no Console assembly sha256", evidence
+    if _probe_ready(probe) and probed == recorded:
+        evidence["shown_by"] = "disposition_probe"
+        return True, "the disposition's probe found #825 in the assembly the run manifest records", evidence
+    named = str(console.get("assembly_path") or console.get("path") or "").strip()
+    assembly = Path(named) if named else None
+    probed_text = ("the disposition's probe read another Console" if _probe_ready(probe) else
+                   f"the disposition's probe found no #825 ({evidence['probe'] or 'not probed'})")
+    if assembly is None or not assembly.is_file():
+        return False, probed_text + ", and the assembly the run manifest names is not on disk to read", evidence
+    try:
+        actual = _file_sha256(assembly)
+    except OSError as error:
+        return False, f"{probed_text}, and the assembly the run manifest names could not be read ({type(error).__name__})", evidence
+    if actual != recorded:
+        return False, f"{probed_text}, and the assembly the run manifest names is no longer the one it recorded", evidence
+    found, why = _assembly_markers(assembly)
+    if found:
+        evidence["shown_by"] = "gate_read_the_assembly"
+        return True, "the gate found #825's markers in the assembly the run manifest records", evidence
+    return False, f"{probed_text}, and the Console the run manifest names has no MsdialWorkbench#825 ({why})", evidence
+
+
+def _multi_energy_aif_failures(
+    rows: "list[tuple[str, tuple[float, ...] | None, str]]", dispositions: list[dict], run_manifest: "dict | None",
+) -> "tuple[list[str], dict]":
+    """Why the rows that run as multi-energy AIF may not, and the evidence. Each row is (name, its record's
+    ms2_collision_energies, its record's console_acquisition_basis).
+
+    Under a binding disposition its aif_multi_ce_run decides: without one naming AIF_MULTI_CE_RULE and two or more
+    energies nothing runs as multi-energy AIF, and each row's basis must be AIF_MULTI_CE_BASIS and its energies the
+    recorded ones. Without a binding disposition (no campaign) the rows' energies must agree. Either way the Console
+    the run manifest names must be shown to have #825 (_multi_energy_aif_console)."""
+    failures: list[str] = []
+    record, energies, why = _aif_multi_ce_record(dispositions)
+    evidence: dict = {"rows": len(rows), "rule": AIF_MULTI_CE_RULE}
+    first = rows[0][0]
+    if dispositions and record is None:
+        failures.append(
+            f"{len(rows)} row(s) run as AIF with more than one MS2 collision energy (the first {first}), and {why}: a "
+            f"multi-energy AIF unit runs as AIF only under {AIF_MULTI_CE_RULE}, on a Console with MsdialWorkbench#825, "
+            "and is held otherwise (aif_multi_ce_awaiting_console)")
+        return failures, evidence
+    if record is not None:
+        evidence[AIF_MULTI_CE_FIELD] = record.get(AIF_MULTI_CE_FIELD)
+        for name, own, basis in rows:
+            if basis != AIF_MULTI_CE_BASIS:
+                failures.append(f"{name}: runs as multi-energy AIF, and its record's console_acquisition_basis is "
+                                f"{basis or 'none'!r}, not {AIF_MULTI_CE_BASIS}")
+            elif own != energies:
+                failures.append(f"{name}: records {_energies_text(own) if own is not None else 'no ms2_collision_energies'}"
+                                f", not the unit's {_energies_text(energies)}, and {AIF_MULTI_CE_RULE} holds only where "
+                                "every input records the same energies (#825 chooses among one file's energies, never "
+                                "across files)")
+    else:
+        sets = {own for _name, own, _basis in rows}
+        energies = next(iter(sets)) if len(sets) == 1 and None not in sets else ()
+        if len(sets) > 1:
+            failures.append(f"{len(rows)} row(s) run as multi-energy AIF, and their inputs record different MS2 "
+                            "collision energies (" + "; ".join(sorted(_energies_text(item) for item in sets if item))
+                            + "): #825 chooses a representative energy among one file's energies, never across files")
+    evidence["collision_energies"] = list(energies)
+    probe = record.get(MULTI_ENERGY_AIF_PROBE_FIELD) if record is not None else None
+    shown, how, console = _multi_energy_aif_console(probe, run_manifest)
+    evidence.update(console=console, console_shown=shown, console_detail=how)
+    if not shown:
+        failures.append(f"{len(rows)} row(s) run as multi-energy AIF ({_energies_text(energies)}; the first {first}), "
+                        f"which only an MS-DIAL Console with MsdialWorkbench#825 processes, and {how}; decide the unit "
+                        "again with the Console that will run it")
+    return failures, evidence
 
 
 def _sanctioned_mapping(header: str, value: str, key: str, dispositions: list[dict],
@@ -3401,6 +3569,7 @@ def _declared_dia_family(dispositions: list[dict]) -> "tuple[str, str] | None":
 
 def check_acquisition_type_is_the_headers(
     report: Report, provenance: dict | None, reason: str, csv_rows: list[dict] | None, csv_reason: str,
+    run_manifest: "dict | None" = None,
 ) -> None:
     """ACQ-1. Every CSV row's acquisition_type is a Console type, and the one its file's header gives.
 
@@ -3421,9 +3590,22 @@ def check_acquisition_type_is_the_headers(
     (user decision, 2026-10-07): an AIF header runs as SWATH where campaign_disposition.aif_run_as_swath names the
     rule single_ce_aif_as_swath_2026_10_07 and exactly one collision energy, and the file's record says that rule
     decided it; the row is then a WARN naming the rule, never a PASS, and a record of more than one energy (a
-    multi-energy AIF unit, held for a patched Console) sanctions nothing. It FAILs too where the type is not the
-    one the record decided
-    (console_acquisition_type). A record written before header_console_acquisition_type existed gives DDA,
+    multi-energy AIF unit) sanctions nothing. It FAILs too where the type is not the one the record decided
+    (console_acquisition_type).
+
+    MULTI-ENERGY AIF WITH #825 (Interactive 0.5.34). A row that runs as AIF is a multi-energy AIF row where its
+    record gives more than one MS2 collision energy (ms2_collision_energies, to 0.1 eV), where its record's basis is
+    aif_multi_ce_console_825, or where a binding disposition records aif_multi_ce_run. It runs as its header gives,
+    so it PASSes only where (_multi_energy_aif_failures): a binding disposition records aif_multi_ce_run under the
+    rule multi_ce_aif_with_console_825 with two or more energies, and each such row's record carries that basis and
+    those energies (inputs whose energies differ are held by Interactive, so a row with others FAILs); and the
+    Console the run manifest (output/run-manifest.json) records is shown to have MsdialWorkbench#825: the
+    disposition's multi_energy_aif_console probe found it in the assembly whose sha256 the run manifest records,
+    or the gate finds both of #825's markers in that assembly itself. A multi-energy AIF row on a Console without
+    #825 FAILs, and so does one whose disposition holds the unit or records no such run. Without a binding
+    disposition (no campaign) the rows' energies must agree and the Console must be shown the same way. A
+    single-energy AIF unit is still expected as SWATH under single_ce_aif_as_swath_2026_10_07, whatever the
+    Console. A record written before header_console_acquisition_type existed gives DDA,
     SWATH or AIF as its acquisition_mode says, and the extractor's own verdict is read beside it, as before;
     the exemption that let a disposition keep the declaration over a header below 0.8 confidence is gone.
     A WARN only names what a row's type rests on where it is not a header's: the repository's declaration
@@ -3457,10 +3639,17 @@ def check_acquisition_type_is_the_headers(
     types = dict(Counter(str(row.get("acquisition_type") or "") for row in rows))
     type_text = ", ".join(f"{key} {count}" for key, count in sorted(types.items()))
 
+    # The rows that run as multi-energy AIF (name, recorded energies, basis), and why they may not.
+    multi_rows: "list[tuple[str, tuple[float, ...] | None, str]]" = []
+    multi_failures: list[str] = []
+
     def refuse(**evidence) -> None:
+        typed = len(failures) - unparsed - len(multi_failures)
         parts = ([f"{unparsed} carry an acquisition_type other than {domain_text}"] if unparsed else []) + (
-            [f"{len(failures) - unparsed} would be deconvoluted as an acquisition type their header does not give"]
-            if len(failures) > unparsed else [])
+            [f"{typed} would be deconvoluted as an acquisition type their header does not give"]
+            if typed > 0 else []) + (
+            [f"{len(multi_rows)} run as multi-energy AIF where the records or the Console do not allow it"]
+            if multi_failures else [])
         report.add("ACQ-1", stage, ACQ1_TITLE, FAIL,
                    f"Of the {len(rows)} row(s), " + " and ".join(parts) + ", which completes, validates and is wrong: "
                    + "; ".join(failures[:3]) + ".",
@@ -3493,6 +3682,7 @@ def check_acquisition_type_is_the_headers(
     dispositions = _binding_dispositions(provenance)
     decisions = _declared_vs_header(dispositions)
     declared_dia = _declared_dia_family(dispositions)
+    multi_ce_recorded = any(isinstance(item.get(AIF_MULTI_CE_FIELD), dict) for item in dispositions)
     warnings: list[str] = []
     basis: Counter = Counter()
     sources: Counter = Counter()
@@ -3538,6 +3728,11 @@ def check_acquisition_type_is_the_headers(
             if console is not None and console != value:
                 failures.append(f"{name}: its record decided {console}, and the Console will deconvolute it as {value}")
                 continue
+            if value == "AIF":
+                energies = _energy_set(record.get("ms2_collision_energies"))
+                basis_text = str(record.get("console_acquisition_basis") or "")
+                if (energies and len(energies) > 1) or basis_text == AIF_MULTI_CE_BASIS or multi_ce_recorded:
+                    multi_rows.append((name, energies, basis_text))
             if mapped:
                 sanctioned += 1
                 sources["sanctioned"] += 1
@@ -3602,6 +3797,17 @@ def check_acquisition_type_is_the_headers(
         evidence["header_overrides_declaration"] = len(overrides)
         evidence["declaration_sources"] = dict(Counter(str(entry.get("declaration_source") or "unrecorded")
                                                        for entry in overrides))
+    multi_text = ""
+    if multi_rows:
+        refused, evidence["multi_energy_aif"] = _multi_energy_aif_failures(multi_rows, dispositions, run_manifest)
+        multi_failures.extend(refused)
+        failures.extend(refused)
+        multi = evidence["multi_energy_aif"]
+        sha = str((multi.get("console") or {}).get("run_console_assembly_sha256") or "")
+        multi_text = (f" {len(multi_rows)} of them run as multi-energy AIF ({_energies_text(multi.get('collision_energies'))}) "
+                      f"under {AIF_MULTI_CE_RULE}: {multi.get('console_detail')}"
+                      + (f" ({sha[:12]})" if sha else "") + ", and that Console represents each peak by the energy of "
+                      "its MS/MS reference-spectrum match, else the energy with the most product ions.")
     if sanctioned:
         evidence["sanctioned_mappings"] = sanctioned
         evidence["sanctioned_rule"] = AIF_AS_SWATH_RULE
@@ -3627,12 +3833,13 @@ def check_acquisition_type_is_the_headers(
                 "on something else for their acquisition type ("
                 + ", ".join(f"{count} {ACQ1_SOURCES[key]}" for key, count in other.items()) + "): "
                 + "; ".join(warnings[:3]) + ".")
-        report.add("ACQ-1", stage, ACQ1_TITLE, WARN, " ".join(sentences),
+        report.add("ACQ-1", stage, ACQ1_TITLE, WARN, " ".join(sentences) + multi_text,
                    warnings=warnings[:10], rows=len(csv_rows), types=types,
                    **({"sanctioned": sanctioned_rows[:10]} if sanctioned_rows else {}), **evidence)
         return
     report.add("ACQ-1", stage, ACQ1_TITLE, PASS,
-               f"All {len(csv_rows)} row(s) run as the acquisition type their raw header gives ({type_text}).",
+               f"All {len(csv_rows)} row(s) run as the acquisition type their raw header gives ({type_text})."
+               + multi_text,
                rows=len(csv_rows), types=types, **evidence)
 
 
@@ -3692,7 +3899,9 @@ def check_aif_files_have_collision_energies(
     empty gets no MS2 deconvolution at all, and nothing says so. The targets are read from the per-file
     raw-header record; the extractor samples spectrum headers and also reads an energy under activation,
     where the Console reads spectrum-level energies only, so a target recorded here is the extractor's
-    evidence and not the Console's list.
+    evidence and not the Console's list. A Console with MsdialWorkbench#825 stops instead on an AIF file whose MS2
+    scans carry no collision energy, and Interactive 0.5.34 holds such a unit before it runs
+    (aif_collision_energy_unrecorded), with or without #825.
 
     Never a FAIL, and never required: the user decided on 2026-09-30 that an AIF file with an empty
     target list is recorded with a warning and still runs. The files are named; the Console's own line is
@@ -8918,7 +9127,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_execution_allowed(report, provenance, provenance_reason)
         check_preflight_claim(report, provenance, provenance_reason)
         check_extractor_identity(report, provenance, provenance_reason)
-        check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason)
+        check_acquisition_type_is_the_headers(report, provenance, provenance_reason, csv_rows, csv_reason, run_manifest)
         check_checksum_coverage(report, provenance, provenance_reason, csv_rows)
         check_converted_inputs_are_their_conversions(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_class_distribution(report, csv_rows, csv_reason, "before-production", provenance)

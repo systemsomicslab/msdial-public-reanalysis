@@ -153,7 +153,21 @@ may run as SWATH where the binding disposition's `aif_run_as_swath` names the
 rule `single_ce_aif_as_swath_2026_10_07` and exactly one collision energy, and
 the file's record says that rule decided it (`console_acquisition_basis`
 `aif_single_ce_as_swath`); such a row is a WARN naming the rule, and a record of
-more than one energy sanctions nothing. Archive members of a unit-scoped
+more than one energy sanctions nothing. A multi-energy AIF unit runs as AIF, not
+as SWATH, on a Console with MsdialWorkbench #825 (Interactive 0.5.34), which
+deconvolutes each energy and represents each peak by the energy of its MS/MS
+reference-spectrum match, else the energy with the most product ions. ACQ-1
+PASSes such rows only where the binding disposition records `aif_multi_ce_run`
+under the rule `multi_ce_aif_with_console_825` with two or more energies, each
+row's record carries `console_acquisition_basis` `aif_multi_ce_console_825` and
+those same `ms2_collision_energies`, and the Console the run manifest records
+(`output/run-manifest.json`, `console.assembly_sha256`) is shown to have #825:
+the disposition's `multi_energy_aif_console` probe found it in that assembly, or
+the gate finds both of #825's markers there itself. A multi-energy AIF row on a
+Console without #825, one whose disposition holds the unit or records no such
+run, and one whose energies differ from the unit's or are unrecorded, FAIL. A
+single-energy AIF unit is still expected as SWATH whatever the Console.
+Archive members of a unit-scoped
 archive that no sample row pairs with, which Interactive 0.5.31 includes as
 inputs of their own (`name_pairing.paired_by` `unattributed_member`, rule
 `unit_scoped_archive_2026_10_07`), are explained inputs to INP-1, CLS-1, CLS-2,
@@ -197,7 +211,19 @@ Interactive's campaign disposition holds it (`hold` true; the AIF rule of
 waits for a patched Console). That hold (`disposition_held`, ledger schema 4)
 is counted apart in `status`, is never rechecked by itself and keeps no runner
 running; only `recheck-held --unit KEY` (or `--disposition-held` for all of
-them) makes its preflight again. `skip --unit KEY` is the operator's explicit
+them) makes its preflight again. The patched Console is MsdialWorkbench #825.
+The runner sends the preflight the pinned Console's path, and Interactive 0.5.34
+decides for it: with #825 a multi-energy AIF unit runs as AIF
+(`multi_ce_aif_with_console_825`; its disposition records `aif_multi_ce_run`
+and the probe), without it the unit is held as before. A recheck that releases a
+held unit writes a `disposition_hold_lifted` event, and `status` counts such
+runs under `multi_energy_aif_runs`. Inputs whose energies differ, or an input
+with no recorded energy, still hold the unit with that Console. The plan records
+Interactive's probe in the Console pin (`multi_energy_aif`) and prints what it
+means, and refuses neither, since a Console without #825 only holds such units.
+A campaign pinned to a Console without #825 cannot change it in place (a changed
+pin pauses the campaign); a new campaign planned with `--replan-from`, pinning
+the #825 Console, takes its `disposition_held` units again. `skip --unit KEY` is the operator's explicit
 decision that lifts the hold: its discard passes Interactive
 `release_disposition_hold`, which records `disposition_hold_released_by`
 `operator_skip`. A split parent's release passes it only when every part its

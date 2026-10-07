@@ -43,6 +43,14 @@ holds such a unit (disposition_held) instead of skipping it, and the hold lifts 
 explicit recheck-held (Disposition.held), or at the operator's skip, whose discard passes Interactive
 release_disposition_hold (DISPOSITION_HELD_BLOCKER).
 
+The patched Console is MsdialWorkbench #825. Interactive 0.5.34 decides a multi-energy AIF unit for the Console
+it is given, the pinned one (the runner passes it to the preflight): with #825 the disposition is "run", AIF, and
+records aif_multi_ce_run {"collision_energies", "rule": AIF_MULTI_CE_RULE} beside its probe of that Console
+(multi_energy_aif_console); without #825 the hold stays. So an operator's recheck-held of a held unit, once the
+pinned Console has #825, brings it through, and the unit's record says why (Disposition.aif_multi_ce_run). A
+unit whose AIF inputs record different energies, or one with no recorded energy, is still held with that
+Console (HOLD_CE_DIFFERS, HOLD_CE_UNRECORDED); the runner holds every hold alike, whatever its reason.
+
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
 msdial-campaign-disposition.v1); read_disposition only reads and checks it. A second mapping of
@@ -65,6 +73,15 @@ DISPOSITIONS = ("run", "skip", "exclude", "split")
 # unit waits for a Console that deconvolutes each energy (MsdialWorkbench #825), and is neither run nor skipped.
 # Interactive records it as disposition "skip", hold true, with this among its reasons.
 HOLD_FOR_CONSOLE = "aif_multi_ce_awaiting_console"
+# Interactive 0.5.34 (msdial-interactive-app #67): a multi-energy AIF unit decided for a Console with
+# MsdialWorkbench #825 runs as AIF under this rule, recorded as aif_multi_ce_run. The holds it keeps with that
+# Console: inputs whose energies differ from one another, and an input with no recorded energy.
+AIF_MULTI_CE_RULE = "multi_ce_aif_with_console_825"
+HOLD_CE_DIFFERS = "aif_collision_energies_differ_between_inputs"
+HOLD_CE_UNRECORDED = "aif_collision_energy_unrecorded"
+# The fields of Interactive's multi_energy_aif_console probe a record keeps: never its console_path, a local path.
+MULTI_ENERGY_AIF_PROBE_FIELDS = ("capability", "available", "probe", "console_source", "console_assembly",
+                                 "assembly_sha256")
 # The Console's AcquisitionType enum is {DDA, SWATH, AIF, None}, and an unparsable value silently becomes
 # DDA (review correction 3), so these are the only values a per-file record may carry.
 CONSOLE_ACQUISITION_TYPES = ("DDA", "SWATH", "AIF")
@@ -131,6 +148,11 @@ class Disposition:
     applied: bool = False
     # Interactive 0.5.31: a skip that is a hold (the AIF rule of 2026-10-07): the unit waits, its raw data kept.
     hold: bool = False
+    # Interactive 0.5.34: what runs a multi-energy AIF unit as AIF (aif_multi_ce_run: its energies and
+    # AIF_MULTI_CE_RULE), and the probe of the Console it was decided for (multi_energy_aif_console, its
+    # MULTI_ENERGY_AIF_PROBE_FIELDS only). Recorded as given; the gate's ACQ-1 is what holds a run to them.
+    aif_multi_ce_run: dict[str, Any] | None = None
+    multi_energy_aif_console: dict[str, Any] | None = None
 
     @property
     def held(self) -> bool:
@@ -150,6 +172,9 @@ class Disposition:
             "extractor": dict(self.extractor),
             "applied": self.applied,
             "hold": self.hold,
+            **({"aif_multi_ce_run": dict(self.aif_multi_ce_run)} if self.aif_multi_ce_run is not None else {}),
+            **({"multi_energy_aif_console": dict(self.multi_energy_aif_console)}
+               if self.multi_energy_aif_console is not None else {}),
         }
 
 
@@ -207,6 +232,8 @@ def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
         problems.append(f"hold is true on a {disposition!r} disposition, where only a skip is held")
     if problems:
         raise DispositionError("campaign_disposition: " + "; ".join(problems) + ".")
+    multi = record.get("aif_multi_ce_run")
+    probe = record.get("multi_energy_aif_console")
     return Disposition(
         disposition=disposition,
         reasons=reasons,
@@ -217,6 +244,9 @@ def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
         extractor=dict(extractor),
         applied=applied is True,
         hold=hold is True,
+        aif_multi_ce_run=dict(multi) if isinstance(multi, Mapping) else None,
+        multi_energy_aif_console=({key: probe[key] for key in MULTI_ENERGY_AIF_PROBE_FIELDS if key in probe}
+                                  if isinstance(probe, Mapping) else None),
     )
 
 

@@ -198,6 +198,7 @@ class PinReader:
         self.gate_root = gate_root
         self._hash_cache: dict[str, tuple[tuple[int, int], str]] = {}
         self._generation_cache: dict[str, tuple[tuple[int, int], str]] = {}
+        self._multi_energy_cache: dict[str, tuple[tuple[int, int], dict[str, Any] | None]] = {}
 
     def _cached_sha256(self, path: str) -> tuple[str, int]:
         stat = os.stat(path)
@@ -219,6 +220,24 @@ class PinReader:
         self._generation_cache[path] = (key, generation)
         return generation
 
+    def _cached_multi_energy_aif(self, console: str, assembly: str) -> dict[str, Any] | None:
+        """Interactive's own probe of the Console for MsdialWorkbench#825 (workflow.multi_energy_aif_console,
+        0.5.34), the one a campaign disposition records: {"available", "probe"}; None where this Interactive has
+        no such probe. Read from the assembly's bytes, so again only when its size or time moved."""
+        try:
+            from msdial_app.workflow import multi_energy_aif_console
+        except ImportError:
+            return None
+        stat = os.stat(assembly)
+        key = (stat.st_size, stat.st_mtime_ns)
+        cached = self._multi_energy_cache.get(console)
+        if cached and cached[0] == key:
+            return cached[1]
+        record = multi_energy_aif_console(console)
+        value = {"available": record.get("available") is True, "probe": str(record.get("probe") or "")}
+        self._multi_energy_cache[console] = (key, value)
+        return value
+
     def console(self) -> dict[str, Any]:
         from msdial_app.workflow import console_assembly_path
 
@@ -236,6 +255,10 @@ class PinReader:
             # Read from the bytes assembly_sha256 identifies, so it changes only with them. approval_problems
             # holds it against a profile that turns automatic RT correction on.
             "automatic_rt_correction": self._cached_generation(str(assembly)),
+            # Whether the Console has MsdialWorkbench#825's multi-energy AIF processing, as Interactive probes it.
+            # Recorded, never required: without it a multi-energy AIF unit is held (aif_multi_ce_awaiting_console),
+            # which is correct; with it Interactive runs such a unit as AIF (multi_ce_aif_with_console_825).
+            "multi_energy_aif": self._cached_multi_energy_aif(str(path), str(assembly)),
         }
         sidecar = path.parent / "msdial-console-build-provenance.json"
         if sidecar.is_file():
@@ -442,24 +465,32 @@ class InteractivePort:
         except (OSError, ValueError):
             return None
 
-    def preflight(self, *, manifest_path: str, extractor_path: str, authorization_path: str) -> dict[str, Any]:
+    def preflight(
+        self, *, manifest_path: str, extractor_path: str, authorization_path: str, console_path: str = "",
+    ) -> dict[str, Any]:
         # The extractor has no outer limit here: Interactive's own per-chunk limits are authoritative. The
         # approval makes the unit a campaign unit (0.5.17): its disposition is applied, and only the pinned,
-        # verified extractor is run.
+        # verified extractor is run. console_path is the pinned Console, the one that will run the unit:
+        # Interactive 0.5.34 decides a multi-energy AIF unit for it (run as AIF with MsdialWorkbench#825, held
+        # without), and an Interactive that does not take it is not sent it (it holds every such unit).
         return self._call(
             "msdial_repository_raw_metadata_preflight",
+            optional={"console_path": console_path} if console_path else None,
             manifest_path=manifest_path, extractor_path=extractor_path, max_inputs=0, confirm_untargeted=False,
             campaign_authorization_path=authorization_path,
         )
 
-    def classify(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+    def classify(self, *, manifest_path: str, authorization_path: str, console_path: str = "") -> dict[str, Any]:
         """Interactive's classify_preflight: decide and apply the disposition of a unit whose preflight is
-        recorded, without reading a header again. {"held": {...}} when disposition_hold holds the unit."""
+        recorded, without reading a header again. {"held": {...}} when disposition_hold holds the unit. It is
+        decided for the pinned Console (console_path) where Interactive takes one (0.5.34), as the preflight is."""
         function = getattr(self.rr, "classify_preflight", None)
         if function is None:
             return {"ok": False, "reason": "unsupported", "detail": "Interactive has no classify_preflight (0.5.17)."}
+        options = ({"console_path": console_path}
+                   if console_path and "console_path" in inspect.signature(function).parameters else {})
         try:
-            result = function(Path(manifest_path), campaign_authorization_path=authorization_path)
+            result = function(Path(manifest_path), campaign_authorization_path=authorization_path, **options)
         except self.ca.CampaignAuthorizationError as error:
             return {"ok": False, "reason": "campaign_authorization_refused", "codes": list(error.codes), "detail": str(error)}
         except Exception as error:  # noqa: BLE001
