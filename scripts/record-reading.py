@@ -97,7 +97,11 @@ def main(argv: list[str]) -> int:
         print(f"not a unit workspace (no output/): {workspace}", file=sys.stderr)
         return 3
     gate = _gate()
-    report = gate.verify(workspace, "before-publish")
+    try:
+        report = gate.verify(workspace, "before-publish")
+    except gate.OutputOutsideWorkspace as error:
+        print(f"unusable workspace: {error}", file=sys.stderr)
+        return 3
     check = next((item for item in report.checks if item.check_id == args.check), None)
     if check is None or "to_read_count" not in check.evidence:
         print(f"{args.check} did not judge this workspace ({check.status if check else 'not run'}): "

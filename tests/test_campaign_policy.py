@@ -181,6 +181,46 @@ class DiagnosticTests(unittest.TestCase):
         for instrument in ("SCIEX TripleTOF 6600", "Agilent 6546 LC/Q-TOF", "Waters Synapt G2-Si", "Bruker impact II"):
             with self.subTest(instrument):
                 self.assertEqual(policy.threshold_step(instrument, "QTOF"), 100)
+        # Interactive 0.5.28's tokens, word boundaries included (review of gate PR #31, round 5): an HPLC column
+        # beside a QTOF names no Orbitrap, and an Orbitrap beside a column is still one.
+        for instrument in ("Agilent 6545 Q-TOF; Zorbax Eclipse Plus C18", "Agilent 6545 Q-TOF; Phenomenex Synergi Fusion-RP",
+                           "SCIEX TripleTOF 6600, Zorbax Eclipse XDB-C18", "LTQ Velos"):
+            with self.subTest(instrument):
+                self.assertEqual(policy.threshold_step(instrument, "QTOF"), 100)
+        for instrument in ("Orbitrap Fusion Lumos; Zorbax Eclipse Plus C18", "Thermo Fusion Lumos", "Orbitrap Ascend",
+                           "Orbitrap ID-X", "scimaX", "Thermo LTQ FT Ultra"):
+            with self.subTest(instrument):
+                self.assertEqual(policy.threshold_step(instrument, "QTOF"), 1000)
+
+    def test_the_family_step_is_interactives(self) -> None:
+        """Interactive 0.5.28's family_threshold_step (msdial-interactive-app#61): 1,000 for a Fourier-transform
+        family, 100 for every other, the Catalog's text not read."""
+        for family, step in (("Fourier-transform MS", 1000), ("FT-ICR", 1000), ("QTOF", 100), ("GC-MS", 100),
+                             ("Unknown", 100), ("", 100)):
+            with self.subTest(family):
+                self.assertEqual(policy.family_step(family), step)
+
+    def test_the_step_an_estimate_used(self) -> None:
+        """The user's step rule of 2026-10-06, read against the family step of the family the estimate records
+        (or, for an Interactive before 0.5.28, the step the runner asked for)."""
+        self.assertEqual(policy.estimate_step({"threshold_step": 100}, 100),
+                         {"threshold_step": 100, "coarse_threshold_step": 100, "step_fallback": False,
+                          "fallback_reason": None}, "an Interactive before 0.5.28: the step asked for, no fallback")
+        self.assertEqual(policy.estimate_step({"threshold_step": 10, "coarse_threshold_step": 100, "step_fallback": True,
+                                               "fallback_reason": "no_coarse_step_in_range"}, 100),
+                         {"threshold_step": 10, "coarse_threshold_step": 100, "step_fallback": True,
+                          "fallback_reason": "no_coarse_step_in_range"})
+        self.assertEqual(policy.estimate_step({"threshold_step": 100.0, "coarse_threshold_step": 1000,
+                                               "step_fallback": True, "fallback_reason": None}, 1000)["threshold_step"], 100)
+        for estimate, said in (({"threshold_step": 1, "coarse_threshold_step": 10, "step_fallback": True}, "family step is 100"),
+                               ({"threshold_step": 1, "coarse_threshold_step": 100, "step_fallback": True}, "gives 10"),
+                               ({"threshold_step": 10, "coarse_threshold_step": 100, "step_fallback": False}, "gives 100"),
+                               ({"threshold_step": 100, "step_fallback": "yes"}, "neither true nor false"),
+                               ({}, "records no threshold step")):
+            with self.subTest(estimate=estimate):
+                problem = policy.estimate_step(estimate, 100)
+                self.assertIsInstance(problem, str)
+                self.assertIn(said, problem)
 
 
 class DiskTests(unittest.TestCase):

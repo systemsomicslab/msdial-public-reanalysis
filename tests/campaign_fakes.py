@@ -150,6 +150,16 @@ class FakeInteractive:
         self.orphan_unkillable = False
         self.kills: list[str] = []
         self.overlapping_starts: list[tuple[str, list[str]]] = []
+        # Interactive 0.5.28's step rule (2026-10-06, msdial-interactive-app#61): the family step of the
+        # instrument family it reads from the file (world.instrument_family) is always the coarse step, and a
+        # requested step is only recorded (requested_threshold_step), never searched. step_fallback: no multiple
+        # of the family step lands in range, and the estimate falls back to a tenth of it (threshold_step the
+        # step used, coarse_threshold_step the family step searched first). legacy_estimate: an Interactive
+        # before 0.5.28, which searches the step it is asked for (100 unasked) and records threshold_step
+        # alone. estimate_patch overrides fields of every estimate.
+        self.step_fallback = False
+        self.legacy_estimate = False
+        self.estimate_patch: dict[str, Any] = {}
 
     # ---- helpers ----
     def _job_id(self, prefix: str) -> str:
@@ -459,10 +469,29 @@ class FakeInteractive:
         job = self.jobs.get(job_id)
         if job is None or job["status"] != "completed":
             return {"ready": False}
-        chosen = step or 100
-        return {"ready": True, "representative": {"instrument_family": self.world.instrument_family,
+        family = self.world.instrument_family
+        if self.legacy_estimate:
+            chosen = step or 100
+            estimate = {"minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen}
+        else:
+            named = family.casefold()
+            chosen = 1000 if "fourier" in named or "ft-icr" in named or "fticr" in named else 100
+            requested = step or None
+            estimate = {
+                "minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen,
+                "coarse_threshold_step": chosen, "fine_threshold_step": chosen // 10, "step_fallback": False,
+                "fallback_reason": None, "instrument_family": family, "requested_threshold_step": requested,
+                "requested_step_disposition": (None if requested is None else "family_step" if requested == chosen
+                                               else "recorded_only"),
+            }
+        if self.step_fallback:
+            estimate.update(minimum_peak_height=12 * (chosen // 10), threshold_step=chosen // 10,
+                            coarse_threshold_step=chosen, step_fallback=True, fallback_reason="no_coarse_step_in_range")
+        estimate.update(self.estimate_patch)
+        return {"ready": True, "representative": {"instrument_family": family,
+                                                  "instrument_family_source": self.world.instrument_family_source,
                                                   "file_name": "QC_05.mzML", "selection_reason": "QC-nearest-run-midpoint"},
-                "estimate": {"minimum_peak_height": 12 * chosen, "diagnostic_peak_count": 8000, "threshold_step": chosen}}
+                "estimate": estimate}
 
     def prepare_guided(self, *, input_path: str, answers: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("prepare_guided", {"answers": answers}))
@@ -678,6 +707,7 @@ class World:
         self.extractor_refused = False
         self.extractor_sha = SHA["extractor"]
         self.instrument_family = "QTOF"
+        self.instrument_family_source = "mzml_instrument_configuration"
         self.private_directory = root / "private libraries" / "vault"
         self.private_directory.mkdir(parents=True)
         self.libraries = {}
