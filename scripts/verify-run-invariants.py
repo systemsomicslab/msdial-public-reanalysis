@@ -409,11 +409,13 @@ def check_preflight_claim(report: Report, provenance: dict | None, reason: str) 
 # "planned" one was approved and never built. Mirrored rather than imported, because the gate judges what
 # Interactive recorded without running Interactive's code, and in one place only;
 # tests/test_verify_extractor_and_release.py holds it equal to the table at EXTRACTOR_PINS_MIRRORED_FROM.
-EXTRACTOR_PINS_MIRRORED_FROM = "89a97bc"
+EXTRACTOR_PINS_MIRRORED_FROM = "c9ef2f6"
 EXTRACTOR_RAW_TREE = "msrawdataworkbench"
 EXTRACTOR_COMMON_TREE = "MsdialWorkbench"
 EXTRACTOR_PIN_BUILT = "built"
 EXTRACTOR_PINNED_BUILDS = (
+    {"msrawdataworkbench": "5f604462d7bd61141bf764ca04ce52bf3f6452c9",
+     "MsdialWorkbench": "f0583493a44e73723f53ae312e33955f62052dd7", "state": "built"},
     {"msrawdataworkbench": "a12293c612a4e29b23d1d584f1c19556d76863f6",
      "MsdialWorkbench": "f0583493a44e73723f53ae312e33955f62052dd7", "state": "built"},
     {"msrawdataworkbench": "592b6dbce72177fa14d3e7cd407557b1c64a3046",
