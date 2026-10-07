@@ -60,6 +60,15 @@ told to, so one part's skip must not lift another's. While a held part has none 
 held), the parent's raw tree is kept, and the parent is reported as waiting for that part. Interactive never
 discards a held unit or a held split part without it: a held unit's discard made otherwise keeps its raw data
 (kept), and an Interactive whose discard cannot take the release leaves them held.
+
+AUTOMATIC RT CORRECTION (decided 2026-10-07). A campaign whose recorded policy pins it
+(policy.automatic_rt_correction_pinned) sends every Console start execute_automatic_rt_correction true and the
+policy's maximum anchors (12), over the profile, as it sends the peak-count targets; the zero-threshold
+diagnostic is sent them too, and Interactive turns the correction off for it. A production run whose Console
+could not select anchors writes policy.AUTOMATIC_RT_FAILED_LINE and exits -1 with no output, and would again on
+every retry: the failed attempt records automatic_rt_correction_failed, and with the policy's fallback the
+unit's next attempts run without the correction. Its campaign record (automatic_rt_correction) and its status
+row say so. Without the fallback the unit is retried and ends as any failure does.
 """
 
 from __future__ import annotations
@@ -116,6 +125,13 @@ CONTRACT_HELD_WARNING = (
     "held: Interactive gave a reply or a record for this unit that the runner cannot read or act on, so the "
     "unit goes no further, its raw data are kept and nothing is counted against it. The step it was held at "
     "is made again at the runner's next start, every few hours while it runs and at an operator's recheck-held"
+)
+# The flag on a failed production attempt whose Console could not select anchors for automatic RT correction,
+# and what the status export says of a unit whose later attempts therefore ran without it.
+AUTOMATIC_RT_FAILED = "automatic_rt_correction_failed"
+AUTOMATIC_RT_FALLBACK_WARNING = (
+    "automatic RT correction off: the Console could not select anchors for this unit's alignment, so its later "
+    "attempts ran without the correction the campaign pins (automatic_rt_correction_fallback)"
 )
 # What the status export says of a unit in disposition_held (the AIF rule of 2026-10-07).
 DISPOSITION_HELD = ledger_module.DISPOSITION_HELD
@@ -293,6 +309,9 @@ class Runner:
         self.policy = policy.CampaignPolicy.from_dict(self.campaign["policy"])
         self.pins = self.campaign["pins"]
         self.profile = self.campaign["profile"]
+        self.pins_automatic_rt = policy.automatic_rt_correction_pinned(self.campaign["policy"]) and bool(
+            self.policy.automatic_rt_correction
+        )
         self.libraries = dict((resources or {}).get("libraries") or {})
         self.redact = policy.redactor(self.libraries)
         self.directory = Path(self.campaign["manifest_path"]).parent
@@ -1608,9 +1627,39 @@ class Runner:
         answers["smoothing_method"] = "TimeBasedLinearWeightedMovingAverage"
         answers["target_peak_count_min"] = int(self.policy.peak_count_min)
         answers["target_peak_count_max"] = int(self.policy.peak_count_max)
+        if self.pins_automatic_rt:
+            answers["execute_automatic_rt_correction"] = not self.automatic_rt_fallback(unit["unit_key"])
+            answers["automatic_rt_correction_maximum_anchors"] = int(self.policy.automatic_rt_correction_maximum_anchors)
         if minimum_peak_height is not None:
             answers["minimum_peak_height"] = float(minimum_peak_height)
         return answers
+
+    def _automatic_rt_selection_failed(self, unit_key: str) -> bool:
+        """Whether a production run of the unit failed because its Console could not select anchors."""
+        return any(item["step"] == "run" and _loads(item["detail_json"]).get(AUTOMATIC_RT_FAILED) is True
+                   for item in self.ledger.attempts(unit_key))
+
+    def automatic_rt_fallback(self, unit_key: str) -> bool:
+        """Whether the unit's production runs go on without the automatic RT correction the campaign pins: a run
+        of it failed for want of anchors, and the policy falls back."""
+        return bool(self.pins_automatic_rt and self.policy.automatic_rt_correction_fallback
+                    and self._automatic_rt_selection_failed(unit_key))
+
+    def _automatic_rt_failed(self, job: Mapping[str, Any]) -> bool:
+        """Whether a production run that ended failed did so because its Console could not select anchors: the
+        Console's line is in the job's error or log tail, or else in the job's whole kept log, read once."""
+        def said(lines: Iterable[Any]) -> bool:
+            return any(policy.AUTOMATIC_RT_FAILED_LINE in str(line) for line in lines)
+        if said([job.get("error") or "", *(job.get("log_tail") or [])]):
+            return True
+        reader = getattr(self.ports.interactive, "job_log", None)
+        job_id = str(job.get("id") or job.get("job_id") or "")
+        if reader is None or not job_id:
+            return False
+        try:
+            return said(reader(job_id) or [])
+        except Exception:  # noqa: BLE001 - a log that cannot be read leaves the failure an ordinary one
+            return False
 
     def _console_start(self, unit: dict[str, Any], kind: str) -> bool:
         """One Console start, recorded before the call (the Console run and its attempt) and adopted
@@ -1706,6 +1755,9 @@ class Runner:
                               console_run=(run[0], "interrupted") if run else None)
             return True
         outcome = "timeout" if exit_code == -3 else "cancelled" if exit_code == -4 else "failed"
+        if step == "run" and outcome == "failed" and self.pins_automatic_rt and self._automatic_rt_failed(job):
+            # Read by automatic_rt_fallback: the unit's next attempts run without the correction, if the policy says.
+            detail[AUTOMATIC_RT_FAILED] = True
         self._production_ended(unit, {"timeout": "timed_out"}.get(outcome, outcome))
         self._fail(unit, step=step, result={"ok": False, "reason": outcome, **detail}, retry_state=retry_state,
                    outcome=outcome, console_run=(run[0], outcome) if run else None, job_id=job_id)
@@ -2523,6 +2575,13 @@ class Runner:
             "step_fallback": _flag(unit.get("step_fallback")),
             "fallback_reason": unit.get("fallback_reason"),
             "diagnostic_peak_count": unit.get("diagnostic_peak_count"),
+            # What the campaign pinned of automatic RT correction, and whether this unit's runs went on without it
+            # (null for a campaign whose policy pins none of it).
+            "automatic_rt_correction": {
+                "maximum_anchors": int(self.policy.automatic_rt_correction_maximum_anchors),
+                "anchor_selection_failed": self._automatic_rt_selection_failed(unit["unit_key"]),
+                "fallback_uncorrected": self.automatic_rt_fallback(unit["unit_key"]),
+            } if self.pins_automatic_rt else None,
             "pins": {
                 "console_sha256": (self.pins.get("console") or {}).get("binary_sha256"),
                 "extractor_sha256": (self.pins.get("extractor") or {}).get("binary_sha256"),
@@ -2541,7 +2600,7 @@ def _write_json(path: Path, value: Any) -> None:
 
 # ---- status, for the operator and for the later verification work ----------------------------------
 
-def unit_status(unit: Mapping[str, Any], hold: str | None = None) -> dict[str, Any]:
+def unit_status(unit: Mapping[str, Any], hold: str | None = None, automatic_rt_fallback: bool = False) -> dict[str, Any]:
     """One unit's status row. `hold` is why a held unit is held, as its hold recorded it (_hold_reasons): for
     gate_held what the gate gave instead of a report (policy.gate_report_problem), for contract_held what
     the runner could not read."""
@@ -2553,6 +2612,8 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None) -> dict[str, A
         warnings.append(CONTRACT_HELD_WARNING + (f" (contract: {hold})" if hold else ""))
     elif unit["state"] == DISPOSITION_HELD:
         warnings.append(DISPOSITION_HELD_WARNING + (f" (disposition: {hold})" if hold else ""))
+    if automatic_rt_fallback:
+        warnings.append(AUTOMATIC_RT_FALLBACK_WARNING)
     return {
         **{key: unit.get(key) for key in TSV_COLUMNS if key not in ("report_terms", "warnings")},
         "report_terms": terms,
@@ -2580,6 +2641,19 @@ def _hold_reasons(ledger: ledger_module.Ledger, units: Iterable[Mapping[str, Any
                 reasons[unit["unit_key"]] = str(held)
                 break
     return reasons
+
+
+def _automatic_rt_fallbacks(ledger: ledger_module.Ledger, campaign: Mapping[str, Any]) -> set[str]:
+    """The units whose production runs went on without the automatic RT correction the campaign pins, as
+    Runner.automatic_rt_fallback reads each one."""
+    recorded = campaign.get("policy")
+    if not policy.automatic_rt_correction_pinned(recorded):
+        return set()
+    rules = policy.CampaignPolicy.from_dict(recorded)
+    if not (rules.automatic_rt_correction and rules.automatic_rt_correction_fallback):
+        return set()
+    return {str(item["unit_key"]) for item in ledger.attempts()
+            if item["step"] == "run" and _loads(item["detail_json"]).get(AUTOMATIC_RT_FAILED) is True}
 
 
 def _waits_for_an_operator(unit: Mapping[str, Any], ledger: ledger_module.Ledger) -> bool:
@@ -2683,7 +2757,8 @@ def export_status(ledger: ledger_module.Ledger) -> tuple[dict[str, Any], str]:
     campaign = ledger.campaign()
     units = ledger.units()
     reasons = _hold_reasons(ledger, units)
-    rows = [unit_status(unit, reasons.get(unit["unit_key"])) for unit in units]
+    fallbacks = _automatic_rt_fallbacks(ledger, campaign)
+    rows = [unit_status(unit, reasons.get(unit["unit_key"]), unit["unit_key"] in fallbacks) for unit in units]
     document = {
         "schema": STATUS_SCHEMA,
         "campaign_id": campaign["campaign_id"],

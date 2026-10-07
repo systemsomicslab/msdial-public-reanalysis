@@ -521,6 +521,9 @@ def profile_problems(profile: Mapping[str, Any] | None, library_names: Iterable[
 
 
 AUTOMATIC_RT_ANSWER = "execute_automatic_rt_correction"
+AUTOMATIC_RT_ANCHORS_ANSWER = "automatic_rt_correction_maximum_anchors"
+AUTOMATIC_RT_WINDOW_ANSWER = "automatic_rt_correction_local_support_rt_window"
+ANCHOR_LIBRARY_RT_ANSWER = "execute_rt_correction"
 
 
 def _true(value: Any) -> bool:
@@ -528,41 +531,92 @@ def _true(value: Any) -> bool:
     return value if isinstance(value, bool) else str(value).strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _profile_settings(profile: Mapping[str, Any] | None) -> Iterable[tuple[str, str, Any]]:
+    """Every (where, key, value) the profile sets: in its answers, for an ion mode, or in a workflow_overrides
+    beneath either (Interactive applies those over the answers)."""
+    def walk(where: str, value: Any) -> Iterable[tuple[str, str, Any]]:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                yield where, str(key), item
+                yield from walk(f"{where}.{key}", item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                yield from walk(where, item)
+    profile = profile or {}
+    yield from walk("answers", profile.get("answers"))
+    yield from walk("by_ion_mode", profile.get("by_ion_mode"))
+
+
 def automatic_rt_correction_requested(profile: Mapping[str, Any] | None) -> bool:
     """Whether the profile turns automatic alignment RT correction on anywhere: in its answers, for an ion
     mode, or in a workflow_overrides beneath either."""
-    def found(value: Any) -> bool:
-        if isinstance(value, Mapping):
-            return any((key == AUTOMATIC_RT_ANSWER and _true(item)) or found(item) for key, item in value.items())
-        if isinstance(value, (list, tuple)):
-            return any(found(item) for item in value)
-        return False
-    return found({"answers": (profile or {}).get("answers"), "by_ion_mode": (profile or {}).get("by_ion_mode")})
+    return any(key == AUTOMATIC_RT_ANSWER and _true(value) for _where, key, value in _profile_settings(profile))
 
 
-def automatic_rt_correction_problems(profile: Mapping[str, Any] | None, console: Mapping[str, Any] | None) -> list[str]:
-    """Why a profile that turns automatic RT correction on cannot run on the pinned Console, or nothing.
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
 
-    The campaign runs it with MsdialWorkbench #826's local outlier test (decided 2026-10-07). Interactive
-    refuses a Console without the correction only at each unit's run start, after the unit's download, and
-    runs a Console of #810 alone with its run-wide test without a word: the key #826 added is not one
-    Interactive writes, so no method-key record shows the difference.
+
+def automatic_rt_profile_conflicts(profile: Mapping[str, Any] | None, campaign_policy: policy.CampaignPolicy) -> list[str]:
+    """Where a profile says otherwise than the automatic RT correction the campaign policy pins. The runner's pin
+    would win (Runner.answers), so such a profile would be approved for a method it does not run."""
+    problems = []
+    anchors = int(campaign_policy.automatic_rt_correction_maximum_anchors)
+    for where, key, value in _profile_settings(profile):
+        if key == AUTOMATIC_RT_ANSWER and not _true(value):
+            problems.append(f"the profile turns automatic RT correction off ({where}), and the campaign policy pins it on")
+        elif key == AUTOMATIC_RT_ANCHORS_ANSWER and _number(value) != anchors:
+            problems.append(f"the profile sets {key} {value!r} ({where}), and the campaign policy pins {anchors}")
+        elif key == ANCHOR_LIBRARY_RT_ANSWER and _true(value):
+            problems.append(f"the profile turns the anchor-library RT correction on ({where}); the campaign runs the "
+                            "automatic correction alone")
+        elif key == AUTOMATIC_RT_WINDOW_ANSWER and _number(value) != policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW:
+            problems.append(f"the profile sets {key} {value!r} ({where}); the campaign runs #826's default window of "
+                            f"{policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW} min")
+    return problems
+
+
+def automatic_rt_correction_problems(
+    profile: Mapping[str, Any] | None, console: Mapping[str, Any] | None, recorded_policy: Mapping[str, Any] | None = None
+) -> list[str]:
+    """Why the manifest's automatic RT correction cannot run as approved, or nothing.
+
+    The campaign runs it with MsdialWorkbench #826's local outlier test and 12 anchors (decided 2026-10-07). A
+    policy that pins it (policy.automatic_rt_correction_pinned) must not meet a profile that says otherwise. A
+    pinned or requested correction needs a Console of #826: Interactive refuses a Console without the correction
+    only at each unit's run start, after the unit's download, and runs a Console of #810 alone with its run-wide
+    test without a word, since no method-key record shows the difference.
     """
-    if not automatic_rt_correction_requested(profile):
-        return []
+    problems = []
+    pinned = policy.automatic_rt_correction_pinned(recorded_policy)
+    if pinned:
+        try:
+            campaign_policy = policy.CampaignPolicy.from_dict(recorded_policy)
+        except (TypeError, ValueError) as error:
+            return [f"the manifest's campaign policy cannot be read: {error}"]
+        if campaign_policy.automatic_rt_correction:
+            problems.extend(automatic_rt_profile_conflicts(profile, campaign_policy))
+    if not (pinned or automatic_rt_correction_requested(profile)):
+        return problems
+    turned_on = "the campaign policy pins automatic RT correction on" if pinned else "the profile turns automatic RT correction on"
     console = console or {}
     if not console.get("exists"):
-        return []  # "the manifest pins no console binary" says it
+        return problems  # "the manifest pins no console binary" says it
     generation = console.get("automatic_rt_correction")
     if generation is None:
-        return ["the profile turns automatic RT correction on, and the Console pin does not record which "
-                "correction the Console implements: plan again"]
-    if generation != policy.AUTOMATIC_RT_LOCAL_SUPPORT:
+        problems.append(f"{turned_on}, and the Console pin does not record which correction the Console implements: "
+                        "plan again")
+    elif generation != policy.AUTOMATIC_RT_LOCAL_SUPPORT:
         implements = ("MsdialWorkbench #810's run-wide outlier test only" if generation == policy.AUTOMATIC_RT_RUN_WIDE
                       else "no automatic RT correction")
-        return [f"the profile turns automatic RT correction on, and the pinned Console implements {implements}, "
-                "not #826's local outlier test: pin a Console built with #826 and plan again"]
-    return []
+        problems.append(f"{turned_on}, and the pinned Console implements {implements}, not #826's local outlier test: "
+                        "pin a Console built with #826 and plan again")
+    return problems
 
 
 # ---- the manifest ---------------------------------------------------------------------------------------
@@ -819,7 +873,9 @@ def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> lis
     if not libraries:
         problems.append("the manifest pins no library: plan again with --resources")
     problems.extend(profile_problems(manifest.get("profile"), [item["name"] for item in libraries]))
-    problems.extend(automatic_rt_correction_problems(manifest.get("profile"), manifest.get("pins", {}).get("console")))
+    problems.extend(automatic_rt_correction_problems(
+        manifest.get("profile"), manifest.get("pins", {}).get("console"), manifest.get("policy")
+    ))
     for name in ("console", "extractor"):
         pin = manifest.get("pins", {}).get(name) or {}
         if not pin.get("exists") or not pin.get("binary_sha256"):

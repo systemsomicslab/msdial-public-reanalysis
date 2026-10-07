@@ -123,8 +123,11 @@ def build_catalog(path: Path) -> None:
 
 
 # Pins an approvable plan records: a verified build of a pinned extractor, clean checkouts.
+# A Console of MsdialWorkbench #826, as the plan reads one: the campaign policy pins automatic RT correction on.
+CONSOLE_826 = b"MZ console" + "automatic rt correction local support rt window".encode("utf-16-le")
 APPROVABLE_PINS = {
-    "console": {"path": "C:/tools/MSDIALCUI.exe", "exists": True, "binary_sha256": "1" * 64},
+    "console": {"path": "C:/tools/MSDIALCUI.exe", "exists": True, "binary_sha256": "1" * 64,
+                "automatic_rt_correction": policy.AUTOMATIC_RT_LOCAL_SUPPORT},
     "extractor": {"path": "C:/tools/RawMetadataConsoleApp.exe", "exists": True, "binary_sha256": "2" * 64,
                   "inventory_sha256": "3" * 64, "provenance_status": "verified", "pinned": True},
     "libraries": [{"name": "P.msp", "sha256": "4" * 64, "bytes": 8}],
@@ -553,7 +556,7 @@ class PlanTests(unittest.TestCase):
     def test_plan_then_approve_from_the_command_line(self) -> None:
         tools = self.root / "tools"
         tools.mkdir()
-        (tools / "MSDIALCUI.exe").write_bytes(b"MZ console")
+        (tools / "MSDIALCUI.exe").write_bytes(CONSOLE_826)
         (tools / "RawMetadataConsoleApp.exe").write_bytes(b"MZ extractor")
         vault = self.root / "vault of private things"
         vault.mkdir()
@@ -624,7 +627,7 @@ class PlanTests(unittest.TestCase):
         ledger whose campaign is the pilot."""
         tools = self.root / "tools"
         tools.mkdir()
-        (tools / "MSDIALCUI.exe").write_bytes(b"MZ console")
+        (tools / "MSDIALCUI.exe").write_bytes(CONSOLE_826)
         (tools / "P.msp").write_text("NAME: x\n", encoding="utf-8")
         resources = self.root / "campaign-resources.local.json"
         resources.write_text(json.dumps({"schema": ports.RESOURCES_SCHEMA, "libraries": {"P.msp": str(tools / "P.msp")}}),
@@ -750,6 +753,7 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
 
     def test_an_rt_correction_profile_needs_a_console_of_826(self) -> None:
         base = {**APPROVABLE_PINS["console"], "assembly_sha256": "1" * 64, "inventory_sha256": "1" * 64}
+        base.pop("automatic_rt_correction")
         covers = ["1", "3", "4"]
         ok = self.manifest(self.RT_PROFILE, {**base, "automatic_rt_correction": policy.AUTOMATIC_RT_LOCAL_SUPPORT})
         self.assertEqual(plan.approval_problems(ok, covers), [])
@@ -787,6 +791,61 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
                 self.assertTrue(plan.automatic_rt_correction_requested(profile))
         self.assertFalse(plan.automatic_rt_correction_requested(None))
         self.assertFalse(plan.automatic_rt_correction_requested({"answers": {"automatic_rt_correction_maximum_anchors": 12}}))
+
+    def pinned(self, profile: dict, generation: str = policy.AUTOMATIC_RT_LOCAL_SUPPORT) -> dict:
+        """A manifest whose campaign policy pins the correction, as every plan made since 2026-10-07 records it."""
+        manifest = self.manifest(profile, {**APPROVABLE_PINS["console"], "automatic_rt_correction": generation})
+        manifest["policy"] = policy.CampaignPolicy().as_dict()
+        return manifest
+
+    def test_the_campaign_policy_pins_the_correction_and_needs_a_console_of_826(self) -> None:
+        plain = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}
+        self.assertEqual(plan.approval_problems(self.pinned(plain), ["1", "3", "4"]), [],
+                         "a profile need not state what the policy pins")
+        self.assertEqual(plan.approval_problems(self.pinned(self.RT_PROFILE), ["1", "3", "4"]), [],
+                         "nor is one refused for stating it as pinned")
+        for generation, words in ((policy.AUTOMATIC_RT_RUN_WIDE, "#810's run-wide"), (policy.AUTOMATIC_RT_NONE, "no automatic RT")):
+            with self.subTest(generation):
+                problems = plan.approval_problems(self.pinned(plain, generation), ["1", "3", "4"])
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("the campaign policy pins automatic RT correction on", problems[0])
+                self.assertIn(words, problems[0])
+
+    def test_a_profile_that_says_otherwise_than_the_pin_is_not_approvable(self) -> None:
+        cases = {
+            "correction off": ({"answers": {"execute_automatic_rt_correction": False}}, "turns automatic RT correction off (answers)"),
+            "off for an ion mode's override": (
+                {"by_ion_mode": {"Negative": {"workflow_overrides": {"execute_automatic_rt_correction": "false"}}}},
+                "(by_ion_mode.Negative.workflow_overrides)"),
+            "Interactive's default of 6 anchors": ({"answers": {"automatic_rt_correction_maximum_anchors": 6}}, "pins 12"),
+            "the anchor-library correction": ({"answers": {"execute_rt_correction": True}}, "the automatic correction alone"),
+            "the run-wide test only": ({"answers": {"automatic_rt_correction_local_support_rt_window": 0}}, "default window of 1.5 min"),
+        }
+        for name, (parts, words) in cases.items():
+            with self.subTest(name):
+                profile = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}
+                for key, value in parts.items():
+                    profile[key] = {**profile[key], **value}
+                problems = plan.approval_problems(self.pinned(profile), ["1", "3", "4"])
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(words, problems[0])
+        stated = {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
+            "library_strategy": "existing", "execute_automatic_rt_correction": "true", "execute_rt_correction": False,
+            "automatic_rt_correction_maximum_anchors": "12", "automatic_rt_correction_local_support_rt_window": 1.5}}
+        self.assertEqual(plan.approval_problems(self.pinned(stated), ["1", "3", "4"]), [])
+
+    def test_a_manifest_approved_before_the_pin_keeps_its_profile(self) -> None:
+        legacy = {key: value for key, value in policy.CampaignPolicy().as_dict().items() if not key.startswith("automatic_rt")}
+        off = json.loads(json.dumps(self.RT_PROFILE))
+        off["answers"]["execute_automatic_rt_correction"] = False
+        off["answers"]["automatic_rt_correction_maximum_anchors"] = 6
+        manifest = self.manifest(off, {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_NONE})
+        manifest["policy"] = legacy
+        self.assertFalse(policy.automatic_rt_correction_pinned(legacy))
+        self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]), [])
+        self.assertTrue(policy.automatic_rt_correction_pinned(policy.CampaignPolicy().as_dict()))
+        self.assertFalse(policy.automatic_rt_correction_pinned(
+            policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()))
 
     @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
     def test_the_console_pin_records_the_generation_of_its_assembly(self) -> None:

@@ -289,6 +289,18 @@ class CampaignPolicy:
     gate_points: tuple[str, ...] = ("before_production", "pre_cleanup", "final")
     peak_count_min: int = 3000
     peak_count_max: int = 6000
+    # Automatic alignment RT correction (decided 2026-10-07): MsdialWorkbench #826's local outlier test, with at
+    # most 12 anchors and the Console's own local window. The runner pins both answers over the profile, as it
+    # pins the peak-count targets, so a profile cannot leave them out and run at Interactive's default of 6
+    # anchors, or uncorrected. A policy recorded before these fields (a manifest approved before 2026-10-07)
+    # does not name them, and its runs are not pinned: automatic_rt_correction_pinned reads the record.
+    automatic_rt_correction: bool = True
+    automatic_rt_correction_maximum_anchors: int = 12
+    # A production run whose Console could not select anchors (AutomaticAlignmentRetentionTimeCorrection
+    # .Build: too few candidates, or too few anchors covering enough samples) ends at exit -1 with no output,
+    # and would end so again on every retry. With the fallback, the unit's next attempts run without the
+    # correction, and its record and status say so; without it, the unit is retried and ends as any failure.
+    automatic_rt_correction_fallback: bool = True
     runner_lock_stale_seconds: float = 600.0
     heartbeat_seconds: float = 30.0
     disk: DiskPolicy = field(default_factory=DiskPolicy)
@@ -333,6 +345,12 @@ class CampaignPolicy:
         if "pre_cleanup" not in self.gate_points:
             # The verdict recorded with every raw deletion is this one.
             raise ValueError("gate_points must include pre_cleanup.")
+        anchors = self.automatic_rt_correction_maximum_anchors
+        if isinstance(anchors, bool) or not isinstance(anchors, int) or anchors < AUTOMATIC_RT_MINIMUM_ANCHORS:
+            raise ValueError(f"automatic_rt_correction_maximum_anchors is a whole number of at least {AUTOMATIC_RT_MINIMUM_ANCHORS}.")
+        for name in ("automatic_rt_correction", "automatic_rt_correction_fallback"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} is true or false.")
         if "before_production" not in self.gate_points:
             # A unit runs only on a before-production report (the user's rule of 2026-10-02): without the
             # point, every unit would be held for want of one.
@@ -959,6 +977,21 @@ def run_policy_mismatches(report: Mapping[str, Any]) -> list[str]:
 AUTOMATIC_RT_LOCAL_SUPPORT = "local_support"
 AUTOMATIC_RT_RUN_WIDE = "run_wide"
 AUTOMATIC_RT_NONE = "none"
+# The Console's least anchor count (Interactive's automatic_rt_correction_minimum_anchors default), below which
+# CampaignPolicy refuses a maximum; and the local window the campaign runs with, #826's default, which the runner
+# does not send (Interactive writes the window only when the answers set it) and a profile may state only as is.
+AUTOMATIC_RT_MINIMUM_ANCHORS = 3
+AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW = 1.5
+# The line the Console writes when it could not select anchors (LcmsProcess: "Automatic alignment RT correction
+# failed: <reason>", then exit -1); Interactive keeps the Console's output in the job's log.
+AUTOMATIC_RT_FAILED_LINE = "Automatic alignment RT correction failed"
+
+
+def automatic_rt_correction_pinned(recorded: Mapping[str, Any] | None) -> bool:
+    """Whether a campaign's recorded policy pins automatic RT correction on: only a policy that names the field.
+    One recorded before 2026-10-07 does not, and its units run with what their profile says, as they did."""
+    return isinstance(recorded, Mapping) and recorded.get("automatic_rt_correction") is True
+
 
 # What identifies each pinned thing. Paths are recorded but not compared: the Console and the extractor
 # may be reached by another spelling, and a library is named by file name only.

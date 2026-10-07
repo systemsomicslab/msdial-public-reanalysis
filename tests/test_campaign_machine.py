@@ -2119,6 +2119,97 @@ class RedactionTests(Base):
         self.assertNotIn(str(world.private_directory).casefold(), text)
 
 
+class AutomaticRtCorrectionTests(Base):
+    """Automatic alignment RT correction (decided 2026-10-07): the runner pins it on with 12 anchors over the profile,
+    and a unit whose Console cannot select anchors runs again without it, on record, instead of failing three
+    identical runs and losing its raw data with no output."""
+
+    @staticmethod
+    def starts(world: fakes.World, kind: str) -> list[dict]:
+        return [call["answers"] for name, call in world.interactive.calls if name == kind]
+
+    @staticmethod
+    def record(book: ledger.Ledger, unit: str) -> dict:
+        return json.loads((Path(book.unit(unit)["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
+
+    def test_every_console_start_is_sent_the_pinned_correction(self) -> None:
+        world = self.world()
+        book = self.finish(world)
+        self.assertEqual(book.unit("u1")["state"], "done")
+        for kind in ("diagnostic", "run"):
+            with self.subTest(kind):
+                (answers,) = self.starts(world, kind)
+                # The diagnostic is sent them too: Interactive's prepare_tuning_run turns the correction off for it.
+                self.assertIs(answers["execute_automatic_rt_correction"], True)
+                self.assertEqual(answers["automatic_rt_correction_maximum_anchors"], 12)
+        self.assertEqual(self.record(book, "u1")["automatic_rt_correction"],
+                         {"maximum_anchors": 12, "anchor_selection_failed": False, "fallback_uncorrected": False})
+        self.assertNotIn(("job_log", {"job_id": book.unit("u1")["run_job_id"]}), world.interactive.calls)
+
+    def test_a_unit_whose_console_finds_too_few_anchors_runs_again_without_the_correction(self) -> None:
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(runs=["rt_fail", "ok"])
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["raw_disposition"]), ("done", 1, "released"))
+        runs = [call for name, call in world.interactive.calls if name == "run" and call["unit"] == "u1"]
+        first, second = (call["answers"] for call in runs)
+        self.assertIs(first["execute_automatic_rt_correction"], True)
+        self.assertIs(second["execute_automatic_rt_correction"], False)
+        self.assertEqual(second["automatic_rt_correction_maximum_anchors"], 12)
+        failed = [row for row in book.attempts("u1") if row["step"] == "run" and row["outcome"] == "failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIs(json.loads(failed[0]["detail_json"])[machine.AUTOMATIC_RT_FAILED], True)
+        self.assertTrue(failed[0]["counted"], "the failed run still counts")
+        # The Console's line sat above 40 lines of finalisation, so the job's kept log was read.
+        self.assertEqual([name for name, _call in world.interactive.calls].count("job_log"), 1)
+        self.assertEqual(self.record(book, "u1")["automatic_rt_correction"],
+                         {"maximum_anchors": 12, "anchor_selection_failed": True, "fallback_uncorrected": True})
+        document, tsv = machine.export_status(book)
+        rows = {row["unit_key"]: row for row in document["units"]}
+        self.assertIn(machine.AUTOMATIC_RT_FALLBACK_WARNING, rows["u1"]["warnings"])
+        self.assertEqual(rows["u2"]["warnings"], [])
+        self.assertIn("automatic RT correction off", tsv)
+        # Another unit keeps the correction.
+        (other,) = [call["answers"] for name, call in world.interactive.calls if name == "run" and call["unit"] == "u2"]
+        self.assertIs(other["execute_automatic_rt_correction"], True)
+
+    def test_without_the_fallback_the_unit_fails_as_any_other(self) -> None:
+        world = self.world(policy_values={"automatic_rt_correction_fallback": False})
+        world.scripts["u1"] = fakes.UnitScript(runs=["rt_fail", "rt_fail", "rt_fail"])
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"]), ("failed", 3))
+        self.assertEqual([answers["execute_automatic_rt_correction"] for answers in self.starts(world, "run")], [True] * 3)
+        self.assertEqual(self.record(book, "u1")["automatic_rt_correction"],
+                         {"maximum_anchors": 12, "anchor_selection_failed": True, "fallback_uncorrected": False})
+
+    def test_another_failure_keeps_the_correction(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(runs=["fail", "ok"])
+        book = self.finish(world)
+        self.assertEqual(book.unit("u1")["state"], "done")
+        self.assertEqual([answers["execute_automatic_rt_correction"] for answers in self.starts(world, "run")], [True, True])
+        self.assertFalse(self.record(book, "u1")["automatic_rt_correction"]["anchor_selection_failed"])
+
+    def test_a_campaign_approved_before_the_decision_is_not_pinned(self) -> None:
+        world = self.world(legacy_policy=True)
+        self.assertNotIn("automatic_rt_correction", world.campaign["policy"])
+        world.scripts["u1"] = fakes.UnitScript(runs=["rt_fail", "ok"])
+        book = self.finish(world)
+        for answers in self.starts(world, "run"):
+            self.assertNotIn("execute_automatic_rt_correction", answers)
+            self.assertNotIn("automatic_rt_correction_maximum_anchors", answers)
+        self.assertIsNone(self.record(book, "u1")["automatic_rt_correction"])
+        self.assertNotIn("job_log", [name for name, _call in world.interactive.calls])
+
+    def test_the_policy_refuses_a_maximum_below_the_consoles_minimum(self) -> None:
+        for value in (2, 12.0, True, "12"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                policy.CampaignPolicy.from_dict({"automatic_rt_correction_maximum_anchors": value})
+        self.assertEqual(policy.CampaignPolicy().automatic_rt_correction_maximum_anchors, 12)
+
+
 class GatePortTests(unittest.TestCase):
     def test_the_gate_is_run_strict_and_never_records_a_reading(self) -> None:
         gate = ports.GatePort(gate_commit="c" * 40)

@@ -421,6 +421,15 @@ class InteractivePort:
         result.pop("logs", None)
         return {"ok": True, **result}
 
+    def job_log(self, job_id: str) -> list[str]:
+        """The job's kept log (Interactive keeps its last 2,000 lines), read once for a production run that
+        ended failed: the Console's own line about why is in it, not in the job's error. A full-detail reply
+        is the job's record itself, with the log as `logs`; a summary would carry `log_tail`."""
+        result = self._call("msdial_interactive_job", job_id=job_id, detail=True, log_lines=2000)
+        if result.get("ok") is False:
+            return []
+        return [str(line) for line in result.get("logs") or result.get("log_tail") or []]
+
     def cancel(self, job_id: str, reason: str) -> dict[str, Any]:
         return self._call("msdial_cancel_job", job_id=job_id, reason=reason)
 
