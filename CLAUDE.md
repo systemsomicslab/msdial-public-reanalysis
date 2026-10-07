@@ -106,7 +106,13 @@ location.
   into a DDA run. ACQ-1 FAILs a row run as another type than its header gives
   (Interactive #62, gate #31). Interactive's `classify_preflight` applies this
   as the unit's `campaign_disposition`, which lists each excluded input with
-  its reason.
+  its reason. One case B2 does not reach: where no input's header could be
+  read and the repository declares a mode, merged Interactive takes the unit at
+  its declaration, warning `acquisition_declared_only`, so every file runs as
+  the declared mode (or is excluded where that mode is out of scope) with no
+  header behind it. That follows the 2026-09-30 rule, which read headers only
+  where the metadata left the mode unknown; this is the agent's reading, and
+  the user has not been asked whether B2 should exclude such a unit instead.
 - **AIF.** The user decided it on 2026-10-07. An AIF unit is judged by the MS2
   collision energies its inputs record (a Waters LockSpray reference function
   records none, msrawdataworkbench #43). With one energy it runs as SWATH
@@ -119,11 +125,16 @@ location.
   product ions (the user's choice), and only when every input records the same
   energies, since #825 chooses among one file's energies, never across files.
   Otherwise the unit is held, its raw data kept: on a Console without
-  #825 (`aif_multi_ce_awaiting_console`), where the inputs' energies differ
-  (`aif_collision_energies_differ_between_inputs`), and where they record none
-  (`aif_collision_energy_unrecorded`), which the warning of 2026-09-30 for an
-  empty energy list no longer lets run. Interactive #64 and #67 and gate #32
-  and #34 implement it; Gate verdicts in a campaign says how a held unit ends.
+  #825 (`aif_multi_ce_awaiting_console`) and where the inputs' energies differ
+  (`aif_collision_energies_differ_between_inputs`). Merged Interactive also
+  holds, raw data kept, an AIF unit whose inputs record no energy
+  (`aif_collision_energy_unrecorded`): no one energy can be shown, and a #825
+  Console stops on such a file. The user did not decide that hold. It departs
+  from the user's rule of 2026-09-30 that an AIF file with an empty
+  collision-energy list gets a recorded warning only, which stands; whether
+  the two concern the same list is not settled, and the case is open for the
+  user. Interactive #64 and #67 and gate #32 and #34 implement it; Gate
+  verdicts in a campaign says how a held unit ends.
 - mzML is supported, and so is a vendor folder: a Waters `.raw`, or an Agilent
   or Bruker `.d` directory, or an archive holding one. A folder is one data
   file, one input and one row of the analysis CSV, which is generated from the
@@ -258,12 +269,14 @@ each be kept on record ("必ず記録として残してください"): the input
 records how each input was paired (`name_pairing.paired_by`), and PAIR-1 lists
 every inferred pairing (Interactive #58, gate #31). For ST001264, where 3 of 31
 rows paired, the user asked on 2026-10-07 that the unit be analysed
-"無理やりにでも". The rule that does it was the agent's proposal: in a unit
-whose download is its own alone, an archive member that no row pairs with is an
+"無理やりにでも". The agent proposed a rule for it, which Interactive #64 and
+gate #32 implement, and the user has not yet accepted it: in a unit whose
+download is its own alone, an archive member that no row pairs with is an
 input all the same (`unattributed_member`), in the abstention's Class or
 `Unattributed`, on record. The members of an archive shared with other units
-are left out, on record, and INP-1 FAILs any that reach a run (Interactive #64,
-gate #32).
+are left out, on record, and INP-1 FAILs any that reach a run. Interactive's
+0.5.31 changelog and the gate's PAIR-1 docstring call the rule the user's
+decision; it is the agent's proposal, open for the user.
 
 Where the Catalog abstains because no declared factor groups the samples, do not
 build Class from other columns. Show the abstention preview
@@ -308,7 +321,11 @@ recorded with it. The user started one on 2026-10-03, 15 units with their raw
 data kept, so its approval covers boundaries 1, 3 and 4 and the split, never 5.
 A pilot run again on the software of 2026-10-08 is a new manifest with its own
 approval; the first pilot's profile, which turned RT correction off, is no
-longer approvable (Evidence and decisions).
+longer approvable (Evidence and decisions). The production campaign starts only
+on the user's explicit go, asked for in the conversation once everything is
+ready: "本番開始前には私がGoサインを出すので、聞いてください。" (2026-10-01).
+No approved manifest, pilot approval or authorization record is that go, and
+the runner's `run` is never started on a real campaign without it.
 
 Interactive checks the record at each boundary it guards and writes the
 crossing into the unit's manifest. The Catalog does not read the record: it
@@ -509,7 +526,12 @@ a new manifest (`plan --replan-from`). Otherwise only an operator's `skip`
 releases the hold, and its discard records `disposition_hold_released_by`
 `operator_skip` before deleting the raw data; a split parent's raw data go
 only once every held part has been skipped so (gate #32 and #34, Interactive
-#64).
+#64). The runner does not check who skips (`skip --by` is optional), and the
+skip deletes raw data the hold keeps, as the user ordered for multi-energy AIF
+on 2026-10-07. So a skip that releases a `disposition_held` unit is made only
+on the user's explicit word in the conversation for that unit; the campaign
+approval's boundary 5 does not cover it. This is the agent's reading of the
+user's "raw kept", and the user has not been asked to confirm it.
 
 The gate lifts none of Interactive's own refusals: a unit Interactive refuses
 to start does not run, whatever the gate said.

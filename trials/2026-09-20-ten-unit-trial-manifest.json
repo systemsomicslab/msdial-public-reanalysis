@@ -1093,7 +1093,8 @@
     {
       "at": "2026-09-30",
       "by": "user, relayed through the campaign workflow",
-      "decision": "An AIF file whose collision-energy target list is empty only gets a recorded warning; it is neither skipped nor excluded."
+      "decision": "An AIF file whose collision-energy target list is empty only gets a recorded warning; it is neither skipped nor excluded.",
+      "result": "Stands; no later decision of the user's withdraws it. Since Interactive #64 (0.5.31) and #67 (0.5.34), an AIF unit whose inputs record no MS2 collision energy is held with its raw data kept (aif_collision_energy_unrecorded), which the user did not decide; whether the two concern the same list is open for the user (the agent's entry of 2026-10-07)."
     },
     {
       "at": "2026-09-30",
@@ -1143,6 +1144,11 @@
       "result": "Interactive's converter (msdial-interactive-app#44, Interactive 0.5.11) does nothing beyond copying what the mzXML records unless asked: by default ConversionOptions imputes no polarity, infers no DIA windows, synthesises no all-ion windows and writes no spectrum-level collision energy. CONV-1 (msdial-public-reanalysis#24) holds each converted input to its conversion record. On 2026-10-01 the lease did not run the converter yet (Interactive 0.5.19), so an mzXML unit was still excluded at eligibility. With every inference off the converter imputes no polarity, so an mzXML whose scans record none (the attribute is optional, or any) converts to spectra without one, which MS-DIAL skips as not the method's ion mode. CONV-1 FAILs such a conversion. Whether imputing the unit's declared ion mode counts as an inference the rule keeps off is put to the user with the contract draft, which marks it as awaiting the user's decision (CLAUDE.md, Supported production scope). Until then the imputation stays off, and CONV-1 is in neither gate list, so the FAIL is recorded, the unit runs without those spectra (with none at all where no scan records a polarity), and its raw data are then deleted as any finished run's are."
     },
     {
+      "at": "2026-10-01",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "Go signal: the production campaign starts only on the user's explicit go, asked for once everything is ready; the campaign runner's run is never started on a real campaign without it. No approved manifest, pilot approval or authorization record is that go. Answer: \u672c\u756a\u958b\u59cb\u524d\u306b\u306f\u79c1\u304cGo\u30b5\u30a4\u30f3\u3092\u51fa\u3059\u306e\u3067\u3001\u805e\u3044\u3066\u304f\u3060\u3055\u3044\u3002"
+    },
+    {
       "at": "2026-10-02",
       "by": "user, relayed through the campaign workflow",
       "decision": "Before production, in the campaign: a FAIL stops a unit's MS-DIAL run for ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1 (blocks_run). Such a unit counts as failed: it is retried twice, and its raw data are then deleted. A FAIL in CLS-1, CLS-2, CLS-3, ORD-1, PKH-1 or SPL-1 is recorded and the unit runs, and PRE-1, which cannot FAIL, is recorded likewise (record_only). A check whose FAIL stops the run and that is left not_evaluable where it is required (counted under --strict, listed in strict_failures) stops the run exactly as a FAIL does; a not_evaluable that is not required never stops it, as for INP-1 in a unit that declares no analysis inputs. Before production, a gate that gives no report the runner can use (a timeout, a crash or an exit code other than 0, 2, 3 and 4, exit 3, output that does not parse, or a gate the runner could not start) holds the unit: it is not run, its raw data are kept, it is counted neither as a retry nor as a failure, a warning is recorded in the ledger and the status export, and every other unit goes on. An operator command, and a later automatic recheck, run the gate again for held units. After the run, a missing report is only recorded, and the raw data go by the deletion rule whatever the gate says. An mzXML with no polarity, in the campaign: Interactive's conversion imputes the polarity from the unit's declared ion mode only where the unit's Catalog handoff declares exactly one polarity (Positive or Negative) in technical_settings.ion_mode, and records the imputation as an inference with its count; otherwise nothing is imputed, CONV-1 FAILs, and the unit stops as on any other FAIL that stops a run. 'Stop' is per unit: it never stops the runner, and only a pin change, a short disk and a repository outage pause the whole campaign, each resuming by itself. This settles the four cases the contract draft left open, on top of the rule of 2026-10-01. Answer: \u306f\u3044\u3001\u63d0\u6848\u901a\u308a\u3067\u826f\u3044\u3067\u3059\u3002 In the same message the user asked whether stopping means stopping that unit's analysis and not the reanalysis agent's execution itself (1\u3064\u78ba\u8a8d\u3067\u3059\u304c\u3001\u6b62\u3081\u308b\u3063\u3066\u3044\u3046\u306e\u306f\u3001\u305d\u306e\u30e6\u30cb\u30c3\u30c8\u306e\u89e3\u6790\u3092\u6b62\u3081\u308b\u306e\u3067\u3042\u3063\u3066\u3001\u518d\u89e3\u6790\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u306e\u5b9f\u884c\u305d\u306e\u3082\u306e\u306f\u6b62\u3081\u306a\u3044\u3001\u3068\u3044\u3046\u7406\u89e3\u3067\u3042\u3063\u3066\u307e\u3059\u304b\uff1f); the per-unit stop above is the answer.",
@@ -1167,16 +1173,40 @@
       "decision": "PAIR-1, the check that lists every inferred name pairing, is recorded and the unit runs, as CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1 and PRE-1 are (record_only). The other list of 2026-10-02 is unchanged."
     },
     {
+      "at": "2026-10-06",
+      "by": "agent",
+      "state": "the agent's reading of the user's rules of 2026-09-30 and 2026-10-06, as merged Interactive applies it; not yet put to the user",
+      "decision": "Rule B2 decides a file by its read header. Where no input's header could be read and the repository declares a mode, Interactive's classify_preflight takes the unit at its declaration with the warning acquisition_declared_only: every file runs as the declared mode, or is excluded where that mode is out of scope, with no header behind it, as the 2026-09-30 rule read headers only where the metadata left the mode unknown. Whether B2 should exclude such a unit instead is the user's to say."
+    },
+    {
       "at": "2026-10-07",
       "by": "user, relayed through the campaign workflow",
       "decision": "AIF: an AIF unit with one collision energy runs as SWATH; one with several is held, its raw data kept, until a patched Console. For MsdialWorkbench #825, an unannotated multi-energy peak is represented by the energy with the most product ions, and a missing target-energy scan is borrowed as the GUI does (\u63a8\u5968\u3067\u304a\u9858\u3044); the user OK'd merging #825. ST001264 (3 of 31 rows paired) is to be analysed even by force: \u7121\u7406\u3084\u308a\u306b\u3067\u3082. The production Console switches to the local RawDataHandler build with the msrawdataworkbench fixes, which is never published: \u307e\u3060\u516c\u958b\u3057\u307e\u305b\u3093\u3057\u3001\u5927\u4e08\u592b\u3067\u3059. Merges are left to Claude after review: \u30de\u30fc\u30b8\u306b\u3064\u3044\u3066\u306f\u3001\u304a\u4efb\u305b\u3067\u304d\u307e\u3059\u304b (and for msrawdataworkbench, PR/Merge\u306f\u304a\u9858\u3044\u3057\u307e\u3059). Automatic RT correction: MsdialWorkbench #826 with 12 anchors, and #826 may be merged: 12\u3067\u78ba\u8a8d\u89e3\u6790\u3092\u56de\u3057\u3066\u304f\u3060\u3055\u3044\u3002#826\u306e\u30de\u30fc\u30b8\u3082OK\u3067\u3059\u3002 Its two defaults as recommended (\u63a8\u5968\u3067\u304a\u9858\u3044\u3057\u307e\u3059): after an anchor-selection failure a unit's later attempts run uncorrected, on record, and Blanks are interpolated by analytical order only where the order is recorded (raw-header start times or the repository's sample table).",
       "result": "Merged 2026-10-07: Interactive #64 (0.5.31: single-energy AIF as SWATH, multi-energy AIF held, and the agent's proposal for ST001264, unpaired members of an archive the unit's download alone holds included as unattributed inputs, on record), #65 (0.5.32, #826's local test), #66 (0.5.33) and #67 (0.5.34: multi-energy AIF runs as AIF on a Console with #825 only when every input records the same energies; otherwise held, aif_collision_energies_differ_between_inputs; an unrecorded energy stays held); gate #32, #33 and #34; MsdialWorkbench #825 and #826; msrawdataworkbench #42 and #43. The production Console is MsdialWorkbench master with #825 and #826 and a local RawDataHandler 1.3.9776.346, pinned by sha256."
     },
     {
+      "at": "2026-10-07",
+      "by": "agent",
+      "state": "implemented in Interactive #64 and #67 and gate #32 and #34; not decided by the user; open for the user",
+      "decision": "An AIF unit whose inputs record no MS2 collision energy is held, its raw data kept (aif_collision_energy_unrecorded): no one energy can be shown, and a #825 Console stops on such a file. The user's answer of 2026-10-07 covers single-energy and multi-energy AIF only, and the user's rule of 2026-09-30 that an AIF file with an empty collision-energy list gets a recorded warning only stands."
+    },
+    {
+      "at": "2026-10-07",
+      "by": "agent",
+      "state": "the agent's proposal for the user's \u7121\u7406\u3084\u308a\u306b\u3067\u3082 (ST001264), implemented in Interactive #64 and gate #32; not yet accepted by the user",
+      "decision": "In a unit whose download is its own alone, an archive member that no sample row pairs with is an input all the same (unattributed_member), in the abstention's Class or Unattributed, on record; the members of an archive shared with other units are left out, on record, and INP-1 FAILs any that reach a run. Interactive's 0.5.31 changelog and the gate's PAIR-1 docstring call this the user's decision; it is the agent's proposal."
+    },
+    {
       "at": "2026-10-08",
       "by": "user, relayed through the campaign workflow",
       "decision": "No Catalog recrawl: the campaign plans on the Catalog as last crawled (2026-09-21 and 2026-09-22), and a crawl starts only when the user asks. Answer: \u518d\u30af\u30ed\u30fc\u30eb\u306f\u5fc5\u8981\u306a\u3044\u3067\u3059\uff01",
       "result": "Interactive #68 (0.5.35) and gate #35 pin the raw-metadata extractor built at msrawdataworkbench 5f60446, whose verdicts equal the a12293c61 build's on 21 real files; merged by Claude under the delegation of 2026-10-07."
+    },
+    {
+      "at": "2026-10-08",
+      "by": "agent",
+      "state": "the agent's reading of the user's 'held, raw kept' of 2026-10-07; not yet put to the user",
+      "decision": "An operator's skip releases a disposition_held unit and deletes the raw data the hold keeps, and the runner does not check who skips. Such a skip is made only on the user's explicit word in the conversation for that unit; the campaign approval's boundary 5 does not cover it."
     }
   ]
 }

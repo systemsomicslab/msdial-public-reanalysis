@@ -51,7 +51,9 @@ user's words: the lower-end threshold, header-first acquisition (rule B2), infer
 collision energies, automatic RT correction, the local production Console, no Catalog recrawl, and merges left to
 Claude. PAIR-1 joined record_only on 2026-10-06 as the agent's reading of the pairing decision, and the manifest and
 the contract both say so; the lists are otherwise those of 2026-10-02. A unit Interactive's disposition holds
-(disposition_held) is stated as the operator's skip releases it.
+(disposition_held) is stated as the operator's skip releases it, only on the user's word. What the user did not
+decide is not credited to the user: the unrecorded-energy AIF hold, the declared-only unit, the unattributed members
+and that skip are each the agent's entry in the manifest. The go signal of 2026-10-01 is the user's.
 """
 
 from __future__ import annotations
@@ -704,6 +706,34 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertIn("replaces the rule of 2026-10-06 that the user merges", merges)
         self.assertIn("still takes the user's explicit OK", merges)
         self.assertNotIn("It is not on Interactive main yet", self.contract)
+
+    def test_what_the_user_did_not_decide_is_not_credited_to_the_user(self) -> None:
+        """The unrecorded-energy AIF hold, the declared-only unit, the unattributed members and the release of a
+        disposition hold are merged behaviour or the agent's reading, not the user's decisions, and the
+        2026-09-30 warning-only rule for an empty energy list still stands."""
+        contract = " ".join(self.contract.split())
+        for phrase in ("The user did not decide that hold", "which stands", "`acquisition_declared_only`",
+                       "the user has not been asked whether B2", "the user has not yet accepted it",
+                       "it is the agent's proposal, open for the user", "only on the user's explicit word",
+                       "boundary 5 does not cover it"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, contract)
+        self.assertNotIn("no longer lets run", contract)
+        agent = [entry for entry in _trial_decisions() if entry.get("by") == "agent"]
+        for word in ("acquisition_declared_only", "aif_collision_energy_unrecorded", "unattributed_member",
+                     "disposition_held"):
+            with self.subTest(word=word):
+                entries = [entry for entry in agent if word in str(entry["decision"])]
+                self.assertEqual(1, len(entries))
+                self.assertIn("user", entries[0]["state"])
+
+    def test_the_go_signal_is_the_users(self) -> None:
+        words = "本番開始前には私がGoサインを出すので、聞いてください。"
+        self.assertIn(words, self.contract)
+        entries = [entry for entry in _trial_decisions() if words in str(entry["decision"])]
+        self.assertEqual(1, len(entries))
+        self.assertEqual("2026-10-01", entries[0]["at"])
+        self.assertTrue(str(entries[0]["by"]).startswith("user"))
 
     def test_a_unit_flagged_by_its_studys_text_alone_is_not_stated_as_excluded(self) -> None:
         """Before 2026-10-03 the contract excluded ion-mobility data "whether the repository or the raw headers

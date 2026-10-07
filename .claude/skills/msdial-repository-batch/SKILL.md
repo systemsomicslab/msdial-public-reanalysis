@@ -49,8 +49,12 @@ For a repository range:
    cannot parse into DDA. AIF goes by the energies its inputs record
    (`CLAUDE.md`, Supported production scope, 2026-10-07): one energy runs as
    SWATH; several run as AIF only on a Console with MsdialWorkbench #825 and
-   the same energies in every input; otherwise, and where no energy is
-   recorded, the unit is held (`disposition_held`) with its raw data kept.
+   the same energies in every input; otherwise the unit is held
+   (`disposition_held`) with its raw data kept. Interactive also holds a unit
+   whose inputs record no energy; the user did not decide that hold, it departs
+   from the 2026-09-30 warning-only rule, and the case is open for the user.
+   Where no header could be read, Interactive takes a declared unit at its
+   declaration (`acquisition_declared_only`), with no header behind its files.
    Ion-mobility data are
    excluded, with the reason recorded (LC-MS only), and a unit counts as ion
    mobility only on its own evidence (option A, 2026-10-03; `CLAUDE.md`,
@@ -291,7 +295,9 @@ Server-side state on `msdial_interactive_app` `main`:
   `confirmed_discard_fallback: true` (`CLAUDE.md`, Raw-data deletion in a
   campaign); without it those raw data stay. A unit Interactive's disposition
   holds is never discarded unless an operator's skip passes
-  `release_disposition_hold`.
+  `release_disposition_hold`, and that skip is made only on the user's explicit
+  word for the unit: it deletes raw data the hold keeps (`CLAUDE.md`, Held by
+  Interactive).
 - A unit whose manifest says `execution_allowed` is not true is refused before
   MS-DIAL starts, and so is a workflow whose polarity, output directory or input
   set disagrees with the manifest.
