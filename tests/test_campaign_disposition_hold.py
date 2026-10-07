@@ -397,6 +397,64 @@ class DispositionHoldTests(Base):
         self.assertEqual(self.parent_releases(world, book), [("release_split_parent", True)])
         self.assertFalse(parent_raw.exists())
 
+    def fail_one_recheck(self, world: fakes.World, book: ledger.Ledger, runner: machine.Runner, key: str) -> None:
+        """The operator rechecks the unit and its preflight raises once: the runner moves it out of
+        disposition_held to wait for a retry, while Interactive's manifest keeps the hold it had."""
+        real = world.interactive.preflight
+        manifest = book.unit(key)["manifest_path"]
+
+        def broken(**arguments):
+            if arguments["manifest_path"] == manifest:
+                raise RuntimeError("backend fault")
+            return real(**arguments)
+
+        world.interactive.preflight = broken
+        book.add_request("recheck_held", key, "try again", "Test Person", runner.stamp())
+        self.step_until(world, book, runner, lambda: book.unit(key)["state"] not in ("disposition_held", "downloaded"),
+                        limit=4000)
+        world.interactive.preflight = real
+        self.assertEqual(book.unit(key)["state"], "waiting_retry")
+        self.assertTrue(world.interactive.held_by_disposition(world.interactive.store.read(manifest)),
+                        "Interactive still holds the unit")
+
+    def test_a_skip_while_a_failed_recheck_waits_still_releases_the_hold(self) -> None:
+        """Review r10-32 of PR #32. The skip released the hold only when the unit was disposition_held at that
+        moment; a unit waiting for a retry after a failed recheck was discarded without the flag, Interactive
+        refused, and its raw data were kept with no path to release them."""
+        world, book, runner = self.held()
+        self.fail_one_recheck(world, book, runner, "u1")
+        book.add_request("skip", "u1", "not waiting for the Console", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=3000)
+
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["raw_disposition"]), ("skipped", "discarded"))
+        self.assertEqual(self.discards(world, book, "u1"), [True])
+        self.assertFalse((Path(unit["workspace"]) / "raw").exists())
+        self.assertEqual(world.interactive.store.read(unit["manifest_path"])["disposition_hold_released_by"], "operator_skip")
+        self.assertIs(json.loads(unit["terminal_detail"])[machine.RELEASE_HOLD], True)
+
+    def test_a_split_part_skipped_while_a_failed_recheck_waits_releases_the_parent(self) -> None:
+        """Review r10-32 of PR #32. u1-SWATH is skipped while it waits for a retry after a failed recheck, then
+        u1-DDA is skipped. Before, u1-SWATH's skip carried no release, so it kept the parent waiting for good and
+        its record said no operator had skipped it. Now both skips release, and the parent is discarded with
+        the flag."""
+        world, book, runner, parent_raw = self.two_held_parts()
+        self.fail_one_recheck(world, book, runner, "u1-SWATH")
+        for key in ("u1-SWATH", "u1-DDA"):
+            book.add_request("skip", key, "not waiting for the Console", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=3000)
+
+        for key in ("u1-SWATH", "u1-DDA"):
+            part = book.unit(key)
+            self.assertEqual((part["state"], part["raw_disposition"]), ("skipped", "deferred_to_parent"), key)
+            self.assertIs(json.loads(part["terminal_detail"])[machine.RELEASE_HOLD], True, key)
+            self.assertEqual(self.discards(world, book, key), [True], key)
+        parent = book.unit("u1")
+        self.assertEqual((parent["state"], parent["raw_disposition"]), ("split_done", "discarded"))
+        self.assertEqual(self.parent_releases(world, book), [("discard", True)])
+        self.assertFalse(parent_raw.exists())
+        self.assertFalse(list(book.events("split_parent_waits_for_held_part")))
+
 
 class HoldDispositionRecordTests(unittest.TestCase):
     """policy.read_disposition reads Interactive 0.5.31's hold, and refuses one of another shape."""

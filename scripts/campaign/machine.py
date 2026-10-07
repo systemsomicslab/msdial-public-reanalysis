@@ -826,8 +826,10 @@ class Runner:
                 else:
                     # An operator's skip of a unit Interactive's disposition holds is the explicit decision that
                     # lifts the hold (the agreed contract of 2026-10-07): its discard, and its split parent's
-                    # release, pass release_disposition_hold, which nothing else here ever does.
-                    released = state == DISPOSITION_HELD
+                    # release, pass release_disposition_hold, which nothing else here ever does. The unit need not
+                    # be disposition_held at that moment: a recheck whose preflight never answered moves it to
+                    # waiting_retry or contract_held while Interactive's hold stands (review r10-32 of PR #32).
+                    released = state == DISPOSITION_HELD or _held_by_disposition(unit)
                     self._move(
                         unit, "discarding", pending_terminal="skipped",
                         terminal_detail=json.dumps({"reason": "operator_skip", "detail": request["reason"],
