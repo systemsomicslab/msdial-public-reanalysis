@@ -237,6 +237,59 @@ released as it was read, or a deletion recorded within a lock's heartbeat
 window), and its output escapes what the console code page cannot print rather
 than ending without a verdict.
 
+The campaign's run answers come from its approved profile
+(`msdial-campaign-profile.v1`); the runner pins the Console path, the smoothing
+method, the target peak counts and automatic alignment RT correction on top of
+them. Automatic RT correction is decided for the campaign (2026-10-07):
+MsdialWorkbench #826's local outlier test at its default window, with 12
+anchors. The campaign policy records it (`automatic_rt_correction` true,
+`automatic_rt_correction_maximum_anchors` 12), and every Console start is sent
+`execute_automatic_rt_correction` true and those anchors, so a profile cannot
+leave them out and run at Interactive's default of 6, or uncorrected. A manifest
+is approvable only if its profile does not say otherwise (correction off,
+another anchor count, the anchor-library correction, or a local window other
+than 1.5 min), and its Console pin records `automatic_rt_correction`
+`local_support`, read from the method keys in the Console assembly. A Console of
+#810 alone (`run_wide`) would run the run-wide test without a word, and one with
+neither (`none`) is refused by Interactive at every unit's run start, after its
+download. A manifest approved before the decision names none of these fields;
+its units run as its profile says.
+
+When the Console cannot select anchors (too few candidates, or too few anchors
+in enough samples), it exits -1 before alignment with no output, and every
+retry would do the same. The runner finds the Console's line in the job's log,
+marks the failed attempt `automatic_rt_correction_failed`, and, with the
+policy's `automatic_rt_correction_fallback` (on by default), runs the unit's
+next attempts without the correction. The failed run still counts as an
+attempt. The unit's `campaign-record.json` (`automatic_rt_correction`) and its
+status row say so. With the fallback off, the unit is retried and ends as any
+failure does.
+
+Blank files have no anchors of their own. By default the Console gives each
+Blank a model interpolated between the non-Blank files beside it in the
+analytical order. The runner allows that only where the order Interactive
+recorded with the analysis CSV is an injection order: the raw headers'
+acquisition start times, or the order the repository's sample table declares
+(the two ORD-2 accepts). For an order read out of the file names or the
+listing, or none recorded, it sends
+`automatic_rt_correction_interpolate_blanks_by_analytical_order` false, and the
+Blanks keep their measured RTs (audit status `BlankNotCorrected`; the Methods
+paragraph counts them among the files that kept their original RTs). A profile
+may not set this answer. The unit's `campaign-record.json` records the choice
+and the order source, and the `prepare_run` attempt in the ledger keeps
+Interactive's plan warnings, which stop nothing. For a declared order,
+Interactive may still warn about Blank interpolation, because its plan adopts
+only a header order.
+
+The zero-threshold diagnostic never corrects: Interactive turns the correction
+off for it. The gate needs nothing more. EXP-1 requires the two audit TSVs that
+Interactive adds to `expected_analysis_exports` when the correction is on.
+CNT-1 does not count them as samples, MTH-1 reads the correction's method keys
+like any other, and QA-1 sets aside the reference file the Methods paragraph
+names. The gate reads no column or status of the audit TSVs. A unit that fell
+back has no audit TSVs and none expected, since Interactive lists them only for
+a run with the correction on.
+
 ## Running a campaign unattended
 
 Launch `scripts/campaign-runner.py run` for an unattended campaign through Task

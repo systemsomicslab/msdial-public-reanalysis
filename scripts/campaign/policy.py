@@ -289,6 +289,18 @@ class CampaignPolicy:
     gate_points: tuple[str, ...] = ("before_production", "pre_cleanup", "final")
     peak_count_min: int = 3000
     peak_count_max: int = 6000
+    # Automatic alignment RT correction (decided 2026-10-07): MsdialWorkbench #826's local outlier test, with at
+    # most 12 anchors and the Console's own local window. The runner pins both answers over the profile, as it
+    # pins the peak-count targets, so a profile cannot leave them out and run at Interactive's default of 6
+    # anchors, or uncorrected. A policy recorded before these fields (a manifest approved before 2026-10-07)
+    # does not name them, and its runs are not pinned: automatic_rt_correction_pinned reads the record.
+    automatic_rt_correction: bool = True
+    automatic_rt_correction_maximum_anchors: int = 12
+    # A production run whose Console could not select anchors (AutomaticAlignmentRetentionTimeCorrection
+    # .Build: too few candidates, or too few anchors covering enough samples) ends at exit -1 with no output,
+    # and would end so again on every retry. With the fallback, the unit's next attempts run without the
+    # correction, and its record and status say so; without it, the unit is retried and ends as any failure.
+    automatic_rt_correction_fallback: bool = True
     runner_lock_stale_seconds: float = 600.0
     heartbeat_seconds: float = 30.0
     disk: DiskPolicy = field(default_factory=DiskPolicy)
@@ -333,6 +345,12 @@ class CampaignPolicy:
         if "pre_cleanup" not in self.gate_points:
             # The verdict recorded with every raw deletion is this one.
             raise ValueError("gate_points must include pre_cleanup.")
+        anchors = self.automatic_rt_correction_maximum_anchors
+        if isinstance(anchors, bool) or not isinstance(anchors, int) or anchors < AUTOMATIC_RT_MINIMUM_ANCHORS:
+            raise ValueError(f"automatic_rt_correction_maximum_anchors is a whole number of at least {AUTOMATIC_RT_MINIMUM_ANCHORS}.")
+        for name in ("automatic_rt_correction", "automatic_rt_correction_fallback"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} is true or false.")
         if "before_production" not in self.gate_points:
             # A unit runs only on a before-production report (the user's rule of 2026-10-02): without the
             # point, every unit would be held for want of one.
@@ -950,6 +968,57 @@ def run_policy_mismatches(report: Mapping[str, Any]) -> list[str]:
 
 
 # ---- pins ------------------------------------------------------------------------------------------
+
+# Which automatic alignment RT correction the pinned Console implements (ports.PinReader.console records it
+# as automatic_rt_correction). The campaign runs MsdialWorkbench #826's local outlier test (decided
+# 2026-10-07): a Console of #810 alone runs the run-wide test instead, silently, since Interactive does not
+# write the key #826 added; a Console of neither is refused by Interactive at every unit's run start, after
+# its download.
+AUTOMATIC_RT_LOCAL_SUPPORT = "local_support"
+AUTOMATIC_RT_RUN_WIDE = "run_wide"
+AUTOMATIC_RT_NONE = "none"
+# The Console's least anchor count (Interactive's automatic_rt_correction_minimum_anchors default), below which
+# CampaignPolicy refuses a maximum; and the local window the campaign runs with, #826's default, which the runner
+# does not send (Interactive writes the window only when the answers set it) and a profile may state only as is.
+AUTOMATIC_RT_MINIMUM_ANCHORS = 3
+AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW = 1.5
+# The line the Console writes when it could not select anchors (LcmsProcess: "Automatic alignment RT correction
+# failed: <reason>", then exit -1); Interactive keeps the Console's output in the job's log.
+AUTOMATIC_RT_FAILED_LINE = "Automatic alignment RT correction failed"
+# Blank files have no anchors of their own. With the answer below true (Interactive's default) the Console gives
+# each Blank a model interpolated between the non-Blank files beside it in the analytical order; false, a Blank
+# keeps its measured RTs (audit status BlankNotCorrected). The runner sends it per unit, true only where the order
+# the analysis CSV carries is one an injection sequence was recorded in: the acquisition start times of the raw
+# headers, or the order the repository's sample table declares (the two the gate's ORD-2 accepts). An order read
+# out of the file names or the listing, or one nobody recorded, is no injection order (decided 2026-09-29), and a
+# Blank model resting on it would be a guess the run's outputs could not show.
+AUTOMATIC_RT_BLANK_ANSWER = "automatic_rt_correction_interpolate_blanks_by_analytical_order"
+HEADER_ORDER_SOURCE = "raw_header_acquisition_start_time"
+DECLARED_ORDER_SOURCE = "repository_sample_table"
+AUTOMATIC_RT_BLANK_ORDER_SOURCES = (HEADER_ORDER_SOURCE, DECLARED_ORDER_SOURCE)
+
+
+def automatic_rt_correction_pinned(recorded: Mapping[str, Any] | None) -> bool:
+    """Whether a campaign's recorded policy pins automatic RT correction on: only a policy that names the field.
+    One recorded before 2026-10-07 does not, and its units run with what their profile says, as they did."""
+    return isinstance(recorded, Mapping) and recorded.get("automatic_rt_correction") is True
+
+
+def analytical_order_source(record: Mapping[str, Any] | None) -> str | None:
+    """What Interactive's analytical-order record (msdial_prepare_repository_reanalysis's preview.analytical_order,
+    also kept in the unit manifest) says the analysis CSV's order was taken from, or None. A header record from
+    before Interactive 0.5.4 names no order_source and reads as the header source, as the gate reads it."""
+    if not isinstance(record, Mapping):
+        return None
+    source = record.get("order_source") or (
+        HEADER_ORDER_SOURCE if record.get("derived_from") == HEADER_ORDER_SOURCE else None)
+    return source if isinstance(source, str) and source else None
+
+
+def blank_interpolation_allowed(order_source: str | None) -> bool:
+    """Whether a Blank's automatic RT-correction model may be interpolated by this analytical order."""
+    return order_source in AUTOMATIC_RT_BLANK_ORDER_SOURCES
+
 
 # What identifies each pinned thing. Paths are recorded but not compared: the Console and the extractor
 # may be reached by another spelling, and a library is named by file name only.

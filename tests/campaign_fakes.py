@@ -83,7 +83,8 @@ class UnitScript:
     split_modes: tuple[str, ...] = ("DDA", "SWATH")
     diagnostics: list[str] = field(default_factory=lambda: ["ok"])  # ok, timeout, fail, lose_reply
     # ok, timeout, fail, invalid (an mzTab-M that does not validate), late_fail (the mzTab-M validated and
-    # the job failed after), hold, lose_reply, busy_reply
+    # the job failed after), hold, lose_reply, busy_reply; rt_fail (the Console could not select anchors for
+    # automatic RT correction: exit -1, no output, its line in the job's log above finalisation's)
     runs: list[str] = field(default_factory=lambda: ["ok"])
     cleanup: str = "ok"  # ok, blocked, unsupported (an Interactive whose cleanup takes no approval)
     # How long each job runs, in 30-second polls of fake time. A job ends when its time is up, whether or
@@ -93,6 +94,12 @@ class UnitScript:
     # maximum_gb) and the bytes the lease streams (it stops past maximum_gb). 0 is small.
     required_bytes: int = 0
     remote_bytes: int = 0
+    # The analytical-order record the prepared metadata's preview carries (Interactive's with_order_source): its
+    # order_source, or None for a record that names none; the key is left out when no_order_record.
+    order_source: str | None = None
+    no_order_record: bool = False
+    # The warnings Interactive's guided plan validation raises (level warning; they stop nothing).
+    plan_warnings: list[str] = field(default_factory=list)
 
 
 def _write(path: Path, value: Any) -> None:
@@ -263,7 +270,12 @@ class FakeInteractive:
         if job["outcome"] == "shared" and job["status"] in ("queued", "running"):
             return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome")},
                     "status": "waiting_for_shared_download"}
-        return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome")}}
+        return {"ok": True, **{key: value for key, value in job.items() if key not in ("done_at", "outcome", "logs")}}
+
+    def job_log(self, job_id: str) -> list[str]:
+        """The job's kept log, as InteractivePort.job_log reads it; the poll carries none of it."""
+        self.calls.append(("job_log", {"job_id": job_id}))
+        return list((self.jobs.get(job_id) or {}).get("logs") or [])
 
     def _advance(self, job: dict[str, Any]) -> None:
         if job.get("cancel"):
@@ -319,7 +331,7 @@ class FakeInteractive:
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
                 job.update(status="failed", error=self.world.network_error["job"])
             return
-        exit_code = {"ok": 0, "invalid": 0, "timeout": -3, "cancelled": -4}.get(outcome, 1)
+        exit_code = {"ok": 0, "invalid": 0, "timeout": -3, "cancelled": -4, "rt_fail": -1}.get(outcome, 1)
         kind = "tuning" if job["kind"] == "diagnostic" else "run"
 
         def close(manifest: dict[str, Any]) -> None:
@@ -341,6 +353,12 @@ class FakeInteractive:
                 manifest.update(status="validation_failed", cleanup_allowed=False)
 
         self._update(manifest_path, close)
+        if outcome == "rt_fail":
+            job["logs"] = (["Automatic alignment RT correction: selecting anchors after peak picking and annotation.",
+                            "Automatic alignment RT correction failed: Fewer than 3 anchors were found in at least "
+                            "50% of the non-blank samples."]
+                           + [f"Moved intermediate {index}." for index in range(40)])
+            job["error"] = "MS-DIAL Console exited with code -1."
         job.update(status="completed" if exit_code == 0 else "failed", exit_code=exit_code,
                    stop_reason="cancelled" if outcome == "cancelled" else None)
 
@@ -427,7 +445,13 @@ class FakeInteractive:
         csv.write_text("file_path,acquisition_type\nS1.mzML,DDA\n", encoding="ascii")
         seed = {"parameter_strategy": "auto_peak_range", "project_type": "lcms", "ion_mode": "Positive",
                 "output_root": str(output), "workflow_overrides": {"repository_run_manifest": manifest_path}}
-        return {"prepared": True, "input_path": str(csv), "preview": {"answer_seed": seed}}
+        script = self.world.scripts.get(self._unit_of_manifest(manifest_path)) or UnitScript()
+        preview: dict[str, Any] = {"answer_seed": seed}
+        if not script.no_order_record:
+            header = script.order_source == "raw_header_acquisition_start_time"
+            preview["analytical_order"] = {"derived_from": script.order_source if header else None,
+                                           "order_source": script.order_source, "files_recorded": 1}
+        return {"prepared": True, "input_path": str(csv), "preview": preview}
 
     def _console(self, kind: str, *, input_path: str, answers: dict[str, Any], authorization_path: str,
                  timeout_seconds: float, idle_timeout_seconds: float) -> dict[str, Any]:
@@ -509,7 +533,10 @@ class FakeInteractive:
 
     def prepare_guided(self, *, input_path: str, answers: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("prepare_guided", {"answers": answers}))
-        return {"prepared": True}
+        manifest_path = (answers.get("workflow_overrides") or {}).get("repository_run_manifest") or ""
+        script = self.world.scripts.get(self._unit_of_manifest(manifest_path)) or UnitScript()
+        validation = [{"level": "warning", "message": message} for message in script.plan_warnings]
+        return {"plan": {"validation": validation, "ready_to_prepare": True}, "preparation": {}, "messages": []}
 
     def qa(self, *, manifest_path: str) -> dict[str, Any]:
         return {"ok": True}
@@ -762,7 +789,7 @@ class World:
 
     def __init__(self, root: Path, unit_ids: list[str], *, policy_values: dict[str, Any] | None = None,
                  retention: str = "delete_after_validated_output", covers: tuple[str, ...] = ("1", "3", "4", "5", "split"),
-                 known_bytes: int = 10 * 1000**3, size_known: bool = True) -> None:
+                 known_bytes: int = 10 * 1000**3, size_known: bool = True, legacy_policy: bool = False) -> None:
         self.root = root
         self.workspace_root = root / "analysis"
         self.directory = self.workspace_root / "_campaigns" / "test-campaign"
@@ -814,7 +841,11 @@ class World:
             "manifest_digest": self.digest, "analysis_purpose": "annotation of every experimental spectrum",
             "workspace_root": str(self.workspace_root), "raw_retention_policy": retention,
             "catalog_database": str(root / "catalog.sqlite"), "authorization_path": str(authorization),
-            "authorization_sha256": SHA["auth"], "policy": policy.CampaignPolicy.from_dict(values).as_dict(),
+            "authorization_sha256": SHA["auth"], "policy": {
+                key: value for key, value in policy.CampaignPolicy.from_dict(values).as_dict().items()
+                # legacy_policy: a policy recorded before the automatic RT correction fields (2026-10-07).
+                if not (legacy_policy and key.startswith("automatic_rt_correction"))
+            },
             "profile": {
                 "schema": "msdial-campaign-profile.v1",
                 "answers": {"library_strategy": "existing", "use_retention_time_for_annotation": False},
