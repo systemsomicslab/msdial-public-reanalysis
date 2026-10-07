@@ -390,10 +390,17 @@ class InteractiveContractTests(unittest.TestCase):
 
         built = next(item for item in extractor.PINNED_BUILDS if item["state"] == extractor.PIN_BUILT)
         path = ports.default_extractor_path(Path(r"D:/0_SourceCode/msdial_interactive_app"))
+        # A pin may name the folder it was built in (Interactive 0.5.35); otherwise both commits name it.
+        folder = built.get("build_folder") or (
+            f"RawMetadataExtractor-{built[extractor.RAW_TREE][:9]}-{built[extractor.COMMON_TREE][:9]}")
         self.assertEqual(path.parts[-7:], (
-            f"RawMetadataExtractor-{built[extractor.RAW_TREE][:9]}-{built[extractor.COMMON_TREE][:9]}", "msrawdataworkbench",
+            folder, "msrawdataworkbench",
             "RawMetadataConsoleApp", "bin", "Release", "net48", "RawMetadataConsoleApp.exe"))
-        if tuple(int(part) for part in msdial_app.__version__.split(".")[:3]) >= (0, 5, 19):
+        version = tuple(int(part) for part in msdial_app.__version__.split(".")[:3])
+        if version >= (0, 5, 35):
+            self.assertTrue(built[extractor.RAW_TREE].startswith("5f604462d"), "the pin of Interactive 0.5.35")
+            self.assertEqual("RawMetadataExtractor-5f60446-f0583493a", folder, "where the 0.5.35 pin was built")
+        elif version >= (0, 5, 19):
             self.assertTrue(built[extractor.RAW_TREE].startswith("a12293c61"), "the pin of Interactive 0.5.19")
 
     def test_the_preflight_is_given_the_approval(self) -> None:

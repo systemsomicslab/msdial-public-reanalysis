@@ -177,6 +177,22 @@ class ExtractorIdentityTests(unittest.TestCase):
         self.assertEqual(verifier.PASS, check.status, check.detail)
         self.assertIn("not the current pin", check.detail)
 
+    def test_the_5f60446_build_is_current_and_the_a12293c61_build_still_passes(self) -> None:
+        """Interactive 0.5.35 pinned 5f60446; a unit read by the a12293c61 build before it stays a PASS."""
+        current = verifier._extractor_pin("5f604462d7bd61141bf764ca04ce52bf3f6452c9", "f0583493a44e73723f53ae312e33955f62052dd7")
+        previous = verifier._extractor_pin("a12293c612a4e29b23d1d584f1c19556d76863f6", "f0583493a44e73723f53ae312e33955f62052dd7")
+        self.assertEqual(CURRENT_PIN, current)
+        self.assertEqual("built", previous["state"])
+        with tempfile.TemporaryDirectory() as temporary:
+            now = self._gate(temporary, _extractor(current), campaign_authorizations=[_crossing(4)])
+        with tempfile.TemporaryDirectory() as temporary:
+            before = self._gate(temporary, _extractor(previous), campaign_authorizations=[_crossing(4)])
+
+        self.assertEqual(verifier.PASS, now.status, now.detail)
+        self.assertNotIn("not the current pin", now.detail)
+        self.assertEqual(verifier.PASS, before.status, before.detail)
+        self.assertIn("not the current pin (5f604462d)", before.detail)
+
     def test_a_stale_or_dirty_build_is_refused(self) -> None:
         for status in ("stale_mismatch", "dirty_source"):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
