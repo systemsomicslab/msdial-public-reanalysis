@@ -714,5 +714,91 @@ class PlanTests(unittest.TestCase):
         self.assertIn("pins no library", err)
 
 
+LOCAL_SUPPORT_KEY = "automatic rt correction local support rt window"  # MsdialWorkbench #826
+RUN_WIDE_KEY = "execute automatic rt correction for alignment"  # MsdialWorkbench #810
+
+
+class AutomaticRtCorrectionPinTests(unittest.TestCase):
+    """The campaign runs automatic alignment RT correction with #826's local outlier test (decided 2026-10-07).
+    A profile that turns it on is approvable only with a Console pin that implements it."""
+
+    RT_PROFILE = {"schema": plan.PROFILE_SCHEMA,
+                  "answers": {"library_strategy": "existing", "execute_automatic_rt_correction": True,
+                              "automatic_rt_correction_maximum_anchors": 12},
+                  "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}}}}
+
+    def manifest(self, profile: dict, console: dict) -> dict:
+        pins = json.loads(json.dumps(APPROVABLE_PINS))
+        pins["console"] = console
+        return {"pins": pins, "profile": json.loads(json.dumps(profile)), "units": [{"unit_key": "uA"}],
+                "raw_retention_policy": "keep"}
+
+    def test_the_generation_is_read_from_the_method_keys_in_the_assembly(self) -> None:
+        cases = {
+            "826, as .NET stores it": (b"MZ" + RUN_WIDE_KEY.encode("utf-16-le") + LOCAL_SUPPORT_KEY.encode("utf-16-le"),
+                                        policy.AUTOMATIC_RT_LOCAL_SUPPORT),
+            "826, in UTF-8": (b"MZ" + LOCAL_SUPPORT_KEY.encode("utf-8"), policy.AUTOMATIC_RT_LOCAL_SUPPORT),
+            "810 alone": (b"MZ" + RUN_WIDE_KEY.encode("utf-16-le"), policy.AUTOMATIC_RT_RUN_WIDE),
+            "neither": (b"MZ console", policy.AUTOMATIC_RT_NONE),
+            # The title-case label is MsdialCore.dll's; a Console beside a newer core does not carry the key.
+            "the label only": (b"MZ" + "Automatic RT correction local support RT window".encode("utf-16-le"),
+                               policy.AUTOMATIC_RT_NONE),
+        }
+        for name, (assembly, expected) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(ports.automatic_rt_correction_generation(assembly), expected)
+
+    def test_an_rt_correction_profile_needs_a_console_of_826(self) -> None:
+        base = {**APPROVABLE_PINS["console"], "assembly_sha256": "1" * 64, "inventory_sha256": "1" * 64}
+        covers = ["1", "3", "4"]
+        ok = self.manifest(self.RT_PROFILE, {**base, "automatic_rt_correction": policy.AUTOMATIC_RT_LOCAL_SUPPORT})
+        self.assertEqual(plan.approval_problems(ok, covers), [])
+        cases = {
+            "810 alone": (policy.AUTOMATIC_RT_RUN_WIDE, "implements MsdialWorkbench #810's run-wide outlier test only"),
+            "neither": (policy.AUTOMATIC_RT_NONE, "implements no automatic RT correction"),
+            "a pin read before the field existed": (None, "does not record which correction"),
+        }
+        for name, (generation, words) in cases.items():
+            with self.subTest(name):
+                console = dict(base)
+                if generation is not None:
+                    console["automatic_rt_correction"] = generation
+                problems = plan.approval_problems(self.manifest(self.RT_PROFILE, console), covers)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(words, problems[0])
+                self.assertIn("automatic RT correction on", problems[0])
+
+    def test_a_profile_without_rt_correction_takes_any_console(self) -> None:
+        off = json.loads(json.dumps(self.RT_PROFILE))
+        off["answers"]["execute_automatic_rt_correction"] = "false"
+        for profile in (off, {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}):
+            with self.subTest(profile=profile["answers"]):
+                self.assertFalse(plan.automatic_rt_correction_requested(profile))
+                manifest = self.manifest(profile, {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_NONE})
+                self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]), [])
+
+    def test_rt_correction_is_found_wherever_the_profile_turns_it_on(self) -> None:
+        for name, profile in {
+            "an ion mode": {"answers": {}, "by_ion_mode": {"Negative": {"execute_automatic_rt_correction": "true"}}},
+            "an override": {"answers": {"workflow_overrides": {"execute_automatic_rt_correction": "on"}}, "by_ion_mode": {}},
+            "an ion mode's override": {"answers": {}, "by_ion_mode": {"Positive": {"workflow_overrides": {"execute_automatic_rt_correction": 1}}}},
+        }.items():
+            with self.subTest(name):
+                self.assertTrue(plan.automatic_rt_correction_requested(profile))
+        self.assertFalse(plan.automatic_rt_correction_requested(None))
+        self.assertFalse(plan.automatic_rt_correction_requested({"answers": {"automatic_rt_correction_maximum_anchors": 12}}))
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
+    def test_the_console_pin_records_the_generation_of_its_assembly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            console = Path(directory) / "MSDIALCUI.exe"
+            console.write_bytes(b"MZ" + RUN_WIDE_KEY.encode("utf-16-le"))
+            reader = ports.PinReader(console_path=str(console), extractor_path="", libraries={})
+            self.assertEqual(reader.console()["automatic_rt_correction"], policy.AUTOMATIC_RT_RUN_WIDE)
+            # A rebuilt Console is read again, as its hashes are.
+            console.write_bytes(b"MZ" + RUN_WIDE_KEY.encode("utf-16-le") + LOCAL_SUPPORT_KEY.encode("utf-16-le") + b"!")
+            self.assertEqual(reader.console()["automatic_rt_correction"], policy.AUTOMATIC_RT_LOCAL_SUPPORT)
+
+
 if __name__ == "__main__":
     unittest.main()

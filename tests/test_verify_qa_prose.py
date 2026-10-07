@@ -997,6 +997,31 @@ class RoundThreeTests(unittest.TestCase):
         unmasked = methods.replace("reference file pooled QC-01", "the file pooled QC-01")
         self.assertEqual(verifier.WARN, _run(INTERACTIVE_052, methods=unmasked).status)
 
+    def test_the_rt_paragraph_with_uncorrected_files_names_no_qa(self) -> None:
+        # With the correction on in every campaign run (2026-10-07), the paragraph's other form, for a run in
+        # which some files kept their measured retention times, names the reference file before "only where".
+        rt = ("\n\nAfter peak detection and annotation on the original retention-time axis, MS-DIAL learned "
+              "distributed anchor features and applied file-specific piecewise-linear retention-time correction "
+              "during alignment only. The retained Console audit records reference file pooled QC-01, which defines "
+              "the axis and keeps its measured retention times. Of the other 10 audited file(s), 8 were corrected "
+              "from their own anchors (12 distinct anchor(s) used), 0 Blank file(s) took an interpolated or "
+              "nearest-sample model, and 2 kept their original retention times. Peaks from the 2 file(s) that kept "
+              "their original retention times enter alignment at their measured retention times. An aligned feature "
+              "retention time, exported as the mzTab-M retention_time_in_seconds, is the mean of the contributing "
+              "peaks' apex retention times: it is on the retention-time axis of reference file pooled QC-01 only "
+              "where none of those files contributes, includes their measured retention times otherwise, and is "
+              "wholly measured for a feature detected only in them. Its start and end are the earliest and latest "
+              "single apex retention times, either of which can be a measured one; per-file peak lists and "
+              "annotation retention-time evidence keep the measured retention times. The per-file models and "
+              "anchor evidence are documented in Supplementary Table S1 and the retained automatic RT-correction "
+              "TSV files.")
+        methods = INTERACTIVE_052["methods"].replace("0.015 Da.", "0.015 Da." + rt)
+        check = _run(INTERACTIVE_052, methods=methods)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        unmasked = methods.replace("reference file pooled QC-01 only", "the file pooled QC-01 only")
+        self.assertEqual(verifier.WARN, _run(INTERACTIVE_052, methods=unmasked).status)
+
     def test_symbols_left_beside_the_statement_are_read(self) -> None:
         check = _run(INTERACTIVE_052, results=_append(INTERACTIVE_052, "\u2713 \u2713"))
 

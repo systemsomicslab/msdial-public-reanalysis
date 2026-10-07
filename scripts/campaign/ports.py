@@ -152,6 +152,27 @@ def _binary_inventory(directory: Path, digest: Callable[[str], tuple[str, int]] 
     return hashlib.sha256(policy.canonical_json(entries)).hexdigest()
 
 
+# Strings only a Console that implements automatic alignment RT correction carries: the lowercase method
+# keys its ConfigParser reads, which are .NET string literals and stored as UTF-16LE (MSDIALCUI.exe for
+# net48, MSDIALCUI.dll for net8; console_assembly_path names the one holding the code). The title-case
+# labels live in MsdialCore.dll, so a Console that merely ships beside a newer core does not match.
+# MsdialWorkbench #810 added the correction with a run-wide outlier test; #826 added the local outlier test
+# the campaign decided to run with (2026-10-07), and with it the key for its window. First match wins.
+AUTOMATIC_RT_CORRECTION_MARKERS = (
+    (policy.AUTOMATIC_RT_LOCAL_SUPPORT, "automatic rt correction local support rt window"),
+    (policy.AUTOMATIC_RT_RUN_WIDE, "execute automatic rt correction for alignment"),
+)
+
+
+def automatic_rt_correction_generation(assembly: bytes) -> str:
+    """Which automatic RT correction a Console assembly implements: policy.AUTOMATIC_RT_LOCAL_SUPPORT
+    (#826), policy.AUTOMATIC_RT_RUN_WIDE (#810 only) or policy.AUTOMATIC_RT_NONE."""
+    for generation, marker in AUTOMATIC_RT_CORRECTION_MARKERS:
+        if marker.encode("utf-16-le") in assembly or marker.encode("utf-8") in assembly:
+            return generation
+    return policy.AUTOMATIC_RT_NONE
+
+
 class PinReader:
     """Reads the identities a campaign pins, the same way at plan time and before every unit.
 
@@ -176,6 +197,7 @@ class PinReader:
         self.catalog_root = catalog_root
         self.gate_root = gate_root
         self._hash_cache: dict[str, tuple[tuple[int, int], str]] = {}
+        self._generation_cache: dict[str, tuple[tuple[int, int], str]] = {}
 
     def _cached_sha256(self, path: str) -> tuple[str, int]:
         stat = os.stat(path)
@@ -186,6 +208,16 @@ class PinReader:
         digest = sha256_file(path)
         self._hash_cache[path] = (key, digest)
         return digest, stat.st_size
+
+    def _cached_generation(self, path: str) -> str:
+        stat = os.stat(path)
+        key = (stat.st_size, stat.st_mtime_ns)
+        cached = self._generation_cache.get(path)
+        if cached and cached[0] == key:
+            return cached[1]
+        generation = automatic_rt_correction_generation(Path(path).read_bytes())
+        self._generation_cache[path] = (key, generation)
+        return generation
 
     def console(self) -> dict[str, Any]:
         from msdial_app.workflow import console_assembly_path
@@ -201,6 +233,9 @@ class PinReader:
             "assembly_sha256": self._cached_sha256(str(assembly))[0],
             # Re-read before every unit, so each file is hashed again only when its size or time moved.
             "inventory_sha256": _binary_inventory(path.parent, self._cached_sha256),
+            # Read from the bytes assembly_sha256 identifies, so it changes only with them. approval_problems
+            # holds it against a profile that turns automatic RT correction on.
+            "automatic_rt_correction": self._cached_generation(str(assembly)),
         }
         sidecar = path.parent / "msdial-console-build-provenance.json"
         if sidecar.is_file():

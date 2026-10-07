@@ -237,6 +237,24 @@ released as it was read, or a deletion recorded within a lock's heartbeat
 window), and its output escapes what the console code page cannot print rather
 than ending without a verdict.
 
+The campaign's run answers come from its approved profile
+(`msdial-campaign-profile.v1`); the runner pins only the Console path, the
+smoothing method and the target peak counts on top of them. Automatic alignment
+RT correction is a profile answer (`execute_automatic_rt_correction`, with
+`automatic_rt_correction_maximum_anchors` 12 as decided on 2026-10-07). The
+campaign runs it with MsdialWorkbench #826's local outlier test, so a manifest
+whose profile turns it on is approvable only when its Console pin records
+`automatic_rt_correction` `local_support`, read from the method keys in the
+Console assembly. A Console of #810 alone (`run_wide`) would run the run-wide
+test without a word, and one with neither (`none`) is refused by Interactive at
+every unit's run start, after its download. The zero-threshold diagnostic never
+corrects: Interactive turns the correction off for it. The gate needs nothing
+more: EXP-1 requires the two audit TSVs Interactive adds to
+`expected_analysis_exports` when the correction is on, CNT-1 does not count them
+as samples, MTH-1 reads the correction's method keys like any other, and QA-1
+sets aside the reference file the Methods paragraph names. The gate reads no
+column or status of the audit TSVs.
+
 ## Running a campaign unattended
 
 Launch `scripts/campaign-runner.py run` for an unattended campaign through Task

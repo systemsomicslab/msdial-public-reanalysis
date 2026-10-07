@@ -520,6 +520,51 @@ def profile_problems(profile: Mapping[str, Any] | None, library_names: Iterable[
     return problems
 
 
+AUTOMATIC_RT_ANSWER = "execute_automatic_rt_correction"
+
+
+def _true(value: Any) -> bool:
+    # As Interactive reads an answer (agent_workflow._as_bool).
+    return value if isinstance(value, bool) else str(value).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def automatic_rt_correction_requested(profile: Mapping[str, Any] | None) -> bool:
+    """Whether the profile turns automatic alignment RT correction on anywhere: in its answers, for an ion
+    mode, or in a workflow_overrides beneath either."""
+    def found(value: Any) -> bool:
+        if isinstance(value, Mapping):
+            return any((key == AUTOMATIC_RT_ANSWER and _true(item)) or found(item) for key, item in value.items())
+        if isinstance(value, (list, tuple)):
+            return any(found(item) for item in value)
+        return False
+    return found({"answers": (profile or {}).get("answers"), "by_ion_mode": (profile or {}).get("by_ion_mode")})
+
+
+def automatic_rt_correction_problems(profile: Mapping[str, Any] | None, console: Mapping[str, Any] | None) -> list[str]:
+    """Why a profile that turns automatic RT correction on cannot run on the pinned Console, or nothing.
+
+    The campaign runs it with MsdialWorkbench #826's local outlier test (decided 2026-10-07). Interactive
+    refuses a Console without the correction only at each unit's run start, after the unit's download, and
+    runs a Console of #810 alone with its run-wide test without a word: the key #826 added is not one
+    Interactive writes, so no method-key record shows the difference.
+    """
+    if not automatic_rt_correction_requested(profile):
+        return []
+    console = console or {}
+    if not console.get("exists"):
+        return []  # "the manifest pins no console binary" says it
+    generation = console.get("automatic_rt_correction")
+    if generation is None:
+        return ["the profile turns automatic RT correction on, and the Console pin does not record which "
+                "correction the Console implements: plan again"]
+    if generation != policy.AUTOMATIC_RT_LOCAL_SUPPORT:
+        implements = ("MsdialWorkbench #810's run-wide outlier test only" if generation == policy.AUTOMATIC_RT_RUN_WIDE
+                      else "no automatic RT correction")
+        return [f"the profile turns automatic RT correction on, and the pinned Console implements {implements}, "
+                "not #826's local outlier test: pin a Console built with #826 and plan again"]
+    return []
+
+
 # ---- the manifest ---------------------------------------------------------------------------------------
 
 def build_manifest(
@@ -774,6 +819,7 @@ def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> lis
     if not libraries:
         problems.append("the manifest pins no library: plan again with --resources")
     problems.extend(profile_problems(manifest.get("profile"), [item["name"] for item in libraries]))
+    problems.extend(automatic_rt_correction_problems(manifest.get("profile"), manifest.get("pins", {}).get("console")))
     for name in ("console", "extractor"):
         pin = manifest.get("pins", {}).get(name) or {}
         if not pin.get("exists") or not pin.get("binary_sha256"):

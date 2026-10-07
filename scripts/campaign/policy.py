@@ -951,6 +951,15 @@ def run_policy_mismatches(report: Mapping[str, Any]) -> list[str]:
 
 # ---- pins ------------------------------------------------------------------------------------------
 
+# Which automatic alignment RT correction the pinned Console implements (ports.PinReader.console records it
+# as automatic_rt_correction). The campaign runs MsdialWorkbench #826's local outlier test (decided
+# 2026-10-07): a Console of #810 alone runs the run-wide test instead, silently, since Interactive does not
+# write the key #826 added; a Console of neither is refused by Interactive at every unit's run start, after
+# its download.
+AUTOMATIC_RT_LOCAL_SUPPORT = "local_support"
+AUTOMATIC_RT_RUN_WIDE = "run_wide"
+AUTOMATIC_RT_NONE = "none"
+
 # What identifies each pinned thing. Paths are recorded but not compared: the Console and the extractor
 # may be reached by another spelling, and a library is named by file name only.
 PIN_IDENTITY = {
