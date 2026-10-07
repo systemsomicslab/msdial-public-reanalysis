@@ -9,7 +9,10 @@ run's records.
 
 These tests pin that the gate reads the folder output_directory names, kept inside the workspace (one
 outside it makes the workspace unusable, exit 3), falls back to <workspace>\\output for a manifest that names
-none, and that RET-1's deletion justification rests on the latest validated run.
+none, and that RET-1 judges a raw deletion by the current run only. Interactive PR #62 at 52b470b holds the
+raw data while a new run prepared after a validated run has not validated (prepared, running or failed): cleanup
+and discard both refuse, approved or not. Review r7-31 found RET-1 passing such a deletion on the superseded
+run's validated outputs; RET-1 now refuses it, naming the superseded run the raw data were held for.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ verifier = release.verifier
 _unit, _outputs, _mztab, _crossing, _write = release._unit, release._outputs, release._mztab, release._crossing, release._write
 VALIDATED = release.VALIDATED
 _ret1 = release._ret1
+_edit = release._edit
 
 
 def _prepared(output: Path) -> None:
@@ -178,58 +182,173 @@ class DeletionAfterANewRunTests(unittest.TestCase):
         self.assertEqual(verifier.FAIL, check.status, check.detail)
         self.assertIn("no mzTab-M is in its output", check.evidence["unvalidated_because"])
 
-    def test_a_superseded_validated_run_justifies_a_deletion_after_the_new_run_failed(self) -> None:
-        """The new run in output-run-2 failed and was not retried; the finished run in output validated."""
+    def _discarded_after_a_new_run(self, root: Path, superseded: list, current: str = "output-run-2",
+                                   **manifest) -> Path:
+        """A unit discarded under the campaign runner's approval with its current run in `current`."""
+        record = {"status": "discarded", "discarded_at": "2026-10-07T04:00:00+00:00",
+                  "campaign_authorizations": [_crossing(5, entry_point="campaign_runner.discard")],
+                  "output_directory": str(root / "unit" / current), "superseded_runs": superseded}
+        record.update(manifest)
+        workspace = _unit(root, outputs=True, **record)
+        (workspace / current).mkdir(exist_ok=True)
+        shutil.rmtree(workspace / "raw")
+        return workspace
+
+    def test_a_deletion_while_the_new_run_has_not_validated_is_refused(self) -> None:
+        """The new run in output-run-2 has not validated; the finished run in output did. Review r7-31: the gate
+        passed this discard on the superseded run's outputs, which Interactive 52b470b refuses to discard."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            workspace = _unit(root, status="discarded", discarded_at="2026-10-07T04:00:00+00:00",
-                              campaign_authorizations=[_crossing(5, entry_point="campaign_runner.discard")],
-                              outputs=True, output_directory=str(root / "unit" / "output-run-2"),
-                              superseded_runs=[_superseded(root / "unit")])
+            workspace = self._discarded_after_a_new_run(root, [_superseded(root / "unit")])
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual(verifier.HELD_FOR_NEW_RUN, check.evidence["justification"])
+        self.assertEqual("its superseded run 0 (superseded_runs[0])", check.evidence["held_superseded_run"])
+        self.assertEqual("output", check.evidence["held_superseded_output"])
+        self.assertIn("superseded_runs[0]", check.detail)
+        self.assertIn("output-run-2", check.detail)
+        self.assertIn("held", check.detail)
+
+    def test_the_held_run_named_is_the_latest_superseded_run_that_validated(self) -> None:
+        """Two finished runs in output and output-run-2, the current one in output-run-3."""
+        for broken, expected in ((False, "superseded_runs[1]"), (True, "superseded_runs[0]")):
+            with self.subTest(latest_unvalidated=broken), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                # The latest finished run: validated, or failed validation in its records and incomplete on disk.
+                latest = _superseded(root / "unit", "output-run-2", **(
+                    {"status": "validation_failed", "cleanup_allowed": False} if broken else {}))
+                workspace = self._discarded_after_a_new_run(root, [_superseded(root / "unit"), latest],
+                                                            current="output-run-3")
+                (workspace / "output-run-2").mkdir()
+                _outputs(workspace / "output-run-2", planned=("s0.mdpeak", "s1.mdpeak"),
+                         written=("s0.mdpeak",) if broken else None)
+                check = _ret1(workspace)
+
+            self.assertEqual(verifier.FAIL, check.status, check.detail)
+            self.assertIn(expected, check.detail)
+
+    def test_the_hold_comes_before_a_failure_or_a_disposition(self) -> None:
+        """A new run that failed and a campaign skip each justify a deletion without a validated superseded run;
+        while one validated, neither does."""
+        failures = [{"reason": "the Console exited 1", "recorded_at": "2026-10-07T03:00:00+00:00"}]
+        cases = {
+            "a recorded run failure": {"run_failures": failures},
+            "a campaign skip": {"campaign_disposition": {"applied": True, "disposition": "skip",
+                                                         "reasons": ["test"]}},
+        }
+        for name, extra in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                workspace = self._discarded_after_a_new_run(root, [_superseded(root / "unit")], **extra)
+                held = _ret1(workspace)
+                # The same unit with no superseded run: the failure or the skip justifies the deletion.
+                _edit(workspace / "provenance" / "run-manifest.json", superseded_runs=[])
+                plain = _ret1(workspace)
+
+            self.assertEqual(verifier.FAIL, held.status, held.detail)
+            self.assertEqual(verifier.HELD_FOR_NEW_RUN, held.evidence["justification"])
+            self.assertEqual(verifier.PASS, plain.status, plain.detail)
+
+    def test_approved_or_not_the_deletion_is_refused(self) -> None:
+        """No campaign crossing: a confirmed=true discard is refused the same way."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = self._discarded_after_a_new_run(root, [_superseded(root / "unit")],
+                                                        campaign_authorizations=[])
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("confirmed=true", check.evidence["authority"])
+        self.assertEqual(verifier.HELD_FOR_NEW_RUN, check.evidence["justification"])
+
+    def test_a_superseded_run_validated_by_its_records_alone_holds_the_raw_data(self) -> None:
+        """Interactive holds on the superseded run's records (a cleanup-ready status or cleanup_allowed), even
+        where its folder no longer shows every output."""
+        for name, record in (("cleanup-ready status", {"cleanup_allowed": False}),
+                             ("cleanup_allowed", {"status": "raw_cleaned"})):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                workspace = self._discarded_after_a_new_run(root, [_superseded(root / "unit", **record)])
+                (workspace / "output" / "s0.mdpeak").unlink()
+                check = _ret1(workspace)
+
+            self.assertEqual(verifier.FAIL, check.status, check.detail)
+            self.assertIn("by its records", check.detail)
+
+    def test_a_cleanup_whose_current_run_is_incomplete_is_refused_naming_the_held_run(self) -> None:
+        """The current run's records validated but an export is absent, so it has not validated; an older run did."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = _unit(root, status="raw_cleaned", raw_cleaned_at="2026-10-07T05:00:00+00:00",
+                              campaign_authorizations=[_crossing(5)], outputs=True,
+                              output_directory=str(root / "unit" / "output-run-2"),
+                              superseded_runs=[_superseded(root / "unit")], **VALIDATED)
             (workspace / "output-run-2").mkdir()
+            _outputs(workspace / "output-run-2", planned=("s0.mdpeak", "s1.mdpeak"), written=("s0.mdpeak",))
+            shutil.rmtree(workspace / "raw")
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertEqual(verifier.HELD_FOR_NEW_RUN, check.evidence["justification"])
+        self.assertIn("1 of the 2 exports its run planned are absent", check.evidence["unvalidated_because"])
+        self.assertIn("superseded_runs[0]", check.detail)
+
+    def test_a_cleanup_after_the_new_run_validated_passes_on_that_run(self) -> None:
+        """Once the new run validates, the cleanup is judged by it like any other; no superseded run is named."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = _unit(root, status="raw_cleaned", raw_cleaned_at="2026-10-07T05:00:00+00:00",
+                              campaign_authorizations=[_crossing(5)], outputs=True,
+                              output_directory=str(root / "unit" / "output-run-2"),
+                              superseded_runs=[_superseded(root / "unit")], **VALIDATED)
+            (workspace / "output-run-2").mkdir()
+            _outputs(workspace / "output-run-2")
             shutil.rmtree(workspace / "raw")
             check = _ret1(workspace)
 
         self.assertEqual(verifier.PASS, check.status, check.detail)
         self.assertEqual("validated", check.evidence["justification"])
-        self.assertIn("superseded_runs[0]", check.detail)
-        self.assertIn("output-run-2", check.detail)
+        self.assertNotIn("superseded", check.detail)
 
-    def test_the_latest_validated_run_is_the_one_named(self) -> None:
-        """Two finished runs in output and output-run-2, the current one in output-run-3."""
-        for broken, expected in ((False, "superseded_runs[1]"), (True, "superseded_runs[0]")):
-            with self.subTest(latest_incomplete=broken), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                workspace = _unit(root, status="discarded", discarded_at="2026-10-07T04:00:00+00:00",
-                                  campaign_authorizations=[_crossing(5, entry_point="campaign_runner.discard")],
-                                  outputs=True, output_directory=str(root / "unit" / "output-run-3"),
-                                  superseded_runs=[_superseded(root / "unit"),
-                                                   _superseded(root / "unit", "output-run-2")])
-                (workspace / "output-run-2").mkdir()
-                # One planned export the Console did not write leaves output-run-2 incomplete.
-                _outputs(workspace / "output-run-2", planned=("s0.mdpeak", "s1.mdpeak"),
-                         written=("s0.mdpeak",) if broken else None)
-                (workspace / "output-run-3").mkdir()
-                shutil.rmtree(workspace / "raw")
-                check = _ret1(workspace)
+    def test_a_split_part_released_while_its_new_run_has_not_validated_is_refused(self) -> None:
+        """Split part or not: the part's raw tree went in its parent's release while its new run had not validated."""
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = release.ReleasedSplitParentTests()._released(temporary)
+            part = fixture.part_roots[0]
+            listed = _ret1(part)
+            _edit(fixture.part_manifest(0), status="preflight_passed", cleanup_allowed=False,
+                  output_directory=str(part / "output-run-2"), superseded_runs=[_superseded(part)])
+            (part / "output-run-2").mkdir()
+            held = _ret1(part)
 
-            self.assertEqual(verifier.PASS, check.status, check.detail)
-            self.assertIn(expected, check.detail)
+        self.assertEqual(verifier.PASS, listed.status, listed.detail)
+        self.assertEqual(verifier.FAIL, held.status, held.detail)
+        self.assertEqual(verifier.HELD_FOR_NEW_RUN, held.evidence["justification"])
+        self.assertIn("superseded_runs[0]", held.detail)
 
     def test_a_superseded_run_whose_records_did_not_validate_justifies_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            workspace = _unit(root, status="discarded", discarded_at="2026-10-07T04:00:00+00:00",
-                              campaign_authorizations=[_crossing(5, entry_point="campaign_runner.discard")],
-                              outputs=True, output_directory=str(root / "unit" / "output-run-2"),
-                              superseded_runs=[_superseded(root / "unit", status="validation_failed",
-                                                           mztab_validation={"summary": {"failed": 1}})])
-            (workspace / "output-run-2").mkdir()
-            shutil.rmtree(workspace / "raw")
+            workspace = self._discarded_after_a_new_run(
+                root, [_superseded(root / "unit", status="validation_failed", cleanup_allowed=False,
+                                   mztab_validation={"summary": {"failed": 1}})])
             check = _ret1(workspace)
 
         self.assertEqual(verifier.WARN, check.status, check.detail)
         self.assertEqual("", check.evidence["justification"])
+
+    def test_raw_still_held_on_disk_is_not_refused(self) -> None:
+        """The hold kept: the new run has not validated, the raw tree is present, nothing was deleted."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = _unit(root, status="preflight_passed", outputs=True,
+                              output_directory=str(root / "unit" / "output-run-2"),
+                              superseded_runs=[_superseded(root / "unit")])
+            (workspace / "output-run-2").mkdir()
+            check = _ret1(workspace)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
 
     def test_raw_still_present_is_judged_by_the_current_runs_folder(self) -> None:
         """Validated records and every output in output-run-2: the deletion is due, as for output."""

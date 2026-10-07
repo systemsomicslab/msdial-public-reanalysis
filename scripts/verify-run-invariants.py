@@ -7487,6 +7487,34 @@ def _outputs_incomplete(output: Path) -> "tuple[str, list[str]]":
     return "", []
 
 
+# A superseded run Interactive calls validated by its records (repository_reanalysis.superseded_validated_run,
+# PR #62 at 52b470b): its status cleanup-ready, or its cleanup allowed.
+CLEANUP_READY_STATUSES = frozenset({"mztab_validated", "completed", "cleanup_pending_confirmation"})
+# _deletion_justification's kind for a unit whose raw data are held for a new run that has not validated.
+HELD_FOR_NEW_RUN = "held_for_new_run"
+
+
+def _held_superseded_run(provenance: dict, workspace: Path) -> "dict | None":
+    """The newest superseded run that validated, for a unit whose current run has not; None when there is none.
+
+    Interactive PR #62 (52b470b): raw-data deletion is judged by the unit's current run, and while a new run
+    prepared after a validated run has not validated (prepared, running or failed) the raw data are held for
+    it - cleanup and discard both refuse. A superseded run counts as validated by its records as Interactive
+    reads them (a cleanup-ready status, or cleanup_allowed true) or by the gate's own fact, a validated mzTab-M
+    and every output in the folder that run's output_directory names. The caller has established that the
+    current run did not validate.
+    """
+    for which, record, output in _unit_runs(provenance, workspace)[1:]:
+        recorded = str(record.get("status") or "") in CLEANUP_READY_STATUSES or record.get("cleanup_allowed") is True
+        on_disk = not (_mztab_not_validated(record, output) or _outputs_incomplete(output)[0])
+        if recorded or on_disk:
+            return {"run": which, "status": str(record.get("status") or ""), "output": output.name,
+                    "finalized_at": record.get("finalized_at"), "superseded_at": record.get("superseded_at"),
+                    "validated_by": "its records and its output" if recorded and on_disk
+                    else "its records" if recorded else "its output"}
+    return None
+
+
 def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, str]":
     """What the campaign's deletion rule lets this unit's raw data go for: (kind, detail), or ("", "").
 
@@ -7497,24 +7525,26 @@ def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, st
     judged by the rest.
     The gate's own verdicts do not enter: the user decided that deletion follows the outputs, whatever
     the gate says of them.
-    Validated outputs are the latest validated run's (_unit_runs): the current run's, read in the folder its
-    output_directory names, else the newest of its superseded_runs whose own records and folder show them. A
-    new run prepared for a finished unit (Interactive 0.5.29) leaves the finished run's validated outputs in
-    their folder, and a new run that has not validated takes nothing from them.
+    A deletion is judged by the unit's current run only, read in the folder its output_directory names
+    (Interactive PR #62 at 52b470b). A superseded run's validated outputs never justify one: while a new run
+    prepared after a validated run has not validated - prepared, running or failed - the raw data are held for
+    it, and no cleanup or discard may delete them, approved or not, split part or not. That case is
+    HELD_FOR_NEW_RUN, ahead of a failure, a disposition or a runner's end, and RET-1 refuses the deletion.
     """
     status = str(provenance.get("status") or "")
-    runs = _unit_runs(provenance, workspace)
-    for which, record, output in runs:
-        if _mztab_not_validated(record, output) or _outputs_incomplete(output)[0]:
-            continue
-        if record is provenance:
-            return "validated", ("its run was finalised, its mzTab-M validated and is in its output, and every export "
-                                 "its run planned is there"
-                                 + ("" if output.name == DEFAULT_OUTPUT_DIRECTORY else f" ({output.name})"))
-        current = runs[0][2]
-        return "validated", (f"{which} was finalised, its mzTab-M validated and is in its output ({output.name}), and "
-                             f"every export that run planned is there; the run prepared after it, in {current.name}, "
-                             f"has not validated ({_mztab_not_validated(provenance, current) or _outputs_incomplete(current)[0]})")
+    output = _unit_runs(provenance, workspace)[0][2]
+    unvalidated = _mztab_not_validated(provenance, output) or _outputs_incomplete(output)[0]
+    if not unvalidated:
+        return "validated", ("its run was finalised, its mzTab-M validated and is in its output, and every export "
+                             "its run planned is there"
+                             + ("" if output.name == DEFAULT_OUTPUT_DIRECTORY else f" ({output.name})"))
+    held = _held_superseded_run(provenance, workspace)
+    if held is not None:
+        return HELD_FOR_NEW_RUN, (
+            f"{held['run']} validated (status {held['status'] or 'unrecorded'!r}, by {held['validated_by']}, in "
+            f"{held['output']}), and the new run prepared after it, its current run in {output.name}, has not "
+            f"({unvalidated}): its raw data are held for that new run, and no cleanup or discard may delete them "
+            "until it validates")
     failures = _run_failures(provenance)
     if failures:
         last = failures[-1]
@@ -7557,7 +7587,9 @@ def check_retention_policy_was_acted_on(
     manifest's record, from a validation that checked at least one file, with every export EXP-1 holds
     the run to and B6's .mdpeak on disk. RET-1 never calls a deletion justified by outputs the progress
     walk or EXP-1 says are not there, and a cleanup after validated output (raw_cleaned) that lacks them
-    is refused. A split part whose parent's release does not list it is a WARN: its tree went without its
+    is refused. Validated is the current run's, in the folder its output_directory names: a deletion while
+    a new run prepared after a validated run has not validated is refused whatever authorized it, naming
+    the superseded run the raw data were held for (Interactive PR #62). A split part whose parent's release does not list it is a WARN: its tree went without its
     own state being part of the decision. So is a deletion with no recorded authority in a unit that
     carries campaign crossings: the gate cannot tell a person's confirmation from a campaign component
     that deleted without recording its approval.
@@ -7707,6 +7739,14 @@ def check_retention_policy_was_acted_on(
             unvalidated = _mztab_not_validated(provenance, output)
             incomplete, absent = ("", []) if unvalidated else _outputs_incomplete(output)
     evidence.update(authority=authority, justification=kind)
+    if kind == HELD_FOR_NEW_RUN:
+        held = _held_superseded_run(provenance, workspace) or {}
+        evidence.update(unvalidated_because=unvalidated or incomplete, held_superseded_run=held.get("run"),
+                        held_superseded_output=held.get("output"), held_superseded_status=held.get("status"))
+        verdict(FAIL, f"The raw tree was deleted ({deleted_where}) on {authority}, and {why}. A raw deletion is "
+                      "judged by the unit's current run (Interactive PR #62): a superseded run's validated outputs "
+                      "justify no deletion, and the new run was left without the inputs it was prepared to read.")
+        return
     if deletion == "raw_cleaned" and kind != "validated":
         evidence["unvalidated_because"] = unvalidated or incomplete
         if absent:
