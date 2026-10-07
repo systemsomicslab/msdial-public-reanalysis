@@ -72,7 +72,9 @@ class UnitScript:
     # arriving and the job never ends until it is cancelled); blocked; interrupt; shared (waiting for another
     # unit's lease to fetch a shared object, no bytes of its own, then ok)
     downloads: list[str] = field(default_factory=lambda: ["ok"])
-    disposition: str = "run"  # run, split, skip, exclude, none, malformed
+    # run, split, skip, exclude, none, malformed; aif_hold (Interactive 0.5.31: a skip with hold true for a
+    # multi-collision-energy AIF unit, aif_multi_ce_awaiting_console)
+    disposition: str = "run"
     # Whether the preflight applies its disposition (a campaign unit, Interactive 0.5.17), and whether
     # classify_preflight then does; held: what disposition_hold holds the unit for, if anything.
     applied: bool = True
@@ -138,6 +140,10 @@ class FakeInteractive:
         self.console_starts: list[tuple[str, str]] = []
         self.cancels: list[tuple[str, str]] = []
         self.split_release_supported = False
+        # Whether discard and release_split_parent take release_disposition_hold (the agreed contract of
+        # 2026-10-07); False plays an Interactive 0.5.31 before it, which has the hold and no way to release it.
+        self.release_hold_supported = True
+        self.split_parts: dict[str, list[str]] = {}
         self.store = ManifestStore()
         self._counter = 0
         self._tries: dict[tuple[str, str], int] = {}
@@ -356,15 +362,20 @@ class FakeInteractive:
             # disposition_hold: nothing is read, and the unit keeps whatever disposition it carries.
             return {"completed": False, "extractor_found": True, "preflight_held": {"reason": script.held, "detail": "held"}}
         disposition = script.disposition
+        hold = disposition == "aif_hold"
+        if hold:
+            disposition = "skip"
         if disposition != "none":
             record = {
                 "schema": policy.DISPOSITION_SCHEMA, "disposition": disposition,
-                "reasons": [] if disposition in ("run", "split") else [f"test_{disposition}"],
+                "reasons": [] if disposition in ("run", "split") else
+                ["aif_multi_ce_awaiting_console"] if hold else [f"test_{disposition}"],
                 "warnings": [], "excluded_inputs": [], "split_key": {"acquisition": True} if disposition == "split" else None,
                 "decided_at": self._stamp(),
                 "extractor": {"sha256": self.world.extractor_sha, "inventory_sha256": SHA["extractor"],
                               "provenance_status": "verified", "pinned": True},
                 "applied": script.applied,
+                **({"hold": True} if hold else {}),
             }
             if disposition == "malformed":
                 record = {"schema": "other", "disposition": "maybe"}
@@ -401,6 +412,9 @@ class FakeInteractive:
             self.world.scripts.setdefault(part, UnitScript())
             parts.append({"analysis_unit_id": part, "workspace": str(part_workspace), "manifest_path": str(part_manifest),
                           "acquisition_mode": mode})
+            self.split_parts.setdefault(manifest_path, [])
+            if str(part_manifest) not in self.split_parts[manifest_path]:
+                self.split_parts[manifest_path].append(str(part_manifest))
         self._update(manifest_path, lambda manifest: manifest.update(status="split_by_acquisition"))
         return {"written": not already, "already_split": already, "parts": parts}
 
@@ -543,20 +557,82 @@ class FakeInteractive:
         return attempt.get("job_id") in self.orphans or (
             not attempt.get("ended_at") and job is not None and job["status"] in ("queued", "running"))
 
-    def discard(self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "") -> dict[str, Any]:
-        self.calls.append(("discard", {"manifest_path": manifest_path, "unit_id": unit_id}))
+    @staticmethod
+    def held_by_disposition(manifest: dict[str, Any]) -> bool:
+        """Interactive f225e9b's unreleased_disposition_hold: an applied skip with hold true, unless an operator's
+        skip lifted it (disposition_hold_released_by operator_skip). A discard that did not record the release
+        leaves it held, discarded or not (review r9-64)."""
+        record = manifest.get("campaign_disposition") or {}
+        return (manifest.get("disposition_hold_released_by") != "operator_skip" and record.get("applied") is True
+                and record.get("disposition") == "skip" and record.get("hold") is True)
+
+    def _held_parts(self, parent_path: str) -> list[str]:
+        return [path for path in self.split_parts.get(parent_path, [])
+                if self.held_by_disposition(self.store.read(path) or {})]
+
+    def _unsupported_release(self, release: bool) -> dict[str, Any] | None:
+        if release and not self.release_hold_supported:
+            return {"ok": False, "reason": "unsupported", "detail": "takes no release_disposition_hold"}
+        return None
+
+    def discard(self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "",
+                release_disposition_hold: bool = False) -> dict[str, Any]:
+        """As Interactive discards under the agreed contract of 2026-10-07: a unit or split part its campaign
+        disposition holds is never discarded without release_disposition_hold, approval or not; with it the
+        discard proceeds and records disposition_hold_released_by operator_skip. A split part's discard deletes
+        nothing (its raw data are its parent's) and answers part_ended; a split parent's is its release."""
+        self.calls.append(("discard", {"manifest_path": manifest_path, "unit_id": unit_id,
+                                       "release_disposition_hold": release_disposition_hold}))
+        unsupported = self._unsupported_release(release_disposition_hold)
+        if unsupported:
+            return unsupported
         manifest = self.store.read(manifest_path) or {}
+        if manifest_path in self.split_parts:
+            result = self._release_parent(manifest_path, release_disposition_hold)
+            if result.get("deleted"):
+                self._update(manifest_path, lambda current: current.update(status="discarded"))
+            return result
         blockers = self.discard_blockers(manifest)
+        held = self.held_by_disposition(manifest)
+        if held and not release_disposition_hold:
+            blockers.append("disposition_held")
         if blockers:
             return {"ok": True, "deleted": False, "blockers": blockers, "detail": "Interactive would refuse: " + ", ".join(blockers)}
+
+        def ended(current: dict[str, Any]) -> None:
+            current["status"] = "discarded"
+            if held:
+                current["disposition_hold_released_by"] = "operator_skip"
+
+        if manifest.get("split_from"):
+            self._update(manifest_path, ended)
+            return {"ok": True, "deleted": False, "part_ended": True, "raw_release_deferred_to": manifest["split_from"]["manifest_path"]}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
-        self._update(manifest_path, lambda current: current.update(status="discarded"))
+        self._update(manifest_path, ended)
         return {"ok": True, "deleted": True}
 
-    def release_split_parent(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
-        self.calls.append(("release_split_parent", {"manifest_path": manifest_path}))
+    def release_split_parent(self, *, manifest_path: str, authorization_path: str,
+                             release_disposition_hold: bool = False) -> dict[str, Any]:
+        self.calls.append(("release_split_parent", {"manifest_path": manifest_path,
+                                                    "release_disposition_hold": release_disposition_hold}))
         if not self.split_release_supported:
             return {"ok": False, "reason": "unsupported", "detail": "no split-parent release"}
+        unsupported = self._unsupported_release(release_disposition_hold)
+        if unsupported:
+            return unsupported
+        return self._release_parent(manifest_path, release_disposition_hold)
+
+    def _release_parent(self, manifest_path: str, release: bool) -> dict[str, Any]:
+        """A held split part keeps its parent's raw data until it is released or run. As Interactive f225e9b's
+        cleanup_split_parent and _part_end do, a release with release_disposition_hold lifts the hold of EVERY
+        part still held (hold_released), recording disposition_hold_released_by operator_skip on each, whether
+        or not an operator skipped that part; without it, any part still held refuses the release."""
+        held = self._held_parts(manifest_path)
+        if held and not release:
+            return {"ok": True, "deleted": False, "blockers": ["disposition_held"],
+                    "detail": f"{len(held)} part(s): its campaign disposition holds it"}
+        for path in held:
+            self._update(path, lambda current: current.update(status="discarded", disposition_hold_released_by="operator_skip"))
         manifest = self.store.read(manifest_path) or {}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
         return {"ok": True, "deleted": True}

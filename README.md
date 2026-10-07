@@ -147,8 +147,23 @@ WARN every input the lease paired with a declared raw file by inference
 part lists only its own inputs' pairings. ACQ-1 follows rule B2 (2026-10-06): a
 row FAILs where it runs as another type than its file's header alone gives
 (`header_console_acquisition_type`), at any confidence, and where an MS1-only
-file was folded into DDA in a unit declared DIA, AIF or SWATH; its one table of
-sanctioned header-to-row mappings is empty. CLS-2 reads what the download
+file was folded into DDA in a unit declared DIA, AIF or SWATH. Its table of
+sanctioned header-to-row mappings holds one entry (2026-10-07): an AIF header
+may run as SWATH where the binding disposition's `aif_run_as_swath` names the
+rule `single_ce_aif_as_swath_2026_10_07` and exactly one collision energy, and
+the file's record says that rule decided it (`console_acquisition_basis`
+`aif_single_ce_as_swath`); such a row is a WARN naming the rule, and a record of
+more than one energy sanctions nothing. Archive members of a unit-scoped
+archive that no sample row pairs with, which Interactive 0.5.31 includes as
+inputs of their own (`name_pairing.paired_by` `unattributed_member`, rule
+`unit_scoped_archive_2026_10_07`), are explained inputs to INP-1, CLS-1, CLS-2,
+CLS-3 and PAIR-1: each WARNs listing them with
+`manifest.unattributed_members.count`, their rows carry the abstention Class or
+`Unattributed`, and CLS-2 counts them as no approved sample (an approved sample
+with no attributed input beside them is listed under
+`samples_without_attributed_input`, not as missing or undelivered). INP-1 FAILs
+them only from a download shared with other units, and PAIR-1 FAILs where their
+record falls short of the rule. CLS-2 reads what the download
 delivered from the archive member listings and the downloads, counting a
 vendor folder fetched file by file (a Waters `.raw`) as one input and a
 companion file (`.wiff.scan`) as none: an approved sample whose file was
@@ -159,7 +174,7 @@ step a diagnostic records. It takes the family from the file first, as
 Interactive does: a family the diagnostic records from the vendor format or the
 mzML header stands, and the Catalog's instrument text decides only where none
 is recorded. It also reports the production run's `production_peak_counts` where
-Interactive records them. The campaign ledger (schema 3) records the step an
+Interactive records them. The campaign ledger (schema 3 on) records the step an
 estimate used (`threshold_step`), the family step it searched first
 (`coarse_threshold_step`) and the fallback (`step_fallback`,
 `fallback_reason`). The runner asks Interactive 0.5.28 for no step: the
@@ -176,7 +191,21 @@ Checks of the later stages state no `run_policy`. `run_blocked_by` lists the
 checks that stop the run, FAILed or unevaluated where owed. The campaign runner
 reads these fields, and holds a unit unrun, its raw data kept and nothing
 counted against it, while the gate gives it no report it can read before
-production (`scripts/campaign/machine.py`).
+production (`scripts/campaign/machine.py`). It holds a unit the same way where
+Interactive's campaign disposition holds it (`hold` true; the AIF rule of
+2026-10-07: a multi-collision-energy AIF unit, `aif_multi_ce_awaiting_console`,
+waits for a patched Console). That hold (`disposition_held`, ledger schema 4)
+is counted apart in `status`, is never rechecked by itself and keeps no runner
+running; only `recheck-held --unit KEY` (or `--disposition-held` for all of
+them) makes its preflight again. `skip --unit KEY` is the operator's explicit
+decision that lifts the hold: its discard passes Interactive
+`release_disposition_hold`, which records `disposition_hold_released_by`
+`operator_skip`. A split parent's release passes it only when every part its
+disposition holds was skipped that way, since Interactive's release lifts the
+hold of every held part; while a held part has no skip (it ended failed or
+stopped while held), the parent's raw data are kept and its `raw_detail` names
+the part it waits for. Interactive never discards a held unit or a held split
+part without it, and the runner passes it nowhere else.
 
 The report also prints a `PROGRESS` line: the furthest stage, B1-B10, whose
 artifacts exist. It is derived from the artifacts on disk and from fields the

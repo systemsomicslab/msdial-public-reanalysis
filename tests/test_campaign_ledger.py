@@ -233,6 +233,13 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.book.unit("u1")["state"], "contract_held")
         self.assertEqual(ledger.HELD_STATES, ("gate_held", "contract_held"))
         self.assertLessEqual(set(ledger.HELD_STATES), set(ledger.WAITING_STATES))
+        # Held by Interactive's disposition (the AIF rule of 2026-10-07): a waiting state, with no recheck of its own.
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+            self.sql("UPDATE unit SET state = 'disposition_held', resume_state = NULL WHERE unit_key = 'u1'")
+        self.book.transition("u1", "disposition_held", NOW, resume_state="downloaded", next_attempt_at=None)
+        self.assertEqual(self.book.unit("u1")["state"], "disposition_held")
+        self.assertIn(ledger.DISPOSITION_HELD, ledger.WAITING_STATES)
+        self.assertNotIn(ledger.DISPOSITION_HELD, ledger.HELD_STATES)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
             self.sql("INSERT INTO request(at, action, unit_key, reason) VALUES (?, 'recheck_everything', 'u1', 'x')", NOW)
 
@@ -244,9 +251,14 @@ SCHEMA_1_TABLES = (
 )
 
 
+def schema_3() -> str:
+    """The ledger's schema 3 (2026-10-07, before the AIF hold): no disposition_held state."""
+    return ledger.SCHEMA.replace(", 'disposition_held'", "")
+
+
 def schema_2() -> str:
     """The ledger's schema 2 (2026-10-02/03): threshold_step 100 or 1000, and none of the step rule's columns."""
-    text = ledger.SCHEMA.replace("threshold_step IN (10, 100, 1000)", "threshold_step IN (100, 1000)")
+    text = schema_3().replace("threshold_step IN (10, 100, 1000)", "threshold_step IN (100, 1000)")
     dropped = ("coarse_threshold_step", "step_fallback", "fallback_reason")
     return "".join(line for line in text.splitlines(keepends=True) if not any(mark in line for mark in dropped))
 
@@ -410,7 +422,8 @@ class SchemaTwoMigrationTests(unittest.TestCase):
     def test_a_schema_2_ledger_is_migrated_with_every_row(self) -> None:
         with ledger.Ledger(self.old) as book:
             db = book.connection
-            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], "3")
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0],
+                             str(ledger.SCHEMA_VERSION))
             for table, rows in self.rows.items():
                 with self.subTest(table=table):
                     self.assertEqual([tuple(row) for row in db.execute(f"SELECT {self.columns[table]} FROM {table}")],
@@ -423,6 +436,61 @@ class SchemaTwoMigrationTests(unittest.TestCase):
             book.update("u1", NOW, threshold_step=10, coarse_threshold_step=100, step_fallback=1,
                         fallback_reason="no_coarse_step_in_range")
             self.assertEqual((book.unit("u1")["threshold_step"], book.unit("u1")["step_fallback"]), (10, 1))
+
+
+class SchemaThreeMigrationTests(unittest.TestCase):
+    """A ledger of schema 3 is brought to schema 4 when it is opened: unit and transition take disposition_held."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.world = fakes.World(Path(self.directory.name), ["u1", "u2"])
+        self.world.gate.exits.update(pre_cleanup=0, final=0)
+        self.world.run()
+        self.old = Path(self.directory.name) / "schema-3.sqlite"
+        source = sqlite3.connect(str(self.world.ledger_path))
+        target = sqlite3.connect(str(self.old))
+        try:
+            target.executescript(schema_3())
+            self.columns = {}
+            for table in SCHEMA_1_TABLES:
+                columns = [row[1] for row in target.execute(f"PRAGMA table_info({table})")]
+                self.columns[table] = ", ".join(columns)
+                rows = source.execute(f"SELECT {', '.join(columns)} FROM {table}").fetchall()
+                target.executemany(
+                    f"INSERT OR REPLACE INTO {table}({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", rows)
+            target.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
+            target.commit()
+            self.rows = {table: source.execute(f"SELECT {self.columns[table]} FROM {table}").fetchall()
+                         for table in SCHEMA_1_TABLES if table != "meta"}
+        finally:
+            source.close()
+            target.close()
+
+    def test_schema_3_refuses_the_disposition_hold(self) -> None:
+        connection = sqlite3.connect(str(self.old))
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+                connection.execute("UPDATE unit SET state = 'disposition_held', resume_state = 'downloaded' "
+                                   "WHERE unit_key = 'u1'")
+        finally:
+            connection.close()
+
+    def test_a_schema_3_ledger_is_migrated_with_every_row(self) -> None:
+        with ledger.Ledger(self.old) as book:
+            db = book.connection
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], "4")
+            for table, rows in self.rows.items():
+                with self.subTest(table=table):
+                    self.assertEqual([tuple(row) for row in db.execute(f"SELECT {self.columns[table]} FROM {table}")],
+                                     [tuple(row) for row in rows])
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                db.execute("UPDATE transition SET to_state = 'done'")
+            db.execute("UPDATE unit SET state = 'disposition_held', resume_state = 'downloaded', terminal_reason = NULL "
+                       "WHERE unit_key = 'u1'")
+            self.assertEqual(book.unit("u1")["state"], "disposition_held")
 
 
 if __name__ == "__main__":

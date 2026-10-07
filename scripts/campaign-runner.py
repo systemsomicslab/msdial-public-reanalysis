@@ -25,6 +25,9 @@ THE ORDER OF USE
         hours); retry runs the unit again from its Class decision. recheck-held [--unit KEY] makes the step
         every held unit (or the one) was held at again now: for a unit the before-production gate gave no
         usable report for, the gate. The runner also makes it again at every start and every few hours.
+        A unit Interactive's disposition holds (disposition_held: a multi-collision-energy AIF unit waiting for
+        a patched Console, the rule of 2026-10-07) is rechecked only when asked: recheck-held --unit KEY, or
+        recheck-held --disposition-held for every such unit, makes its preflight again.
         Every request is acted on by the runner that holds the campaign; with none running, by the next run.
 
 A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, a failure or a hold stops
@@ -63,6 +66,19 @@ record) makes it exit 3 and says so; it is never reported as another approval's.
 RUN --UNTIL-IDLE returns once every unit has ended or waits for disk. A held unit is not idle: the runner
 stays, polling, and makes the held unit's step again every few hours, so a unit that stays held keeps it
 running until a recheck gives what was missing or an operator skips the unit.
+
+A UNIT INTERACTIVE'S DISPOSITION HOLDS (2026-10-07). A multi-collision-energy AIF unit is held until a patched
+Console exists: Interactive 0.5.31's disposition says skip, hold true, aif_multi_ce_awaiting_console. The runner
+holds it (disposition_held): not run, raw data kept, no retry counted, reported as held in status
+(summary disposition_held, with the count and the reasons), and the other units go on. Nothing rechecks it by
+itself and it keeps no runner running: only recheck-held --unit KEY (or --disposition-held for all of them) lifts
+it, by making its preflight again, and Interactive then decides it anew. skip --unit KEY is the explicit decision
+that lifts the hold: the unit ends as skipped, and its discard passes Interactive release_disposition_hold, which
+records disposition_hold_released_by operator_skip and deletes its raw data under boundary 5; a held split part's
+discard records that the part has ended, and its parent's release then goes ahead, passing the release only when
+every held part was skipped. A held part that ended otherwise keeps the parent's raw data (kept, waiting for that
+part). Nothing else releases a hold:
+Interactive never discards a held unit without it, and an Interactive that cannot take it leaves the raw data held.
 
 THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
 of the approved manifest, naming each library as "library:<file name>" and never by location:
@@ -606,11 +622,14 @@ def command_request(args: argparse.Namespace) -> int:
 
 def command_recheck_held(args: argparse.Namespace) -> int:
     """A recheck_held request for the named unit, or for every held unit: held because the gate gave no
-    usable report (gate_held) or because Interactive's reply or record could not be read (contract_held)."""
+    usable report (gate_held) or because Interactive's reply or record could not be read (contract_held), and,
+    with --disposition-held, every unit Interactive's disposition holds (disposition_held, 2026-10-07), which
+    nothing else rechecks."""
     from campaign import ledger
 
     with _open(args) as book:
-        units = [args.unit] if args.unit else [unit["unit_key"] for unit in book.units(ledger.HELD_STATES)]
+        states = (ledger.DISPOSITION_HELD,) if args.disposition_held else ledger.HELD_STATES
+        units = [args.unit] if args.unit else [unit["unit_key"] for unit in book.units(states)]
         requests = [book.add_request("recheck_held", unit, args.reason, args.by or "", _now()) for unit in units]
         note = _runner_note(book)
     if not requests:
@@ -780,6 +799,8 @@ def command_schedule(args: argparse.Namespace) -> int:
     print(f'schtasks /Run /TN "{task}"')
     print("# run --until-idle ends once every unit has ended or waits for disk. While a unit is held it keeps running,")
     print("# to make the held unit's step again every few hours; a request (recheck-held, skip) waits for a runner.")
+    print("# A unit Interactive's disposition holds (disposition_held) keeps nothing running: recheck-held --unit KEY")
+    print("# or --disposition-held lifts it.")
     print("# A backend that cannot be started 3 times in a row is not started again for an hour; the ledger keeps that")
     print("# pause, so the hourly start honours it. A runner on a campaign with no work left (every unit ended, no request")
     print("# waiting, no held raw data to look at again) exits before it locks the Catalog or starts a backend, and the")
@@ -892,6 +913,9 @@ def parser() -> argparse.ArgumentParser:
         "recheck-held", help="make the step of the held units again now: the gate, for a unit it gave no usable report for")
     recheck.add_argument("--campaign", required=True)
     recheck.add_argument("--unit", help="one held unit; every held unit when left out")
+    recheck.add_argument("--disposition-held", action="store_true",
+                         help="every unit Interactive's disposition holds (disposition_held, a multi-collision-energy "
+                              "AIF unit waiting for a patched Console), in place of the gate- and contract-held units")
     recheck.add_argument("--reason", default="operator recheck of a held unit")
     recheck.add_argument("--by", default="")
     recheck.set_defaults(handler=command_recheck_held)

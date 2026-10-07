@@ -36,6 +36,13 @@ And two defaults the runner proposed and the user did not object to on 2026-10-0
   does not parse among them (UNREADABLE_REPLY_ERRORS), holds that unit, as a missing gate report does, and
   pauses nothing; a recheck makes the step again.
 
+And the AIF rule of 2026-10-07: a multi-collision-energy AIF unit is HELD until a patched Console exists, not
+run, its raw data kept, and not counted as a failure. Interactive 0.5.31 says so in the disposition itself:
+disposition "skip", hold true and the reason aif_multi_ce_awaiting_console (HOLD_FOR_CONSOLE). The runner
+holds such a unit (disposition_held) instead of skipping it, and the hold lifts only at an operator's
+explicit recheck-held (Disposition.held), or at the operator's skip, whose discard passes Interactive
+release_disposition_hold (DISPOSITION_HELD_BLOCKER).
+
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
 msdial-campaign-disposition.v1); read_disposition only reads and checks it. A second mapping of
@@ -54,6 +61,10 @@ from typing import Any, Iterable, Mapping
 
 DISPOSITION_SCHEMA = "msdial-campaign-disposition.v1"
 DISPOSITIONS = ("run", "skip", "exclude", "split")
+# The hold Interactive 0.5.31 writes into a disposition (user decision, 2026-10-07): a multi-collision-energy AIF
+# unit waits for a Console that deconvolutes each energy (MsdialWorkbench #825), and is neither run nor skipped.
+# Interactive records it as disposition "skip", hold true, with this among its reasons.
+HOLD_FOR_CONSOLE = "aif_multi_ce_awaiting_console"
 # The Console's AcquisitionType enum is {DDA, SWATH, AIF, None}, and an unparsable value silently becomes
 # DDA (review correction 3), so these are the only values a per-file record may carry.
 CONSOLE_ACQUISITION_TYPES = ("DDA", "SWATH", "AIF")
@@ -118,6 +129,14 @@ class Disposition:
     # set execution_allowed, the status and each input's acquisition type. Outside a campaign it is advice,
     # and the runner acts on no disposition that is not applied.
     applied: bool = False
+    # Interactive 0.5.31: a skip that is a hold (the AIF rule of 2026-10-07): the unit waits, its raw data kept.
+    hold: bool = False
+
+    @property
+    def held(self) -> bool:
+        """Whether the disposition holds the unit rather than ending it: a skip with hold true. A hold keeps the
+        raw data and counts nothing; only an operator's recheck-held asks Interactive again."""
+        return self.hold and self.disposition == "skip"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -130,6 +149,7 @@ class Disposition:
             "decided_at": self.decided_at,
             "extractor": dict(self.extractor),
             "applied": self.applied,
+            "hold": self.hold,
         }
 
 
@@ -178,6 +198,13 @@ def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
     applied = record.get("applied", False)
     if not isinstance(applied, bool):
         problems.append("applied is neither true nor false")
+    # A disposition before Interactive 0.5.31 says nothing of a hold. A hold is a skip that waits (2026-10-07);
+    # on any other disposition it is a record of another shape, which holds the unit as a contract result.
+    hold = record.get("hold", False)
+    if not isinstance(hold, bool):
+        problems.append("hold is neither true nor false")
+    elif hold and disposition != "skip":
+        problems.append(f"hold is true on a {disposition!r} disposition, where only a skip is held")
     if problems:
         raise DispositionError("campaign_disposition: " + "; ".join(problems) + ".")
     return Disposition(
@@ -189,6 +216,7 @@ def read_disposition(manifest: Mapping[str, Any]) -> Disposition | None:
         decided_at=str(record.get("decided_at") or ""),
         extractor=dict(extractor),
         applied=applied is True,
+        hold=hold is True,
     )
 
 
@@ -700,7 +728,11 @@ def download_bound_gb(total: int, policy: DiskPolicy) -> float:
 # The permanent ones do not change by waiting: a validated run takes the normal cleanup instead, and a run
 # that left an mzTab-M it could not validate keeps its raw data until Interactive has a discard for it.
 # console_live is the port's own: a Console that may still read the raw tree (one a backend restart left
-# running) ends, or the runner stops it, so waiting mends it.
+# running) ends, or the runner stops it, so waiting mends it. disposition_held (Interactive 0.5.31): the unit's
+# campaign disposition holds it, and Interactive never discards a held unit or a held split part unless the
+# call passes release_disposition_hold, which only an operator's skip of the held unit does; waiting does not
+# mend it, and the machine keeps such raw data (the hold's own decision) rather than holding them for a recheck.
+DISPOSITION_HELD_BLOCKER = "disposition_held"
 DISCARD_BLOCKERS = {
     "console_live": False,
     "validated_status": True,
@@ -708,6 +740,7 @@ DISCARD_BLOCKERS = {
     "mztab_output_exists": True,
     "raw_outside_workspace": True,
     "finalisation_held": False,
+    DISPOSITION_HELD_BLOCKER: True,
 }
 
 
