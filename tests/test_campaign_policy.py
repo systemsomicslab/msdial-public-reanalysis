@@ -182,8 +182,17 @@ class DiagnosticTests(unittest.TestCase):
             with self.subTest(instrument):
                 self.assertEqual(policy.threshold_step(instrument, "QTOF"), 100)
 
+    def test_the_family_step_is_interactives(self) -> None:
+        """Interactive 0.5.28's family_threshold_step (msdial-interactive-app#61): 1,000 for a Fourier-transform
+        family, 100 for every other, the Catalog's text not read."""
+        for family, step in (("Fourier-transform MS", 1000), ("FT-ICR", 1000), ("QTOF", 100), ("GC-MS", 100),
+                             ("Unknown", 100), ("", 100)):
+            with self.subTest(family):
+                self.assertEqual(policy.family_step(family), step)
+
     def test_the_step_an_estimate_used(self) -> None:
-        """The user's step rule of 2026-10-06, read against the family step the runner asked for."""
+        """The user's step rule of 2026-10-06, read against the family step of the family the estimate records
+        (or, for an Interactive before 0.5.28, the step the runner asked for)."""
         self.assertEqual(policy.estimate_step({"threshold_step": 100}, 100),
                          {"threshold_step": 100, "coarse_threshold_step": 100, "step_fallback": False,
                           "fallback_reason": None}, "an Interactive before 0.5.28: the step asked for, no fallback")
@@ -193,7 +202,7 @@ class DiagnosticTests(unittest.TestCase):
                           "fallback_reason": "no_coarse_step_in_range"})
         self.assertEqual(policy.estimate_step({"threshold_step": 100.0, "coarse_threshold_step": 1000,
                                                "step_fallback": True, "fallback_reason": None}, 1000)["threshold_step"], 100)
-        for estimate, said in (({"threshold_step": 1, "coarse_threshold_step": 10, "step_fallback": True}, "asked for 100"),
+        for estimate, said in (({"threshold_step": 1, "coarse_threshold_step": 10, "step_fallback": True}, "family step is 100"),
                                ({"threshold_step": 1, "coarse_threshold_step": 100, "step_fallback": True}, "gives 10"),
                                ({"threshold_step": 10, "coarse_threshold_step": 100, "step_fallback": False}, "gives 100"),
                                ({"threshold_step": 100, "step_fallback": "yes"}, "neither true nor false"),

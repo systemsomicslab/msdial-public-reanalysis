@@ -6833,8 +6833,9 @@ FINE_STEP_DIVISOR = 10
 # family step and falls back to 1, at the noise floor.
 FAMILY_STEPS = {"qtof": 100, "fourier": 1000}
 STEP_FLOORS = {"qtof": 10, "fourier": 100}
-# Fourier-transform analysers in the Catalog's instrument text, as the campaign runner reads them for the
-# diagnostic's step (scripts/campaign/policy.py _FOURIER_INSTRUMENT). Read only where the diagnostic records
+# Fourier-transform analysers in the Catalog's instrument text, as the campaign runner reads them
+# (scripts/campaign/policy.py _FOURIER_INSTRUMENT; since Interactive 0.5.28 the runner asks for no step, and
+# Interactive's family decides it, msdial-interactive-app#61). Read only where the diagnostic records
 # no family from the file itself (_step_family): before 0.5.28 Interactive labelled every mzML QTOF, and
 # since then it reads the mzML header and lets a declared instrument decide only over a format default.
 FOURIER_INSTRUMENT = re.compile(
@@ -6899,6 +6900,23 @@ def _figure(value: "float | None") -> str:
     if value is None:
         return "?"
     return f"{int(value):,}" if value == int(value) else f"{value:,}"
+
+
+def _is_fourier_family(named: object) -> bool:
+    family = str(named or "").casefold()
+    return "fourier" in family or "ft-icr" in family or "fticr" in family
+
+
+def _recorded_family(item: dict) -> tuple[str, str]:
+    """(family, source): the instrument family a diagnostic records, its representative's first, and what
+    Interactive took it from ("" for either where nothing is recorded, as before 0.5.28 for the source)."""
+    representative = item.get("representative") if isinstance(item.get("representative"), dict) else {}
+    family = next((str(named).strip() for named in (representative.get("instrument_family"),
+                                                    _diagnostic_field(item, "instrument_family"))
+                   if str(named or "").strip()), "")
+    source = str(representative.get("instrument_family_source")
+                 or _diagnostic_field(item, "instrument_family_source") or "").strip()
+    return family, source
 
 
 def _step_family(item: dict, provenance: dict | None) -> tuple[str, str]:
@@ -6992,8 +7010,18 @@ def _step_rule(item: dict, provenance: dict | None = None) -> dict:
         broken.append(f"the instrument-family step recorded is {_figure(coarse)}, which is neither 100 (QTOF-type) "
                       "nor 1,000 (Fourier-transform)")
     elif recorded and coarse is not None and coarse != FAMILY_STEPS[family]:
-        notes.append(f"the diagnostic searched first at step {_figure(coarse)}, where {family_name} data "
-                     f"({family_why}) take {FAMILY_STEPS[family]:,}")
+        note = (f"the diagnostic searched first at step {_figure(coarse)}, where {family_name} data "
+                f"({family_why}) take {FAMILY_STEPS[family]:,}")
+        own, source = _recorded_family(item)
+        own_step = FAMILY_STEPS["fourier" if _is_fourier_family(own) else "qtof"]
+        if own and source and coarse != own_step:
+            # Interactive 0.5.28 (msdial-interactive-app#61) always searches first the step of the family it
+            # records, and only records a requested step; the campaign runner asks for none. A record whose
+            # search began elsewhere came from a build that searched a requested step, not from the rule.
+            note += (f"; the diagnostic records the family {own}, from {source}, whose step is {own_step:,}, and "
+                     "Interactive 0.5.28 always searches that step first and never a requested one, so this "
+                     "search was not made by its rule")
+        notes.append(note)
     if fallback is True:
         fine = coarse / FINE_STEP_DIVISOR if coarse else None
         said = (f"step {_figure(step)}, falling back from the instrument-family step {_figure(coarse)}"

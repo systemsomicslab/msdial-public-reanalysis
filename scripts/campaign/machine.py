@@ -1746,16 +1746,27 @@ class Runner:
 
     def _estimate(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
         """The stepped threshold from the diagnostic, with the campaign's step rule applied: {"estimate",
-        "representative", "step"}, the step being policy.estimate_step's record of the step the estimate used,
-        the family step it searched first and whether and why it fell back (the user's rule of 2026-10-06). None
-        where Interactive answered that no estimate is ready; its ok:false reply where a call did not give one,
-        for the caller to classify (a backend that does not answer is not the unit's failure). An estimate
-        whose step the rule does not give is a reply the runner cannot read (reason malformed): the unit is
-        held, not run at a step nobody chose.
+        "representative", "step", "family"}, the step being policy.estimate_step's record of the step the
+        estimate used, the family step it searched first and whether and why it fell back (the user's rule of
+        2026-10-06), and "family" the instrument family Interactive read, with its source. None where
+        Interactive answered that no estimate is ready; its ok:false reply where a call did not give one, for the
+        caller to classify (a backend that does not answer is not the unit's failure). An estimate whose step the
+        rule does not give is a reply the runner cannot read (reason malformed): the unit is held, not run at a
+        step nobody chose.
 
-        The estimate is asked for again at the policy's family step only where the one it gave searched
-        another first: after a fallback, threshold_step is the finer step, and coarse_threshold_step is the one
-        to compare (Interactive 0.5.28; an older one records threshold_step alone)."""
+        INTERACTIVE DECIDES THE STEP (0.5.28, msdial-interactive-app#61). It reads the instrument family from
+        the representative file (its vendor format or mzML header; the repository's declared instrument only
+        over a format default), always searches that family's step first, and only records a requested step,
+        never searching it. So the runner asks once, with no step, and reads the estimate against the family
+        step of the family the estimate itself records (policy.family_step): it never asks again at a step of
+        its own, which would come back unsearched and hold the unit for a step nobody searched (a multi-
+        platform study's "Q Exactive; TripleTOF 6600" on a SCIEX .wiff; review of #61, 2026-10-07). Where the
+        Catalog's instrument text would give another step, a note says so, and the unit runs at
+        Interactive's.
+
+        An Interactive before 0.5.28 records threshold_step alone, the step it was asked for, and labelled every
+        mzML QTOF: for it alone the runner asks again at policy.threshold_step's step, which that build
+        searches."""
         arguments = {"job_id": unit["diagnostic_job_id"], "manifest_path": unit["manifest_path"],
                      "minimum": self.policy.peak_count_min, "maximum": self.policy.peak_count_max}
         first = self.ports.interactive.estimate(**arguments, step=0)
@@ -1764,23 +1775,38 @@ class Runner:
         if not first.get("ready"):
             return None
         representative = dict(first.get("representative") or {})
-        step = policy.threshold_step(
-            unit["instrument"], str(representative.get("instrument_family") or ""),
-            thermo_raw_inputs(self._manifest(unit)),
-        )
         estimate = dict(first.get("estimate") or {})
-        if int(estimate.get("coarse_threshold_step", estimate.get("threshold_step")) or 0) != step:
-            second = self.ports.interactive.estimate(**arguments, step=step)
-            if second.get("ok") is False:
-                return dict(second)
-            if not second.get("ready"):
-                return None
-            estimate = dict(second.get("estimate") or {})
+        if "coarse_threshold_step" not in estimate:
+            asked = policy.threshold_step(
+                unit["instrument"], str(representative.get("instrument_family") or ""),
+                thermo_raw_inputs(self._manifest(unit)),
+            )
+            if int(estimate.get("threshold_step") or 0) != asked:
+                second = self.ports.interactive.estimate(**arguments, step=asked)
+                if second.get("ok") is False:
+                    return dict(second)
+                if not second.get("ready"):
+                    return None
+                estimate = dict(second.get("estimate") or {})
+        family = {"instrument_family": str(estimate["instrument_family"] if "instrument_family" in estimate
+                                           else representative.get("instrument_family") or ""),
+                  "instrument_family_source": str(representative.get("instrument_family_source") or "")}
+        if "coarse_threshold_step" in estimate:
+            step = policy.family_step(family["instrument_family"])
+            catalog = policy.threshold_step(unit["instrument"])
+            if catalog != step:
+                family["note"] = (
+                    f"Interactive searched the {family['instrument_family'] or 'unrecorded'} family's step {step}"
+                    + (f" (from {family['instrument_family_source']})" if family["instrument_family_source"] else "")
+                    + f", where the Catalog's instrument text ({unit['instrument']}) would give {catalog}; the "
+                    "family Interactive read from the file decides.")
+        else:
+            step = asked
         used = policy.estimate_step(estimate, step)
         if isinstance(used, str):
             return {"ok": False, "reason": "malformed", "detail": f"The peak-height estimate's step is not one the "
                     f"step rule gives: {used}.", "estimate": estimate}
-        return {"estimate": estimate, "representative": representative, "step": used}
+        return {"estimate": estimate, "representative": representative, "step": used, "family": family}
 
     def _diagnosed(self, unit: dict[str, Any], estimate: Mapping[str, Any]) -> bool:
         values = estimate["estimate"]
@@ -1795,7 +1821,8 @@ class Runner:
             representative_file=str(representative.get("file_name") or representative.get("file_path") or ""),
             order_source=str(representative.get("selection_reason") or ""),
             end_console_run=self._open_console_end(unit, "completed"),
-            detail={"estimate": dict(values), "representative_reason": representative.get("selection_reason")},
+            detail={"estimate": dict(values), "representative_reason": representative.get("selection_reason"),
+                    "instrument_family": dict(estimate.get("family") or {})},
         )
         return True
 

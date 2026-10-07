@@ -148,8 +148,62 @@ class HappyPathTests(Base):
         self.assertEqual((unit["state"], unit["raw_disposition"]), ("done", "released"))
         self.assertIn("exit 2", unit["raw_detail"])
 
-    def test_a_fourier_transform_instrument_steps_by_1000(self) -> None:
+    def test_a_fourier_transform_family_steps_by_1000(self) -> None:
+        """Interactive 0.5.28 reads the family from the file and searches its step: the runner asks once, with no
+        step, and takes it."""
         world = self.world()
+        world.instrument_family = "Fourier-transform MS"
+        with world.open() as book:
+            book.connection.execute("UPDATE unit SET instrument = 'Thermo Orbitrap Exploris 480'")
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual((unit["threshold_step"], unit["coarse_threshold_step"], unit["minimum_peak_height"]),
+                         (1000, 1000, 12000.0))
+        asked = [arguments["step"] for name, arguments in world.interactive.calls if name == "estimate"]
+        self.assertEqual([0], asked, "no step of the runner's own")
+
+    def test_interactives_family_decides_over_the_catalogs_text(self) -> None:
+        """A multi-platform study's Catalog text names a Q Exactive, but Interactive reads the unit's file as
+        QTOF-type (review of msdial-interactive-app#61, 2026-10-07). Interactive searches 100, and a step the
+        runner asked for would only be recorded there, never searched: the runner asks for none, runs the unit
+        at Interactive's step and notes the Catalog's, and never holds the unit for it."""
+        world = self.world()
+        world.instrument_family_source = "vendor_format"
+        with world.open() as book:
+            book.connection.execute("UPDATE unit SET instrument = 'Thermo Q Exactive; SCIEX TripleTOF 6600'")
+        book = self.finish(world)
+        unit = book.unit("u1")
+        self.assertEqual(unit["state"], "done")
+        self.assertEqual((unit["threshold_step"], unit["coarse_threshold_step"], unit["minimum_peak_height"]),
+                         (100, 100, 1200.0))
+        asked = [arguments["step"] for name, arguments in world.interactive.calls if name == "estimate"]
+        self.assertEqual([0], asked, "never asked again at the Catalog's step of 1,000")
+        diagnosed = [json.loads(row["detail_json"]) for row in book.transitions("u1") if row["to_state"] == "diagnosed"]
+        self.assertEqual(1, len(diagnosed))
+        family = diagnosed[0]["instrument_family"]
+        self.assertEqual((family["instrument_family"], family["instrument_family_source"]), ("QTOF", "vendor_format"))
+        self.assertIn("would give 1000", family["note"])
+
+    def test_an_estimate_inconsistent_with_its_own_family_holds_the_unit(self) -> None:
+        """An estimate that records a Fourier-transform family but searched 100 first is no step the rule gives
+        for the family it records: held for a person, as any reply the runner cannot read."""
+        world = self.world()
+        world.interactive.estimate_patch = {"instrument_family": "Fourier-transform MS"}
+        world.run(max_iterations=200)
+        book = world.open()
+        self.addCleanup(book.close)
+        unit = book.unit("u1")
+        self.assertEqual(unit["state"], "contract_held")
+        asked = [arguments["step"] for name, arguments in world.interactive.calls if name == "estimate"]
+        self.assertNotIn(1000, asked, "the runner asks for no step of its own")
+        said = [row[0] for row in book.connection.execute("SELECT detail_json FROM attempt WHERE unit_key = 'u1'")]
+        self.assertTrue(any("where its family step is 1000" in item for item in said), said)
+
+    def test_an_interactive_before_0_5_28_is_asked_at_the_catalogs_step(self) -> None:
+        """An Interactive before 0.5.28 searched the step it was asked for and labelled every mzML QTOF: for it
+        alone, the Catalog's Orbitrap text still asks for 1,000."""
+        world = self.world()
+        world.interactive.legacy_estimate = True
         with world.open() as book:
             book.connection.execute("UPDATE unit SET instrument = 'Thermo Orbitrap Exploris 480'")
         book = self.finish(world)
@@ -180,16 +234,17 @@ class HappyPathTests(Base):
     def test_a_fourier_transform_fallback_is_to_100(self) -> None:
         world = self.world()
         world.interactive.step_fallback = True
-        with world.open() as book:
-            book.connection.execute("UPDATE unit SET instrument = 'Thermo Orbitrap Exploris 480'")
+        world.instrument_family = "Fourier-transform MS"
         book = self.finish(world)
         unit = book.unit("u1")
         self.assertEqual((unit["threshold_step"], unit["coarse_threshold_step"], unit["step_fallback"]), (100, 1000, 1))
-        self.assertIn(("estimate", {"job_id": unit["diagnostic_job_id"], "step": 1000}), world.interactive.calls)
+        self.assertEqual([0], [arguments["step"] for name, arguments in world.interactive.calls if name == "estimate"])
 
     def test_an_estimate_without_the_step_rule_is_recorded_as_no_fallback(self) -> None:
         """An Interactive before 0.5.28 records threshold_step alone: the step asked for, with no fallback."""
-        book = self.finish(self.world())
+        world = self.world()
+        world.interactive.legacy_estimate = True
+        book = self.finish(world)
         unit = book.unit("u1")
         self.assertEqual((unit["threshold_step"], unit["coarse_threshold_step"], unit["step_fallback"],
                           unit["fallback_reason"]), (100, 100, 0, None))

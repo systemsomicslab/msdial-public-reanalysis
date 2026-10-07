@@ -67,9 +67,10 @@ COMPLETED = "completed"
 VALIDATED_STATUSES = frozenset({"mztab_validated", "completed", "cleanup_pending_confirmation"})
 RAW_CLEANED_STATUS = "raw_cleaned"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-# Fourier-transform analysers, for the diagnostic's threshold step (1000 rather than 100). Read from the
-# catalog's instrument text, which is the submitter's own words: "Thermo Scientific Exactive" and "Exactive
-# Plus" name no Q, "IQ-X tribrid" no Orbitrap, and "Bruker APEX-Qe 9.4T" is an FT-ICR.
+# Fourier-transform analysers in the catalog's instrument text, which is the submitter's own words: "Thermo
+# Scientific Exactive" and "Exactive Plus" name no Q, "IQ-X tribrid" no Orbitrap, and "Bruker APEX-Qe 9.4T" is
+# an FT-ICR. The step asked of an Interactive before 0.5.28 (threshold_step); since 0.5.28 the family
+# Interactive reads from the file decides the step, and this text only leaves a note where it disagrees.
 _FOURIER_INSTRUMENT = re.compile(
     r"orbitrap|exactive|exploris|fusion|lumos|eclipse|astral|tribrid|ltq[\s-]?ft|ft[\s-]?icr|fticr|"
     r"solarix|apex|fourier",
@@ -527,14 +528,30 @@ def fetch_completed(manifest: Mapping[str, Any] | None) -> bool:
 
 # ---- the diagnostic ---------------------------------------------------------------------------------
 
-def threshold_step(instrument: str, instrument_family: str = "", thermo_raw_inputs: int = 0) -> int:
-    """1000 for Fourier-transform data, 100 otherwise (the project contract's diagnostic rule).
-
-    Interactive labels every mzML QTOF (workflow.py), so the catalog's instrument text is read too: an
-    Orbitrap unit published as mzML is Fourier-transform data.
-    """
+def is_fourier_transform_family(instrument_family: str) -> bool:
+    """True for the labels Interactive gives Orbitrap and FT-ICR data ("Fourier-transform MS", "FT-ICR"), as
+    Interactive 0.5.28's agent_workflow.is_fourier_transform_family reads them."""
     family = str(instrument_family or "").casefold()
-    if "fourier" in family or "ft-icr" in family or "fticr" in family:
+    return "fourier" in family or "ft-icr" in family or "fticr" in family
+
+
+def family_step(instrument_family: str) -> int:
+    """The instrument family's step, as Interactive 0.5.28 gives it (agent_workflow.family_threshold_step,
+    msdial-interactive-app#61): 1,000 for a Fourier-transform family, 100 for every other (QTOF-type, GC-MS,
+    Unknown, none recorded). Interactive always searches this step first, whatever step it is asked for."""
+    return 1000 if is_fourier_transform_family(instrument_family) else 100
+
+
+def threshold_step(instrument: str, instrument_family: str = "", thermo_raw_inputs: int = 0) -> int:
+    """1000 for Fourier-transform data, 100 otherwise, from the Catalog's instrument text as well as the family.
+
+    Asked for only of an Interactive before 0.5.28, which searched the step it was asked for and labelled every
+    mzML QTOF, so the Catalog's text had to name an Orbitrap published as mzML. Interactive 0.5.28 decides the
+    step itself from the file (family_step), and a requested step is only recorded there, never searched: the
+    runner asks it for none (machine.Runner._estimate), and compares this step with Interactive's only to
+    leave a note.
+    """
+    if is_fourier_transform_family(instrument_family):
         return 1000
     if thermo_raw_inputs > 0:
         return 1000
@@ -543,14 +560,16 @@ def threshold_step(instrument: str, instrument_family: str = "", thermo_raw_inpu
     return 100
 
 
-def estimate_step(estimate: Mapping[str, Any], requested: int) -> dict[str, Any] | str:
-    """The step an estimate used, read against the instrument-family step the runner asked for (the user's
-    step rule of 2026-10-06): {"threshold_step", "coarse_threshold_step", "step_fallback", "fallback_reason"},
-    or what is wrong with it.
+def estimate_step(estimate: Mapping[str, Any], family: int) -> dict[str, Any] | str:
+    """The step an estimate used, read against the family step it should have searched first (the user's step
+    rule of 2026-10-06): {"threshold_step", "coarse_threshold_step", "step_fallback", "fallback_reason"}, or
+    what is wrong with it.
 
-    Interactive 0.5.28 records threshold_step (the step used), coarse_threshold_step (the family step it searched
-    first), step_fallback and fallback_reason; an older one records threshold_step alone, the step it was asked
-    for, with no fallback. The step used is the family step, or with a fallback a tenth of it, never finer.
+    family is the family step of the instrument family the estimate itself records (family_step) for
+    Interactive 0.5.28, which records threshold_step (the step used), coarse_threshold_step (the family step it
+    searched first), step_fallback and fallback_reason; for an older one, which records threshold_step alone,
+    it is the step the runner asked for, with no fallback. The step used is the family step, or with a
+    fallback a tenth of it, never finer.
     """
     def number(value: Any) -> int | None:
         if isinstance(value, bool):
@@ -568,12 +587,12 @@ def estimate_step(estimate: Mapping[str, Any], requested: int) -> dict[str, Any]
         return "the estimate records no threshold step"
     if fallback not in (True, False):
         return f"the estimate's step_fallback is {fallback!r}, neither true nor false"
-    if coarse != requested:
-        return f"the estimate searched first at step {coarse}, where the runner asked for {requested}"
-    expected = requested // 10 if fallback else requested
+    if coarse != family:
+        return f"the estimate searched first at step {coarse}, where its family step is {family}"
+    expected = family // 10 if fallback else family
     if used != expected:
         return (f"the estimate used step {used}, where {'a fallback from' if fallback else 'no fallback from'} the "
-                f"family step {requested} gives {expected}")
+                f"family step {family} gives {expected}")
     reason = estimate.get("fallback_reason")
     return {"threshold_step": used, "coarse_threshold_step": coarse, "step_fallback": bool(fallback),
             "fallback_reason": str(reason) if reason else None}

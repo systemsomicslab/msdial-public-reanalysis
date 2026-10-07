@@ -818,9 +818,26 @@ class FamilyFromTheFileTests(unittest.TestCase):
 
         self.assertEqual("fourier", check.evidence["instrument_family_for_step"])
 
-    def test_the_family_decides_over_a_runner_step_of_1000_on_qtof_data(self) -> None:
-        """The runner asked for 1,000 from the Catalog's text on a .wiff Interactive keeps QTOF: the floor is the
-        QTOF one, and the search at 1,000 is a note to be read, not a break."""
+    def test_a_multi_platform_unit_as_the_runner_now_records_it_passes(self) -> None:
+        """A SCIEX .wiff in a study whose Catalog lists a Q Exactive too, diagnosed as the runner does it since
+        Interactive 0.5.28 (msdial-interactive-app#61): asked for no step, Interactive searched its QTOF family's
+        100 and the threshold is a multiple of 100. Nothing to read: the Catalog's text decides nothing here."""
+        check = self._pkh1(_with_family(_diagnostic(200, count=35678, estimated=3517, step=100, within=True,
+                                                    coarse_threshold_step=100, step_fallback=False,
+                                                    fallback_reason=None, requested_threshold_step=None,
+                                                    requested_step_disposition=None),
+                                        "QTOF", "vendor_format"),
+                           instrument=self.MULTI_PLATFORM)
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual("qtof", check.evidence["instrument_family_for_step"])
+        self.assertNotIn("step_rule_notes", check.evidence)
+
+    def test_a_search_not_at_the_recorded_familys_step_is_a_note_naming_it(self) -> None:
+        """A record whose search began at 1,000 on a family it records as QTOF from the file. Interactive 0.5.28
+        never makes one (it always searches its family's step first and only records a requested step, and the
+        runner asks for none); a build that searched a requested step did, #61 before its review. The floor is
+        the QTOF one, and the note says the search was not the rule's."""
         check = self._pkh1(_with_family(_diagnostic(3000, count=35678, estimated=3517, step=1000, within=True,
                                                     coarse_threshold_step=1000, step_fallback=False,
                                                     fallback_reason=None),
@@ -831,6 +848,24 @@ class FamilyFromTheFileTests(unittest.TestCase):
         self.assertEqual("qtof", check.evidence["instrument_family_for_step"])
         self.assertNotIn("step_rule_broken", check.evidence)
         self.assertIn("searched first at step 1,000, where QTOF-type data", check.detail)
+        self.assertIn("whose step is 100", check.detail)
+        self.assertIn("not made by its rule", check.detail)
+
+    def test_a_search_at_the_recorded_familys_step_is_not_called_off_rule(self) -> None:
+        """A format default that Interactive kept QTOF and searched at its own family's 100, where the gate's
+        reading of the Catalog's text makes it Fourier-transform data for the floor (the two read that text with
+        different patterns; synthetic here). The note says 1,000 is the step for that data, and does not call the
+        search one Interactive's rule did not make: the search was the rule's for the family recorded."""
+        check = self._pkh1(_with_family(_diagnostic(200, count=35678, estimated=3517, step=100, within=True,
+                                                    coarse_threshold_step=100, step_fallback=False,
+                                                    fallback_reason=None),
+                                        "QTOF", "format_default"),
+                           instrument="Thermo Q Exactive HF hybrid Orbitrap")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertEqual("fourier", check.evidence["instrument_family_for_step"])
+        self.assertIn("searched first at step 100, where Fourier-transform data", check.detail)
+        self.assertNotIn("not made by its rule", check.detail)
 
 
 class SplitPartPairingTests(unittest.TestCase):

@@ -162,7 +162,12 @@ is recorded. It also reports the production run's `production_peak_counts` where
 Interactive records them. The campaign ledger (schema 3) records the step an
 estimate used (`threshold_step`), the family step it searched first
 (`coarse_threshold_step`) and the fallback (`step_fallback`,
-`fallback_reason`). A `blocks_run` check left not evaluable on
+`fallback_reason`). The runner asks Interactive 0.5.28 for no step: the
+family Interactive reads from the file decides it, the estimate is read against
+that family's step, and a Catalog instrument text that would give another step
+is a note on the `diagnosed` transition, never a hold. Only an Interactive
+before 0.5.28, which searched the step it was asked for, is still asked at the
+Catalog's step. A `blocks_run` check left not evaluable on
 an artifact its stage owed, which `strict_failures` names, stops the run as its
 FAIL does; one not evaluable where the stage owed nothing, such as INP-1 for a
 unit that declares no analysis inputs, never does. Each check's docstring gives

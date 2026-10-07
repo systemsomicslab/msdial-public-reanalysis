@@ -73,11 +73,24 @@ For a repository range:
    samples), not the run: say so, order the files by the raw headers'
    `acquisitionStartTime` yourself, and pass the choice as
    `representative_file`. A `file_type` Standard is not a Sample. Call
-   `msdial_estimate_peak_height` for the default 3,000-6,000 range with the
-   step for the instrument: the inspection calls every mzML `QTOF`, so pass
-   `threshold_step=1000` when the raw header or sample metadata shows
-   Fourier-transform data (Orbitrap, FT-ICR). Add the accepted threshold to the
-   answers and preserve `TimeBasedLinearWeightedMovingAverage`.
+   `msdial_estimate_peak_height` for the default 3,000-6,000 range and leave
+   `threshold_step` at 0. Since Interactive 0.5.28 the step comes from the
+   representative file's `instrument_family`: 100 for QTOF-type data and 1,000
+   for Fourier-transform data (Orbitrap-class, FT-ICR), read from the vendor
+   format or the mzML header, and from the unit's declared instrument only
+   where the file names none (`instrument_family_source: format_default`). That
+   family step is always the coarse step. Of its multiples the estimate takes
+   the highest whose estimated count is still at least 3,000, the lower end of
+   the range. Only when no multiple lands in range does it fall back to the fine
+   step, 10 (QTOF-type) or 100 (Fourier-transform) and never finer, and say
+   `step_fallback: true` with its `fallback_reason`. A `threshold_step` you pass
+   is only recorded (`requested_threshold_step`, with a warning), never
+   searched, so it cannot make a unit Fourier-transform data. When the raw
+   header or sample metadata shows FT data that the estimate's
+   `instrument_family` does not, report the disagreement to the user rather
+   than passing a step. When `within_target_range` is false, show the
+   estimate's `warnings`. Add the accepted threshold to the answers and
+   preserve `TimeBasedLinearWeightedMovingAverage`.
 12. Write the production bundle with `msdial_prepare_guided_analysis`, with the
    accepted `minimum_peak_height` in the answers, then run the
    `before-production` gate (see below) against it and stop the unit on a
