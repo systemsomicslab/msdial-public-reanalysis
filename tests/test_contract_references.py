@@ -180,7 +180,8 @@ _DECIDED_CASES = {
     "AIF": (_SCOPE_SECTION, "- **AIF.**", (
         "2026-10-07", "it runs as SWATH", "MsdialWorkbench #825", "same energies", "raw data kept",
         "`aif_multi_ce_awaiting_console`", "`aif_collision_energies_differ_between_inputs`",
-        "`aif_collision_energy_unrecorded`",
+        "`aif_collision_energy_unrecorded`", "any one input that runs", "holds all forty",
+        "`aif_collision_energy_targets_empty`", "no unit runs under the 2026-09-30 rule",
     )),
     "held by Interactive": (_GATE_RULE_SECTION, "**Held by Interactive.**", (
         "`disposition_held`", "raw data kept", "counted neither as a retry nor as a failure",
@@ -719,6 +720,8 @@ class ContractGateChecksTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, contract)
         self.assertNotIn("no longer lets run", contract)
+        # The warning of 2026-09-30 and the hold read the same field, so whether they concern one list is not open.
+        self.assertNotIn("concern the same list", contract)
         agent = [entry for entry in _trial_decisions() if entry.get("by") == "agent"]
         for word in ("acquisition_declared_only", "aif_collision_energy_unrecorded", "unattributed_member",
                      "disposition_held"):
@@ -734,6 +737,23 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertEqual(1, len(entries))
         self.assertEqual("2026-10-01", entries[0]["at"])
         self.assertTrue(str(entries[0]["by"]).startswith("user"))
+        # The skill runs from any directory, where this contract is not loaded, and the README states the approval.
+        skill = " ".join((_ROOT / _BATCH_SKILL).read_text(encoding="utf-8").split())
+        self.assertIn(words, skill)
+        self.assertIn("never started or scheduled on the production campaign before the user's explicit go", skill)
+        readme = " ".join((_ROOT / "README.md").read_text(encoding="utf-8").split())
+        self.assertIn("Nor is it the user's go", readme)
+
+    def test_the_rules_replaced_on_2026_10_02_are_marked_in_the_trial_manifest(self) -> None:
+        """The gate lists of 2026-10-01 and its mzXML rule with every inference off were replaced on 2026-10-02."""
+        for opening in ("Before production, in the campaign: a FAIL stops a unit's MS-DIAL run only for",
+                        "mzXML conversion, in the campaign, as relayed with the campaign rules on 2026-10-01"):
+            with self.subTest(opening=opening):
+                entries = [entry for entry in _trial_decisions() if str(entry["decision"]).startswith(opening)]
+                self.assertEqual(1, len(entries))
+                self.assertIn("replaced on 2026-10-02", str(entries[0]["decision"]))
+                self.assertIn("Replaced on 2026-10-02", str(entries[0]["result"]))
+                self.assertNotIn("awaiting the user's decision", str(entries[0]["result"]))
 
     def test_a_unit_flagged_by_its_studys_text_alone_is_not_stated_as_excluded(self) -> None:
         """Before 2026-10-03 the contract excluded ion-mobility data "whether the repository or the raw headers

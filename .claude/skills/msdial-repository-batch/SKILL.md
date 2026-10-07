@@ -50,9 +50,11 @@ For a repository range:
    (`CLAUDE.md`, Supported production scope, 2026-10-07): one energy runs as
    SWATH; several run as AIF only on a Console with MsdialWorkbench #825 and
    the same energies in every input; otherwise the unit is held
-   (`disposition_held`) with its raw data kept. Interactive also holds a unit
-   whose inputs record no energy; the user did not decide that hold, it departs
-   from the 2026-09-30 warning-only rule, and the case is open for the user.
+   (`disposition_held`) with its raw data kept. Interactive also holds the
+   whole unit when any one input records no energy above 0
+   (`aif_collision_energy_unrecorded`); the user did not decide that hold. It
+   reads the same field as the 2026-09-30 warning-only rule, so no unit runs
+   under that rule, and which of the two governs is open for the user.
    Where no header could be read, Interactive takes a declared unit at its
    declaration (`acquisition_declared_only`), with no header behind its files.
    Ion-mobility data are
@@ -105,7 +107,10 @@ For a repository range:
    tools, unless the approval is a recorded campaign approval of the manifest's
    digest (`CLAUDE.md`, Confirmation boundaries): for the units it lists, that
    record is those confirmations, and the campaign runner carries it (see
-   Unattended operation).
+   Unattended operation). The production campaign still starts only on the
+   user's explicit go, asked for in the conversation once everything is ready
+   ("本番開始前には私がGoサインを出すので、聞いてください。", 2026-10-01): no
+   approved manifest, pilot approval or authorization record is that go.
 10. Call `msdial_repository_reanalysis_plan` and
    `msdial_download_repository_raw` with the same `analysis_unit_handoff_path` for
    each approved unit. For accession-bundle downloads, verify the resulting
@@ -308,8 +313,11 @@ Server-side state on `msdial_interactive_app` `main`:
 ## Unattended operation
 
 An unattended run may only proceed inside a manifest the user has already
-approved. For a campaign, that approval is the recorded campaign approval of
-the manifest's digest (`CLAUDE.md`, Confirmation boundaries), and the execution
+approved. The runner's `run` (`--until-idle` included) is never started or
+scheduled on the production campaign before the user's explicit go, asked for
+in the conversation (`CLAUDE.md`, Confirmation boundaries, 2026-10-01); an
+approved digest is not that go. For a campaign, that approval is the recorded
+campaign approval of the manifest's digest (`CLAUDE.md`, Confirmation boundaries), and the execution
 path is the campaign runner, `scripts/campaign-runner.py`. It calls the
 Interactive and Catalog functions the MCP tools expose, in its own process, and
 where a tool would ask for `confirmed=true` it passes the approval instead:

@@ -127,12 +127,18 @@ location.
   Otherwise the unit is held, its raw data kept: on a Console without
   #825 (`aif_multi_ce_awaiting_console`) and where the inputs' energies differ
   (`aif_collision_energies_differ_between_inputs`). Merged Interactive also
-  holds, raw data kept, an AIF unit whose inputs record no energy
-  (`aif_collision_energy_unrecorded`): no one energy can be shown, and a #825
-  Console stops on such a file. The user did not decide that hold. It departs
-  from the user's rule of 2026-09-30 that an AIF file with an empty
-  collision-energy list gets a recorded warning only, which stands; whether
-  the two concern the same list is not settled, and the case is open for the
+  holds, raw data kept, the whole unit when any one input that runs records no
+  energy above 0 (`aif_collision_energy_unrecorded`): a header that lists no
+  energy, lists only energies of 0 or below, or has a reference function with
+  an MS level. One such file among forty holds all forty. No one energy can be
+  shown, and a #825 Console stops on such a file. The user did not decide that
+  hold. It overrides the user's rule of 2026-09-30 that an AIF file with an
+  empty collision-energy list gets a recorded warning only, which stands as the
+  user's until the user withdraws it. The two read the same header field (the
+  extractor's `collisionEnergies`), so every file that rule warns about is one
+  the hold counts: Interactive records the warning
+  (`aif_collision_energy_targets_empty`) and then holds the unit, and no unit
+  runs under the 2026-09-30 rule. Which of the two governs is open for the
   user. Interactive #64 and #67 and gate #32 and #34 implement it; Gate
   verdicts in a campaign says how a held unit ends.
 - mzML is supported, and so is a vendor folder: a Waters `.raw`, or an Agilent
