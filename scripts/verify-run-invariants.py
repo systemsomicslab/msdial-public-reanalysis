@@ -23,11 +23,14 @@ Nothing here writes, moves or deletes anything. It is safe to run at any point i
 Usage:
     python scripts/verify-run-invariants.py <unit-workspace> [--stage STAGE] [--json]
 
-    <unit-workspace>  the directory holding provenance/ and output/ for ONE analysis unit
+    <unit-workspace>  the directory holding provenance/ and output/ for ONE analysis unit; a run's outputs
+                      are read in the folder the manifest's output_directory names (output-run-<n> for a
+                      new run of a finished unit), which must lie inside this directory
     --stage           before-production | after-run | before-publish | all   (default: all)
     --json            emit the full report as JSON on stdout
 
-Exit codes: 0 no evaluated check failed, 2 at least one failed, 3 the workspace is unusable,
+Exit codes: 0 no evaluated check failed, 2 at least one failed, 3 the workspace is unusable (not a
+directory, or a run's output_directory outside it),
 4 (--strict only) a check could not be evaluated because an artifact the stage owed is absent.
 A WARN exits 0 and is for a person to read before publishing: QA-1's, for one, quotes every QA
 sentence that is not Interactive's own statement for the assessment. Those sentences, and the
@@ -7369,6 +7372,90 @@ def _release_parts(release: object) -> "list[str] | None":
     return [str(item.get("analysis_unit_id") or "") for item in release["parts"] if isinstance(item, dict)]
 
 
+# Where a run's outputs are. Interactive 0.5.29 (PR #62) prepares a new production run of a finished unit in a new
+# folder, <workspace>\output-run-<n>, named by the manifest's output_directory, and moves the finished run's records,
+# its output_directory among them, into an entry of superseded_runs; the old folder is left as it was. A manifest
+# written before then may name no output_directory, and its run's folder is <workspace>\output.
+DEFAULT_OUTPUT_DIRECTORY = "output"
+
+
+class OutputOutsideWorkspace(ValueError):
+    """A run's output_directory lies outside the unit workspace the gate judges: the gate reads nothing there.
+
+    main() exits 3, the workspace is unusable, as it does for a workspace that is not a directory.
+    """
+
+
+def _parts_inside(path: Path, root: Path) -> "tuple[str, ...] | None":
+    """The parts of `path` below `root` when `path` lies strictly inside it, compared as Windows compares paths
+    (case and separators aside); None otherwise, the root itself included."""
+    def plain(item: Path) -> str:
+        return os.path.normpath(os.path.abspath(str(item)))
+
+    target, base = plain(path), plain(root)
+    try:
+        relative = os.path.relpath(os.path.normcase(target), os.path.normcase(base))
+    except ValueError:  # another drive
+        return None
+    if relative in (os.curdir, os.pardir) or relative.startswith(os.pardir + os.sep) or os.path.isabs(relative):
+        return None
+    return Path(target).parts[len(Path(base).parts):]
+
+
+def _run_output(record: dict, workspace: Path, recorded_workspace: str = "") -> Path:
+    """The folder holding one run's outputs, inside `workspace`: the record's output_directory, else <workspace>\\output.
+
+    output_directory is an absolute path Interactive wrote. It is taken when it lies inside the workspace judged,
+    also once each is resolved (a short 8.3 name, a junction), or inside the workspace the manifest recorded, which
+    a copied or moved workspace no longer is: its place relative to that workspace is then read in this one. A
+    relative output_directory is read against the workspace. Anything else - another unit's folder, a folder
+    outside the analysis tree, the workspace itself - raises OutputOutsideWorkspace, and nothing is read from it.
+    """
+    declared = str(record.get("output_directory") or "").strip() if isinstance(record, dict) else ""
+    if not declared:
+        return workspace / DEFAULT_OUTPUT_DIRECTORY
+    path = Path(declared)
+    if not path.is_absolute():
+        path = workspace / path
+    candidates = [(path, workspace)]
+    try:
+        candidates.append((path.resolve(), workspace.resolve()))
+    except (OSError, RuntimeError):
+        pass
+    if recorded_workspace.strip():
+        candidates.append((path, Path(recorded_workspace.strip())))
+    for target, root in candidates:
+        parts = _parts_inside(target, root)
+        if parts:
+            return workspace.joinpath(*parts)
+    raise OutputOutsideWorkspace(
+        f"The manifest names output_directory {declared!r}, which is not inside the unit workspace {str(workspace)!r}"
+        + (f" or the workspace it recorded ({recorded_workspace.strip()!r})" if recorded_workspace.strip() else "")
+        + ". The gate reads a run's outputs only from within the workspace it judges.")
+
+
+def _superseded_runs(provenance: dict | None) -> list[dict]:
+    """The unit's earlier production runs, oldest first, as Interactive keeps them (superseded_runs)."""
+    runs = (provenance or {}).get("superseded_runs") if isinstance(provenance, dict) else None
+    return [item for item in runs if isinstance(item, dict)] if isinstance(runs, list) else []
+
+
+def _unit_runs(provenance: dict | None, workspace: Path) -> "list[tuple[str, dict, Path]]":
+    """Every production run of the unit, newest first: (which, its record, its output folder).
+
+    The current run is the manifest's top level; the superseded runs follow, the latest first. Raises
+    OutputOutsideWorkspace when any of them names a folder outside the workspace.
+    """
+    record = provenance if isinstance(provenance, dict) else {}
+    recorded = str(record.get("workspace") or "")
+    runs = [("its current run", record, _run_output(record, workspace, recorded))]
+    superseded = _superseded_runs(record)
+    for index in reversed(range(len(superseded))):
+        runs.append((f"its superseded run {index} (superseded_runs[{index}])", superseded[index],
+                     _run_output(superseded[index], workspace, recorded)))
+    return runs
+
+
 def _mztab_not_validated(provenance: dict, output: Path) -> str:
     """Why the unit's mzTab-M does not count as validated for deleting its raw data, or "" when it does.
 
@@ -7410,12 +7497,24 @@ def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, st
     judged by the rest.
     The gate's own verdicts do not enter: the user decided that deletion follows the outputs, whatever
     the gate says of them.
+    Validated outputs are the latest validated run's (_unit_runs): the current run's, read in the folder its
+    output_directory names, else the newest of its superseded_runs whose own records and folder show them. A
+    new run prepared for a finished unit (Interactive 0.5.29) leaves the finished run's validated outputs in
+    their folder, and a new run that has not validated takes nothing from them.
     """
     status = str(provenance.get("status") or "")
-    output = workspace / "output"
-    if not (_mztab_not_validated(provenance, output) or _outputs_incomplete(output)[0]):
-        return "validated", ("its run was finalised, its mzTab-M validated and is in its output, and every export "
-                             "its run planned is there")
+    runs = _unit_runs(provenance, workspace)
+    for which, record, output in runs:
+        if _mztab_not_validated(record, output) or _outputs_incomplete(output)[0]:
+            continue
+        if record is provenance:
+            return "validated", ("its run was finalised, its mzTab-M validated and is in its output, and every export "
+                                 "its run planned is there"
+                                 + ("" if output.name == DEFAULT_OUTPUT_DIRECTORY else f" ({output.name})"))
+        current = runs[0][2]
+        return "validated", (f"{which} was finalised, its mzTab-M validated and is in its output ({output.name}), and "
+                             f"every export that run planned is there; the run prepared after it, in {current.name}, "
+                             f"has not validated ({_mztab_not_validated(provenance, current) or _outputs_incomplete(current)[0]})")
     failures = _run_failures(provenance)
     if failures:
         last = failures[-1]
@@ -7485,6 +7584,8 @@ def check_retention_policy_was_acted_on(
         return
     policy = str(policy)
     status = str(provenance.get("status") or "")
+    # The current run's folder; verify() has refused a workspace whose runs name one outside it.
+    output = _unit_runs(provenance, workspace)[0][2]
     if policy not in ("keep", DELETE_RETENTION):
         report.add("RET-1", stage, RET1_TITLE, FAIL,
                    f"The manifest records a retention policy of {policy!r}, which is neither 'keep' "
@@ -7537,8 +7638,8 @@ def check_retention_policy_was_acted_on(
                           "the raw tree is still on disk: the release has not completed.")
             return
         if policy == DELETE_RETENTION and status in VALIDATED_STATUSES - {"raw_cleaned"}:
-            incomplete = _outputs_incomplete(workspace / "output")[0]
-            if incomplete and not _mztab_not_validated(provenance, workspace / "output"):
+            incomplete = _outputs_incomplete(output)[0]
+            if incomplete and not _mztab_not_validated(provenance, output):
                 verdict(WARN, f"Policy is delete_after_validated_output, the mzTab-M is validated, and {incomplete}: "
                               "the raw tree is still present, and the deletion is not yet due. A unit whose outputs "
                               "are incomplete has in effect failed, and its raw data go after its retries.")
@@ -7603,8 +7704,8 @@ def check_retention_policy_was_acted_on(
     else:
         kind, why = _deletion_justification(provenance, workspace)
         if kind != "validated":
-            unvalidated = _mztab_not_validated(provenance, workspace / "output")
-            incomplete, absent = ("", []) if unvalidated else _outputs_incomplete(workspace / "output")
+            unvalidated = _mztab_not_validated(provenance, output)
+            incomplete, absent = ("", []) if unvalidated else _outputs_incomplete(output)
     evidence.update(authority=authority, justification=kind)
     if deletion == "raw_cleaned" and kind != "validated":
         evidence["unvalidated_because"] = unvalidated or incomplete
@@ -8310,10 +8411,16 @@ def _readable_members(path: Path, unread: list[str] | None = None) -> list[tuple
 
 
 def verify(workspace: Path, stage: str) -> Report:
+    """Run `stage`'s checks (or every stage's) on one unit workspace.
+
+    The run's outputs are read in the folder the manifest's output_directory names, <workspace>\\output where
+    it names none (_run_output). Raises OutputOutsideWorkspace, before any check runs, when that folder or a
+    superseded run's lies outside the workspace.
+    """
     report = Report(workspace)
     provenance_path = workspace / "provenance" / "run-manifest.json"
-    output = workspace / "output"
     provenance, provenance_reason = _read_json(provenance_path)
+    output = _unit_runs(provenance, workspace)[0][2]
     csv_rows, csv_reason = _read_csv_rows(output / "analysis_files.csv")
     run_manifest, _ = _read_json(output / "run-manifest.json")
 
@@ -8564,7 +8671,11 @@ def main(argv: list[str]) -> int:
         print(f"not a directory: {workspace}", file=sys.stderr)
         return 3
 
-    report = verify(workspace, args.stage)
+    try:
+        report = verify(workspace, args.stage)
+    except OutputOutsideWorkspace as error:
+        print(f"unusable workspace: {error}", file=sys.stderr)
+        return 3
     # Details quote the artifacts, and a console code page such as cp932 has no "\u2264" in it: the
     # print would end the gate with no report at all. JSON escapes what it cannot print; text
     # replaces it.
