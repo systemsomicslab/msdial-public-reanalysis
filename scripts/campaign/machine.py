@@ -53,10 +53,13 @@ nothing changes until the Console does: only an operator's recheck-held (or retr
 preflight again, and Interactive decides it anew. A held unit does not keep run --until-idle running, nor
 make the hourly scheduled start a campaign with work left (remaining_work); a later campaign planned with
 --replan-from takes it up again (plan.NOT_REPLANNED does not name the state). An operator's skip of the unit is
-the explicit decision that lifts the hold (the agreed contract of 2026-10-07): its discard, and for a held split
-part its parent's release, pass Interactive release_disposition_hold, which nothing else here passes. Interactive
-never discards a held unit or a held split part without it: a held unit's discard made otherwise keeps its raw
-data (kept), and an Interactive whose discard cannot take the release leaves them held.
+the explicit decision that lifts the hold (the agreed contract of 2026-10-07): its discard passes Interactive
+release_disposition_hold, which nothing else here passes. A split parent's release passes it only when every part
+its disposition holds has its own operator's skip: Interactive's release lifts the hold of every held part it is
+told to, so one part's skip must not lift another's. While a held part has none (it ended failed or stopped while
+held), the parent's raw tree is kept, and the parent is reported as waiting for that part. Interactive never
+discards a held unit or a held split part without it: a held unit's discard made otherwise keeps its raw data
+(kept), and an Interactive whose discard cannot take the release leaves them held.
 """
 
 from __future__ import annotations
@@ -145,6 +148,20 @@ class Ports:
 def _releases_hold(unit: Mapping[str, Any]) -> bool:
     """Whether the unit ended by an operator's skip of its disposition hold (RELEASE_HOLD in terminal_detail)."""
     return _loads(unit.get("terminal_detail")).get(RELEASE_HOLD) is True
+
+
+def _held_by_disposition(unit: Mapping[str, Any]) -> bool:
+    """Whether the last disposition the runner read for the unit holds it (a skip with hold true), as Interactive's
+    held_by_disposition reads the manifest's. A recheck whose preflight decided anew replaces the record; one
+    whose preflight never answered leaves it, as it leaves Interactive's hold."""
+    record = _loads(unit.get("disposition_json"))
+    return record.get("disposition") == "skip" and record.get("hold") is True
+
+
+def _parts_still_held(parts: Iterable[Mapping[str, Any]]) -> list[str]:
+    """The split parts their disposition holds that no operator's skip released: each keeps its parent's raw
+    tree (the agreed contract of 2026-10-07; review r9-32 of PR #32)."""
+    return [str(item["unit_key"]) for item in parts if _held_by_disposition(item) and not _releases_hold(item)]
 
 
 def _loads(text: str | None) -> dict[str, Any]:
@@ -1525,9 +1542,17 @@ class Runner:
             return "kept", "the campaign keeps raw data", None
         if not self._live("5"):
             return "kept", "no live approval covers boundary 5", None
-        # A part an operator's skip released from its disposition hold no longer keeps the parent's raw data;
-        # Interactive is told so explicitly, never by default.
-        release = any(_releases_hold(item) for item in parts)
+        # Interactive's release with release_disposition_hold lifts the hold of EVERY part its disposition holds
+        # (cleanup_split_parent, _part_end), so it is passed only when every such part has its own operator's
+        # skip (review r9-32 of PR #32). A held part without one - it ended failed or stopped while held - keeps
+        # the parent's raw tree: nothing is asked of Interactive, and the parent waits for that part. Kept, not
+        # held: only that part's release would change the answer, and no recheck can make it.
+        waiting = _parts_still_held(parts)
+        if waiting:
+            self._event("split_parent_waits_for_held_part", {"parts": waiting}, unit["unit_key"])
+            return ("kept", f"kept: waiting for part {', '.join(waiting)}, which Interactive's campaign disposition "
+                    "holds and no operator's skip released", None)
+        release = any(_held_by_disposition(item) for item in parts)
         if any(item["outputs_produced"] for item in parts):
             result = self.ports.interactive.release_split_parent(
                 manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),

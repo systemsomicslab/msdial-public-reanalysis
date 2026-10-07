@@ -655,7 +655,8 @@ class InteractivePort:
         self, *, manifest_path: str, authorization_path: str, release_disposition_hold: bool = False,
     ) -> dict[str, Any]:
         """Release a split parent's raw data once its parts have ended. release_disposition_hold is passed only
-        when true, for a parent one of whose parts an operator's skip released from its disposition hold."""
+        when true, for a parent every one of whose held parts an operator's skip released from its disposition
+        hold: Interactive's release lifts the hold of every held part it is told to (machine._split_parent_raw)."""
         function = getattr(self.rr, "cleanup_split_parent", None)
         if function is None:
             return {"ok": False, "reason": "unsupported", "detail": "Interactive has no split-parent release yet (plan item 14)."}

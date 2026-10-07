@@ -271,6 +271,132 @@ class DispositionHoldTests(Base):
         self.assertFalse(parent_raw.exists())
         self.assertEqual(machine.remaining_work(book), [])
 
+    def two_held_parts(self):
+        """A split parent u1 whose two parts, u1-DDA and u1-SWATH, Interactive's disposition both holds."""
+        world = self.world(("u1",))
+        world.scripts["u1"] = fakes.UnitScript(disposition="split")
+        world.scripts["u1-DDA"] = fakes.UnitScript(disposition="aif_hold")
+        world.scripts["u1-SWATH"] = fakes.UnitScript(disposition="aif_hold")
+        world.interactive.split_release_supported = True
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        runner.run(until_idle=True, max_iterations=3000)
+        self.assertEqual([book.unit(key)["state"] for key in ("u1", "u1-DDA", "u1-SWATH")],
+                         ["split_parent", "disposition_held", "disposition_held"])
+        parent_raw = Path(world.interactive.store.read(book.unit("u1")["manifest_path"])["raw_directory"])
+        self.assertTrue(parent_raw.is_dir())
+        return world, book, runner, parent_raw
+
+    def end_held_without_a_skip(self, world: fakes.World, book: ledger.Ledger, runner: machine.Runner, key: str) -> None:
+        """The operator rechecks the part, and its preflight never answers (the backend breaks every time): the
+        runner ends it failed after its retries, while Interactive's manifest keeps the hold it had."""
+        real = world.interactive.preflight
+        manifest = book.unit(key)["manifest_path"]
+
+        def broken(**arguments):
+            if arguments["manifest_path"] == manifest:
+                raise RuntimeError("backend fault")
+            return real(**arguments)
+
+        world.interactive.preflight = broken
+        book.add_request("recheck_held", key, "try again", "Test Person", runner.stamp())
+        self.step_until(world, book, runner, lambda: book.unit(key)["state"] in ledger.TERMINAL_STATES, limit=4000)
+        world.interactive.preflight = real
+        self.assertEqual(book.unit(key)["state"], "failed")
+        self.assertNotIn(machine.RELEASE_HOLD, json.loads(book.unit(key)["terminal_detail"] or "{}"))
+        self.assertTrue(world.interactive.held_by_disposition(world.interactive.store.read(manifest)),
+                        "Interactive still holds the part")
+
+    def parent_releases(self, world: fakes.World, book: ledger.Ledger) -> list:
+        manifest = book.unit("u1")["manifest_path"]
+        return [(name, arguments["release_disposition_hold"]) for name, arguments in world.interactive.calls
+                if name in ("release_split_parent", "discard") and arguments["manifest_path"] == manifest]
+
+    def test_the_fake_release_lifts_every_held_part_as_interactive_does(self) -> None:
+        """What makes the parent's flag dangerous: Interactive f225e9b's cleanup_split_parent, told
+        release_disposition_hold, ends every part its disposition still holds as hold_released, recording
+        disposition_hold_released_by operator_skip on each, skipped or not; without it, a held part refuses."""
+        world, book, _runner, parent_raw = self.two_held_parts()
+        parent = book.unit("u1")["manifest_path"]
+        refused = world.interactive.release_split_parent(manifest_path=parent, authorization_path="a")
+        self.assertEqual((refused["deleted"], refused["blockers"]), (False, ["disposition_held"]))
+        self.assertTrue(parent_raw.is_dir())
+
+        released = world.interactive.release_split_parent(manifest_path=parent, authorization_path="a",
+                                                          release_disposition_hold=True)
+        self.assertTrue(released["deleted"])
+        for key in ("u1-DDA", "u1-SWATH"):
+            manifest = world.interactive.store.read(book.unit(key)["manifest_path"])
+            self.assertEqual(manifest["disposition_hold_released_by"], "operator_skip")
+
+    def test_one_skipped_part_does_not_release_another_held_part_or_the_parent(self) -> None:
+        """Review r9-32 of PR #32. Two held parts; u1-SWATH ends failed while still held, and the operator skips
+        u1-DDA only. Before, the parent's release passed release_disposition_hold because ANY part carried an
+        operator's skip, and Interactive then lifted u1-SWATH's hold too, recording operator_skip for a part no
+        operator skipped, and deleted the raw tree u1-SWATH still needs. Now the flag goes only when every held
+        part has its own skip: nothing is asked of Interactive for the parent, its raw tree is kept, and the
+        parent is reported as waiting for u1-SWATH."""
+        world, book, runner, parent_raw = self.two_held_parts()
+        self.end_held_without_a_skip(world, book, runner, "u1-SWATH")
+        self.assertEqual(book.unit("u1")["state"], "split_parent", "u1-DDA is held, so the parent has not ended")
+
+        book.add_request("skip", "u1-DDA", "not waiting for the Console", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=3000)
+
+        dda = book.unit("u1-DDA")
+        self.assertEqual((dda["state"], dda["raw_disposition"]), ("skipped", "deferred_to_parent"))
+        self.assertEqual(self.discards(world, book, "u1-DDA"), [True], "the skipped part's own release")
+        self.assertEqual(world.interactive.store.read(dda["manifest_path"])["disposition_hold_released_by"], "operator_skip")
+
+        swath = world.interactive.store.read(book.unit("u1-SWATH")["manifest_path"])
+        self.assertNotIn("disposition_hold_released_by", swath, "no operator skipped u1-SWATH")
+        self.assertTrue(world.interactive.held_by_disposition(swath))
+        self.assertEqual(self.discards(world, book, "u1-SWATH"), [])
+
+        parent = book.unit("u1")
+        self.assertEqual((parent["state"], parent["raw_disposition"]), ("split_done", "kept"))
+        self.assertEqual(self.parent_releases(world, book), [], "neither released nor discarded, with or without the flag")
+        self.assertTrue(parent_raw.is_dir(), "the parent's raw tree stays for u1-SWATH")
+        self.assertIn("waiting for part u1-SWATH", parent["raw_detail"])
+        self.assertEqual([json.loads(row["detail_json"])["parts"] for row in book.events("split_parent_waits_for_held_part")],
+                         [["u1-SWATH"]])
+        self.assertEqual(machine.remaining_work(book), [], "no recheck loop: only u1-SWATH's release changes the answer")
+
+    def test_every_held_part_skipped_releases_the_parent_with_the_flag(self) -> None:
+        """The rule's other side: once every held part has its own operator's skip, the parent's release goes
+        ahead, told of the release."""
+        world, book, runner, parent_raw = self.two_held_parts()
+        book.add_request("skip", "u1-DDA", "not waiting for the Console", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=3000)
+        self.assertEqual(book.unit("u1")["state"], "split_parent", "u1-SWATH is still held")
+        self.assertEqual(self.parent_releases(world, book), [])
+        self.assertTrue(parent_raw.is_dir())
+
+        book.add_request("skip", "u1-SWATH", "not waiting for the Console", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=3000)
+
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["raw_disposition"]), ("split_done", "discarded"))
+        self.assertEqual(self.parent_releases(world, book), [("discard", True)])
+        self.assertFalse(parent_raw.exists())
+        for key in ("u1-DDA", "u1-SWATH"):
+            self.assertEqual(self.discards(world, book, key), [True])
+
+    def test_a_part_whose_recheck_ran_is_no_longer_held_and_keeps_no_parent_waiting(self) -> None:
+        """A part whose recheck Interactive decided anew (run) is no longer held, so it does not keep the parent
+        waiting: with the other held part skipped, the parent's release goes ahead."""
+        world, book, runner, parent_raw = self.two_held_parts()
+        world.scripts["u1-SWATH"].disposition = "run"
+        book.add_request("recheck_held", "u1-SWATH", "the patched Console is pinned", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=3000)
+        self.assertEqual(book.unit("u1-SWATH")["state"], "done")
+        book.add_request("skip", "u1-DDA", "not waiting for the Console", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=3000)
+
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["raw_disposition"]), ("split_done", "released"))
+        self.assertEqual(self.parent_releases(world, book), [("release_split_parent", True)])
+        self.assertFalse(parent_raw.exists())
+
 
 class HoldDispositionRecordTests(unittest.TestCase):
     """policy.read_disposition reads Interactive 0.5.31's hold, and refuses one of another shape."""

@@ -559,9 +559,11 @@ class FakeInteractive:
 
     @staticmethod
     def held_by_disposition(manifest: dict[str, Any]) -> bool:
-        """Interactive 0.5.31's held_by_disposition: an applied skip with hold true, not yet discarded."""
+        """Interactive f225e9b's unreleased_disposition_hold: an applied skip with hold true, unless an operator's
+        skip lifted it (disposition_hold_released_by operator_skip). A discard that did not record the release
+        leaves it held, discarded or not (review r9-64)."""
         record = manifest.get("campaign_disposition") or {}
-        return (manifest.get("status") != "discarded" and record.get("applied") is True
+        return (manifest.get("disposition_hold_released_by") != "operator_skip" and record.get("applied") is True
                 and record.get("disposition") == "skip" and record.get("hold") is True)
 
     def _held_parts(self, parent_path: str) -> list[str]:
@@ -621,7 +623,10 @@ class FakeInteractive:
         return self._release_parent(manifest_path, release_disposition_hold)
 
     def _release_parent(self, manifest_path: str, release: bool) -> dict[str, Any]:
-        """A held split part keeps its parent's raw data until it is released or run."""
+        """A held split part keeps its parent's raw data until it is released or run. As Interactive f225e9b's
+        cleanup_split_parent and _part_end do, a release with release_disposition_hold lifts the hold of EVERY
+        part still held (hold_released), recording disposition_hold_released_by operator_skip on each, whether
+        or not an operator skipped that part; without it, any part still held refuses the release."""
         held = self._held_parts(manifest_path)
         if held and not release:
             return {"ok": True, "deleted": False, "blockers": ["disposition_held"],

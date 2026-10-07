@@ -75,7 +75,9 @@ itself and it keeps no runner running: only recheck-held --unit KEY (or --dispos
 it, by making its preflight again, and Interactive then decides it anew. skip --unit KEY is the explicit decision
 that lifts the hold: the unit ends as skipped, and its discard passes Interactive release_disposition_hold, which
 records disposition_hold_released_by operator_skip and deletes its raw data under boundary 5; a held split part's
-discard records that the part has ended, and its parent's release then goes ahead. Nothing else releases a hold:
+discard records that the part has ended, and its parent's release then goes ahead, passing the release only when
+every held part was skipped. A held part that ended otherwise keeps the parent's raw data (kept, waiting for that
+part). Nothing else releases a hold:
 Interactive never discards a held unit without it, and an Interactive that cannot take it leaves the raw data held.
 
 THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
