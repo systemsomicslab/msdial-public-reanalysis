@@ -52,7 +52,11 @@ go on. Unlike gate_held and contract_held, no recheck comes by itself, at a star
 nothing changes until the Console does: only an operator's recheck-held (or retry) for the unit makes its
 preflight again, and Interactive decides it anew. A held unit does not keep run --until-idle running, nor
 make the hourly scheduled start a campaign with work left (remaining_work); a later campaign planned with
---replan-from takes it up again (plan.NOT_REPLANNED does not name the state).
+--replan-from takes it up again (plan.NOT_REPLANNED does not name the state). An operator's skip of the unit is
+the explicit decision that lifts the hold (the agreed contract of 2026-10-07): its discard, and for a held split
+part its parent's release, pass Interactive release_disposition_hold, which nothing else here passes. Interactive
+never discards a held unit or a held split part without it: a held unit's discard made otherwise keeps its raw
+data (kept), and an Interactive whose discard cannot take the release leaves them held.
 """
 
 from __future__ import annotations
@@ -112,6 +116,10 @@ CONTRACT_HELD_WARNING = (
 )
 # What the status export says of a unit in disposition_held (the AIF rule of 2026-10-07).
 DISPOSITION_HELD = ledger_module.DISPOSITION_HELD
+# The flag an operator's skip of a disposition_held unit carries (terminal_detail), and the argument of
+# Interactive's discard and split-parent release that lifts a disposition hold (the agreed contract of
+# 2026-10-07): without it Interactive never discards a held unit or a held split part, approval or not.
+RELEASE_HOLD = "release_disposition_hold"
 DISPOSITION_HELD_WARNING = (
     "held: Interactive's campaign disposition holds this unit (a multi-collision-energy AIF unit waits for a "
     "patched Console), so it has not run, its raw data are kept and nothing is counted against it. Only an "
@@ -132,6 +140,11 @@ class Ports:
     clock: Any
     pins: Any
     backend: Any = None
+
+
+def _releases_hold(unit: Mapping[str, Any]) -> bool:
+    """Whether the unit ended by an operator's skip of its disposition hold (RELEASE_HOLD in terminal_detail)."""
+    return _loads(unit.get("terminal_detail")).get(RELEASE_HOLD) is True
 
 
 def _loads(text: str | None) -> dict[str, Any]:
@@ -794,13 +807,18 @@ class Runner:
                 elif state == "split_parent":
                     detail = "not skipped: skip the split parts one by one"
                 else:
+                    # An operator's skip of a unit Interactive's disposition holds is the explicit decision that
+                    # lifts the hold (the agreed contract of 2026-10-07): its discard, and its split parent's
+                    # release, pass release_disposition_hold, which nothing else here ever does.
+                    released = state == DISPOSITION_HELD
                     self._move(
                         unit, "discarding", pending_terminal="skipped",
-                        terminal_detail=json.dumps({"reason": "operator_skip", "detail": request["reason"]}),
-                        detail={"request_id": request["request_id"]},
+                        terminal_detail=json.dumps({"reason": "operator_skip", "detail": request["reason"],
+                                                    **({RELEASE_HOLD: True} if released else {})}),
+                        detail={"request_id": request["request_id"], **({RELEASE_HOLD: True} if released else {})},
                         end_console_run=self._open_console_end(unit, "skipped"),
                     )
-                    detail = "skipped"
+                    detail = "skipped; the disposition hold is released (operator_skip)" if released else "skipped"
             elif request["action"] == "release_held":
                 # Only the unit's raw data, under boundary 5, through Interactive's own deletion: the unit keeps
                 # how it ended. A retry would run it again from its Class decision.
@@ -1507,9 +1525,13 @@ class Runner:
             return "kept", "the campaign keeps raw data", None
         if not self._live("5"):
             return "kept", "no live approval covers boundary 5", None
+        # A part an operator's skip released from its disposition hold no longer keeps the parent's raw data;
+        # Interactive is told so explicitly, never by default.
+        release = any(_releases_hold(item) for item in parts)
         if any(item["outputs_produced"] for item in parts):
             result = self.ports.interactive.release_split_parent(
-                manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit)
+                manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+                release_disposition_hold=release,
             )
             if result.get("ok") is not False and result.get("deleted"):
                 return "released", "released after its parts' validated outputs", "5"
@@ -1517,7 +1539,7 @@ class Runner:
             return raw, str(result.get("detail") or result.get("reason") or "not released"), None
         result = self.ports.interactive.discard(
             manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
-            unit_id=unit["unit_key"],
+            unit_id=unit["unit_key"], release_disposition_hold=release,
         )
         if result.get("ok") is not False and result.get("deleted"):
             return "discarded", "no part produced validated outputs", "5"
@@ -2223,7 +2245,10 @@ class Runner:
         manifest = self._manifest(unit) if unit["manifest_path"] else None
         if manifest is None:
             return "none", "no raw data were downloaded", None
+        release = _releases_hold(unit)
         if unit["role"] == "split_part":
+            if release:
+                return self._release_part_hold(unit)
             return "deferred_to_parent", "deleted with the split parent once every part has ended", None
         if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
             return "kept", "the campaign keeps raw data", None
@@ -2248,21 +2273,51 @@ class Runner:
         result = self.ports.interactive.discard(
             manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
             unit_id=unit["unit_key"], parent_unit_id=unit["parent_unit_key"] or "",
+            release_disposition_hold=release,
         )
         if result.get("ok") is not False and result.get("deleted"):
-            return "discarded", f"deleted: the unit {ending}", "5"
+            return "discarded", f"deleted: the unit {ending}" + (
+                ", its disposition hold released by the operator's skip" if release else ""), "5"
         if policy.classify_result(result) == policy.REFUSED:
             return "kept", f"deletion refused: {result.get('codes') or result.get('detail')}", None
         if policy.classify_result(result) == policy.CONTRACT:
             return "held", f"not deleted: {result.get('reason')}: {result.get('detail')}", None
         blockers = [str(code) for code in result.get("blockers") or []]
         detail = str(result.get("detail") or result.get("reason") or "not deleted")
+        if policy.DISPOSITION_HELD_BLOCKER in blockers and not release:
+            # Interactive's disposition holds the unit, and no operator released it: its raw data are kept by
+            # that decision, not held for a recheck, which would ask for the same refused discard forever.
+            return "kept", f"kept: Interactive's campaign disposition holds the unit ({detail})", None
         if policy.discard_blocked_for_good(blockers):
             # A failed run that left an mzTab-M: Interactive discards no such unit's raw data, and asking
             # again changes nothing. Nothing here works around that by touching the unit's output: the raw
             # data are held, counted apart, until Interactive's own discard deletes them (plan item 14).
             return "held", f"not deleted ({', '.join(blockers)}): {detail}", None
         return "wait", detail, None
+
+    def _release_part_hold(self, unit: Mapping[str, Any]) -> tuple[str, str, str | None]:
+        """An operator's skip of a split part Interactive's disposition holds: the part's own discard, with
+        release_disposition_hold, records that it has ended (deleting nothing; its raw data are its parent's),
+        so the parent's release no longer waits for it. Until it is released, a held part keeps its parent's raw
+        data. Under the campaign's retention and a live boundary 5 only, as any deletion."""
+        if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
+            return "deferred_to_parent", "the campaign keeps raw data", None
+        if not self._live("5"):
+            return ("deferred_to_parent", "no live approval covers boundary 5; the parent's release passes the "
+                    "operator's release of the part's disposition hold", None)
+        result = self.ports.interactive.discard(
+            manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+            unit_id=unit["unit_key"], parent_unit_id=unit["parent_unit_key"] or "", release_disposition_hold=True,
+        )
+        if result.get("ok") is not False and (result.get("part_ended") or result.get("deleted")):
+            return ("deferred_to_parent", "the part's disposition hold released by the operator's skip; its raw data "
+                    "go with the split parent's once every part has ended", "5")
+        if policy.classify_result(result) == policy.REFUSED:
+            return "kept", f"hold release refused: {result.get('codes') or result.get('detail')}", None
+        if policy.classify_result(result) == policy.CONTRACT:
+            return ("deferred_to_parent", f"the part's hold was not released here ({result.get('reason')}: "
+                    f"{result.get('detail')}); the parent's release passes the operator's release", None)
+        return "wait", str(result.get("blockers") or result.get("detail") or result.get("reason") or "not released"), None
 
     def _held_recheck(self) -> bool:
         """Look again at every unit whose raw data are held, when the runner starts and every

@@ -374,6 +374,73 @@ class UnattributedMembersTests(unittest.TestCase):
 
         self.assertEqual(verifier.WARN, check.status, check.detail)
 
+    def test_pair1_compares_member_basenames_with_the_record(self) -> None:
+        """The agreed contract (2026-10-07): members are basenames, paths are under the raw data root. A record
+        that gives its members as paths under a top folder of the archive, or a lineage member_name given as such
+        a path, is still the same member."""
+        cases = {
+            "basenames, with paths": lambda unit: unit.manifest["unattributed_members"].update(
+                paths=[f"study/{name}" for name in YOUN]),
+            "members as paths": lambda unit: unit.manifest["unattributed_members"].update(
+                members=[f"study/{name}" for name in YOUN]),
+            "member_name as a path": lambda unit: [
+                row["name_pairing"].update(member_name="study\\" + row["name_pairing"]["member_name"])
+                for row in unit.manifest["input_lineage"]["rows"] if verifier._is_unattributed(row)],
+        }
+        for name, change in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                unit = _st001264(temporary)
+                unit.prepare()
+                change(unit)
+                check = _check(unit.gate(), "PAIR-1")
+                self.assertEqual(verifier.WARN, check.status, check.detail)
+                self.assertNotIn("does not list", check.detail)
+                self.assertTrue(all("/" not in item and "\\" not in item
+                                    for item in check.evidence["unattributed_members"]["members"]))
+
+    def test_pair1_still_names_a_member_the_record_leaves_out_by_its_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = _st001264(temporary)
+            unit.prepare()
+            unit.manifest["unattributed_members"]["members"] = [f"study/{name}" for name in YOUN[:-1]]
+            check = _check(unit.gate(), "PAIR-1")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("unattributed_members.members does not list 021518_387057_CSHp_Youn_sa28.raw", check.detail)
+
+    def test_inp1_fails_undeclared_members_of_a_shared_archive_and_blocks_the_run(self) -> None:
+        """ST001264 as 0.5.31 writes it declares no analysis inputs: the shared-archive guard must be read
+        before INP-1 finds nothing declared to compare (review of PR #32, finding 1)."""
+        for shared in ({"bundle_shared_unit_count": 2},
+                       {"kind": "unit_files", "bundle_urls": [{"url": "u", "shared_unit_count": 2}]},
+                       {"bundle_shared_unit_count": 1, "objects": [{"key": "o", "shared_unit_count": "3"}]}):
+            with self.subTest(scope=shared), tempfile.TemporaryDirectory() as temporary:
+                unit = _st001264(temporary)
+                unit.prepare()
+                unit.manifest["project"]["download_scope"] = shared
+                self.assertIsNone(verifier._declared_inputs(unit.manifest["project"])[0])
+                report = unit.gate()
+                check = _check(report, "INP-1")
+                self.assertEqual(verifier.FAIL, check.status, check.detail)
+                self.assertIn("28 input candidate(s) are archive members no sample row pairs with", check.detail)
+                self.assertIn("the download is shared with other units", check.detail)
+                self.assertEqual(28, check.evidence["unattributed_members"]["count"])
+                self.assertIn("INP-1", report.run_blocked_by)
+
+    def test_inp1_leaves_undeclared_members_of_a_unit_scoped_archive_not_evaluable(self) -> None:
+        for scope in ({"bundle_shared_unit_count": 1}, {"kind": "unit_files"}, None):
+            with self.subTest(scope=scope), tempfile.TemporaryDirectory() as temporary:
+                unit = _st001264(temporary)
+                unit.prepare()
+                if scope is None:
+                    unit.manifest["project"].pop("download_scope")
+                else:
+                    unit.manifest["project"]["download_scope"] = scope
+                report = unit.gate()
+                check = _check(report, "INP-1")
+                self.assertEqual(verifier.NOT_EVALUABLE, check.status, check.detail)
+                self.assertNotIn("INP-1", report.run_blocked_by)
+
 
 class UnattributedInputsTests(unittest.TestCase):
     """INP-1: unattributed members are input candidates beside the declared inputs the lease attributed."""
@@ -461,6 +528,12 @@ class UnitScopeTests(unittest.TestCase):
             ({"kind": "accession_bundle_with_file_allowlist", "bundle_shared_unit_count": 2,
               "bundle_urls": [{"url": "a", "shared_unit_count": 2}]}, False),
             ({"bundle_urls": [{"url": "a", "shared_unit_count": 1}, {"url": "b"}]}, None),
+            # Shared first, whatever the kind (Interactive's unit_scoped_download reads it in this order).
+            ({"kind": "unit_files", "bundle_urls": [{"url": "a", "shared_unit_count": 2}]}, False),
+            ({"kind": "unit_files", "bundle_shared_unit_count": 3}, False),
+            ({"bundle_urls": [{"url": "a", "shared_unit_count": "2"}]}, False),
+            ({"bundle_urls": [{"url": "a", "shared_unit_count": 1}, {"url": "b"}],
+              "objects": [{"key": "o", "shared_unit_count": 4}]}, False),
             ({}, None),
         ]
         for scope, expected in cases:

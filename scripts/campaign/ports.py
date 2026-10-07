@@ -344,6 +344,8 @@ class InteractivePort:
             "disposition_hold": hasattr(self.rr, "disposition_hold"),
             "authorized_cleanup": self._takes("msdial_cleanup_repository_raw", "campaign_authorization_path"),
             "authorized_discard": self._authorized_discard() is not None,
+            # The agreed contract of 2026-10-07: the discard lifts a disposition hold only when told to.
+            "release_disposition_hold": self._discard_takes_release(),
             "split_parent_release": hasattr(self.rr, "cleanup_split_parent"),
             "cancel_job": hasattr(self.tools, "msdial_cancel_job"),
             "lease_uses_store": lease_uses_store(self.tools),
@@ -482,7 +484,9 @@ class InteractivePort:
             return {"ok": True, "deleted": True, "detail": result.get("raw_directory")}
         return {"ok": True, "deleted": False, "blockers": list(result.get("blockers") or []), "detail": result.get("message")}
 
-    def discard_blockers(self, manifest_path: Path, manifest: Mapping[str, Any]) -> list[dict[str, str]]:
+    def discard_blockers(
+        self, manifest_path: Path, manifest: Mapping[str, Any], *, release_disposition_hold: bool = False,
+    ) -> list[dict[str, str]]:
         """What discard_download_lease would refuse on, in the order it checks, with Interactive's own tests.
 
         Interactive's discard has no preview that checks anything (confirmed=false returns before its
@@ -512,6 +516,10 @@ class InteractivePort:
         holds = raw_deletion_holds(manifest_path, dict(manifest))
         if holds:
             blockers.append({"code": "finalisation_held", "detail": f"{len(holds)} finalisation hold(s) on the raw directory"})
+        held_by = getattr(self.rr, "held_by_disposition", None)
+        if not release_disposition_hold and held_by is not None and held_by(dict(manifest)):
+            blockers.append({"code": policy.DISPOSITION_HELD_BLOCKER,
+                             "detail": "the unit's campaign disposition holds it, and no operator released the hold"})
         return blockers
 
     def _console_blockers(self, manifest_path: Path) -> list[dict[str, str]]:
@@ -531,16 +539,29 @@ class InteractivePort:
         ("still downloading", "lease_live"),
         ("outside the expected project workspace", "raw_outside_workspace"),
         ("finalisation_held", "finalisation_held"),
+        # Interactive 0.5.31: "The unit's campaign disposition holds it (...)", and a split parent's release
+        # names a part whose "campaign disposition holds it".
+        ("campaign disposition holds it", policy.DISPOSITION_HELD_BLOCKER),
     )
 
-    def _authorized_discard(self) -> Callable[[Path, str], dict[str, Any]] | None:
+    def _discard_takes_release(self) -> bool:
+        """Whether Interactive's discard takes release_disposition_hold (the agreed contract of 2026-10-07)."""
+        if self._takes("msdial_discard_repository_raw", "campaign_authorization_path"):
+            return self._takes("msdial_discard_repository_raw", RELEASE_HOLD)
+        return RELEASE_HOLD in inspect.signature(self.rr.discard_download_lease).parameters
+
+    def _authorized_discard(self) -> Callable[[Path, str, bool], dict[str, Any]] | None:
         """Interactive's own discard that takes the campaign approval (plan item 14), found by its signature:
         an MCP tool msdial_discard_repository_raw, or discard_download_lease with a campaign_authorization
-        parameter. It checks the approval and records the crossing itself. None until it exists."""
+        parameter. It checks the approval and records the crossing itself. None until it exists.
+
+        Its third argument is release_disposition_hold, passed only when true: an operator's skip of a unit
+        Interactive's disposition holds (the agreed contract of 2026-10-07). An Interactive whose discard does not
+        take it cannot release a hold, which is the unsupported reply, never a discard without it."""
         if self._takes("msdial_discard_repository_raw", "campaign_authorization_path"):
-            def tool(path: Path, authorization: str) -> dict[str, Any]:
+            def tool(path: Path, authorization: str, release: bool = False) -> dict[str, Any]:
                 result = self._call("msdial_discard_repository_raw", manifest_path=str(path), confirmed=False,
-                                    campaign_authorization_path=authorization)
+                                    campaign_authorization_path=authorization, **_release_argument(release))
                 if result.get("ok") is False:
                     raise _ToolRefusal(result)
                 return result
@@ -549,11 +570,13 @@ class InteractivePort:
         parameters = inspect.signature(self.rr.discard_download_lease).parameters
         for key in ("campaign_authorization_path", "campaign_authorization"):
             if key in parameters:
-                return lambda path, authorization, key=key: self.rr.discard_download_lease(path, **{key: authorization})
+                return lambda path, authorization, release=False, key=key: self.rr.discard_download_lease(
+                    path, **{key: authorization}, **_release_argument(release))
         return None
 
     def discard(
         self, *, manifest_path: str, authorization_path: str, unit_id: str, parent_unit_id: str = "",
+        release_disposition_hold: bool = False,
     ) -> dict[str, Any]:
         """Delete the raw data of a unit that produced no validated output, under boundary 5.
 
@@ -563,9 +586,19 @@ class InteractivePort:
         that will happen is authorized, recorded and made. It never deletes anything but the raw tree, and
         never the unit's output or its mzTab-M: a failed run that left an mzTab-M keeps its raw data
         ({"deleted": false, "blockers": ["mztab_output_exists"]}), with no crossing recorded.
+
+        A unit or split part Interactive's campaign disposition holds is never discarded unless
+        release_disposition_hold is true, which the machine passes only for an operator's skip of that held unit
+        (the agreed contract of 2026-10-07). An Interactive that cannot take the release is the unsupported
+        reply: the raw data are then held, never discarded without it. A split part's discard deletes nothing and
+        answers part_ended, which is passed on.
         """
         path = Path(manifest_path)
         authorized = self._authorized_discard()
+        if release_disposition_hold and not self._discard_takes_release():
+            return {"ok": False, "reason": "unsupported",
+                    "detail": "Interactive's discard takes no release_disposition_hold, so it cannot release a unit "
+                              "its campaign disposition holds"}
         try:
             live = self._console_blockers(path)
             if live:
@@ -573,7 +606,7 @@ class InteractivePort:
                 return {"ok": True, "deleted": False, "blockers": [item["code"] for item in live],
                         "detail": "; ".join(item["detail"] for item in live)}
             if authorized is not None:
-                result = authorized(path, authorization_path)
+                result = authorized(path, authorization_path, release_disposition_hold)
             else:
                 from msdial_app.run_finalisation import raw_deletion_holds, resolve_finalisation_holds
 
@@ -583,7 +616,7 @@ class InteractivePort:
                     if hasattr(self.rr, "refresh_retained_artifacts"):
                         self.rr.refresh_retained_artifacts(path)
                     manifest = self.rr.read_manifest(path)
-                blockers = self.discard_blockers(path, manifest)
+                blockers = self.discard_blockers(path, manifest, release_disposition_hold=release_disposition_hold)
                 if blockers:
                     return {"ok": True, "deleted": False, "blockers": [item["code"] for item in blockers],
                             "detail": "; ".join(item["detail"] for item in blockers)}
@@ -593,13 +626,18 @@ class InteractivePort:
                     raw_retention_policy=str(manifest.get("raw_retention_policy") or "keep"),
                 )
                 self.rr.record_campaign_authorization(path, crossing or {})
-                result = self.rr.discard_download_lease(path, confirmed=True)
+                result = self.rr.discard_download_lease(path, confirmed=True, **_release_argument(release_disposition_hold))
         except self.ca.CampaignAuthorizationError as error:
             return {"ok": False, "reason": "campaign_authorization_refused", "codes": list(error.codes), "detail": str(error)}
         except _ToolRefusal as refusal:
             return self._discard_refusal(refusal.result, str(refusal.result.get("detail") or ""))
         except Exception as error:  # noqa: BLE001
             return self._discard_refusal(_exception_result(error, "discard_download_lease"), str(error))
+        if not result.get("deleted") and result.get("part_ended"):
+            # A split part's discard: it records that the part has ended and deletes nothing (its raw data are
+            # its parent's).
+            return {"ok": True, "deleted": False, "part_ended": True,
+                    "detail": str(result.get("raw_release_deferred_to") or "part ended")}
         if not result.get("deleted"):
             # A preview that was not ready, as the approval-taking cleanup answers one.
             text = "; ".join(str(item) for item in result.get("blockers") or []) or str(result.get("message") or "")
@@ -613,14 +651,21 @@ class InteractivePort:
             return {"ok": True, "deleted": False, "blockers": codes, "detail": text}
         return result
 
-    def release_split_parent(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
+    def release_split_parent(
+        self, *, manifest_path: str, authorization_path: str, release_disposition_hold: bool = False,
+    ) -> dict[str, Any]:
+        """Release a split parent's raw data once its parts have ended. release_disposition_hold is passed only
+        when true, for a parent one of whose parts an operator's skip released from its disposition hold."""
         function = getattr(self.rr, "cleanup_split_parent", None)
         if function is None:
             return {"ok": False, "reason": "unsupported", "detail": "Interactive has no split-parent release yet (plan item 14)."}
         parameters = inspect.signature(function).parameters
+        if release_disposition_hold and RELEASE_HOLD not in parameters:
+            return {"ok": False, "reason": "unsupported",
+                    "detail": "Interactive's split-parent release takes no release_disposition_hold"}
         key = "campaign_authorization_path" if "campaign_authorization_path" in parameters else "campaign_authorization"
         try:
-            result = function(Path(manifest_path), **{key: authorization_path})
+            result = function(Path(manifest_path), **{key: authorization_path}, **_release_argument(release_disposition_hold))
         except Exception as error:  # noqa: BLE001
             return _exception_result(error, "cleanup_split_parent")
         return {"ok": True, "deleted": bool((result or {}).get("deleted")), "detail": result}
@@ -727,6 +772,15 @@ def copy_handoff(response: Mapping[str, Any], destination: Path) -> dict[str, An
     record["copy_path"] = str(copy.resolve())
     record["copy_sha256"] = sha256_file(copy)
     return record
+
+
+# The argument of Interactive's discard and split-parent release that lifts a disposition hold (the agreed
+# contract of 2026-10-07). Passed only when true, so an Interactive before it is called as it always was.
+RELEASE_HOLD = "release_disposition_hold"
+
+
+def _release_argument(release: bool) -> dict[str, bool]:
+    return {RELEASE_HOLD: True} if release else {}
 
 
 def release_stale_campaign_lock(lock_module: Any, database: str | Path, approval_id: str) -> dict[str, Any] | None:

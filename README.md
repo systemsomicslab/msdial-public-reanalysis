@@ -197,7 +197,12 @@ Interactive's campaign disposition holds it (`hold` true; the AIF rule of
 waits for a patched Console). That hold (`disposition_held`, ledger schema 4)
 is counted apart in `status`, is never rechecked by itself and keeps no runner
 running; only `recheck-held --unit KEY` (or `--disposition-held` for all of
-them) makes its preflight again.
+them) makes its preflight again. `skip --unit KEY` is the operator's explicit
+decision that lifts the hold: its discard (and, for a held split part, the
+parent's release) passes Interactive `release_disposition_hold`, which records
+`disposition_hold_released_by` `operator_skip`. Interactive never discards a
+held unit or a held split part without it, and the runner passes it nowhere
+else.
 
 The report also prints a `PROGRESS` line: the furthest stage, B1-B10, whose
 artifacts exist. It is derived from the artifacts on disk and from fields the

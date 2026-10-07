@@ -245,7 +245,7 @@ class InteractiveContractTests(unittest.TestCase):
         capabilities = port.capabilities()
         self.assertEqual(set(capabilities), {
             "version", "classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup",
-            "authorized_discard", "split_parent_release", "cancel_job", "lease_uses_store",
+            "authorized_discard", "release_disposition_hold", "split_parent_release", "cancel_job", "lease_uses_store",
         })
         # What the runner cannot run without, since Interactive 0.5.17 (verify-env refuses otherwise).
         for name in ("cancel_job", "classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup"):
@@ -454,6 +454,70 @@ class InteractiveContractTests(unittest.TestCase):
             self.assertEqual((refused["deleted"], refused["blockers"]), (False, ["mztab_output_exists"]))
             self.assertEqual(calls[0], (str(unit["manifest_path"]), "auth.json"))
             self.assertEqual(boundary_5_crossings(unit["manifest_path"]), [])
+
+    def test_a_disposition_hold_is_released_only_when_the_discard_is_told_to(self) -> None:
+        """The agreed contract of 2026-10-07: Interactive's discard and split-parent release take
+        release_disposition_hold, default false, and never discard a held unit without it. The port passes it
+        only when asked (an operator's skip of a held unit), reads the refusal as disposition_held, and an
+        Interactive that cannot take it is unsupported, never a discard made without it."""
+        from msdial_app import mcp_server
+
+        port = ports.InteractivePort(port=8766)
+        calls: list = []
+        refusal = ("The unit's campaign disposition holds it (aif_multi_ce_awaiting_console): it is to run once a "
+                   "Console that can exists, and a held unit's raw data are kept.")
+
+        def with_release(download_job_id="", manifest_path="", confirmed=False, host="", port=0,
+                         campaign_authorization_path="", release_disposition_hold=False):
+            calls.append(("discard", release_disposition_hold))
+            if not release_disposition_hold:
+                return {"deleted": False, "confirmation_required": False, "blockers": [refusal]}
+            return {"deleted": True, "raw_directory": "raw"}
+
+        def without_release(download_job_id="", manifest_path="", confirmed=False, host="", port=0,
+                            campaign_authorization_path=""):
+            calls.append(("discard", "no argument"))
+            return {"deleted": False, "confirmation_required": False, "blockers": [refusal]}
+
+        def release_with(manifest_path, campaign_authorization_path=None, release_disposition_hold=False, **_entry):
+            calls.append(("release", release_disposition_hold))
+            return {"deleted": bool(release_disposition_hold)}
+
+        def release_without(manifest_path, campaign_authorization_path=None, **_entry):
+            calls.append(("release", "no argument"))
+            return {"deleted": False}
+
+        with tempfile.TemporaryDirectory() as directory:
+            unit = campaign_unit(Path(directory))
+            arguments = {"manifest_path": str(unit["manifest_path"]), "authorization_path": str(unit["authorization"]),
+                         "unit_id": "u1"}
+            with mock.patch.object(mcp_server, "msdial_discard_repository_raw", with_release), \
+                    mock.patch.object(self.rr, "cleanup_split_parent", release_with, create=True):
+                self.assertTrue(port.capabilities()["release_disposition_hold"])
+                held = port.discard(**arguments)
+                self.assertEqual((held["ok"], held["deleted"], held["blockers"]), (True, False, ["disposition_held"]))
+                self.assertTrue(policy.discard_blocked_for_good(held["blockers"]), "waiting does not lift a hold")
+                released = port.discard(**arguments, release_disposition_hold=True)
+                self.assertEqual((released["ok"], released["deleted"]), (True, True))
+                self.assertFalse(port.release_split_parent(manifest_path=arguments["manifest_path"],
+                                                           authorization_path="auth.json")["deleted"])
+                self.assertTrue(port.release_split_parent(manifest_path=arguments["manifest_path"],
+                                                          authorization_path="auth.json",
+                                                          release_disposition_hold=True)["deleted"])
+            self.assertEqual(calls, [("discard", False), ("discard", True), ("release", False), ("release", True)])
+            calls.clear()
+            with mock.patch.object(mcp_server, "msdial_discard_repository_raw", without_release), \
+                    mock.patch.object(self.rr, "cleanup_split_parent", release_without, create=True):
+                self.assertFalse(port.capabilities()["release_disposition_hold"])
+                result = port.discard(**arguments, release_disposition_hold=True)
+                self.assertEqual((result["ok"], result["reason"]), (False, "unsupported"))
+                self.assertEqual(policy.classify_result(result), policy.CONTRACT)
+                result = port.release_split_parent(manifest_path=arguments["manifest_path"],
+                                                   authorization_path="auth.json", release_disposition_hold=True)
+                self.assertEqual((result["ok"], result["reason"]), (False, "unsupported"))
+                self.assertEqual(port.discard(**arguments)["blockers"], ["disposition_held"])
+            self.assertEqual(calls, [("discard", "no argument")], "nothing is called with a release it cannot take")
+            self.assertTrue(unit["raw"].is_file())
 
     def test_the_fallback_moves_the_containers_out_before_it_discards(self) -> None:
         """A finalisation hold (MS-DIAL's containers still in the raw tree) is retried first, as Interactive's

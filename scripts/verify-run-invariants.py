@@ -2467,7 +2467,9 @@ def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
 # Interactive records each as an input_lineage row whose name_pairing is {"paired_by": "unattributed_member",
 # "member_name": <name>}, with the member's stem as sample_id and sample_row null; its analysis-CSV row has the
 # unit's abstention Class where the Class decision is an abstention, else UNATTRIBUTED_CLASS, as a Sample; the
-# manifest's unattributed_members gives {"count", "members", "rule"}; and the manifest's and the disposition's
+# manifest's unattributed_members gives {"count", "members", "paths", "rule"} (members the basenames, as each
+# name_pairing.member_name is; paths the '/'-separated paths under the unit's raw data root, its parent's for a
+# split part: the agreed contract of 2026-10-07); and the manifest's and the disposition's
 # warnings carry UNATTRIBUTED_WARNING. INP-1, CLS-1, CLS-2, CLS-3 and PAIR-1 read them as explained inputs:
 # never a FAIL for being there, always a WARN that lists them, and never an approved sample.
 UNATTRIBUTED_PAIRING = "unattributed_member"
@@ -2484,9 +2486,15 @@ def _is_unattributed(row: object) -> bool:
     return isinstance(pairing, dict) and str(pairing.get("paired_by") or "") == UNATTRIBUTED_PAIRING
 
 
+def _basename(name: str) -> str:
+    """The last part of a member name, or of a '/'- or backslash-separated path under a data root."""
+    return name.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
 def _member_name(row: dict) -> str:
+    """The member's basename: name_pairing.member_name, as Interactive writes it for every rule, else its path's."""
     pairing = row.get("name_pairing") if isinstance(row.get("name_pairing"), dict) else {}
-    return str(pairing.get("member_name") or "") or Path(str(row["path"]).rstrip("\\/")).name
+    return _basename(str(pairing.get("member_name") or "") or str(row["path"]))
 
 
 def _download_scope(manifest: "dict | None") -> dict:
@@ -2496,24 +2504,34 @@ def _download_scope(manifest: "dict | None") -> dict:
 
 
 def _unit_scoped(manifest: "dict | None") -> "tuple[bool | None, str]":
-    """Whether the raw owner's download is unit-scoped, as the rule of 2026-10-07 reads the Catalog's scope: its
-    kind is "unit_files", or every download object it lists (bundle_urls, objects) is claimed by this unit alone
-    (shared_unit_count 1). None where no scope is recorded, or one that lists no object and is not unit_files."""
+    """Whether the raw owner's download is unit-scoped, as the rule of 2026-10-07 reads the Catalog's scope.
+    Shared first, in the order Interactive's unit_scoped_download reads it: any bundle URL or object claimed by
+    more than one unit (shared_unit_count above 1, or bundle_shared_unit_count above 1) is a shared archive,
+    whatever the scope's kind (False). Then its own: kind "unit_files", or every count the scope records (on its
+    bundle_urls, its objects and bundle_shared_unit_count) is 1 (True). None where no scope is recorded, or one
+    that records no count for some of its objects and is not unit_files."""
     scope = _download_scope(manifest)
     if not scope:
         return None, "the manifest records no download_scope"
-    if str(scope.get("kind") or "") == UNIT_SCOPED_DOWNLOAD_KIND:
-        return True, "the Catalog scoped the download to the unit's own files (unit_files)"
-    counts = [item.get("shared_unit_count") for key in ("bundle_urls", "objects")
+
+    def count(value: object) -> "int | None":
+        if isinstance(value, bool):
+            return None
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    listed = [count(item.get("shared_unit_count")) for key in ("bundle_urls", "objects")
               for item in scope.get(key) or [] if isinstance(item, dict)]
-    bundle = scope.get("bundle_shared_unit_count")
-    if isinstance(bundle, int) and not isinstance(bundle, bool):
-        counts.append(bundle)
-    numbers = [count for count in counts if isinstance(count, int) and not isinstance(count, bool)]
-    if any(count > 1 for count in numbers):
+    bundle = count(scope.get("bundle_shared_unit_count"))
+    numbers = [number for number in [*listed, bundle] if number is not None]
+    if any(number > 1 for number in numbers):
         return False, (f"the download is shared with other units (shared_unit_count up to {max(numbers)}), so a "
                        "member no sample row pairs with may be another unit's file")
-    if numbers and len(numbers) == len(counts):
+    if str(scope.get("kind") or "") == UNIT_SCOPED_DOWNLOAD_KIND:
+        return True, "the Catalog scoped the download to the unit's own files (unit_files)"
+    if numbers and None not in listed:
         return True, "every download object is claimed by this unit alone (shared_unit_count 1)"
     return None, "the download_scope records no shared_unit_count for its objects"
 
@@ -2545,8 +2563,10 @@ class _Unattributed:
                 f"{count if count is not None else 'not recorded'}) in Class {self.class_label!r}: {names}")
 
     def evidence(self) -> dict:
+        paths = (self.record or {}).get("paths")
         return {"warning": UNATTRIBUTED_WARNING, UNATTRIBUTED_RECORD: {
             "count": self.recorded_count, "lineage_rows": len(self.members), "members": self.members[:10],
+            **({"paths": [str(item) for item in paths[:10]]} if isinstance(paths, list) else {}),
             "rule": (self.record or {}).get("rule"), "class": self.class_label}}
 
 
@@ -2611,7 +2631,10 @@ def _unattributed_record_problems(provenance: dict, unattributed: _Unattributed)
                             f"{UNATTRIBUTED_RULE}")
         listed = record.get("members")
         if isinstance(listed, list):
-            missing = [name for name in unattributed.members if name not in {str(item) for item in listed}]
+            # Basenames on both sides (the agreed contract of 2026-10-07): members lists them, as each lineage
+            # row's name_pairing.member_name does; the paths under the data root are unattributed_members.paths.
+            recorded = {_basename(str(item)) for item in listed}
+            missing = [name for name in unattributed.members if _basename(name) not in recorded]
             if missing:
                 problems.append(f"{UNATTRIBUTED_RECORD}.members does not list {', '.join(missing[:5])}")
         else:
@@ -2681,7 +2704,9 @@ def check_analysis_inputs_are_the_inputs(
     them, since which declared input each one is, if any, is exactly what nobody could say. Every row must still
     open a candidate, once. The check is then a WARN that lists them with manifest.unattributed_members.count,
     never a PASS. They FAIL it only where the download is recorded as shared with other units, whose files they
-    may be: the rule includes them from a unit-scoped archive only.
+    may be: the rule includes them from a unit-scoped archive only. That guard is read first, before INP-1 finds
+    nothing declared to compare: Interactive includes unattributed members only where the Catalog declared no
+    analysis inputs, so a check that returned NOT_EVALUABLE first never blocked a real run on it.
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
     an input the run never opens, gives results for files that are not the unit's.
@@ -2700,6 +2725,20 @@ def check_analysis_inputs_are_the_inputs(
     own_declared, own_contradiction = declaration(provenance)
     declared, contradiction = declaration(owner) if split and owner is not None else (own_declared, own_contradiction)
     if declared is None and own_declared is None:
+        # Interactive includes unattributed members only where the Catalog declared no analysis inputs, so the
+        # shared-archive guard is read here, before the declaration is found missing: members of an archive
+        # other units share may be their files, and the unit does not run on them.
+        unattributed = _unattributed_members(provenance)
+        if unattributed:
+            scoped, why = _unit_scoped(owner if isinstance(owner, dict) else provenance)
+            if scoped is False:
+                report.add("INP-1", stage, INP1_TITLE, FAIL,
+                           "What MS-DIAL will open is not what the rule of 2026-10-07 lets it open: "
+                           f"{len(unattributed.members)} input candidate(s) are archive members no sample row "
+                           f"pairs with, included unattributed, and {why}. The rule includes them from a "
+                           "unit-scoped archive only. " + unattributed.sentence() + ".",
+                           **unattributed.evidence())
+                return
         report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
                    "The manifest declares no analysis inputs: the unit finds its inputs after the download, or "
                    "was prepared before the Catalog declared them.", required=False)

@@ -72,8 +72,11 @@ Console exists: Interactive 0.5.31's disposition says skip, hold true, aif_multi
 holds it (disposition_held): not run, raw data kept, no retry counted, reported as held in status
 (summary disposition_held, with the count and the reasons), and the other units go on. Nothing rechecks it by
 itself and it keeps no runner running: only recheck-held --unit KEY (or --disposition-held for all of them) lifts
-it, by making its preflight again, and Interactive then decides it anew. skip --unit KEY ends it as skipped and
-deletes its raw data, as for any unit.
+it, by making its preflight again, and Interactive then decides it anew. skip --unit KEY is the explicit decision
+that lifts the hold: the unit ends as skipped, and its discard passes Interactive release_disposition_hold, which
+records disposition_hold_released_by operator_skip and deletes its raw data under boundary 5; a held split part's
+discard records that the part has ended, and its parent's release then goes ahead. Nothing else releases a hold:
+Interactive never discards a held unit without it, and an Interactive that cannot take it leaves the raw data held.
 
 THE PROFILE (--profile, schema msdial-campaign-profile.v1) is the answers every unit's run shares, part
 of the approved manifest, naming each library as "library:<file name>" and never by location:

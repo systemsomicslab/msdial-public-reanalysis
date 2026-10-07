@@ -40,7 +40,8 @@ And the AIF rule of 2026-10-07: a multi-collision-energy AIF unit is HELD until 
 run, its raw data kept, and not counted as a failure. Interactive 0.5.31 says so in the disposition itself:
 disposition "skip", hold true and the reason aif_multi_ce_awaiting_console (HOLD_FOR_CONSOLE). The runner
 holds such a unit (disposition_held) instead of skipping it, and the hold lifts only at an operator's
-explicit recheck-held (Disposition.held).
+explicit recheck-held (Disposition.held), or at the operator's skip, whose discard passes Interactive
+release_disposition_hold (DISPOSITION_HELD_BLOCKER).
 
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
@@ -727,7 +728,11 @@ def download_bound_gb(total: int, policy: DiskPolicy) -> float:
 # The permanent ones do not change by waiting: a validated run takes the normal cleanup instead, and a run
 # that left an mzTab-M it could not validate keeps its raw data until Interactive has a discard for it.
 # console_live is the port's own: a Console that may still read the raw tree (one a backend restart left
-# running) ends, or the runner stops it, so waiting mends it.
+# running) ends, or the runner stops it, so waiting mends it. disposition_held (Interactive 0.5.31): the unit's
+# campaign disposition holds it, and Interactive never discards a held unit or a held split part unless the
+# call passes release_disposition_hold, which only an operator's skip of the held unit does; waiting does not
+# mend it, and the machine keeps such raw data (the hold's own decision) rather than holding them for a recheck.
+DISPOSITION_HELD_BLOCKER = "disposition_held"
 DISCARD_BLOCKERS = {
     "console_live": False,
     "validated_status": True,
@@ -735,6 +740,7 @@ DISCARD_BLOCKERS = {
     "mztab_output_exists": True,
     "raw_outside_workspace": True,
     "finalisation_held": False,
+    DISPOSITION_HELD_BLOCKER: True,
 }
 
 

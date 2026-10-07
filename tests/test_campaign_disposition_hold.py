@@ -123,13 +123,75 @@ class DispositionHoldTests(Base):
         self.assertEqual(self.preflights(world, book, "u1"), 2)
         self.assertEqual(machine.summary(book)["disposition_held"]["recheck_asked"], 0)
 
-    def test_an_operator_skip_ends_it_as_any_skip(self) -> None:
+    def discards(self, world: fakes.World, book: ledger.Ledger, key: str) -> list:
+        manifest = book.unit(key)["manifest_path"]
+        return [arguments["release_disposition_hold"] for name, arguments in world.interactive.calls
+                if name == "discard" and arguments["manifest_path"] == manifest]
+
+    def test_the_fake_refuses_a_held_discard_without_the_release_as_interactive_does(self) -> None:
+        world, book, _runner = self.held()
+        unit = book.unit("u1")
+        refused = world.interactive.discard(manifest_path=unit["manifest_path"], authorization_path="a", unit_id="u1")
+
+        self.assertEqual((refused["deleted"], refused["blockers"]), (False, ["disposition_held"]))
+        self.assertTrue(policy.discard_blocked_for_good(refused["blockers"]))
+        self.assertTrue((Path(unit["workspace"]) / "raw").is_dir())
+
+    def test_an_operator_skip_releases_the_hold_and_discards_the_raw_data(self) -> None:
+        """The agreed contract of 2026-10-07: only an operator's explicit decision lifts the hold, and the skip
+        is that decision. Its discard passes release_disposition_hold; Interactive records
+        disposition_hold_released_by operator_skip. Before, the runner called the discard without it, so a
+        real Interactive refused it; it was retried and the raw data then held, rechecked for good."""
         world, book, runner = self.held()
         book.add_request("skip", "u1", "not waiting for the Console", "Test Person", runner.stamp())
         runner.run(until_idle=True, max_iterations=2000)
 
         unit = book.unit("u1")
         self.assertEqual((unit["state"], unit["raw_disposition"]), ("skipped", "discarded"))
+        self.assertEqual(self.discards(world, book, "u1"), [True])
+        self.assertFalse((Path(unit["workspace"]) / "raw").exists())
+        manifest = world.interactive.store.read(unit["manifest_path"])
+        self.assertEqual((manifest["status"], manifest["disposition_hold_released_by"]), ("discarded", "operator_skip"))
+        self.assertIs(json.loads(unit["terminal_detail"])["release_disposition_hold"], True)
+        self.assertIn("disposition hold released", unit["raw_detail"])
+        handled = [row[0] for row in book.connection.execute("SELECT handled_detail FROM request ORDER BY request_id")]
+        self.assertEqual(handled, ["skipped; the disposition hold is released (operator_skip)"])
+        self.assertEqual(machine.remaining_work(book), [], "nothing is left to recheck")
+
+    def test_no_other_discard_releases_a_hold(self) -> None:
+        """A held unit sent to its discard without an operator's release (a ledger whose skip predates it) keeps
+        its raw data as the hold decided, and is not held for a recheck that would ask for the same refused
+        discard every few hours and keep the hourly start running."""
+        world, book, runner = self.held()
+        unit = book.unit("u1")
+        book.transition("u1", "discarding", runner.stamp(), expect_from="disposition_held", pending_terminal="skipped",
+                        terminal_detail=json.dumps({"reason": "operator_skip", "detail": "before the release"}))
+        runner.run(until_idle=True, max_iterations=2000)
+
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["raw_disposition"]), ("skipped", "kept"))
+        self.assertEqual(self.discards(world, book, "u1"), [False])
+        self.assertTrue((Path(unit["workspace"]) / "raw").is_dir())
+        self.assertIn("campaign disposition holds the unit", unit["raw_detail"])
+        self.assertEqual(machine.remaining_work(book), [])
+
+    def test_an_interactive_that_cannot_release_a_hold_leaves_the_raw_data_held(self) -> None:
+        """Interactive 0.5.31 as first written (68f1cc0): the hold, and no release_disposition_hold. The skip's
+        discard is a contract the runner cannot meet: the raw data are held, never discarded without the release."""
+        world, book, runner = self.held()
+        world.interactive.release_hold_supported = False
+        book.add_request("skip", "u1", "not waiting for the Console", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=2000)
+
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["raw_disposition"]), ("skipped", "held"))
+        self.assertTrue((Path(unit["workspace"]) / "raw").is_dir())
+        self.assertNotIn(False, self.discards(world, book, "u1"), "never a discard without the release")
+        world.interactive.release_hold_supported = True
+        book.add_request("release_held", "u1", "Interactive takes the release now", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=2000)
+        self.assertEqual(book.unit("u1")["raw_disposition"], "discarded")
+        self.assertFalse((Path(unit["workspace"]) / "raw").exists())
 
     def test_the_recheck_held_command_asks_for_the_disposition_held_units_only_when_told(self) -> None:
         world = self.world(("u1", "u2", "u3"))
@@ -177,6 +239,37 @@ class DispositionHoldTests(Base):
         self.assertEqual(machine.remaining_work(book), ["1 operator request(s) wait for a runner"])
         runner.run(until_idle=True, max_iterations=3000)
         self.assertEqual([book.unit(key)["state"] for key in ("u1", "u1-DDA")], ["split_done", "done"])
+
+    def test_an_operator_skip_of_a_held_split_part_releases_it_and_then_the_parent(self) -> None:
+        """A held split part keeps its parent's raw data until it is released or run. Its skip releases it: the
+        part's discard passes release_disposition_hold (deleting nothing; its raw data are its parent's), and
+        the parent's release then goes ahead, told of the release too. Before, the part's skip called nothing,
+        and the parent's release was refused for the held part for good."""
+        world = self.world(("u1", "u2"))
+        world.scripts["u1"] = fakes.UnitScript(disposition="split")
+        world.scripts["u1-DDA"] = fakes.UnitScript(disposition="aif_hold")
+        world.interactive.split_release_supported = True
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        runner.run(until_idle=True, max_iterations=3000)
+        self.assertEqual(book.unit("u1-DDA")["state"], "disposition_held")
+        parent_raw = Path(world.interactive.store.read(book.unit("u1")["manifest_path"])["raw_directory"])
+        self.assertTrue(parent_raw.is_dir())
+
+        book.add_request("skip", "u1-DDA", "not waiting for the Console", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=3000)
+
+        part = book.unit("u1-DDA")
+        self.assertEqual((part["state"], part["raw_disposition"]), ("skipped", "deferred_to_parent"))
+        self.assertEqual(self.discards(world, book, "u1-DDA"), [True])
+        manifest = world.interactive.store.read(part["manifest_path"])
+        self.assertEqual((manifest["status"], manifest["disposition_hold_released_by"]), ("discarded", "operator_skip"))
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["raw_disposition"]), ("split_done", "released"))
+        self.assertEqual([arguments["release_disposition_hold"] for name, arguments in world.interactive.calls
+                          if name == "release_split_parent"], [True])
+        self.assertFalse(parent_raw.exists())
+        self.assertEqual(machine.remaining_work(book), [])
 
 
 class HoldDispositionRecordTests(unittest.TestCase):
