@@ -108,6 +108,12 @@ For a repository range:
    `requires_conversion` and excludes the unit: there is no reader and no
    converter for it. Interactive has taken folder inputs since 0.5.20 and
    converts a campaign unit's mzXML since 0.5.21.
+   Where a sample row admits an mzML that RawDataHandler cannot decode and a
+   twin of the same sample can be read (a vendor container or folder, or in a
+   campaign an mzXML, converted), the twin runs as that sample's own input, in
+   its Class, and the mzML is recorded as undecodable (the user's answer of
+   2026-10-08, "A: 読める方をそのサンプルとして使う"; Interactive #69, 0.5.36, and gate #37;
+   `CLAUDE.md`, Evidence and decisions).
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.

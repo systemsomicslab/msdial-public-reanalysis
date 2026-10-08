@@ -76,14 +76,14 @@ no longer waits and gate #37 merges before or with it; an unpaired mzXML of a un
 campaign and one of a name's two encodings taken by the encoding order, with what Interactive records for the
 members a Catalog declaration does not name stated as it is (nothing of its own); and every manifest without an
 automatic RT correction statement refused, to be planned again (gate #36). Review after the second round found
-three points of answer 3 that the code does not meet or the answer did not cover: the record of the members a
-declaration does not name; the cases the encoding order does not decide, among them a tie with an admitted member
-whose record names the order as the basis; and an admitted mzML RawDataHandler cannot decode, replaced by an unpaired
-twin, which runs outside the sample's Class where it is a vendor container and, converted in a campaign, as the
-sample's own input where it is an mzXML, under a record that lists it as taken instead all the same. Only the passage
-that states those three is marked open for the user. The documents also say that #69 sets an undecodable unpaired
-mzML aside (undecodable_mzml_set_aside) only where another unpaired encoding of its sample can be read, and that
-otherwise its record names another basis and not that it could not be decoded.
+one case neither answer covered, an admitted mzML RawDataHandler cannot decode beside a readable twin, and the user
+answered it the same day ("A: 読める方をそのサンプルとして使う"): the twin runs as that sample's own input, in its Class, and
+the mzML is recorded as undecodable. The trial manifest records that answer as the user's, and the documents state
+it as Interactive #69 (at 35d75ad) and gate #37 (at e7b2901) implement it, together with what #69 now records of
+the review's points: the members a Catalog declaration does not name, each left out with its reason; the basis of
+a tie with an admitted member (admitted_by_the_unit); and an undecodable mzML, recorded as undecodable whatever
+stands beside it. What remains open for the user is the wording of the whole amendment, and only the passage that
+says so is marked open; the cases neither answer covered are stated as the agent's reading in the code.
 """
 
 from __future__ import annotations
@@ -290,8 +290,8 @@ _PARAPHRASES_QUOTED = ('"record only, the unit runs"', '"include them as unattri
                        '"the 10 unfinished units"')
 # The user's request for that form, verbatim.
 _A_TO_D_REQUEST = "すみません、判断をしないといけない点に関して、A～Dあたりの質問形式で、順番に出してもらえますか？"
-# What marks a passage as a case the user has not settled. After the second round of 2026-10-08 one passage carries
-# it: the three points of answer 3 that review found the code does not meet or the answer did not cover.
+# What marks a passage as a case the user has not settled. Since the extra answer of 2026-10-08 one passage carries
+# it: the one that says the wording of the whole amendment is what remains open for the user.
 _OPEN_MARKS = ("open for the user", "not yet put to the user", "not yet accepted", "has not been asked",
                "the user did not decide", "stands as the user's")
 # The user's second-round answers of 2026-10-08, each: the label exactly as the question showed it (letter included),
@@ -304,15 +304,13 @@ _SECOND_ROUND = {
     4: "なんのことかわからないのですが、デフォルトでは補正ON、ということで良いんじゃないですか？",
 }
 _SECOND_ROUND_HEADING = "**The second round.**"
-# The passage after the second round's list that leaves three points of answer 3 to the user, and its three items.
-_SECOND_ROUND_UNSETTLED = "Review after the second round found three points of answer 3"
-_SECOND_ROUND_UNSETTLED_ITEMS = (
-    "- **The record of the members a Catalog declaration does not name.**",
-    "- **The cases the encoding order does not decide.**",
-    "- **An admitted encoding RawDataHandler cannot decode.**",
-)
-# The heads of the pull requests that implement the second round, as the documents cite them.
-_SECOND_ROUND_HEADS = {"Interactive #69": "4722776", "gate #37": "c716368", "gate #36": "f043ab1"}
+# The passages after the second round's list: the user's answer to the extra question of the same day, and the one
+# passage that says what remains open for the user.
+_EXTRA_HEADING = "**The extra question.**"
+_EXTRA_ANSWER = "A: 読める方をそのサンプルとして使う"
+_OPEN_PASSAGE = "**Open for the user.**"
+# The heads of the pull requests that implement the second round and the extra answer, as the documents cite them.
+_SECOND_ROUND_HEADS = {"Interactive #69": "35d75ad", "gate #37": "e7b2901", "gate #36": "fe3f346"}
 # The reasons Interactive records for the members it leaves out of a unit-scoped archive, and the records it keeps of
 # what it took, after the second round's answer 3 (Interactive #69).
 _UNIT_SCOPED_LEFT_OUT = ("`requires_conversion`", "`polarity_token_contradicts_ion_mode`",
@@ -925,7 +923,7 @@ class ContractGateChecksTests(unittest.TestCase):
         agent = [entry for entry in decisions
                  if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
         for phrase in ("for its unit-scoped half", "which no decision of the user's settled then",
-                       "(second-round answer 1, the last entry of that date)", "second-round answer 3"):
+                       "(second-round answer 1, the second-round entry of that date)", "second-round answer 3"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, str(agent["state"]))
 
@@ -988,17 +986,29 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertNotIn("no longer lets run", contract)
         self.assertNotIn("concern the same list", contract)
 
-    def test_only_the_three_points_of_answer_3_are_marked_open_for_the_user(self) -> None:
-        """The answers of 2026-10-08 settled every case the draft had left open, and the second round the points review
-        found after them, but for three points of its answer 3 that review found after it: only the passage that states
-        those three is marked open, and no agent entry since 2026-10-06 marks a passage open."""
+    def test_only_the_wording_is_marked_open_for_the_user(self) -> None:
+        """The answers of 2026-10-08, the second round and the extra question settled every case review found: only the
+        passage that says the wording of the whole amendment remains open is marked open, and no agent entry since
+        2026-10-06 marks a passage open."""
         found = {}
         for document in DOCUMENTS:
             for block in _blocks((_ROOT / document).read_text(encoding="utf-8")):
                 marks = [mark for mark in _OPEN_MARKS if mark in block]
                 if marks:
-                    found.setdefault(document, []).append(block[:len(_SECOND_ROUND_UNSETTLED)])
-        self.assertEqual({"CLAUDE.md": [_SECOND_ROUND_UNSETTLED]}, found)
+                    found.setdefault(document, []).append(block[:len(_OPEN_PASSAGE)])
+        self.assertEqual({"CLAUDE.md": [_OPEN_PASSAGE]}, found)
+        blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
+        open_passage = [block for block in blocks if block.startswith(_OPEN_PASSAGE)]
+        self.assertEqual(1, len(open_passage))
+        for phrase in ("What is open for the user is the approval of this amendment's wording as a whole",
+                       "the agent's reading in the code", "Approving the wording leaves each as the code does it, on "
+                       "record, until the user says otherwise"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, open_passage[0])
+        for withdrawn in ("Each is open for the user", "Beyond these three points",
+                          "three points of answer 3 that the code does not meet"):
+            with self.subTest(withdrawn=withdrawn):
+                self.assertNotIn(withdrawn, " ".join(self.contract.split()))
         for entry in _trial_decisions():
             if entry.get("by") == "agent" and str(entry.get("at", "")) >= "2026-10-06":
                 state = str(entry.get("state", ""))
@@ -1017,8 +1027,7 @@ class ContractGateChecksTests(unittest.TestCase):
         for phrase in ("three points that no answer of 2026-10-08 covered", "gate #36 had left one choice to the user",
                        "the same question form", "answered all four on 2026-10-08",
                        "exactly as the question showed it, its letter included", "the agent's rendering, not a quote",
-                       *(f"{name} (at `{head}`)" for name, head in (("Interactive #69", "4722776"),)),
-                       "#37 (at `c716368`)", "#36 (at `f043ab1`)"):
+                       "Interactive #69 (at `35d75ad`)", "gate #37 (at `e7b2901`)", "gate #36 (merged as `fe3f346`)"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, blocks[heads[0]])
         items = blocks[heads[0] + 1:heads[0] + 1 + len(_SECOND_ROUND)]
@@ -1029,8 +1038,10 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertIn(f'"{words}"', item)
         self.assertIn("The agent reads the rest as the decision", items[3])
         self.assertIn("with no exception for one planned before the statement", items[3])
-        self.assertIn("implement the answers, but for the three points of answer 3 after the list", blocks[heads[0]])
-        self.assertTrue(blocks[heads[0] + 1 + len(_SECOND_ROUND)].startswith(_SECOND_ROUND_UNSETTLED))
+        self.assertIn("implement the answers:", blocks[heads[0]])
+        self.assertNotIn("but for the three points", blocks[heads[0]])
+        self.assertTrue(blocks[heads[0] + 1 + len(_SECOND_ROUND)].startswith(_EXTRA_HEADING))
+        self.assertTrue(blocks[heads[0] + 2 + len(_SECOND_ROUND)].startswith(_OPEN_PASSAGE))
         self.assertNotIn("leaves none of this amendment's rules", " ".join(self.contract.split()))
         second = _second_round_entry()
         self.assertTrue(str(second["by"]).startswith("user"))
@@ -1045,144 +1056,118 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertIn(f"{name} (", result)
                 self.assertIn(head, result)
 
-    def test_the_three_points_of_answer_3_the_code_does_not_settle_are_left_to_the_user(self) -> None:
-        """Answer 3 keeps the members a Catalog declaration does not name left out, on record, but Interactive #69
-        records nothing of its own for them; where the encoding order cannot choose, or a sample row admits an encoding
-        the order puts after an unpaired twin, #69 follows the agent's reading, which the answer did not cover, and
-        where the order ties and a sample row admits one, #69 records chosen_by encoding_order although the admission
-        chose; and where the encoding a sample row admits is an mzML RawDataHandler cannot decode, #69 takes a readable
-        unpaired twin in its place: a vendor twin as an unattributed input, outside the sample's Class, recorded only
-        in taken_instead_of_undecodable, and in a campaign an mzXML twin, converted, as the sample's own input (the
-        mzML written from it carries the name the sample row gives), while taken_instead_of_undecodable lists it as an
-        unattributed member the record's count leaves out (review contract-r2, round 3, finding 1). The documents
-        state all three as the user's to settle, not as the answer implemented."""
+    def test_the_extra_answer_is_the_users_and_stated_as_interactive_69_implements_it(self) -> None:
+        """Review after the second round found that no answer said what runs where a sample row admits an mzML
+        RawDataHandler cannot decode and a twin of it can be read; #69 at 4722776 ran a vendor twin unattributed, outside
+        the sample's Class, under a record (taken_instead_of_undecodable) its own count contradicted. The user answered
+        the same day: the readable twin runs as that sample's own input, in its Class. The documents quote the answer
+        as the question showed it, state it as the user's, and state what #69 at 35d75ad records and gate #37 at
+        e7b2901 checks, with no passage left calling the twin's handling the agent's reading or the record a defect."""
         blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
-        start = [index for index, block in enumerate(blocks) if block.startswith(_SECOND_ROUND_UNSETTLED)]
-        self.assertEqual(1, len(start))
-        for phrase in ("the code does not meet or that the answer did not cover", "Each is open for the user",
-                       "decides none of them"):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, blocks[start[0]])
-        record, order, undecodable = blocks[start[0] + 1:start[0] + 4]
-        for block, lead in zip((record, order, undecodable), _SECOND_ROUND_UNSETTLED_ITEMS):
-            self.assertTrue(block.startswith(lead), block[:80])
-        for phrase in ("records nothing of its own for them", "the archive's member listing is their only record",
-                       "The code does not meet this part of the answer as written", "is the user's to say",
-                       "with no reason recorded for it"):
-            with self.subTest(item="record", phrase=phrase):
-                self.assertIn(phrase, record)
-        order = " ".join(order.split())
-        for phrase in ("takes neither and leaves both out (`two_encodings_of_one_name`)", "not analysed at all",
-                       "`admitted_by_the_unit`", "The answer covers none of these cases",
-                       "Where no sample row admits either", "Where a sample row admits one of them",
-                       "`chosen_by` `encoding_order`: the record names the order as the basis although the order "
-                       "tied and the sample row's admission chose", "gate #37 accepts that record",
-                       "a misstated basis in #69's record, which Interactive has not corrected",
-                       "the agent's reading in #69", "not the user's decision"):
-            with self.subTest(item="order", phrase=phrase):
-                self.assertIn(phrase, order)
-        undecodable = " ".join(undecodable.split())
-        for phrase in ("sets the admitted mzML aside", "`unsupported_mzml_encoding`",
-                       "takes the unpaired twin the order takes in its place",
-                       "although #69 means it as an unattributed input in both cases",
-                       "A vendor twin (`S1.raw` beside an admitted `S1.mzML`) runs as an unattributed input",
-                       "not in the sample's Class, so the sample's data leave its contrast group",
-                       "Only `unattributed_members.taken_instead_of_undecodable` records the substitution",
-                       "An mzXML twin is converted in a campaign",
-                       "the converted twin runs as the sample's own input, in the sample's Class",
-                       "`unattributed_members` gives `count` 0 and no member, yet `taken_instead_of_undecodable` "
-                       "lists the mzXML", "a defect in #69's record that Interactive has not corrected",
-                       "Outside a campaign an mzXML twin stays left out (`requires_conversion`)",
-                       "Gate #37 does not read `taken_instead_of_undecodable`",
-                       "Before #69 that sample had no input at all",
-                       "left a vendor twin out as `two_encodings_of_one_name` and an mzXML twin as "
-                       "`requires_conversion`, in a campaign too",
-                       "Neither answer 3 nor the rule of 2026-09-30", "the agent's reading in #69",
-                       "not the user's decision", "is the user's to say"):
-            with self.subTest(item="undecodable", phrase=phrase):
-                self.assertIn(phrase, undecodable)
-        for withdrawn in ("takes the unpaired twin in its place as an unattributed input",
-                          "converted first where it is an mzXML in a campaign", "That twin has no sample row"):
-            with self.subTest(item="undecodable", withdrawn=withdrawn):
-                self.assertNotIn(withdrawn, undecodable)
-        self.assertTrue(blocks[start[0] + 4].startswith("Beyond these three points, what remains is the user's approval"))
+        extra = [block for block in blocks if block.startswith(_EXTRA_HEADING)]
+        self.assertEqual(1, len(extra))
+        for phrase in (f'"{_EXTRA_ANSWER}"', "exactly as the question showed it, its letter included",
+                       "an mzML that RawDataHandler cannot decode", "runs as that sample's own input, paired to its "
+                       "sample row and in its Class, never as an unattributed input",
+                       "the undecodable mzML is recorded with that reason", "(`4722776`)", "from `06d2891` on"):
+            with self.subTest(item="extra", phrase=phrase):
+                self.assertIn(phrase, extra[0])
+        twin = [block for block in blocks if block.startswith("- **A readable twin of an admitted mzML that cannot be "
+                                                                 "decoded**")]
+        self.assertEqual(1, len(twin))
+        for phrase in (f'"{_EXTRA_ANSWER}"', "runs as that sample's own input, paired to its sample row and in its "
+                       "Class, never as an unattributed input", "`replaces_undecodable`",
+                       "`rule` `readable_twin_runs_as_the_sample_2026_10_08`", "names the twin as `replaced_by`",
+                       "`analysed_for_an_admitted_sample`", "`stands_for_reason` `undecodable_mzml`",
+                       "`unattributed_members.replaced_undecodable`", "`replaced_by_input`", "`replacement_excluded`",
+                       "Where the order ties between readable twins, none is taken",
+                       "outside a campaign an mzXML twin stays left out (`requires_conversion`)",
+                       "Beside a shared archive, too, the twin runs for its sample",
+                       "that is the agent's reading in #69", "Before #69 such a sample had no input",
+                       "that list is gone", "Gate #37's INP-1 accepts a twin only where these four records agree",
+                       "FAILs a twin that runs unattributed", "with no record", "(`readable_twins`)",
+                       "CONV-1 holds a converted twin"):
+            with self.subTest(item="twin", phrase=phrase):
+                self.assertIn(phrase, twin[0])
         section = " ".join(_section(self.contract, "## Evidence and decisions").split())
-        for phrase in ("implement it where it covers the case. Where they go beyond it or fall short of it, the item "
-                       "says so", "That much is the answer.", "The rest of this item is the agent's reading in #69",
-                       "which the answer did not cover and the user has not decided",
-                       "Where a sample row admits a readable encoding of that sample",
-                       "where the order ranks the two equal (recorded with `chosen_by` `encoding_order`, although the "
-                       "admission chose)", "sets the admitted one aside too",
-                       "vendor twin as an unattributed input outside the sample's Class "
-                       "(`unattributed_members.taken_instead_of_undecodable`)",
-                       "in a campaign an mzXML twin, converted, as the sample's own input in the sample's Class, "
-                       "although `taken_instead_of_undecodable` lists it too",
-                       "Where the order cannot choose and no sample row admits either",
-                       "no encoding is taken: both are still left out as `two_encodings_of_one_name`",
-                       'That falls short of answer 3\'s "on record" as written, and the code has not closed the gap'):
+        for withdrawn in ("a defect in #69's record that Interactive has not corrected",
+                          "which Interactive has not corrected", "the code has not closed the gap",
+                          "Gate #37 does not read `taken_instead_of_undecodable`",
+                          "A vendor twin (`S1.raw` beside an admitted `S1.mzML`) runs as an unattributed input",
+                          "although `taken_instead_of_undecodable` lists it too",
+                          "although #69 means it as an unattributed input in both cases",
+                          "those points are the user's to settle"):
+            with self.subTest(withdrawn=withdrawn):
+                self.assertNotIn(withdrawn, section)
+        entries = [entry for entry in _trial_decisions() if _EXTRA_ANSWER in str(entry.get("decision"))]
+        self.assertEqual(1, len(entries))
+        entry = entries[0]
+        self.assertEqual("2026-10-08", entry["at"])
+        self.assertTrue(str(entry["by"]).startswith("user"))
+        self.assertEqual(entry, _trial_decisions()[-1])
+        for phrase in ("exactly as the question showed it, its letter included", "the agent's rendering",
+                       "runs as that sample's own input, paired to its sample row and in its Class"):
+            with self.subTest(entry="extra decision", phrase=phrase):
+                self.assertIn(phrase, str(entry["decision"]))
+        result = str(entry["result"])
+        for phrase in ("Interactive #69 (0.5.36) from 06d2891 on, head 35d75ad", "gate #37, head e7b2901",
+                       "replaces_undecodable", "readable_twin_runs_as_the_sample_2026_10_08",
+                       "analysed_for_an_admitted_sample", "replaced_undecodable", "taken_instead_of_undecodable, "
+                       "which is gone", "Beyond the answer, the agent's reading in #69"):
+            with self.subTest(entry="extra result", phrase=phrase):
+                self.assertIn(phrase, result)
+        second = str(_second_round_entry()["result"])
+        for phrase in ("The record defects review found at 4722776 are corrected at 35d75ad",
+                       "a tie with an admitted member gives chosen_by admitted_by_the_unit, not encoding_order",
+                       "taken_instead_of_undecodable, which contradicted the record's own count, is gone",
+                       "under the user's answer to the extra question (the next entry)"):
+            with self.subTest(entry="second round", phrase=phrase):
+                self.assertIn(phrase, second)
+        for withdrawn in ("a defect in #69's record", "the code has not closed the gap", "is the user's to say",
+                          "These cases are the agent's reading in Interactive #69, kept from the behaviour before the "
+                          "answer, which the answer did not cover and the user has not decided"):
+            with self.subTest(entry="second round", withdrawn=withdrawn):
+                self.assertNotIn(withdrawn, second)
+        agent = [entry for entry in _trial_decisions()
+                 if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
+        for phrase in ("the user's answer to the extra question of that date (the last entry of that date) runs the "
+                       "twin as that sample's own input, in its Class",
+                       "Interactive #69 now records the members a Catalog declaration does not name",
+                       "The cases neither answer covered are the agent's reading in #69"):
+            with self.subTest(entry="agent", phrase=phrase):
+                self.assertIn(phrase, agent["state"])
+        self.assertNotIn("taken_instead_of_undecodable", agent["state"])
+
+    def test_an_undecodable_mzml_is_recorded_as_undecodable_whatever_stands_beside_it(self) -> None:
+        """At 4722776 Interactive #69 recorded chosen_by undecodable_mzml_set_aside for an unpaired mzML RawDataHandler
+        cannot decode only beside a readable unpaired twin; beside an admitted encoding the record named another basis
+        and nothing said the mzML could not be decoded. At 35d75ad its record always says so: undecodable_mzml_set_aside,
+        naming what runs for the sample, where another encoding of the sample runs, and undecodable_mzml, with nothing
+        chosen, where nothing of the sample runs. The documents state that record and no longer the gap (review of
+        contract #28, round 3)."""
+        section = " ".join(_section(self.contract, "## Evidence and decisions").split())
+        for phrase in ("An mzML RawDataHandler cannot decode competes with no other encoding of its sample",
+                       "its record says that it could not be decoded whatever stands beside it",
+                       "`chosen_by` `undecodable_mzml_set_aside`, `chosen` naming what runs for the sample, wherever "
+                       "another encoding of the sample runs, an unpaired twin or the unit's own admitted encoding alike",
+                       "as `undecodable_mzml`, with nothing chosen, where nothing of the sample runs",
+                       "it is an unattributed input the lease excludes (`unattributed_members.excluded`, "
+                       "`unsupported_mzml_encoding`)",
+                       "`admitted_by_the_unit` where the order puts the twin first or ranks the two equal"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, section)
-        for withdrawn in ("Interactive #69 and gate #37 implement the answer:",
-                          "Where a sample row admits an encoding of that sample, that one stays the sample's input",
-                          "decode competes with none (`undecodable_mzml_set_aside`)", "those two points are the user's"):
+        for withdrawn in ("#69 sets it aside only then.", "nothing in the record says that the mzML could not be decoded",
+                          "That is a gap in #69's record", "never `undecodable_mzml_set_aside`",
+                          "recorded with `chosen_by` `encoding_order`, although the admission chose"):
             with self.subTest(withdrawn=withdrawn):
                 self.assertNotIn(withdrawn, section)
         result = str(_second_round_entry()["result"])
-        for phrase in ("These cases are the agent's reading in Interactive #69",
-                       "the answer did not cover and the user has not decided",
-                       "the other is left out with chosen_by encoding_order, although the admission chose, a misstated "
-                       "basis Interactive has not corrected",
-                       "A vendor twin runs as an unattributed input",
-                       "recorded only in unattributed_members.taken_instead_of_undecodable, which gate #37 does not read",
-                       "it runs as the sample's own input, in the sample's Class, while its record gives count 0 and "
-                       "no member yet lists the mzXML in taken_instead_of_undecodable, a defect in #69's record",
-                       "outside a campaign the mzXML twin stays left out (requires_conversion)",
-                       "That too is the agent's reading, not the user's decision",
-                       'That falls short of the answer\'s "on record" as written', "is the user's to say",
-                       "the code has not closed the gap"):
+        for phrase in ("is never taken beside another encoding of its sample, and its record says it could not be "
+                       "decoded: chosen_by undecodable_mzml_set_aside, with chosen what runs for the sample",
+                       "the reason undecodable_mzml where nothing of the sample runs"):
             with self.subTest(entry="second round", phrase=phrase):
                 self.assertIn(phrase, result)
-        self.assertNotIn("These two cases", result)
-        self.assertNotIn("takes that twin in its place as an unattributed input", result)
-        agent = [entry for entry in _trial_decisions()
-                 if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
-        for phrase in ("three points of that answer review found unmet or uncovered and left to the user",
-                       "its twin recorded as chosen by the encoding order although the admission chose",
-                       "a vendor twin as an unattributed input, outside the sample's Class "
-                       "(unattributed_members.taken_instead_of_undecodable)",
-                       "in a campaign an mzXML twin, converted, as the sample's own input by its converted name, "
-                       "although taken_instead_of_undecodable lists it too, also the agent's reading"):
-            with self.subTest(entry="agent", phrase=phrase):
-                self.assertIn(phrase, agent["state"])
-
-    def test_an_undecodable_unpaired_mzml_is_set_aside_only_beside_a_readable_unpaired_twin(self) -> None:
-        """Interactive #69 records chosen_by undecodable_mzml_set_aside for an unpaired mzML RawDataHandler cannot decode
-        only where another unpaired encoding of its sample can be read. Where it is the sample's only unpaired member
-        beside an encoding a sample row admits, it is left out as chosen_other_encoding with chosen_by
-        admitted_by_the_unit or encoding_order, and nothing in the record says it could not be decoded. The documents
-        qualify the rule so, and name the record's silence as a gap in #69's record, not as the user's rule (review
-        contract-r2, round 3, finding 2)."""
-        section = " ".join(_section(self.contract, "## Evidence and decisions").split())
-        for phrase in ("Where another unpaired encoding of the same sample can be read, an unpaired mzML RawDataHandler "
-                       "cannot decode competes with none and is left out with `chosen_by` `undecodable_mzml_set_aside`",
-                       "#69 sets it aside only then.",
-                       "it is left out as `chosen_other_encoding` all the same, with the admitted one kept, but its "
-                       "record names `chosen_by` `admitted_by_the_unit` (beside an admitted mzXML) or "
-                       "`encoding_order` (beside an admitted vendor container), never `undecodable_mzml_set_aside`",
-                       "nothing in the record says that the mzML could not be decoded",
-                       "That is a gap in #69's record, which Interactive has not corrected.",
-                       "it is an unattributed input the lease excludes (`unattributed_members.excluded`, "
-                       "`unsupported_mzml_encoding`)"):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, section)
-        self.assertNotIn("That much is the answer. An unpaired mzML RawDataHandler cannot decode competes with none",
-                         section)
-        result = str(_second_round_entry()["result"])
-        for phrase in ("is set aside (chosen_by undecodable_mzml_set_aside) only where another unpaired encoding of "
-                       "its sample can be read", "it is left out with chosen_by admitted_by_the_unit or encoding_order, "
-                       "and nothing in the record says it could not be decoded, a gap in #69's record"):
-            with self.subTest(entry="second round", phrase=phrase):
-                self.assertIn(phrase, result)
+        self.assertNotIn("a gap in #69's record", result)
 
     def test_the_members_a_unit_scoped_archive_leaves_out_are_stated_as_the_second_round_decided_them(self) -> None:
         """Interactive #64 left out of a unit-scoped archive an mzXML that only converts, a member whose path names the
@@ -1200,10 +1185,12 @@ class ContractGateChecksTests(unittest.TestCase):
                        "the existing encoding order (a vendor folder or container, then mzML, then mzXML) takes one",
                        "Where the order cannot choose", "both are still left out as `two_encodings_of_one_name`",
                        "is still left out, on record (`polarity_token_contradicts_ion_mode`)",
-                       "Interactive records nothing of its own for the members no declaration names",
-                       "such a unit's manifest carries no `unattributed_members`",
-                       "nothing names them as left out or says why", "INP-1, a `blocks_run` check, FAILs a left-out "
-                       "member that reaches a run"):
+                       "Interactive #69 records the members no declaration names",
+                       "`not_named_by_the_catalog_declaration`", "the reason `catalog_declared_inputs`",
+                       "Before #69 such a unit's manifest carried no `unattributed_members`",
+                       "`twin_of`, `twin_of_reason` `undecodable_mzml`", "#69 keeps the declaration, as before, the "
+                       "agent's reading", "`copy_of_the_chosen_member`", "`admitted_mzxml_not_converted`",
+                       "INP-1, a `blocks_run` check, FAILs a left-out member that reaches a run"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, section)
         self.assertNotIn("That settles the unit-scoped half.", section)
@@ -1217,8 +1204,9 @@ class ContractGateChecksTests(unittest.TestCase):
         result = str(_second_round_entry()["result"])
         for phrase in ("unattributed_members.converted", "chosen_other_encoding",
                        "two_encodings_of_one_name remains only where the order cannot choose",
-                       "Interactive records nothing of its own for the members no declaration names",
-                       "the manifest carries no unattributed_members"):
+                       "records each analysable member no declaration names in unattributed_members.left_out with "
+                       "the reason not_named_by_the_catalog_declaration",
+                       "before #69 it recorded nothing of its own for them"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, result)
 
@@ -1228,7 +1216,10 @@ class ContractGateChecksTests(unittest.TestCase):
         merges = " ".join(_section(self.contract, "## Merges").split())
         for phrase in ("Gate #37 merges before, or with, Interactive #69",
                        "no campaign pins Interactive 0.5.36 before it is in",
-                       "no longer waits for an answer of the user's", "second-round answer 2 of 2026-10-08"):
+                       "no longer waits for an answer of the user's", "second-round answer 2 of 2026-10-08",
+                       "Interactive #69 at `35d75ad` and gate #37 at `e7b2901`", "`replaces_undecodable`",
+                       "as the user's answer to the extra question of the same day has it",
+                       "The two cases #69 names as questions of its own", "they do not hold the merge"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, merges)
         self.assertNotIn("is not merged under this delegation", merges)
