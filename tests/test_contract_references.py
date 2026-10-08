@@ -82,8 +82,13 @@ the mzML is recorded as undecodable. The trial manifest records that answer as t
 it as Interactive #69 (at 35d75ad) and gate #37 (at e7b2901) implement it, together with what #69 now records of
 the review's points: the members a Catalog declaration does not name, each left out with its reason; the basis of
 a tie with an admitted member (admitted_by_the_unit); and an undecodable mzML, recorded as undecodable whatever
-stands beside it. What remains open for the user is the wording of the whole amendment, and only the passage that
-says so is marked open; the cases neither answer covered are stated as the agent's reading in the code.
+stands beside it. What remains open for the user is the wording of the whole amendment and four questions of a
+readable twin in which two answers meet or the extra answer does not say which twin (a twin in a shared archive, a
+declared unit's twin, two twins the order ranks equal, an admitted mzXML's twin outside a campaign); only the passage
+that says so is marked open, and it lists the four with what the code does until the user answers. The other cases
+neither answer covered are stated as the agent's reading in the code. Since #69 at 35d75ad runs a shared archive's
+twin, which second-round answer 1 leaves out, #69 does not merge so before the user answers (review of contract #28,
+round 4), and a chosen is stated as the member the lease takes to run, not as an input that always runs.
 """
 
 from __future__ import annotations
@@ -986,10 +991,13 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertNotIn("no longer lets run", contract)
         self.assertNotIn("concern the same list", contract)
 
-    def test_only_the_wording_is_marked_open_for_the_user(self) -> None:
-        """The answers of 2026-10-08, the second round and the extra question settled every case review found: only the
-        passage that says the wording of the whole amendment remains open is marked open, and no agent entry since
-        2026-10-06 marks a passage open."""
+    def test_only_the_open_passage_is_marked_open_and_it_lists_the_four_twin_questions(self) -> None:
+        """The answers of 2026-10-08, the second round and the extra question settled every case review found but four
+        of a readable twin, where two answers meet or the extra answer does not say which twin. Only the passage that
+        says what remains open is marked open: the wording of the whole amendment, and those four questions, each
+        stated with what the code does until the user answers, none folded into the approval of the wording or called
+        a case no answer covered (review of contract #28, round 4). No agent entry since 2026-10-06 marks a passage
+        open."""
         found = {}
         for document in DOCUMENTS:
             for block in _blocks((_ROOT / document).read_text(encoding="utf-8")):
@@ -1000,11 +1008,41 @@ class ContractGateChecksTests(unittest.TestCase):
         blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
         open_passage = [block for block in blocks if block.startswith(_OPEN_PASSAGE)]
         self.assertEqual(1, len(open_passage))
-        for phrase in ("What is open for the user is the approval of this amendment's wording as a whole",
-                       "the agent's reading in the code", "Approving the wording leaves each as the code does it, on "
-                       "record, until the user says otherwise"):
+        for phrase in ("What is open for the user is the approval of this amendment's wording as a whole, and four "
+                       "questions about a readable twin that the wording does not settle and approving it does not "
+                       "answer", "the agent's reading in the code", "Approving the wording leaves each as the code "
+                       "does it, on record, until the user says otherwise", "The four questions are the user's to "
+                       "answer", "the agent does not choose between them", "Until the user answers, the behaviour "
+                       "before #69 is the one to keep: the twin does not run, on record"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, open_passage[0])
+        for moved in ("a readable twin run for its sample beside a shared archive", "or of an admitted mzXML outside "
+                      "a campaign, which does not run"):
+            with self.subTest(moved=moved):
+                self.assertNotIn(moved, open_passage[0])
+        start = blocks.index(open_passage[0])
+        questions = blocks[start + 1:start + 5]
+        expected = {
+            1: ("A readable twin in an archive shared by several units", f'"{_SECOND_ROUND[1]}"',
+                f'"{_EXTRA_ANSWER}"', "Interactive #69 at `35d75ad` runs such a twin for its sample",
+                "gate #37 at `e7b2901` accepts it where its records agree, whatever the archive's scope",
+                "#69 does not merge running it before the user answers (Merges)"),
+            2: ("in a unit whose Catalog declared its inputs", "makes no exception for a declared unit",
+                "second-round answer 3 keeps out the members a declaration does not name",
+                "#69 keeps the twin out, on record", "a precedent #69 names for running it"),
+            3: ("which the encoding order ranks equal", "The extra answer does not say which to use",
+                "#69 takes neither, and the sample has no input"),
+            4: ("A readable twin of an admitted mzXML outside a campaign", "`admitted_mzxml_not_converted`",
+                "the sample has no input"),
+        }
+        for number, phrases in expected.items():
+            item = questions[number - 1]
+            with self.subTest(question=number):
+                self.assertTrue(item.startswith(f"{number}. "), item[:60])
+            for phrase in phrases:
+                with self.subTest(question=number, phrase=phrase):
+                    self.assertIn(phrase, item)
+        self.assertFalse(blocks[start + 5].startswith("5. "))
         for withdrawn in ("Each is open for the user", "Beyond these three points",
                           "three points of answer 3 that the code does not meet"):
             with self.subTest(withdrawn=withdrawn):
@@ -1082,9 +1120,14 @@ class ContractGateChecksTests(unittest.TestCase):
                        "`unattributed_members.replaced_undecodable`", "`replaced_by_input`", "`replacement_excluded`",
                        "Where the order ties between readable twins, none is taken",
                        "outside a campaign an mzXML twin stays left out (`requires_conversion`)",
-                       "Beside a shared archive, too, the twin runs for its sample",
-                       "that is the agent's reading in #69", "Before #69 such a sample had no input",
-                       "that list is gone", "Gate #37's INP-1 accepts a twin only where these four records agree",
+                       "Which of two twins the order ranks equal should run, if either, the answer does not say "
+                       "(question 3 under Open for the user, above)",
+                       "Beside a shared archive, too, #69 at `35d75ad` runs the twin for its sample, although "
+                       "second-round answer 1 leaves a shared archive's unpaired members out of every unit",
+                       "whether the twin runs there is question 1 under Open for the user",
+                       "until the user answers it a twin that is a member of a shared archive is to stay out, as "
+                       "before (Merges)", "Before #69 such a sample had no input",
+                       "that list is gone", "Gate #37's INP-1 accepts a twin only where the four records above agree",
                        "FAILs a twin that runs unattributed", "with no record", "(`readable_twins`)",
                        "CONV-1 holds a converted twin"):
             with self.subTest(item="twin", phrase=phrase):
@@ -1096,7 +1139,8 @@ class ContractGateChecksTests(unittest.TestCase):
                           "A vendor twin (`S1.raw` beside an admitted `S1.mzML`) runs as an unattributed input",
                           "although `taken_instead_of_undecodable` lists it too",
                           "although #69 means it as an unattributed input in both cases",
-                          "those points are the user's to settle"):
+                          "those points are the user's to settle",
+                          "the answer did not name the archive's scope, and that is the agent's reading in #69"):
             with self.subTest(withdrawn=withdrawn):
                 self.assertNotIn(withdrawn, section)
         entries = [entry for entry in _trial_decisions() if _EXTRA_ANSWER in str(entry.get("decision"))]
@@ -1113,7 +1157,10 @@ class ContractGateChecksTests(unittest.TestCase):
         for phrase in ("Interactive #69 (0.5.36) from 06d2891 on, head 35d75ad", "gate #37, head e7b2901",
                        "replaces_undecodable", "readable_twin_runs_as_the_sample_2026_10_08",
                        "analysed_for_an_admitted_sample", "replaced_undecodable", "taken_instead_of_undecodable, "
-                       "which is gone", "Beyond the answer, the agent's reading in #69"):
+                       "which is gone", "Beyond the answer, four cases are questions the contract puts to the user",
+                       "which #69 at 35d75ad runs for its sample although second-round answer 1 leaves a shared "
+                       "archive's unpaired members out of every unit", "two readable twins the order ranks equal",
+                       "A chosen names the member the lease takes to run"):
             with self.subTest(entry="extra result", phrase=phrase):
                 self.assertIn(phrase, result)
         second = str(_second_round_entry()["result"])
@@ -1123,6 +1170,8 @@ class ContractGateChecksTests(unittest.TestCase):
                        "under the user's answer to the extra question (the next entry)"):
             with self.subTest(entry="second round", phrase=phrase):
                 self.assertIn(phrase, second)
+        self.assertNotIn("Beyond the answer, the agent's reading in #69", result)
+        self.assertIn("whether that twin should run is a question the contract puts to the user", second)
         for withdrawn in ("a defect in #69's record", "the code has not closed the gap", "is the user's to say",
                           "These cases are the agent's reading in Interactive #69, kept from the behaviour before the "
                           "answer, which the answer did not cover and the user has not decided"):
@@ -1133,9 +1182,12 @@ class ContractGateChecksTests(unittest.TestCase):
         for phrase in ("the user's answer to the extra question of that date (the last entry of that date) runs the "
                        "twin as that sample's own input, in its Class",
                        "Interactive #69 now records the members a Catalog declaration does not name",
-                       "The cases neither answer covered are the agent's reading in #69"):
+                       "The cases neither answer covered are the agent's reading in #69",
+                       "the contract lists them as questions for the user",
+                       "new with #69 and against the plain reading of second-round answer 1"):
             with self.subTest(entry="agent", phrase=phrase):
                 self.assertIn(phrase, agent["state"])
+        self.assertNotIn("a readable twin run for its sample beside a shared archive", agent["state"])
         self.assertNotIn("taken_instead_of_undecodable", agent["state"])
 
     def test_an_undecodable_mzml_is_recorded_as_undecodable_whatever_stands_beside_it(self) -> None:
@@ -1169,6 +1221,31 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertIn(phrase, result)
         self.assertNotIn("a gap in #69's record", result)
 
+    def test_a_chosen_is_stated_as_what_the_lease_takes_to_run_not_as_an_input_that_runs(self) -> None:
+        """Interactive #69 sets chosen when it selects one encoding of a sample, before any conversion or raw-header
+        preflight, and re-points nothing afterwards: a chosen mzXML whose conversion fails, or a vendor file the
+        per-file preflight excludes, is still named by the sample's other encodings. The contract said a chosen always
+        names an input that runs (review of contract #28, round 4)."""
+        section = " ".join(_section(self.contract, "## Evidence and decisions").split())
+        self.assertNotIn("always names an input that runs", section)
+        for phrase in ("A `chosen` names the member the lease takes to run for the sample, decided before anything is "
+                       "converted or its raw header read", "Nothing re-points it afterwards",
+                       "each other encoding of the sample still names it as `chosen`, and the sample can have no input",
+                       "A twin's own record shows it (`replacement_excluded`, below)"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, section)
+
+    def test_the_batch_skill_names_the_four_twin_questions(self) -> None:
+        """The skill states the extra answer; it also says which cases of it are the user's to answer and that the twin
+        stays out of them until then (review of contract #28, round 4)."""
+        skill = " ".join((_ROOT / _BATCH_SKILL).read_text(encoding="utf-8").split())
+        for phrase in (f'"{_EXTRA_ANSWER}"', "Four cases of such a twin are questions for the user that no answer "
+                       "settles", "a twin in an archive shared by several units", "two twins the encoding order ranks "
+                       "equal", "a twin of an admitted mzXML outside a campaign", "Until the user answers, the twin is "
+                       "to stay out in each of them", "#69 at `35d75ad` still runs the first, and does not merge so"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
+
     def test_the_members_a_unit_scoped_archive_leaves_out_are_stated_as_the_second_round_decided_them(self) -> None:
         """Interactive #64 left out of a unit-scoped archive an mzXML that only converts, a member whose path names the
         opposite polarity and one name in two encodings, and took none where the Catalog declared the inputs. The
@@ -1188,12 +1265,20 @@ class ContractGateChecksTests(unittest.TestCase):
                        "Interactive #69 records the members no declaration names",
                        "`not_named_by_the_catalog_declaration`", "the reason `catalog_declared_inputs`",
                        "Before #69 such a unit's manifest carried no `unattributed_members`",
-                       "`twin_of`, `twin_of_reason` `undecodable_mzml`", "#69 keeps the declaration, as before, the "
-                       "agent's reading", "`copy_of_the_chosen_member`", "`admitted_mzxml_not_converted`",
+                       "`twin_of`, `twin_of_reason` `undecodable_mzml`",
+                       "One kind of member no declaration names runs all the same, as it did before #69",
+                       "makes no exception for a declared unit", "Which governs is question 2 under Open for the user",
+                       "Until the user answers, #69 keeps the declaration, as before",
+                       "One member of such an archive is an exception in Interactive #69 at `35d75ad`",
+                       "`copy_of_the_chosen_member`", "`admitted_mzxml_not_converted`",
                        "INP-1, a `blocks_run` check, FAILs a left-out member that reaches a run"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, section)
         self.assertNotIn("That settles the unit-scoped half.", section)
+        for withdrawn in ("takes only the declared ones", "#69 keeps the declaration, as before, the agent's reading",
+                          "neither answer says; #69 keeps the behaviour before it, the agent's reading"):
+            with self.subTest(withdrawn=withdrawn):
+                self.assertNotIn(withdrawn, section)
         decisions = _trial_decisions()
         agent = [entry for entry in decisions
                  if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
@@ -1210,19 +1295,30 @@ class ContractGateChecksTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, result)
 
-    def test_gate_37_merges_before_interactive_69_and_69_waits_for_no_answer(self) -> None:
-        """The second round's answer 2 is met, so #69 no longer waits for the user; the next plan pins what Interactive
-        main carries, so gate #37 goes in first or with it."""
+    def test_gate_37_merges_with_interactive_69_which_waits_only_on_the_shared_archive_twin(self) -> None:
+        """The second round's answer 2 is met; the next plan pins what Interactive main carries, so gate #37 goes in
+        first or with #69. #69 at 35d75ad runs a shared archive's readable twin, which second-round answer 1 leaves
+        out: it does not merge so until the user answers or it leaves the twin out, and the agent does not choose
+        between the answers. The other three twin questions do not hold the merge and stay the user's (review of
+        contract #28, round 4)."""
         merges = " ".join(_section(self.contract, "## Merges").split())
         for phrase in ("Gate #37 merges before, or with, Interactive #69",
                        "no campaign pins Interactive 0.5.36 before it is in",
-                       "no longer waits for an answer of the user's", "second-round answer 2 of 2026-10-08",
-                       "Interactive #69 at `35d75ad` and gate #37 at `e7b2901`", "`replaces_undecodable`",
-                       "as the user's answer to the extra question of the same day has it",
-                       "The two cases #69 names as questions of its own", "they do not hold the merge"):
+                       "second-round answer 2 of 2026-10-08", "Interactive #69 at `35d75ad` and gate #37 at `e7b2901`",
+                       "`replaces_undecodable`", "as the user's answer to the extra question of the same day has it",
+                       "One thing still holds #69 at `35d75ad`: it runs a readable twin that is a member of a shared "
+                       "archive for its sample, which second-round answer 1 leaves out of every unit",
+                       "It merges once the user has answered that question, or once #69 leaves such a twin out, on "
+                       "record, until the user does; the agent does not choose between the two answers",
+                       "the two #69 names as its own", "two readable twins the order ranks equal",
+                       "They do not hold the merge, and they stay the user's to answer; approving the amendment's "
+                       "wording does not answer them"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, merges)
-        self.assertNotIn("is not merged under this delegation", merges)
+        for withdrawn in ("is not merged under this delegation", "no longer waits for an answer of the user's",
+                          "they are among the agent's readings the amendment's wording states"):
+            with self.subTest(withdrawn=withdrawn):
+                self.assertNotIn(withdrawn, merges)
 
     def test_the_differing_energy_hold_is_not_stated_as_standing(self) -> None:
         """Answer 6 replaced the hold of Interactive 0.5.34 and gate #34; the documents say what replaces it, which

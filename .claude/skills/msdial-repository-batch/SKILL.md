@@ -113,7 +113,13 @@ For a repository range:
    campaign an mzXML, converted), the twin runs as that sample's own input, in
    its Class, and the mzML is recorded as undecodable (the user's answer of
    2026-10-08, "A: 読める方をそのサンプルとして使う"; Interactive #69, 0.5.36, and gate #37;
-   `CLAUDE.md`, Evidence and decisions).
+   `CLAUDE.md`, Evidence and decisions). Four cases of such a twin are
+   questions for the user that no answer settles: a twin in an archive shared
+   by several units, a twin of a declared mzML no declaration names, two twins
+   the encoding order ranks equal, and a twin of an admitted mzXML outside a
+   campaign. Until the user answers, the twin is to stay out in each of them,
+   as before Interactive #69; #69 at `35d75ad` still runs the first, and does
+   not merge so (`CLAUDE.md`, Merges).
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
