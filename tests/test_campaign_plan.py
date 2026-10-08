@@ -1091,7 +1091,7 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
         text = "\n".join(record["statement"])
         self.assertIn("Each unit runs as the profile says: ON (set by answers.workflow_overrides: 'false', which "
                       "Interactive applies unconverted and reads as true)", text)
-        self.assertNotIn(": OFF", text)
+        self.assertNotIn(": OFF", " | ".join(line for line in record["statement"] if "anchor-library" not in line))
 
         def manifest(profile: dict, generation: str) -> dict:
             return self.manifest(profile, {**APPROVABLE_PINS["console"], "automatic_rt_correction": generation}, unpinned)
@@ -1181,6 +1181,15 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
             "a profile turning it on in an ion mode's override": (
                 legacy, {**plain, "by_ion_mode": {"Negative": {"workflow_overrides": {"execute_automatic_rt_correction": True}}}},
                 "and its profile turns it on"),
+            # The review of #36 (round 2): Interactive runs the anchor-library correction for every unit, and the
+            # digest covers no words saying so.
+            "a policy from before 2026-10-07, a profile turning the anchor-library correction on": (
+                legacy, {**plain, "answers": {**plain["answers"], "execute_rt_correction": True,
+                                              "rt_correction_anchor_path": "library:P.msp"}},
+                "and its profile turns the anchor-library RT correction on"),
+            "the anchor-library correction for an ion mode": (
+                legacy, {**plain, "by_ion_mode": {"Positive": {"execute_rt_correction": "true"}}},
+                "and its profile turns the anchor-library RT correction on"),
             # Only one of the fields: still a policy that records a decision about the correction.
             "the anchors alone": ({**legacy, "automatic_rt_correction_maximum_anchors": 12}, plain,
                                   "its campaign policy records it (automatic_rt_correction_maximum_anchors)"),
@@ -1210,11 +1219,125 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
             "no RT setting": {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}},
             "turned off": {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
                 "library_strategy": "existing", "execute_automatic_rt_correction": "false"}},
+            # Settings without the switch, and the anchor-library correction turned off, change nothing that runs.
+            "settings without the switch": {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
+                "library_strategy": "existing", "execute_rt_correction": False,
+                "automatic_rt_correction_outlier_mad_threshold": 1000, "automatic_rt_correction_maximum_anchors": 6}},
         }.items():
             with self.subTest(name):
                 manifest = self.planned_before_the_statement(self.manifest(profile, console, legacy))
                 self.assertEqual(plan.automatic_rt_statement_missing_problems(manifest), [])
                 self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]), [])
+
+    def test_under_the_pin_every_other_automatic_setting_is_refused(self) -> None:
+        """The review of #36 (round 2): a profile's outlier threshold, reference file, coverage or tolerance runs in
+        every unit, since the runner pins none of them, and the pinned statement named none of them."""
+        plain = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}
+        cases = {
+            "the outlier threshold": ({"answers": {"automatic_rt_correction_outlier_mad_threshold": 1000}},
+                                      "automatic_rt_correction_outlier_mad_threshold 1000 (answers)"),
+            "the reference file": ({"answers": {"automatic_rt_correction_reference_file_id": 0}},
+                                   "automatic_rt_correction_reference_file_id 0 (answers)"),
+            "the sample coverage": ({"answers": {"automatic_rt_correction_minimum_sample_coverage": 0.05}},
+                                    "automatic_rt_correction_minimum_sample_coverage 0.05 (answers)"),
+            "a workflow_overrides tolerance": (
+                {"answers": {"workflow_overrides": {"automatic_rt_correction_match_rt_tolerance": 5.0}}},
+                "automatic_rt_correction_match_rt_tolerance 5.0 (answers.workflow_overrides)"),
+            "an ion mode's least anchors": ({"by_ion_mode": {"Negative": {"automatic_rt_correction_minimum_anchors": 4}}},
+                                            "automatic_rt_correction_minimum_anchors 4 (by_ion_mode.Negative)"),
+            # Even Interactive's own default: the decision is Interactive's defaults, which the profile leaves alone.
+            "Interactive's default, written out": ({"answers": {"automatic_rt_correction_outlier_mad_threshold": 3.5}},
+                                                   "automatic_rt_correction_outlier_mad_threshold 3.5 (answers)"),
+        }
+        for name, (parts, words) in cases.items():
+            with self.subTest(name):
+                profile = json.loads(json.dumps(plain))
+                for key, value in parts.items():
+                    profile[key] = {**profile[key], **value}
+                manifest = self.pinned(profile)
+                problems = plan.approval_problems(manifest, ["1", "3", "4"])
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(words, problems[0])
+                self.assertIn("every other automatic RT correction setting is Interactive's default", problems[0])
+                self.assertTrue(problems[0].endswith("leave it out of the profile"))
+                # And the words say what the profile gives, so nothing is approved unread even where it is refused.
+                self.assertIn("    other settings as the profile states them: " + words, manifest["automatic_rt_correction"]["statement"])
+                self.assertEqual(len(manifest["automatic_rt_correction"]["other_settings"]), 1)
+        stated = self.pinned(plain)["automatic_rt_correction"]
+        self.assertEqual(stated["other_settings"], [])
+        self.assertIn("    other settings Interactive's defaults", stated["statement"])
+
+    def test_an_unpinned_correction_states_the_other_settings_the_profile_gives(self) -> None:
+        unpinned = policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()
+        on = {"execute_automatic_rt_correction": True}
+        tuned = {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
+            "library_strategy": "existing", **on, "automatic_rt_correction_outlier_mad_threshold": 1000,
+            "workflow_overrides": {"automatic_rt_correction_reference_file_id": 0}}}
+        record = plan.automatic_rt_correction_record(unpinned, tuned, ["automatic_rt_correction"])
+        self.assertIn("    other settings as the profile states them: automatic_rt_correction_outlier_mad_threshold 1000 "
+                      "(answers), automatic_rt_correction_reference_file_id 0 (answers.workflow_overrides)", record["statement"])
+        self.assertEqual([item["key"] for item in record["other_settings"]],
+                         ["automatic_rt_correction_outlier_mad_threshold", "automatic_rt_correction_reference_file_id"])
+        # Stated, not refused: unpinned, each unit runs as its profile says, and the words say what that is.
+        manifest = self.manifest(tuned, {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_LOCAL_SUPPORT},
+                                 unpinned)
+        self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]), [])
+        # For one ion mode, the line says which units it applies to.
+        split = plan.automatic_rt_correction_record(unpinned, {"by_ion_mode": {"Positive": {
+            **on, "automatic_rt_correction_rt_bin_width": 0.2}}}, ["automatic_rt_correction"])
+        self.assertIn("    for the Positive units: other settings as the profile states them: "
+                      "automatic_rt_correction_rt_bin_width 0.2 (by_ion_mode.Positive)", split["statement"])
+        plain = plan.automatic_rt_correction_record(unpinned, {"answers": on}, ["automatic_rt_correction"])
+        self.assertIn("    other settings Interactive's defaults", plain["statement"])
+        # Off, the settings change nothing that runs, and the statement does not dwell on them.
+        off = plan.automatic_rt_correction_record(unpinned, {"answers": {"automatic_rt_correction_rt_bin_width": 0.2}},
+                                                  ["automatic_rt_correction"])
+        self.assertNotIn("other settings", "\n".join(off["statement"]))
+
+    def test_the_statement_says_where_the_anchor_library_correction_runs(self) -> None:
+        """The review of #36 (round 2): an unpinned plan whose profile turns the anchor-library correction on said
+        "OFF" and nothing more, while every unit ran that correction."""
+        unpinned = policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()
+        console = {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_NONE}
+        library = {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
+            "library_strategy": "existing", "execute_rt_correction": True, "rt_correction_anchor_path": "library:P.msp"}}
+        record = plan.automatic_rt_correction_record(unpinned, library, ["automatic_rt_correction"])
+        lines = record["statement"]
+        self.assertEqual(lines[-2], "  !! THE ANCHOR-LIBRARY RT CORRECTION RUNS for the Positive and Negative units "
+                                    "(the decision of 2026-10-07 is the automatic correction alone)")
+        self.assertEqual(lines[-1], "  anchor-library RT correction (execute_rt_correction): no policy field decides it. "
+                                    "Each unit runs as the profile says: ON (set by answers)")
+        self.assertEqual({mode: item["correction"] for mode, item in record["anchor_library_rt_correction_by_ion_mode"].items()},
+                         {"Positive": True, "Negative": True})
+        # Stated, so approvable unpinned; the digest covers the words.
+        self.assertEqual(plan.approval_problems(self.manifest(library, console, unpinned), ["1", "3", "4"]), [])
+        # For one ion mode.
+        negative = plan.automatic_rt_correction_record(
+            unpinned, {"by_ion_mode": {"Negative": {"execute_rt_correction": True}}}, ["automatic_rt_correction"])
+        self.assertIn("  !! THE ANCHOR-LIBRARY RT CORRECTION RUNS for the Negative units", negative["statement"][-2])
+        self.assertIn("Each unit runs as the profile says for its ion mode: Positive units OFF (not set; Interactive's "
+                      "default is off), Negative units ON (set by by_ion_mode.Negative)", negative["statement"][-1])
+        # Off everywhere, it says so, with no warning, pinned or not.
+        for recorded in (unpinned, policy.CampaignPolicy().as_dict()):
+            with self.subTest(pinned=recorded["automatic_rt_correction"]):
+                quiet = plan.automatic_rt_correction_record(recorded, {"answers": {"execute_rt_correction": False}}, [])
+                self.assertEqual(quiet["statement"][-1], "  anchor-library RT correction (execute_rt_correction): no "
+                                 "policy field decides it. Each unit runs as the profile says: OFF (set by answers)")
+                self.assertNotIn("ANCHOR-LIBRARY RT CORRECTION RUNS", "\n".join(quiet["statement"]))
+        # A statement written before these words (one planned on an earlier commit of #36) no longer matches.
+        manifest = self.manifest(library, console, unpinned)
+        manifest["automatic_rt_correction"]["statement"] = manifest["automatic_rt_correction"]["statement"][:-2]
+        self.assertIn("does not match its policy and profile", "; ".join(plan.approval_problems(manifest, ["1", "3", "4"])))
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
+    def test_every_automatic_setting_interactive_writes_is_known_by_its_prefix(self) -> None:
+        from msdial_app import workflow
+        keys = set(workflow.AUTOMATIC_RT_CORRECTION_DEFAULTS) | {workflow.AUTOMATIC_RT_CORRECTION_LOCAL_SUPPORT_RT_WINDOW}
+        for key in sorted(keys):
+            with self.subTest(key):
+                self.assertTrue(key.startswith(plan.AUTOMATIC_RT_SETTING_PREFIX))
+                named = key in (plan.AUTOMATIC_RT_ANCHORS_ANSWER, plan.AUTOMATIC_RT_WINDOW_ANSWER, policy.AUTOMATIC_RT_BLANK_ANSWER)
+                self.assertEqual(plan.automatic_rt_tuning_key(key), not named)
 
     @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
     def test_the_console_pin_records_the_generation_of_its_assembly(self) -> None:

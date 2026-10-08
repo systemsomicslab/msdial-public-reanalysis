@@ -61,7 +61,10 @@ not refused for it, but the manifest names the fields the override set (policy_o
 correction as the summary states it, words included (automatic_rt_correction), so the digest covers what the
 person read; where it differs from the decision the summary says so first, in capitals. A manifest planned before
 that record carries no statement, and approve refuses it wherever its policy names the correction's fields or its
-profile turns the correction on, telling the person to plan again (automatic_rt_statement_missing_problems).
+profile turns the correction, or the anchor-library RT correction, on, telling the person to plan again
+(automatic_rt_statement_missing_problems). The statement also says where the profile turns the anchor-library
+correction on, and every other setting of the automatic correction the profile gives; under the policy's pin a
+profile that gives any of those is refused, since the decision is #826 with Interactive's defaults.
 """
 
 from __future__ import annotations
@@ -533,6 +536,19 @@ AUTOMATIC_RT_ANSWER = "execute_automatic_rt_correction"
 AUTOMATIC_RT_ANCHORS_ANSWER = "automatic_rt_correction_maximum_anchors"
 AUTOMATIC_RT_WINDOW_ANSWER = "automatic_rt_correction_local_support_rt_window"
 ANCHOR_LIBRARY_RT_ANSWER = "execute_rt_correction"
+# Every other setting of the automatic correction that Interactive reads from the answers (or a workflow_overrides)
+# and writes into each unit's method: workflow.AUTOMATIC_RT_CORRECTION_DEFAULTS, the reference file, bin width, match
+# tolerance, least anchors, sample coverage, intensity and peak-width quantiles, signal to noise, Gaussian
+# similarity, ideal slope, outlier MAD threshold and centrality weight. They are known by their prefix, so a setting
+# Interactive adds later is not missed (test_campaign_plan checks the prefix against Interactive's table).
+AUTOMATIC_RT_SETTING_PREFIX = "automatic_rt_correction_"
+
+
+def automatic_rt_tuning_key(key: str) -> bool:
+    """Whether a profile key is a setting of the automatic correction other than those the statement names on
+    their own (the anchors, the local window and Blank interpolation)."""
+    return key.startswith(AUTOMATIC_RT_SETTING_PREFIX) and key not in (
+        AUTOMATIC_RT_ANCHORS_ANSWER, AUTOMATIC_RT_WINDOW_ANSWER, policy.AUTOMATIC_RT_BLANK_ANSWER)
 
 
 def _true(value: Any) -> bool:
@@ -587,10 +603,22 @@ def _profile_settings(profile: Mapping[str, Any] | None) -> Iterable[tuple[str, 
     yield from walk("by_ion_mode", profile.get("by_ion_mode"))
 
 
-def automatic_rt_correction_requested(profile: Mapping[str, Any] | None) -> bool:
-    """Whether the profile turns automatic alignment RT correction on anywhere: in its answers, for an ion
-    mode, or in a workflow_overrides beneath either."""
-    return any(key == AUTOMATIC_RT_ANSWER and _setting_true(where, value) for where, key, value in _profile_settings(profile))
+def automatic_rt_correction_requested(profile: Mapping[str, Any] | None, key: str = AUTOMATIC_RT_ANSWER) -> bool:
+    """Whether the profile turns automatic alignment RT correction (or, with key=ANCHOR_LIBRARY_RT_ANSWER, the
+    anchor-library RT correction) on anywhere: in its answers, for an ion mode, or in a workflow_overrides
+    beneath either."""
+    return any(found == key and _setting_true(where, value) for where, found, value in _profile_settings(profile))
+
+
+def automatic_rt_tuning_statements(profile: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Every setting of the automatic correction the profile gives other than the switch, the anchors, the window
+    and Blank interpolation (automatic_rt_tuning_key), with where it gives it."""
+    return [{"key": key, "where": where, "value": value}
+            for where, key, value in _profile_settings(profile) if automatic_rt_tuning_key(key)]
+
+
+def _tuned(statements: Sequence[Mapping[str, Any]]) -> str:
+    return ", ".join(f"{item['key']} {item['value']!r} ({item['where']})" for item in statements)
 
 
 def _number(value: Any) -> float | None:
@@ -629,6 +657,12 @@ def automatic_rt_profile_conflicts(profile: Mapping[str, Any] | None, campaign_p
         elif key == policy.AUTOMATIC_RT_BLANK_ANSWER:
             problems.append(f"the profile sets {key} ({where}); the runner sets it for each unit from the analytical "
                             "order Interactive records (true only for a header or declared order)")
+        elif automatic_rt_tuning_key(key):
+            # The runner pins none of these, so the profile's value would run in every unit, and the decision of
+            # 2026-10-07 (#826 with 12 anchors) is Interactive's defaults for them.
+            problems.append(f"the profile sets {key} {value!r} ({where}); under the campaign policy's pin every "
+                            "other automatic RT correction setting is Interactive's default, as decided on "
+                            f"{AUTOMATIC_RT_DECISION_DATE}: leave it out of the profile")
     return problems
 
 
@@ -704,9 +738,12 @@ def _stated(statements: Sequence[Mapping[str, Any]]) -> str:
 ION_MODES = ("Positive", "Negative")
 
 
-def automatic_rt_correction_by_ion_mode(profile: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+def automatic_rt_correction_by_ion_mode(
+    profile: Mapping[str, Any] | None, key: str = AUTOMATIC_RT_ANSWER
+) -> dict[str, dict[str, Any]]:
     """Whether a unit of each ion mode runs the automatic RT correction under the profile alone (no policy pin),
-    and which setting decides it (set_by; None where the profile does not set it and Interactive's default, off,
+    or, with key=ANCHOR_LIBRARY_RT_ANSWER, the anchor-library RT correction (which no policy pins), and which
+    setting decides it (set_by; None where the profile does not set it and Interactive's default, off,
     applies). Runner.answers merges the profile's answers, then by_ion_mode for the unit's ion mode, nested
     objects key by key; Interactive then applies workflow_overrides over the answers. So the first of these that
     sets it decides: by_ion_mode.<mode>.workflow_overrides, answers.workflow_overrides, by_ion_mode.<mode>,
@@ -725,8 +762,8 @@ def automatic_rt_correction_by_ion_mode(profile: Mapping[str, Any] | None) -> di
             (f"by_ion_mode.{mode}", mode_answers),
             ("answers", answers),
         ):
-            if isinstance(settings, Mapping) and AUTOMATIC_RT_ANSWER in settings:
-                value = settings[AUTOMATIC_RT_ANSWER]
+            if isinstance(settings, Mapping) and key in settings:
+                value = settings[key]
                 result[mode] = {"correction": _setting_true(where, value), "set_by": where}
                 if _override_reading(where, value):
                     result[mode]["read_as"] = _override_reading(where, value)
@@ -741,6 +778,23 @@ def automatic_rt_mode_state(item: Mapping[str, Any]) -> str:
         return _on(item["correction"]) + " (not set; Interactive's default is off)"
     read_as = f": {item['read_as']}" if item.get("read_as") else ""
     return _on(item["correction"]) + f" (set by {item['set_by']}{read_as})"
+
+
+def _modes_split(modes: Mapping[str, Mapping[str, Any]]) -> bool:
+    return 0 < sum(1 for mode in ION_MODES if modes[mode]["correction"]) < len(ION_MODES)
+
+
+def _per_mode(modes: Mapping[str, Mapping[str, Any]]) -> str:
+    return ", ".join(f"{mode} units {automatic_rt_mode_state(modes[mode])}" for mode in ION_MODES)
+
+
+def _as_the_profile_says(modes: Mapping[str, Mapping[str, Any]]) -> str:
+    """What a correction stated per ion mode runs as: "Each unit runs as the profile says" and what it says."""
+    if _modes_split(modes):
+        return f"Each unit runs as the profile says for its ion mode: {_per_mode(modes)}"
+    if modes["Positive"]["set_by"] == modes["Negative"]["set_by"]:
+        return f"Each unit runs as the profile says: {automatic_rt_mode_state(modes['Positive'])}"
+    return f"Each unit runs as the profile says: {_on(modes['Positive']['correction'])}, {_per_mode(modes)}"
 
 
 def automatic_rt_correction_record(
@@ -769,6 +823,19 @@ def automatic_rt_correction_record(
     windows = _profile_statements(profile, AUTOMATIC_RT_WINDOW_ANSWER)
     window_text = (f"local window {_stated(windows)} min as the profile states it" if windows else
                    f"local window {policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW} min (the Console's default; not sent)")
+    tuning = automatic_rt_tuning_statements(profile)
+    tuning_text = ("other settings as the profile states them: " + _tuned(tuning) if tuning
+                   else "other settings Interactive's defaults")
+    # Interactive runs the anchor-library correction (a user-defined anchor library) wherever the profile turns it
+    # on, pinned or not, and no policy field decides it: the words say where it runs.
+    library_modes = automatic_rt_correction_by_ion_mode(profile, ANCHOR_LIBRARY_RT_ANSWER)
+    library_on = [mode for mode in ION_MODES if library_modes[mode]["correction"]]
+    library_lines = []
+    if library_on:
+        library_lines.append(f"  !! THE ANCHOR-LIBRARY RT CORRECTION RUNS for the {' and '.join(library_on)} units "
+                             f"(the decision of {AUTOMATIC_RT_DECISION_DATE} is the automatic correction alone)")
+    library_lines.append(f"  anchor-library RT correction ({ANCHOR_LIBRARY_RT_ANSWER}): no policy field decides it. "
+                         + _as_the_profile_says(library_modes))
     if fields is None:
         source = "the manifest's recorded policy (which fields a --policy override named was not recorded)"
     elif fields:
@@ -781,6 +848,8 @@ def automatic_rt_correction_record(
         "source": "unrecorded" if fields is None else ("policy_override" if fields else "default_policy"),
         "overridden_fields": fields,
         "differs_from_decision": differences,
+        "other_settings": tuning,
+        "anchor_library_rt_correction_by_ion_mode": library_modes,
     }
     lines = []
     if differences:
@@ -798,6 +867,7 @@ def automatic_rt_correction_record(
         lines += [
             f"  automatic RT correction: {_on(True)}, pinned by the campaign policy over the profile; from {source}",
             f"    maximum anchors {anchors}; {window_text}; MsdialWorkbench #826's local outlier test",
+            f"    {tuning_text}",
             f"    fallback {_on(fallback)}: " + (
                 "after an anchor-selection failure the unit's next attempts run uncorrected, and its record says so"
                 if fallback else "a unit whose anchors cannot be selected is retried and ends as any failure does"),
@@ -808,7 +878,7 @@ def automatic_rt_correction_record(
         modes = automatic_rt_correction_by_ion_mode(profile)
         on_modes = [mode for mode in ION_MODES if modes[mode]["correction"]]
         requested = bool(on_modes)
-        split = 0 < len(on_modes) < len(ION_MODES)
+        split = _modes_split(modes)
         anchors = _profile_statements(profile, AUTOMATIC_RT_ANCHORS_ANSWER)
         blanks = _profile_statements(profile, policy.AUTOMATIC_RT_BLANK_ANSWER)
         record.update({
@@ -818,26 +888,22 @@ def automatic_rt_correction_record(
             "profile_statements": {key: _profile_statements(profile, key) for key in (
                 AUTOMATIC_RT_ANSWER, AUTOMATIC_RT_ANCHORS_ANSWER, AUTOMATIC_RT_WINDOW_ANSWER, policy.AUTOMATIC_RT_BLANK_ANSWER)},
         })
-        per_mode = ", ".join(f"{mode} units {automatic_rt_mode_state(modes[mode])}" for mode in ION_MODES)
         if split:
             lines.append("  !! AUTOMATIC RT CORRECTION DIFFERS BY ION MODE (not pinned by the campaign policy): "
-                         + per_mode)
-            says = f"Each unit runs as the profile says for its ion mode: {per_mode}"
-        elif modes["Positive"]["set_by"] == modes["Negative"]["set_by"]:
-            says = f"Each unit runs as the profile says: {automatic_rt_mode_state(modes['Positive'])}"
-        else:
-            says = f"Each unit runs as the profile says: {_on(requested)}, " + ", ".join(
-                f"{mode} units {automatic_rt_mode_state(modes[mode])}" for mode in ION_MODES)
-        lines.append(f"  automatic RT correction: NOT PINNED by the campaign policy; from {source}. {says}")
+                         + _per_mode(modes))
+        lines.append(f"  automatic RT correction: NOT PINNED by the campaign policy; from {source}. "
+                     + _as_the_profile_says(modes))
         if requested:
+            for_modes = "    for the " + " and ".join(on_modes) + " units: " if split else "    "
             lines += [
-                ("    for the " + " and ".join(on_modes) + " units: " if split else "    ")
-                + "maximum anchors " + (_stated(anchors) if anchors else "Interactive's default") + f"; {window_text}",
+                for_modes + "maximum anchors " + (_stated(anchors) if anchors else "Interactive's default")
+                + f"; {window_text}",
+                for_modes + tuning_text,
                 "    fallback OFF: the runner falls back to an uncorrected run only under the campaign policy's pin",
                 "    Blanks: " + (_stated(blanks) if blanks else
                                   "Interactive's default (interpolated by analytical order, whatever the order was read from)"),
             ]
-    record["statement"] = lines
+    record["statement"] = lines + library_lines
     return record
 
 
@@ -1105,10 +1171,15 @@ def automatic_rt_statement_missing_problems(manifest: Mapping[str, Any]) -> list
       or its fallback): the plan was made by a runner that pins the correction, on or deliberately off, and the
       summary a person read said neither (nor that "off" differs from the decision);
     - a profile that turns the correction on anywhere, as Interactive reads it (automatic_rt_correction_requested):
-      its units would run corrected, unpinned and with no fallback, and nobody read that either.
-    A manifest whose policy names none of those fields and whose profile turns the correction on nowhere stays
-    approvable: every unit runs uncorrected, Interactive's default, which is what the runner does with any policy
-    recorded before 2026-10-07 (policy.automatic_rt_correction_pinned), and nothing it covers says otherwise.
+      its units would run corrected, unpinned and with no fallback, and nobody read that either;
+    - a profile that turns the anchor-library RT correction on anywhere (execute_rt_correction, read the same way):
+      Interactive runs that correction, with the profile's anchor library, whatever the policy says, and the
+      plan of that time stated it nowhere.
+    A manifest whose policy names none of those fields and whose profile turns neither correction on stays
+    approvable: every unit runs with no RT correction, Interactive's default for both, which is what the runner
+    does with any policy recorded before 2026-10-07 (policy.automatic_rt_correction_pinned), and nothing it covers
+    says otherwise. Settings of the automatic correction (its anchors, window or other settings) without its switch
+    change nothing that runs.
     """
     recorded = manifest.get("policy") if isinstance(manifest.get("policy"), Mapping) else {}
     named = sorted(key for key in AUTOMATIC_RT_DECISION if key in recorded)
@@ -1123,12 +1194,14 @@ def automatic_rt_statement_missing_problems(manifest: Mapping[str, Any]) -> list
         reasons.append(f"its campaign policy {state} ({', '.join(named)})")
     if automatic_rt_correction_requested(manifest.get("profile")):
         reasons.append("its profile turns it on")
+    if automatic_rt_correction_requested(manifest.get("profile"), ANCHOR_LIBRARY_RT_ANSWER):
+        reasons.append("its profile turns the anchor-library RT correction on")
     if not reasons:
         return []
     return [
         "the manifest carries no automatic RT correction statement (it was planned before the plan stated the "
         f"correction), and {' and '.join(reasons)}, so the digest a person approves covers no words saying how its "
-        "units are corrected: plan again (campaign-runner.py plan), read the automatic RT correction in the new "
+        "units are RT corrected: plan again (campaign-runner.py plan), read the automatic RT correction in the new "
         "summary, and approve the new digest"
     ]
 
