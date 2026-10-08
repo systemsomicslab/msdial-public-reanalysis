@@ -60,9 +60,10 @@ interpolated only by a recorded injection order (decided 2026-10-07). A --policy
 not refused for it, but the manifest names the fields the override set (policy_overrides) and keeps the
 correction as the summary states it, words included (automatic_rt_correction), so the digest covers what the
 person read; where it differs from the decision the summary says so first, in capitals. A manifest planned before
-that record carries no statement, and approve refuses it wherever its policy names the correction's fields or its
-profile turns the correction, or the anchor-library RT correction, on, telling the person to plan again
-(automatic_rt_statement_missing_problems). The statement also says where the profile turns the anchor-library
+that record carries no statement, and approve refuses every such manifest, telling the person to plan again
+(automatic_rt_statement_missing_problems): there is no exception for one that would run uncorrected, since the
+user's answer of 2026-10-08 is that the default is correction ON, and a manifest planned now with the default
+policy states it on. The statement also says where the profile turns the anchor-library
 correction on, and every other setting of the automatic correction the profile gives; under the policy's pin a
 profile that gives any of those is refused, since the decision is #826 with Interactive's defaults.
 """
@@ -1191,23 +1192,18 @@ def read_manifest(path: Path) -> tuple[dict[str, Any], str]:
 
 def automatic_rt_statement_missing_problems(manifest: Mapping[str, Any]) -> list[str]:
     """Why a manifest that carries no automatic RT correction statement (one planned before the plan stated it)
-    cannot be approved, or nothing.
+    cannot be approved: always one problem, telling the person to plan again.
 
-    Its digest covers no words about the correction, so a person who approves it has read none. That is refused
-    wherever what the digest does cover could run the correction, or records a decision about it:
+    Its digest covers no words about the correction, so a person who approves it has read none. Every such manifest
+    is refused, with no exception (the user's answer of 2026-10-08, R2-4: the default is correction ON, so a manifest
+    that says nothing is not read as "uncorrected"; one planned now with the default policy states the correction
+    on). The problem names, where there are any, what the digest does cover that bears on the correction:
     - a recorded policy that names any of the fields decided on 2026-10-07 (automatic_rt_correction, its anchors
-      or its fallback): the plan was made by a runner that pins the correction, on or deliberately off, and the
-      summary a person read said neither (nor that "off" differs from the decision);
-    - a profile that turns the correction on anywhere, as Interactive reads it (automatic_rt_correction_requested):
-      its units would run corrected, unpinned and with no fallback, and nobody read that either;
-    - a profile that turns the anchor-library RT correction on anywhere (execute_rt_correction, read the same way):
-      Interactive runs that correction, with the profile's anchor library, whatever the policy says, and the
-      plan of that time stated it nowhere.
-    A manifest whose policy names none of those fields and whose profile turns neither correction on stays
-    approvable: every unit runs with no RT correction, Interactive's default for both, which is what the runner
-    does with any policy recorded before 2026-10-07 (policy.automatic_rt_correction_pinned), and nothing it covers
-    says otherwise. Settings of the automatic correction (its anchors, window or other settings) without its switch
-    change nothing that runs.
+      or its fallback), pinning the correction on, turning it off, or recording a setting of it;
+    - a profile that turns the correction on anywhere, as Interactive reads it (automatic_rt_correction_requested);
+    - a profile that turns the anchor-library RT correction on anywhere (execute_rt_correction, read the same way).
+    Where none of those holds, the units would run with no RT correction, Interactive's default for both, against
+    the campaign's default of correction ON, and nobody read that either.
     """
     recorded = manifest.get("policy") if isinstance(manifest.get("policy"), Mapping) else {}
     named = sorted(key for key in AUTOMATIC_RT_DECISION if key in recorded)
@@ -1225,7 +1221,9 @@ def automatic_rt_statement_missing_problems(manifest: Mapping[str, Any]) -> list
     if automatic_rt_correction_requested(manifest.get("profile"), ANCHOR_LIBRARY_RT_ANSWER):
         reasons.append("its profile turns the anchor-library RT correction on")
     if not reasons:
-        return []
+        # What runs is no RT correction at all, which the campaign's default (correction ON) is not.
+        reasons.append("nothing it records turns either RT correction on, so its units would run uncorrected, "
+                       "against the campaign's default of correction ON")
     return [
         "the manifest carries no automatic RT correction statement (it was planned before the plan stated the "
         f"correction), and {' and '.join(reasons)}, so the digest a person approves covers no words saying how its "

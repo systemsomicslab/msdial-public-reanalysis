@@ -17,7 +17,10 @@ THE ORDER OF USE
         checkout; a manifest is approvable only with a verified, pinned extractor and clean checkouts.
     python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
         --by NAME --statement "the person's words" --covers 1,3,4,5,split
-        only after the person approved that digest in the conversation; the approval id is theirs
+        only after the person approved that digest in the conversation; the approval id is theirs.
+        A manifest that carries no automatic RT correction statement (planned before the plan stated it) is
+        refused, whatever its policy and profile say: plan again and approve the new digest (the default is
+        correction ON, the user's answer of 2026-10-08).
     python scripts/campaign-runner.py run --campaign ID [--until-idle] [--max-units N] [--prefetch N]
     python scripts/campaign-runner.py status|export|verify-env|pause|resume|skip|retry|release-held|recheck-held|revoke --campaign ID ...
         release-held --unit KEY deletes, under boundary 5, the raw data an ended unit holds against the rules
@@ -867,7 +870,8 @@ def parser() -> argparse.ArgumentParser:
                       help="an earlier campaign, its approval revoked, whose units that did not end done are planned again")
     plan.set_defaults(handler=command_plan)
 
-    approve = commands.add_parser("approve", help="record the person's approval of one manifest digest")
+    approve = commands.add_parser("approve", help="record the person's approval of one manifest digest; a manifest "
+                                  "with no automatic RT correction statement is refused (plan again)")
     approve.add_argument("--campaign", required=True)
     approve.add_argument("--digest", required=True)
     approve.add_argument("--approval-id", required=True, help="the approval id the person gave")

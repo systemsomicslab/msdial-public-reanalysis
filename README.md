@@ -278,8 +278,15 @@ than 1.5 min), and its Console pin records `automatic_rt_correction`
 `local_support`, read from the method keys in the Console assembly. A Console of
 #810 alone (`run_wide`) would run the run-wide test without a word, and one with
 neither (`none`) is refused by Interactive at every unit's run start, after its
-download. A manifest approved before the decision names none of these fields;
-its units run as its profile says.
+download. The plan states the automatic RT correction in the summary a person
+approves, and the manifest's digest covers that statement. Approve refuses
+every manifest that carries no such statement (one planned before the plan
+stated it), whatever its policy and profile say, and tells the person to plan
+again: the default is correction ON (the user's answer of 2026-10-08), so a
+manifest that says nothing is never read as "uncorrected". A manifest planned
+now with the default policy states the correction ON. A campaign already
+approved before the decision names none of these fields; its units run as its
+profile says.
 
 When the Console cannot select anchors (too few candidates, or too few anchors
 in enough samples), it exits -1 before alignment with no output, and every
