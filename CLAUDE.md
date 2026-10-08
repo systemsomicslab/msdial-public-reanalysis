@@ -144,8 +144,10 @@ location.
     are merged and the campaign pins Interactive 0.5.36, merged code still
     holds such a unit, and gate #37 merges first: the gate of #34 FAILs ACQ-1,
     a `blocks_run` check, for such a unit run under 0.5.36, so the unit would
-    fail, be retried and lose its raw data without a run. A unit the old hold
-    kept is taken again by a recheck on the #825 Console once both are in.
+    fail, be retried and lose its raw data without a run. Interactive #69
+    itself waits for the user's answer on inputs that share a file name (the
+    next item), so until then answer 6 takes effect for no unit. A unit the old
+    hold kept is taken again by a recheck on the #825 Console once both are in.
   - **Inputs that share a file name.** One case does not run as answer 6
     says. Interactive #69 records each input's own set by its file name alone
     (`aif_collision_energies_by_input`), and gate #37 reads it so. Where two
@@ -162,14 +164,22 @@ location.
     name it before a manifest is approved: the plan records whether a unit
     has an archive, not its input names, and an archive's members are known
     only once it is downloaded and extracted, after the approval. The case
-    arises only once the campaign pins Interactive 0.5.36 or later: merged
-    Interactive (0.5.35) holds every unit whose inputs record different sets,
-    raw data kept, whatever their names. Until the user answers, a request to
-    approve a manifest that pins such an Interactive without a fix states
-    this case and what it costs. Either way out needs a code change: keying
-    each input's set by its relative path in Interactive and the gate before
-    0.5.36 is pinned, or holding such a unit at preflight, raw data kept,
-    once its inputs are known.
+    arises only once the campaign pins an Interactive that carries #69 (0.5.36
+    or later): merged Interactive (0.5.35) holds every unit whose inputs record
+    different sets, raw data kept, whatever their names. So until the user
+    answers, Interactive #69 is not merged and no campaign pins an Interactive
+    that carries it without a fix, the delegation of merges notwithstanding
+    (Merges): once #69 were merged, the next plan would pin it and the loss
+    would come into force with no answer behind it, and a manifest approval is
+    not an answer to this point. Until then every unit whose sets differ stays
+    held under 0.5.35, raw data kept, whatever its file names. Either way out
+    needs a code change: keying each input's set by its relative path in
+    Interactive and the gate before #69 merges, or a hold at Interactive's
+    preflight, raw data kept (`disposition_held`), for a unit whose inputs
+    share a file name and record different sets. A change in the runner alone
+    would not hold such a unit: Interactive refuses it when the run is prepared
+    and again when it starts, the gate FAILs its ACQ-1, a `blocks_run` check,
+    and the runner takes each as a failure.
   - **An input that records no energy.** The whole unit is held, its raw data
     kept, when any one input that runs records no energy above 0
     (`aif_collision_energy_unrecorded`): a header that lists no energy, lists
@@ -280,16 +290,23 @@ beside such a quote is the agent's rendering, not a quote. The options' words
 are the agent's; the choice is the user's. Where an answer settles what
 merged code did or the agent had read or proposed, the passage says so.
 
-**Open points.** Review after the answers found two points that no answer of
-2026-10-08 covers. Both are open for the user, to be put in the same question
-form, and until the user answers each stays as merged code has it:
+**Open points.** Review after the answers found three points that no answer of
+2026-10-08 covers. All three are open for the user, to be put in the same
+question form, and until the user answers each stays as merged code has it. For
+the second, that holds only because Interactive #69 is not merged before the
+user answers it (Supported production scope, AIF):
 
-- whether the members of an archive shared with other units are left out of
-  a unit, as merged code does, or included as answer 2 read literally would
-  include them (the pairing of sample rows, below);
+- whether the members of an archive shared with other units, or of one the
+  Catalog does not show to be the unit's own, are left out of a unit, as merged
+  code does, or included as answer 2 read literally would include them (the
+  pairing of sample rows, below);
 - how a multi-energy AIF unit is treated whose inputs share a file name and
   record different energy sets, which under Interactive 0.5.36 would lose its
-  raw data without a run (Supported production scope, AIF).
+  raw data without a run (Supported production scope, AIF);
+- whether the members merged code leaves out of a unit-scoped archive stay out:
+  an mzXML that only converts, one name in two encodings, a member whose path
+  names the opposite polarity, and, where the Catalog declared the unit's
+  inputs, every member it does not name (the pairing of sample rows, below).
 
 Before selecting units or proposing Class, ask what the user wants to learn from
 the reanalysis. Record the scientific question, intended biological comparison,
@@ -359,16 +376,34 @@ record, and the members of an archive shared with other units are left out,
 on record, and INP-1 FAILs any that reach a run. Question 2 of 2026-10-08
 asked what to do where only some of an archive's files pair with the sample
 table ("ST001264 のように、アーカイブ内のファイルの一部しかサンプル表と対応が取れない場合、どうしますか？"), and the
-user accepted it on 2026-10-08 so far as the question reached (answer 2, option A,
-"出所不明の入力として含める": "対応が取れないファイルも、出所不明の入力として解析に含め、記録に残します。"). That settles
-the unit-scoped half. The question did not distinguish an archive that is the
-unit's own from one shared with other units, and read literally the answer
-could reach a shared archive's members too. Leaving those members out is the
-implementation's rule, unchanged, and no decision of the user's stands
-behind it: whether they stay out is open for the user (Open points, above),
-and until the user answers they are left out, on record. Interactive's
-0.5.31 changelog and the gate's PAIR-1 docstring called the rule the user's
-decision a day before the user accepted it.
+user accepted it on 2026-10-08 so far as the question reached (answer 2, option
+A, "出所不明の入力として含める": "対応が取れないファイルも、出所不明の入力として解析に含め、記録に残します。"). That settles the
+unit-scoped half, for the members the implementation takes. The question did
+not distinguish an archive that is the unit's own from one shared with other
+units, and read literally the answer could reach a shared archive's members
+too. Leaving those members out is the implementation's rule, unchanged, and no
+decision of the user's stands behind it: whether they stay out is open for the
+user (Open points, above), and until the user answers they are left out, on
+record. So are the members where the Catalog's download scope does not show the
+download to be the unit's own (`download_scope_not_unit_scoped`). Within a
+unit-scoped archive, too, the implementation does not take every member no row
+pairs with (Interactive #64). It takes none where the Catalog declared the
+unit's analysis inputs, whose declaration then names them. And it leaves out,
+on record, each with its reason (the manifest's
+`unattributed_members.left_out`): an mzXML, or another member that only
+converts to mzML (`requires_conversion`), which a campaign's conversion does
+not convert either, since it converts only an mzXML the unit's file listing or
+a sample row admits; a member whose path names the polarity opposite to the
+unit's ion mode by a token of its own (`polarity_token_contradicts_ion_mode`);
+and a member whose name another member carries in another encoding
+(`two_encodings_of_one_name`), so that one name in two encodings MS-DIAL opens,
+neither paired, leaves both out. Answer 2 read literally would include them,
+and in a campaign the rule of 2026-09-30 converts mzXML-only data and runs
+them. No decision of the user's stands behind these exclusions either: whether
+the members merged code leaves out of a unit-scoped archive stay out is open
+for the user (Open points, above), and until the user answers they are left
+out, on record. Interactive's 0.5.31 changelog and the gate's PAIR-1 docstring
+called the rule the user's decision a day before the user accepted it.
 
 Where the Catalog abstains because no declared factor groups the samples, do not
 build Class from other columns. Show the abstention preview
@@ -686,7 +721,10 @@ a review comes back clean and the change is validated
 merges. A merge into MsdialWorkbench master still takes the user's explicit
 OK, as #825 and #826 each had, and this amendment merges only once the user
 has approved its wording. A merge here changes the gate pin and pauses a
-running campaign (Confirmation boundaries).
+running campaign (Confirmation boundaries). Interactive #69 is not merged under
+this delegation before the user answers the open point on multi-energy AIF
+inputs that share a file name (Evidence and decisions, Open points), since the
+next plan would pin it.
 
 ## Feedback to Codex
 

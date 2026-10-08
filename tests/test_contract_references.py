@@ -201,6 +201,8 @@ _DECIDED_CASES = {
         "`aif_energy_sets_differ_between_inputs`", "WARNs, which stops no run", "Interactive #69", "gate #37",
         "replaces the hold `aif_collision_energies_differ_between_inputs`", "the user had not decided",
         "merged code still holds such a unit", "gate #37 merges first", "taken again by a recheck",
+        # #69 waits for the user's answer on inputs that share a file name, so answer 6 is not yet in force.
+        "Interactive #69 itself waits for the user's answer", "answer 6 takes effect for no unit",
     )),
     # The case Interactive #69 and gate #37 leave open, which question 6 did not cover: open for the user, and
     # nothing guards against it, since a unit's input names are not known before its manifest is approved.
@@ -214,7 +216,15 @@ _DECIDED_CASES = {
         "the agent cannot name it before a manifest is approved",
         "the plan records whether a unit has an archive, not its input names", "after the approval",
         "merged Interactive (0.5.35) holds every unit whose inputs record different sets",
-        "states this case and what it costs", "Either way out needs a code change",
+        # The interim stays fixed until the user answers: #69 is not merged under the delegation, since the next plan
+        # would pin it, and an approval is no answer.
+        "Interactive #69 is not merged", "the delegation of merges notwithstanding",
+        "a manifest approval is not an answer to this point",
+        "Until then every unit whose sets differ stays held under 0.5.35", "Either way out needs a code change",
+        # The second way out is a preflight hold; the runner alone would not hold such a unit.
+        "a hold at Interactive's preflight, raw data kept (`disposition_held`)",
+        "A change in the runner alone would not hold such a unit", "when the run is prepared and again when it starts",
+        "the gate FAILs its ACQ-1",
     )),
     "AIF, an unrecorded energy": (_SCOPE_SECTION, "- **An input that records no energy.**", (
         "`aif_collision_energy_unrecorded`", "any one input that runs", "holds all forty",
@@ -278,12 +288,21 @@ _A_TO_D_REQUEST = "すみません、判断をしないといけない点に関�
 # What marked a passage as a case the user had not settled before 2026-10-08.
 _OPEN_MARKS = ("open for the user", "not yet put to the user", "not yet accepted", "has not been asked",
                "the user did not decide", "stands as the user's")
-# The two points review found after the answers of 2026-10-08, which no answer covers: open for the user until the
+# The three points review found after the answers of 2026-10-08, which no answer covers: open for the user until the
 # user answers them. A passage may carry an open mark only where it names one of them (or is the list itself).
 _OPEN_POINTS = {
     "shared archive": "shared with other units",
     "shared file name": "share a file name",
+    "members a unit-scoped archive leaves out": "leaves out of a unit-scoped archive",
 }
+# The members Interactive #64 leaves out of a unit-scoped archive, each with its reason, and the scope the rule does
+# not reach: stated as the implementation's, not as answer 2.
+_UNIT_SCOPED_LEFT_OUT = ("`requires_conversion`", "`polarity_token_contradicts_ion_mode`",
+                         "`two_encodings_of_one_name`", "`download_scope_not_unit_scoped`",
+                         "`unattributed_members.left_out`")
+# An interim an earlier draft stated for the shared-file-name point, which left the worst option to the timing of a
+# merge: a statement in the approval request, with #69 free to merge.
+_WITHDRAWN_INTERIM = ("states this case and what it costs",)
 _OPEN_POINTS_HEADING = "**Open points.**"
 # The step a review found could not be carried out: a unit's input names are not known before approval.
 _WITHDRAWN_PRECAUTION = ("the agent's precaution", "name every unit whose inputs share a file name",
@@ -889,7 +908,8 @@ class ContractGateChecksTests(unittest.TestCase):
                        "where those two inputs' sets differ", "loses its raw data without a run",
                        "question 6 did not cover it", "open for the user", "cannot be named then",
                        "holds every unit whose sets differ, whatever the names",
-                       "states this case and what it costs"):
+                       "Interactive #69 is not merged", "answer 6 takes effect for no unit until then",
+                       "a manifest approval is not an answer to this point"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, skill)
         user = [entry for entry in _trial_decisions()
@@ -898,13 +918,17 @@ class ContractGateChecksTests(unittest.TestCase):
         for phrase in ("share a file name, in different folders, and record different energy sets is refused",
                        "question 6 did not cover it, and it is open for the user",
                        "its input names are not known before a manifest is approved",
-                       "the case arises only once the campaign pins 0.5.36"):
+                       "the case arises only once the campaign pins 0.5.36",
+                       "Until the user answers, Interactive #69 is not merged",
+                       "a manifest approval is not an answer to this point",
+                       "a change in the runner alone would not hold it"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, result)
-        # The naming step an earlier draft stated cannot be carried out before approval; no document states it.
+        # The naming step an earlier draft stated cannot be carried out before approval, and the approval-request
+        # statement left the interim to the timing of #69's merge; no document states either.
         for document in DOCUMENTS:
             text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
-            for words in _WITHDRAWN_PRECAUTION:
+            for words in (*_WITHDRAWN_PRECAUTION, *_WITHDRAWN_INTERIM):
                 with self.subTest(document=document, words=words):
                     self.assertNotIn(words, text)
 
@@ -930,9 +954,9 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertNotIn("no longer lets run", contract)
         self.assertNotIn("concern the same list", contract)
 
-    def test_only_the_two_points_no_answer_covers_are_marked_open_for_the_user(self) -> None:
-        """The answers of 2026-10-08 settled every case the draft had left open; review then found two points no
-        answer covers. Each document marks a passage open only where it names one of those two, and the agent's
+    def test_only_the_three_points_no_answer_covers_are_marked_open_for_the_user(self) -> None:
+        """The answers of 2026-10-08 settled every case the draft had left open; review then found three points no
+        answer covers. Each document marks a passage open only where it names one of those three, and the agent's
         entries likewise."""
         found = {}
         for document in DOCUMENTS:
@@ -949,26 +973,64 @@ class ContractGateChecksTests(unittest.TestCase):
                     if any(mark in state for mark in _OPEN_MARKS):
                         self.assertIn("shared archive", state)
 
-    def test_the_two_open_points_are_listed_as_open_for_the_user(self) -> None:
-        """Until the user answers them, the contract lists both points as open, in Evidence and decisions, and the
-        passage of each says so; neither is stated as settled."""
+    def test_the_three_open_points_are_listed_as_open_for_the_user(self) -> None:
+        """Until the user answers them, the contract lists the three points as open, in Evidence and decisions, and
+        the passage of each says so; none is stated as settled."""
         blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
         heads = [index for index, block in enumerate(blocks) if block.startswith(_OPEN_POINTS_HEADING)]
         self.assertEqual(1, len(heads))
-        self.assertIn("Both are open for the user", blocks[heads[0]])
+        self.assertIn("All three are open for the user", blocks[heads[0]])
         self.assertIn("the same question form", blocks[heads[0]])
-        items = blocks[heads[0] + 1:heads[0] + 3]
+        self.assertIn("only because Interactive #69 is not merged before the user answers it", blocks[heads[0]])
+        count = len(_OPEN_POINTS)
+        items = blocks[heads[0] + 1:heads[0] + 1 + count]
         self.assertTrue(all(item.startswith("- ") for item in items))
         for point, key in _OPEN_POINTS.items():
             with self.subTest(point=point):
                 self.assertEqual(1, sum(key in item for item in items))
-        if heads[0] + 3 < len(blocks):
-            self.assertFalse(blocks[heads[0] + 3].startswith("- "))
+        if heads[0] + 1 + count < len(blocks):
+            self.assertFalse(blocks[heads[0] + 1 + count].startswith("- "))
         normalised = " ".join(self.contract.split())
         for phrase in ("whether they stay out is open for the user (Open points, above)",
+                       "whether the members merged code leaves out of a unit-scoped archive stay out is open for "
+                       "the user (Open points, above)",
                        "it is open for the user (Open points, Evidence and decisions)"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalised)
+
+    def test_the_members_a_unit_scoped_archive_leaves_out_are_stated_as_the_implementations(self) -> None:
+        """Interactive #64 does not take every unpaired member of a unit-scoped archive: it leaves out, on record, an
+        mzXML that only converts, a member whose path names the opposite polarity and one name in two encodings, and
+        takes none where the Catalog declared the inputs. The contract and the trial manifest say so, as the
+        implementation's rule and open for the user, not as answer 2."""
+        section = " ".join(_section(self.contract, "## Evidence and decisions").split())
+        for phrase in (*_UNIT_SCOPED_LEFT_OUT, "for the members the implementation takes",
+                       "the implementation does not take every member no row pairs with (Interactive #64)",
+                       "It takes none where the Catalog declared the unit's analysis inputs",
+                       "a campaign's conversion does not convert either",
+                       "one name in two encodings MS-DIAL opens, neither paired, leaves both out",
+                       "the rule of 2026-09-30 converts mzXML-only data",
+                       "No decision of the user's stands behind these exclusions either"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, section)
+        self.assertNotIn("That settles the unit-scoped half.", section)
+        decisions = _trial_decisions()
+        agent = [entry for entry in decisions
+                 if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
+        for reason in _UNIT_SCOPED_LEFT_OUT:
+            with self.subTest(reason=reason):
+                self.assertIn(reason.strip("`"), str(agent["decision"]))
+        self.assertIn("so are the members it leaves out of a unit-scoped archive", str(agent["state"]))
+        user = [entry for entry in decisions
+                if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])][0]
+        self.assertIn("the members Interactive #64 leaves out of a unit-scoped archive", str(user["result"]))
+
+    def test_interactive_69_waits_for_the_users_answer_whatever_the_delegation_of_merges(self) -> None:
+        """Until the shared-file-name point is answered, merging #69 would put its loss of raw data into force at the
+        next plan; the Merges section holds it back from the delegation."""
+        merges = " ".join(_section(self.contract, "## Merges").split())
+        self.assertIn("Interactive #69 is not merged under this delegation before the user answers the open point on "
+                      "multi-energy AIF inputs that share a file name", merges)
 
     def test_the_differing_energy_hold_is_not_stated_as_standing(self) -> None:
         """Answer 6 replaced the hold of Interactive 0.5.34 and gate #34; the documents say what replaces it, which
