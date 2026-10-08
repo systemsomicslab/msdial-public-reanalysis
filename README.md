@@ -209,10 +209,13 @@ whatever its records say), or an mzML that runs beside its twin. An input that
 runs as an undecodable mzML's sample, as an encoding of it, with none of those
 records and nothing of its own (name, pairing, archive or declaration) that
 makes it that sample's FAILs INP-1 too; an `encoding_choice` counts only where
-the mzXML it stands for is an mzXML of that sample. So does a readable twin
-that runs as an unattributed member, with no record, beside its sample's
-admitted mzML that the lease excluded as undecodable: that sample's data would
-run outside its row and Class. PAIR-1 lists each twin
+the mzXML it stands for is an mzXML of that sample, and its own pairing only by
+a rule Interactive pairs by, to a `raw_file` of that sample. So does a
+readable twin that runs as an unattributed member, or as no sample, with no
+record, beside its sample's admitted mzML that the lease excluded as
+undecodable: that sample's data would run outside its row and Class. The
+mzML's sample is its excluded row's or, where that names none, the one sample
+row that names it. PAIR-1 lists each twin
 (WARN) and FAILs, on record only, where `replaced_undecodable` or a `left_out`
 entry does not say what ran; CONV-1 holds a converted twin to the mzXML the
 record names. CLS-2 reads what the download

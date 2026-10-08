@@ -2568,9 +2568,11 @@ NOT_NAMED_BY_DECLARATION = "not_named_by_the_catalog_declaration"
 # all of them say so, it runs as that mzML's sample and is an encoding of that sample (_encoding_sample: the same
 # name, in folders that agree but for the words naming an encoding), and the mzML it replaces does not run; and an
 # input that runs as such an mzML's sample, as an encoding of it, with none of those records and nothing of its own
-# that makes it that sample's (an encoding_choice only through an mzXML of that sample), FAILs it as well, and so does
-# an unattributed input that is an encoding of the sample of such an mzML a sample row admitted, the twin run outside
-# its sample's row and Class (_silent_twin_problems). PAIR-1 lists each twin
+# that makes it that sample's (an encoding_choice only through an mzXML of that sample, its own pairing only by a rule
+# Interactive pairs by to a raw_file of that sample), FAILs it as well, and so does an unattributed input, or one that
+# runs as no sample, that is an encoding of the sample of such an mzML a sample row admitted, the twin run outside its
+# sample's row and Class (_silent_twin_problems). The mzML's sample is its excluded row's or, where that names none,
+# the one sample row's that names it. PAIR-1 lists each twin
 # and holds the record itself (_undecodable_twin_record_problems, record_only); CONV-1 holds a converted twin to the
 # mzXML the record names.
 UNDECODABLE_MZML = "undecodable_mzml"
@@ -3071,7 +3073,11 @@ def _own_sample_basis(provenance: dict, row: dict, member: str, sample: str) -> 
 
     - a sample row of the sample names it: its raw_file is the member's base name, or that less its last extension,
       or a packed container that unpacks to that name;
-    - its own inferred pairing (name_pairing whose member_name is its own base name, not the mzML's it was given);
+    - its own inferred pairing (_pairing_names_a_raw_file_of): name_pairing by a rule Interactive pairs by
+      (INFERRED_PAIRING_RULES), whose member_name is its own base name, not the mzML's it was given, and whose
+      declared_raw_file is a raw_file of this sample. Interactive gives a row a sample through its own pairing only
+      as the sample whose raw_file the pairing declares, so a pairing to another sample's raw file, or by a rule it
+      has not, is no basis (review of gate #37 at 0e12b7f);
     - its own record of standing for an mzXML of the sample (encoding_choice), where that mzXML is the sample's
       (_stands_for_an_mzxml_of): Interactive gives such a row its sample through the mzXML's own naming alone, so a
       record of standing for an mzXML that is no encoding of this input's sample, or that nothing makes this
@@ -3093,9 +3099,7 @@ def _own_sample_basis(provenance: dict, row: dict, member: str, sample: str) -> 
                         raw_names.add(unpacked)
     if raw_names & forms:
         return True
-    pairing = row.get("name_pairing")
-    if isinstance(pairing, dict) and not _is_unattributed(row) \
-            and _basename(str(pairing.get("member_name") or "")).casefold() == base:
+    if _pairing_names_a_raw_file_of(row, base, raw_names):
         return True
     if _stands_for_an_mzxml_of(provenance, row, member, sample, raw_names):
         return True
@@ -3107,6 +3111,19 @@ def _own_sample_basis(provenance: dict, row: dict, member: str, sample: str) -> 
     names = row.get("declared_names") if isinstance(row.get("declared_names"), list) else []
     own = {**row, "declared_names": [name for name in names if _basename(str(name or "")).casefold() == base]}
     return any(_declared_sample_of(manifest, own, _declared_samples(manifest)) == sample for manifest in manifests)
+
+
+def _pairing_names_a_raw_file_of(row: dict, member_base: str, raw_names: "set[str]") -> bool:
+    """Whether a lineage row's own inferred pairing pairs the member ``member_base`` (a casefolded base name) with a
+    raw_file of the sample whose raw_file base names are ``raw_names``: name_pairing by a rule Interactive's lease
+    pairs by (INFERRED_PAIRING_RULES, never an unattributed member's), whose member_name is that member and whose
+    declared_raw_file is one of the sample's. Interactive's naming gives a row a sample through such a pairing only
+    as sample_names.get(declared_raw_file)."""
+    pairing = row.get("name_pairing")
+    return isinstance(pairing, dict) \
+        and str(pairing.get("paired_by") or "") in INFERRED_PAIRING_RULES \
+        and _basename(str(pairing.get("member_name") or "")).casefold() == member_base \
+        and _basename(str(pairing.get("declared_raw_file") or "")).casefold() in raw_names
 
 
 def _stands_for_an_mzxml_of(provenance: dict, row: dict, member: str, sample: str, raw_names: "set[str]") -> bool:
@@ -3136,30 +3153,58 @@ def _stands_for_an_mzxml_of(provenance: dict, row: dict, member: str, sample: st
         return True
     if _input_samples(provenance, ("rows", "excluded")).get(_path_key(stand_path), "") == sample:
         return True
-    pairing = row.get("name_pairing")
-    if isinstance(pairing, dict) and not _is_unattributed(row) \
-            and _basename(str(pairing.get("member_name") or "")).casefold() == stand_base \
-            and _basename(str(pairing.get("declared_raw_file") or "")).casefold() in raw_names:
+    if _pairing_names_a_raw_file_of(row, stand_base, raw_names):
         return True
     named = {"path": stand_path, "declared_names": [_basename(stand)]}
     return any(_declared_sample_of(manifest, named, _declared_samples(manifest)) == sample
                for manifest in _lineage_manifests(provenance))
 
 
-def _admitted_undecodable(provenance: dict, undecodable: "dict[str, dict]", samples: "dict[str, str]") -> dict[str, str]:
-    """Of the mzML the lease excluded as undecodable (``undecodable``, by key), those the unit admitted for a sample
-    row, by key: the sample (``samples``, its lineage row's or the declaration's), "" where the row names none.
-
-    Admitted is: its excluded lineage row names a sample, or carries a pairing of its own (name_pairing, not an
-    unattributed member's), or a sample row's raw_file is its base name, or that less its extension. An mzML that was
-    an unattributed member of its own is none of these."""
-    names: set[str] = set()
-    excluded: dict[str, dict] = {}
+def _sample_rows_by_raw_name(provenance: dict) -> dict[str, set[str]]:
+    """The samples each raw_file base name (casefolded) of the unit's sample rows names, and of its raw owner's for
+    a split part, a packed container's also under the container it unpacks to, as Interactive's naming reads
+    sample_names."""
+    names: dict[str, set[str]] = {}
     for manifest in _lineage_manifests(provenance):
         for item in (manifest.get("project") or {}).get("sample_metadata") or []:
             raw = _basename(str(item.get("raw_file") or "")).casefold() if isinstance(item, dict) else ""
-            if raw:
-                names.add(raw)
+            if not raw:
+                continue
+            sample = str(item.get("sample_id") or "").strip()
+            unpacked = _strip_suffix(raw, ARCHIVE_SUFFIXES)
+            forms = [raw, unpacked] if unpacked != raw and _strip_suffix(unpacked, CONTAINER_SUFFIXES) != unpacked \
+                else [raw]
+            for form in forms:
+                names.setdefault(form, set())
+                if sample:
+                    names[form].add(sample)
+    return names
+
+
+def _sample_named_for(base: str, names: "dict[str, set[str]]") -> "tuple[bool, str]":
+    """Whether a sample row names a member of base name ``base`` (casefolded): its raw_file is that name, or that
+    less its last extension, as Interactive's naming matches sample_names (the full name first, then the stem);
+    and the one sample it gives, "" where the rows name none or more than one."""
+    stem = base.rsplit(".", 1)[0] if "." in base else base
+    if base not in names and stem not in names:
+        return False, ""
+    matched = names.get(base) or names.get(stem) or set()
+    return True, next(iter(matched)) if len(matched) == 1 else ""
+
+
+def _admitted_undecodable(provenance: dict, undecodable: "dict[str, dict]", samples: "dict[str, str]") -> dict[str, str]:
+    """Of the mzML the lease excluded as undecodable (``undecodable``, by key), those the unit admitted for a sample
+    row, by key: the sample (``samples``, its lineage row's or the declaration's; where they name none, the one
+    sample row that names it, _sample_named_for), "" where none names one.
+
+    Admitted is: its excluded lineage row names a sample, or carries a pairing of its own (name_pairing, not an
+    unattributed member's), or a sample row's raw_file is its base name, or that less its extension. An mzML that was
+    an unattributed member of its own is none of these. The sample rows are read even where the excluded row names
+    no sample: Interactive's naming gives the mzML the sample of the one row that names it, so a row left without
+    one does not take the mzML out of that sample (review of gate #37 at 0e12b7f)."""
+    names = _sample_rows_by_raw_name(provenance)
+    excluded: dict[str, dict] = {}
+    for manifest in _lineage_manifests(provenance):
         for row in _lineage_rows(manifest, "excluded"):
             excluded.setdefault(_path_key(row["path"]), row)
     admitted: dict[str, str] = {}
@@ -3167,11 +3212,10 @@ def _admitted_undecodable(provenance: dict, undecodable: "dict[str, dict]", samp
         row = excluded.get(key)
         if row is not None and _is_unattributed(row):
             continue
-        base = _basename(entry["relative"]).casefold()
+        named, by_name = _sample_named_for(_basename(entry["relative"]).casefold(), names)
         pairing = row.get("name_pairing") if row is not None else None
-        if samples.get(key, "") or isinstance(pairing, dict) \
-                or {base, base.rsplit(".", 1)[0] if "." in base else base} & names:
-            admitted[key] = samples.get(key, "")
+        if samples.get(key, "") or isinstance(pairing, dict) or named:
+            admitted[key] = samples.get(key, "") or by_name
     return admitted
 
 
@@ -3181,16 +3225,17 @@ def _silent_twin_problems(provenance: dict, rows: list[dict], reaching: "set[str
     ``rows`` are the unit's own input lineage rows that reach the run, ``reaching`` their keys and the CSV's. Three
     refusals, each of an input whose row carries no replaces_undecodable:
 
-    - it runs as the sample of an mzML the lease excluded as undecodable (unsupported_mzml_encoding), is an encoding
-      of that sample (_encoding_sample), and nothing of its own makes it that sample's (_own_sample_basis): the
-      sample it runs as can only have come from the mzML it replaces, which no record says;
-    - it runs as an unattributed member (a converted one judged by the mzXML it was converted from) and is an
-      encoding of the sample of such an mzML the unit admitted (_admitted_undecodable: its excluded row carries a
-      sample or a pairing of its own, or a sample row names it). Under the user's answer of 2026-10-08 a readable
-      twin of that sample runs as that sample's own input, in its Class, never unattributed, and Interactive 0.5.36
-      runs no other unpaired encoding of an admitted sample (it is left out, chosen_other_encoding or
-      copy_of_the_chosen_member), so here the sample's data runs outside its sample row and its Class (review of
-      gate #37 at 07db837);
+    - it runs as the sample of an mzML the lease excluded as undecodable (unsupported_mzml_encoding), the sample its
+      excluded row names or, where that names none, the one sample row that names it (_admitted_undecodable), is an
+      encoding of that sample (_encoding_sample), and nothing of its own makes it that sample's (_own_sample_basis):
+      the sample it runs as can only have come from the mzML it replaces, which no record says;
+    - it runs as an unattributed member, or as no sample at all (a converted one judged by the mzXML it was
+      converted from), and is an encoding of the sample of such an mzML the unit admitted (_admitted_undecodable:
+      its excluded row carries a sample or a pairing of its own, or a sample row names it). Under the user's answer
+      of 2026-10-08 a readable twin of that sample runs as that sample's own input, in its Class, never
+      unattributed, and Interactive 0.5.36 runs no other unpaired encoding of an admitted sample (it is left out,
+      chosen_other_encoding or copy_of_the_chosen_member), so here the sample's data runs outside its sample row and
+      its Class (reviews of gate #37 at 07db837 and 0e12b7f);
     - the lease's record of such an mzML names it as replaced_by."""
     root = _data_root(provenance)
     samples = _input_samples(provenance, ("rows", "excluded"))
@@ -3225,16 +3270,17 @@ def _silent_twin_problems(provenance: dict, rows: list[dict], reaching: "set[str
                                 f"{member} as the input that runs in its place, and {member}'s lineage row does not "
                                 f"say it replaces it ({REPLACES_UNDECODABLE})")
                 continue
-            if _is_unattributed(row):
+            if _is_unattributed(row) or not sample:
                 if mzml_key in admitted and _encoding_sample(member) == _encoding_sample(relative):
                     of = admitted[mzml_key]
-                    problems.append(f"{member} runs as an unattributed member, an encoding of {relative}, the mzML "
+                    runs = "an unattributed member" if _is_unattributed(row) else "no sample"
+                    problems.append(f"{member} runs as {runs}, an encoding of {relative}, the mzML "
                                     f"the unit admitted for {f'sample {of}' if of else 'a sample row'} and the lease "
                                     f"excluded as undecodable ({UNSUPPORTED_MZML_ENCODING}), and nothing records that "
                                     f"it replaces it: a readable twin of that sample runs as that sample's own input, "
                                     "in its Class, never unattributed (the user's answer of 2026-10-08)")
                 continue
-            if not sample or samples.get(mzml_key, "") != sample \
+            if (samples.get(mzml_key, "") or admitted.get(mzml_key, "")) != sample \
                     or _encoding_sample(member) != _encoding_sample(relative):
                 continue
             if not _own_sample_basis(provenance, row, member, sample):
@@ -3303,6 +3349,7 @@ def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") 
                 candidates.setdefault(_path_key(item["path"]), item)
     left_by_path = {str(item["path"]).casefold(): item for item in left_out}
     replaced_by_path = {str(item["path"]).casefold(): item for item in replaced}
+    named_samples = _sample_rows_by_raw_name(provenance)
 
     def under_root(path: object) -> str:
         return _aif_input_key(path, root)
@@ -3369,7 +3416,8 @@ def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") 
                     problems.append(f"the lease's record of {relative} names {said or 'no input'} as replaced_by, "
                                     f"not {own_input}, the twin that runs for it")
                     break
-            excluded_sample = str((excluded_rows.get(key) or {}).get("sample_id") or "").strip()
+            excluded_sample = str((excluded_rows.get(key) or {}).get("sample_id") or "").strip() \
+                or _sample_named_for(_basename(relative).casefold(), named_samples)[1]
             if sample and excluded_sample and excluded_sample != sample:
                 problems.append(f"{member} runs as sample {sample}, and {relative}, the mzML it replaces, is sample "
                                 f"{excluded_sample}'s")
