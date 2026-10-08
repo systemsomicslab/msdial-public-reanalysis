@@ -202,13 +202,19 @@ _DECIDED_CASES = {
         "replaces the hold `aif_collision_energies_differ_between_inputs`", "the user had not decided",
         "merged code still holds such a unit", "gate #37 merges first", "taken again by a recheck",
     )),
-    # The case Interactive #69 and gate #37 leave open, which question 6 did not cover.
+    # The case Interactive #69 and gate #37 leave open, which question 6 did not cover: open for the user, and
+    # nothing guards against it, since a unit's input names are not known before its manifest is approved.
     "AIF, inputs that share a file name": (_SCOPE_SECTION, "- **Inputs that share a file name.**", (
         "does not run as answer 6 says", "by its file name alone", "`aif_collision_energies_by_input`",
+        "share a file name and record different sets",
         "refused by Interactive's own check before the Console starts", "FAILs ACQ-1", "`blocks_run`",
         "loses its raw data without a run", "Gate #37 names this as a limit it leaves open",
         "Question 6 did not cover this case", "no decision of the user's stands behind any treatment of it",
-        "before a manifest is approved", "the agent's precaution, not a rule the user gave",
+        "it is open for the user", "Nothing guards against it yet",
+        "the agent cannot name it before a manifest is approved",
+        "the plan records whether a unit has an archive, not its input names", "after the approval",
+        "merged Interactive (0.5.35) holds every unit whose inputs record different sets",
+        "states this case and what it costs", "Either way out needs a code change",
     )),
     "AIF, an unrecorded energy": (_SCOPE_SECTION, "- **An input that records no energy.**", (
         "`aif_collision_energy_unrecorded`", "any one input that runs", "holds all forty",
@@ -272,6 +278,16 @@ _A_TO_D_REQUEST = "すみません、判断をしないといけない点に関�
 # What marked a passage as a case the user had not settled before 2026-10-08.
 _OPEN_MARKS = ("open for the user", "not yet put to the user", "not yet accepted", "has not been asked",
                "the user did not decide", "stands as the user's")
+# The two points review found after the answers of 2026-10-08, which no answer covers: open for the user until the
+# user answers them. A passage may carry an open mark only where it names one of them (or is the list itself).
+_OPEN_POINTS = {
+    "shared archive": "shared with other units",
+    "shared file name": "share a file name",
+}
+_OPEN_POINTS_HEADING = "**Open points.**"
+# The step a review found could not be carried out: a unit's input names are not known before approval.
+_WITHDRAWN_PRECAUTION = ("the agent's precaution", "name every unit whose inputs share a file name",
+                         "names to the user, before a manifest is approved")
 # What the trial manifest's 2026-10-03 decision says, and the user's answer verbatim.
 _DECISION_2026_10_03_SAYS = (
     "option A", "unit-level evidence", "is not such evidence", "MTBKS217", "MTBKS219 and MTBKS220",
@@ -361,6 +377,22 @@ def _gate_run_policy() -> dict[str, set[str]]:
 
 def _check_ids(text: str) -> set[str]:
     return set(_CHECK_ID.findall(text)) - _NOT_CHECKS
+
+
+def _blocks(text: str) -> list[str]:
+    """A document's paragraphs, list items and headings, each with its whitespace collapsed."""
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if not line.strip() or _LIST_ITEM.match(line) or line.startswith("#"):
+            if current:
+                blocks.append(current)
+            current = [line] if line.strip() else []
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    return [" ".join(" ".join(block).split()) for block in blocks]
 
 
 def _section(text: str, heading: str) -> str:
@@ -846,20 +878,35 @@ class ContractGateChecksTests(unittest.TestCase):
                  if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
         self.assertIn("for its unit-scoped half", str(agent["state"]))
         self.assertIn("which no decision of the user's settles", str(agent["state"]))
+        self.assertIn("whether they stay out is open for the user", str(agent["state"]))
+        self.assertIn("and until the user answers they are left out, on record", section)
 
     def test_the_shared_file_name_case_is_named_as_left_open(self) -> None:
         """Interactive #69 and gate #37 key each input's energy set by file name alone; the skill and the trial
         manifest name the case as well as the contract (whose passage _SECTIONS holds)."""
         skill = " ".join((_ROOT / _BATCH_SKILL).read_text(encoding="utf-8").split())
         for phrase in ("two inputs of the unit share a file name", "key each input's set by file name alone",
-                       "loses its raw data without a run", "question 6 did not cover it",
-                       "before its manifest is approved"):
+                       "where those two inputs' sets differ", "loses its raw data without a run",
+                       "question 6 did not cover it", "open for the user", "cannot be named then",
+                       "holds every unit whose sets differ, whatever the names",
+                       "states this case and what it costs"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, skill)
         user = [entry for entry in _trial_decisions()
                 if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])][0]
-        self.assertIn("share a file name", str(user["result"]))
-        self.assertIn("question 6 did not cover it", str(user["result"]))
+        result = str(user["result"])
+        for phrase in ("share a file name, in different folders, and record different energy sets is refused",
+                       "question 6 did not cover it, and it is open for the user",
+                       "its input names are not known before a manifest is approved",
+                       "the case arises only once the campaign pins 0.5.36"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, result)
+        # The naming step an earlier draft stated cannot be carried out before approval; no document states it.
+        for document in DOCUMENTS:
+            text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+            for words in _WITHDRAWN_PRECAUTION:
+                with self.subTest(document=document, words=words):
+                    self.assertNotIn(words, text)
 
     def test_the_cases_the_agent_had_read_are_stated_as_decided_on_2026_10_08(self) -> None:
         """Answers 1 to 5 settle what merged code did or the agent had read or proposed: each agent entry says the
@@ -883,18 +930,45 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertNotIn("no longer lets run", contract)
         self.assertNotIn("concern the same list", contract)
 
-    def test_no_document_or_agent_entry_marks_a_case_as_still_open_for_the_user(self) -> None:
+    def test_only_the_two_points_no_answer_covers_are_marked_open_for_the_user(self) -> None:
+        """The answers of 2026-10-08 settled every case the draft had left open; review then found two points no
+        answer covers. Each document marks a passage open only where it names one of those two, and the agent's
+        entries likewise."""
         found = {}
         for document in DOCUMENTS:
-            text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
-            marks = [mark for mark in _OPEN_MARKS if mark in text]
-            if marks:
-                found[document] = marks
+            for block in _blocks((_ROOT / document).read_text(encoding="utf-8")):
+                marks = [mark for mark in _OPEN_MARKS if mark in block]
+                named = block.startswith(_OPEN_POINTS_HEADING) or any(key in block for key in _OPEN_POINTS.values())
+                if marks and not named:
+                    found.setdefault(document, []).append(block[:80])
         self.assertEqual({}, found)
         for entry in _trial_decisions():
             if entry.get("by") == "agent" and str(entry.get("at", "")) >= "2026-10-06":
+                state = str(entry.get("state", ""))
                 with self.subTest(entry=str(entry["decision"])[:60]):
-                    self.assertEqual([], [mark for mark in _OPEN_MARKS if mark in str(entry.get("state", ""))])
+                    if any(mark in state for mark in _OPEN_MARKS):
+                        self.assertIn("shared archive", state)
+
+    def test_the_two_open_points_are_listed_as_open_for_the_user(self) -> None:
+        """Until the user answers them, the contract lists both points as open, in Evidence and decisions, and the
+        passage of each says so; neither is stated as settled."""
+        blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
+        heads = [index for index, block in enumerate(blocks) if block.startswith(_OPEN_POINTS_HEADING)]
+        self.assertEqual(1, len(heads))
+        self.assertIn("Both are open for the user", blocks[heads[0]])
+        self.assertIn("the same question form", blocks[heads[0]])
+        items = blocks[heads[0] + 1:heads[0] + 3]
+        self.assertTrue(all(item.startswith("- ") for item in items))
+        for point, key in _OPEN_POINTS.items():
+            with self.subTest(point=point):
+                self.assertEqual(1, sum(key in item for item in items))
+        if heads[0] + 3 < len(blocks):
+            self.assertFalse(blocks[heads[0] + 3].startswith("- "))
+        normalised = " ".join(self.contract.split())
+        for phrase in ("whether they stay out is open for the user (Open points, above)",
+                       "it is open for the user (Open points, Evidence and decisions)"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, normalised)
 
     def test_the_differing_energy_hold_is_not_stated_as_standing(self) -> None:
         """Answer 6 replaced the hold of Interactive 0.5.34 and gate #34; the documents say what replaces it, which

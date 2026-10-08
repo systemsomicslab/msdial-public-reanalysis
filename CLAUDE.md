@@ -149,17 +149,27 @@ location.
   - **Inputs that share a file name.** One case does not run as answer 6
     says. Interactive #69 records each input's own set by its file name alone
     (`aif_collision_energies_by_input`), and gate #37 reads it so. Where two
-    inputs of one unit, in different folders, share a file name, they share
-    one entry, and the input whose set differs from that entry is refused by
-    Interactive's own check before the Console starts and FAILs ACQ-1, a
-    `blocks_run` check: the unit fails, is retried twice and loses its raw
-    data without a run. Gate #37 names this as a limit it leaves open; keying
-    by the input's relative path needs a change on both sides. Question 6 did
-    not cover this case, and no decision of the user's stands behind any
-    treatment of it. Until the keying is fixed, the agent names to the user,
-    before a manifest is approved, every unit in it whose inputs share a file
-    name, and the user decides whether that unit is in the manifest; this is
-    the agent's precaution, not a rule the user gave.
+    inputs of one unit, in different folders, share a file name and record
+    different sets, they share one entry, and the input whose set differs
+    from that entry is refused by Interactive's own check before the Console
+    starts and FAILs ACQ-1, a `blocks_run` check: the unit fails, is retried
+    twice and loses its raw data without a run. Gate #37 names this as a
+    limit it leaves open; keying by the input's relative path needs a change
+    on both sides. Question 6 did not cover this case, and no decision of the
+    user's stands behind any treatment of it: it is open for the user (Open
+    points, Evidence and decisions). Nothing guards against it yet. The plan,
+    the runner and the gate do not hold such a unit, and the agent cannot
+    name it before a manifest is approved: the plan records whether a unit
+    has an archive, not its input names, and an archive's members are known
+    only once it is downloaded and extracted, after the approval. The case
+    arises only once the campaign pins Interactive 0.5.36 or later: merged
+    Interactive (0.5.35) holds every unit whose inputs record different sets,
+    raw data kept, whatever their names. Until the user answers, a request to
+    approve a manifest that pins such an Interactive without a fix states
+    this case and what it costs. Either way out needs a code change: keying
+    each input's set by its relative path in Interactive and the gate before
+    0.5.36 is pinned, or holding such a unit at preflight, raw data kept,
+    once its inputs are known.
   - **An input that records no energy.** The whole unit is held, its raw data
     kept, when any one input that runs records no energy above 0
     (`aif_collision_energy_unrecorded`): a header that lists no energy, lists
@@ -270,6 +280,17 @@ beside such a quote is the agent's rendering, not a quote. The options' words
 are the agent's; the choice is the user's. Where an answer settles what
 merged code did or the agent had read or proposed, the passage says so.
 
+**Open points.** Review after the answers found two points that no answer of
+2026-10-08 covers. Both are open for the user, to be put in the same question
+form, and until the user answers each stays as merged code has it:
+
+- whether the members of an archive shared with other units are left out of
+  a unit, as merged code does, or included as answer 2 read literally would
+  include them (the pairing of sample rows, below);
+- how a multi-energy AIF unit is treated whose inputs share a file name and
+  record different energy sets, which under Interactive 0.5.36 would lose its
+  raw data without a run (Supported production scope, AIF).
+
 Before selecting units or proposing Class, ask what the user wants to learn from
 the reanalysis. Record the scientific question, intended biological comparison,
 whether annotation or comparative profiling is central, and required outputs as
@@ -344,7 +365,8 @@ the unit-scoped half. The question did not distinguish an archive that is the
 unit's own from one shared with other units, and read literally the answer
 could reach a shared archive's members too. Leaving those members out is the
 implementation's rule, unchanged, and no decision of the user's stands
-behind it. Interactive's 0.5.31 changelog and the gate's PAIR-1 docstring
+behind it: whether they stay out is open for the user (Open points, above),
+and until the user answers they are left out, on record. Interactive's 0.5.31 changelog and the gate's PAIR-1 docstring
 called the rule the user's decision a day before the user accepted it.
 
 Where the Catalog abstains because no declared factor groups the samples, do not

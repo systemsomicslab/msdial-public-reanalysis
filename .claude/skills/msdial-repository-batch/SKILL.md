@@ -59,10 +59,14 @@ For a repository range:
    the gate change merges before the campaign pins Interactive 0.5.36). Not
    so where two inputs of the unit share a file name: both PRs key each
    input's set by file name alone, so where those two inputs' sets differ the
-   unit is refused, FAILs ACQ-1 and loses its raw data without a run (gate #37 leaves this open, and question
-   6 did not cover it). Until that is fixed, name every unit whose inputs
-   share a file name to the user before its manifest is approved
-   (`CLAUDE.md`, Supported production scope).
+   unit is refused, FAILs ACQ-1 and loses its raw data without a run (gate
+   #37 leaves this open, and question 6 did not cover it). The case is open
+   for the user (`CLAUDE.md`, Open points). Nothing holds such a unit, and its
+   input names are not known before approval (an archive's members only once
+   it is downloaded), so it cannot be named then. Merged Interactive 0.5.35
+   holds every unit whose sets differ, whatever the names; until the user
+   answers, a request to approve a manifest that pins Interactive 0.5.36 or
+   later without a fix states this case and what it costs.
    Interactive holds the whole unit when any one input records no energy above
    0 (`aif_collision_energy_unrecorded`), and the user decided on 2026-10-08
    that this hold governs over the 2026-09-30 warning-only rule (answer 3,
