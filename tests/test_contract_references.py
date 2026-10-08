@@ -1013,7 +1013,11 @@ class ContractGateChecksTests(unittest.TestCase):
                        "answer", "the agent's reading in the code", "Approving the wording leaves each as the code "
                        "does it, on record, until the user says otherwise", "The four questions are the user's to "
                        "answer", "the agent does not choose between them", "Until the user answers, the behaviour "
-                       "before #69 is the one to keep: the twin does not run, on record"):
+                       "before #69 is the one to keep, on record, wherever no answer of the user's rules it out",
+                       "which within one folder it was and across folders it was not",
+                       "Interactive 0.5.35 told one name in two encodings apart only within one folder",
+                       "in a campaign's lease it ran a shared archive's readable twin of an admitted mzXML for its "
+                       "sample", "Each question says what ran before #69 and what #69 does"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, open_passage[0])
         for moved in ("a readable twin run for its sample beside a shared archive", "or of an admitted mzXML outside "
@@ -1023,17 +1027,26 @@ class ContractGateChecksTests(unittest.TestCase):
         start = blocks.index(open_passage[0])
         questions = blocks[start + 1:start + 5]
         expected = {
-            1: ("A readable twin in an archive shared by several units", f'"{_SECOND_ROUND[1]}"',
-                f'"{_EXTRA_ANSWER}"', "Interactive #69 at `35d75ad` runs such a twin for its sample",
+            1: ("A readable twin of an admitted mzML that cannot be decoded, in an archive shared by several "
+                "units", f'"{_SECOND_ROUND[1]}"', f'"{_EXTRA_ANSWER}"',
+                "The merged code answer 1 endorsed did not leave out every such member",
+                "Interactive 0.5.35 already ran a shared archive's readable twin of a sample's admitted mzXML for "
+                "that sample", "while its record listed the same member as left out",
+                "it does not hold #69", "The twin of an undecodable mzML no version before #69 ran from a shared "
+                "archive", "Interactive #69 at `35d75ad` runs it for its sample",
                 "gate #37 at `e7b2901` accepts it where its records agree, whatever the archive's scope",
                 "#69 does not merge running it before the user answers (Merges)"),
             2: ("in a unit whose Catalog declared its inputs", "makes no exception for a declared unit",
                 "second-round answer 3 keeps out the members a declaration does not name",
                 "#69 keeps the twin out, on record", "a precedent #69 names for running it"),
             3: ("which the encoding order ranks equal", "The extra answer does not say which to use",
-                "#69 takes neither, and the sample has no input"),
+                "#69 takes neither, and the sample has no input", "Within one folder that is as before",
+                "Interactive 0.5.35 ran both as unattributed inputs", "so no behaviour before #69 is left to keep"),
             4: ("A readable twin of an admitted mzXML outside a campaign", "`admitted_mzxml_not_converted`",
-                "the sample has no input"),
+                "the sample has no input", "That is as before only where the twin lies in the mzXML's folder",
+                "Interactive 0.5.35 saw no twin, and in a unit-scoped archive ran it as an unattributed input",
+                "so data 0.5.35 analysed is not analysed",
+                "#69 does not merge with that change before the user answers (Merges)"),
         }
         for number, phrases in expected.items():
             item = questions[number - 1]
@@ -1122,11 +1135,15 @@ class ContractGateChecksTests(unittest.TestCase):
                        "outside a campaign an mzXML twin stays left out (`requires_conversion`)",
                        "Which of two twins the order ranks equal should run, if either, the answer does not say "
                        "(question 3 under Open for the user, above)",
-                       "Beside a shared archive, too, #69 at `35d75ad` runs the twin for its sample, although "
-                       "second-round answer 1 leaves a shared archive's unpaired members out of every unit",
-                       "whether the twin runs there is question 1 under Open for the user",
-                       "until the user answers it a twin that is a member of a shared archive is to stay out, as "
-                       "before (Merges)", "Before #69 such a sample had no input",
+                       "Beside a shared archive, too, #69 at `35d75ad` runs the twin for its sample, which no "
+                       "version before it did, although second-round answer 1 leaves a shared archive's unpaired "
+                       "members out of every unit", "whether the twin runs there is question 1 under Open for the user",
+                       "until the user answers it the twin of an undecodable mzML that is a member of a shared "
+                       "archive is to stay out, as before (Merges)",
+                       "A shared archive's readable twin of an admitted mzXML, which the convert stage analyses for "
+                       "its sample in a campaign, ran before #69 and still runs",
+                       "Before #69, within one folder, such a sample had no input",
+                       "0.5.35 saw no twin and, in a unit-scoped archive, ran a vendor twin as an unattributed input",
                        "that list is gone", "Gate #37's INP-1 accepts a twin only where the four records above agree",
                        "FAILs a twin that runs unattributed", "with no record", "(`readable_twins`)",
                        "CONV-1 holds a converted twin"):
@@ -1184,10 +1201,14 @@ class ContractGateChecksTests(unittest.TestCase):
                        "Interactive #69 now records the members a Catalog declaration does not name",
                        "The cases neither answer covered are the agent's reading in #69",
                        "the contract lists them as questions for the user",
-                       "new with #69 and against the plain reading of second-round answer 1"):
+                       "Those readings are kept from before within one folder only",
+                       "which #69 at 35d75ad runs for its sample and no version before it ran",
+                       "the code that answer endorsed already ran a shared archive's twin of an admitted mzXML in a "
+                       "campaign", "but which 0.5.35 ran as an unattributed input across folders"):
             with self.subTest(entry="agent", phrase=phrase):
                 self.assertIn(phrase, agent["state"])
         self.assertNotIn("a readable twin run for its sample beside a shared archive", agent["state"])
+        self.assertNotIn("new with #69 and against the plain reading of second-round answer 1", agent["state"])
         self.assertNotIn("taken_instead_of_undecodable", agent["state"])
 
     def test_an_undecodable_mzml_is_recorded_as_undecodable_whatever_stands_beside_it(self) -> None:
@@ -1241,8 +1262,11 @@ class ContractGateChecksTests(unittest.TestCase):
         skill = " ".join((_ROOT / _BATCH_SKILL).read_text(encoding="utf-8").split())
         for phrase in (f'"{_EXTRA_ANSWER}"', "Four cases of such a twin are questions for the user that no answer "
                        "settles", "a twin in an archive shared by several units", "two twins the encoding order ranks "
-                       "equal", "a twin of an admitted mzXML outside a campaign", "Until the user answers, the twin is "
-                       "to stay out in each of them", "#69 at `35d75ad` still runs the first, and does not merge so"):
+                       "equal", "a twin of an admitted mzXML outside a campaign", "Until the user answers, the behaviour "
+                       "before Interactive #69 is kept in each of them wherever no answer rules it out",
+                       "Interactive 0.5.35 ran a twin in another folder as an unattributed input",
+                       "#69 at `35d75ad` runs a shared archive's twin of an undecodable mzML",
+                       "it does not merge with either change before the user answers"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, skill)
 
@@ -1269,7 +1293,11 @@ class ContractGateChecksTests(unittest.TestCase):
                        "One kind of member no declaration names runs all the same, as it did before #69",
                        "makes no exception for a declared unit", "Which governs is question 2 under Open for the user",
                        "Until the user answers, #69 keeps the declaration, as before",
-                       "One member of such an archive is an exception in Interactive #69 at `35d75ad`",
+                       "Two kinds of member of such an archive run all the same",
+                       "Interactive 0.5.35 already did so, while its record listed the same member as left out",
+                       "And in Interactive #69 at `35d75ad`, the readable twin of a sample's admitted mzML that cannot "
+                       "be decoded runs for that sample, whatever the archive's scope, which no version before it did",
+                       "It compared each member's whole path below the data root less its suffix",
                        "`copy_of_the_chosen_member`", "`admitted_mzxml_not_converted`",
                        "INP-1, a `blocks_run` check, FAILs a left-out member that reaches a run"):
             with self.subTest(phrase=phrase):
@@ -1295,30 +1323,98 @@ class ContractGateChecksTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, result)
 
-    def test_gate_37_merges_with_interactive_69_which_waits_only_on_the_shared_archive_twin(self) -> None:
+    def test_gate_37_merges_with_interactive_69_which_waits_on_two_changes_to_what_ran_before(self) -> None:
         """The second round's answer 2 is met; the next plan pins what Interactive main carries, so gate #37 goes in
-        first or with #69. #69 at 35d75ad runs a shared archive's readable twin, which second-round answer 1 leaves
-        out: it does not merge so until the user answers or it leaves the twin out, and the agent does not choose
-        between the answers. The other three twin questions do not hold the merge and stay the user's (review of
-        contract #28, round 4)."""
+        first or with #69. #69 at 35d75ad runs a shared archive's readable twin of an undecodable mzML, which
+        second-round answer 1 leaves out and no version before it ran (review of contract #28, round 4); and outside a
+        campaign it leaves out an admitted mzXML's readable twin in another folder, which Interactive 0.5.35 ran as an
+        unattributed input (round 5). It does not merge with either change until the user answers or it keeps the
+        behaviour before it, and the agent does not choose between the answers. A shared archive's twin of an admitted
+        mzXML ran before #69 and does not hold it; the other two questions do not either, and all four stay the
+        user's."""
         merges = " ".join(_section(self.contract, "## Merges").split())
         for phrase in ("Gate #37 merges before, or with, Interactive #69",
                        "no campaign pins Interactive 0.5.36 before it is in",
                        "second-round answer 2 of 2026-10-08", "Interactive #69 at `35d75ad` and gate #37 at `e7b2901`",
                        "`replaces_undecodable`", "as the user's answer to the extra question of the same day has it",
-                       "One thing still holds #69 at `35d75ad`: it runs a readable twin that is a member of a shared "
-                       "archive for its sample, which second-round answer 1 leaves out of every unit",
-                       "It merges once the user has answered that question, or once #69 leaves such a twin out, on "
-                       "record, until the user does; the agent does not choose between the two answers",
-                       "the two #69 names as its own", "two readable twins the order ranks equal",
-                       "They do not hold the merge, and they stay the user's to answer; approving the amendment's "
-                       "wording does not answer them"):
+                       "Two things still hold #69 at `35d75ad`, each a change from the behaviour before it that no "
+                       "answer of the user's settles", "It runs the readable twin of an undecodable mzML that is a "
+                       "member of a shared archive for its sample, which second-round answer 1 leaves out of every "
+                       "unit and which no version before it ran (question 1)",
+                       "outside a campaign it leaves out the readable twin of an admitted mzXML that lies in another "
+                       "folder, which Interactive 0.5.35 ran as an unattributed input in a unit-scoped archive "
+                       "(question 4)", "It merges once the user has answered both questions, or once #69 keeps the "
+                       "behaviour before it in those two cases, on record, until the user does; the agent does not "
+                       "choose between the answers", "ran before #69 and does not hold it",
+                       "one of the two #69 names as its own", "two readable twins the order ranks equal",
+                       "All four stay the user's to answer; approving the amendment's wording does not answer them"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, merges)
         for withdrawn in ("is not merged under this delegation", "no longer waits for an answer of the user's",
-                          "they are among the agent's readings the amendment's wording states"):
+                          "they are among the agent's readings the amendment's wording states",
+                          "One thing still holds #69", "#69 leaves as before, on record (the twin does not run)"):
             with self.subTest(withdrawn=withdrawn):
                 self.assertNotIn(withdrawn, merges)
+
+    def test_what_ran_before_interactive_69_is_stated_for_each_folder_layout(self) -> None:
+        """Interactive 0.5.35 compared one name in two encodings by the whole path below the data root, so across
+        folders it saw no twin and ran a member no row paired as an unattributed input; and in a campaign its convert
+        stage ran a shared archive's readable twin of an admitted mzXML for its sample, while its record listed the
+        member as left out. The documents said 'as before' and 'no version before it' of cases where that was not so:
+        the shared-archive twin in general, the admitted mzXML's twin outside a campaign across folders, and the tie
+        across folders (review of contract #28, round 5). No document states those claims, and each says what ran
+        before #69 in each layout."""
+        documents = {document: " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+                     for document in ("CLAUDE.md", _BATCH_SKILL)}
+        withdrawn = (
+            "Until the user answers, the behaviour before #69 is the one to keep: the twin does not run",
+            "runs such a twin for its sample, which no version before it did",
+            "a twin that is a member of a shared archive is to stay out, as before",
+            "Before #69 such a sample had no input",
+            "kept from the behaviour before the answer. In a campaign",
+            "also the agent's reading, kept from before.",
+            "until the user answers it #69 keeps the behaviour before it.",
+            "the twin is to stay out in each of them, as before Interactive #69",
+            "#69 leaves as before, on record (the twin does not run)",
+            "One thing still holds #69",
+        )
+        for document, text in documents.items():
+            for phrase in withdrawn:
+                with self.subTest(document=document, withdrawn=phrase):
+                    self.assertNotIn(phrase, text)
+        for entry in _trial_decisions():
+            text = " ".join(str(entry.get(field, "")) for field in ("decision", "state", "result"))
+            for phrase in ("new with #69 and against the plain reading of second-round answer 1",
+                           "admitted_mzxml_not_converted), as before;",
+                           "and three it keeps out, as before"):
+                with self.subTest(entry=str(entry["decision"])[:60], withdrawn=phrase):
+                    self.assertNotIn(phrase, text)
+        contract = documents["CLAUDE.md"]
+        for phrase in ("so it saw one name in two encodings only within one folder",
+                       "across folders (`RAW/x.raw` beside `mzML/x.mzML` or `mzXML/x.mzXML`) it saw no twin",
+                       "Interactive 0.5.35 already did so, while its record listed the same member as left out "
+                       "(`two_encodings_of_one_name`, or `shared_archive` across folders)",
+                       "which in a campaign's lease ran all the same a shared archive's readable twin of a sample's "
+                       "admitted mzXML for that sample (question 1 under Open for the user)",
+                       "kept from the behaviour before the answer within one folder; across folders Interactive "
+                       "0.5.35 ran the twin as well",
+                       "kept from before within one folder; across folders 0.5.35 ran each as an unattributed input"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, contract)
+        second = str(_second_round_entry()["result"])
+        for phrase in ("as 0.5.35 did where the twin lies in the mzXML's folder",
+                       "0.5.35, comparing whole paths, saw no twin and ran it as an unattributed input",
+                       "#69 does not merge with that change before the user answers",
+                       "The behaviour #69 keeps from before the answer is kept within one folder only"):
+            with self.subTest(entry="second round", phrase=phrase):
+                self.assertIn(phrase, second)
+        extra = str(_trial_decisions()[-1]["result"])
+        for phrase in ("Before #69, within one folder, such a sample had no input",
+                       "0.5.35 already ran, in a campaign, a shared archive's twin of an admitted mzXML; #69 keeps that",
+                       "where 0.5.35 ran it across folders as an unattributed input",
+                       "#69 does not merge with the first and the last of these changes"):
+            with self.subTest(entry="extra", phrase=phrase):
+                self.assertIn(phrase, extra)
 
     def test_the_differing_energy_hold_is_not_stated_as_standing(self) -> None:
         """Answer 6 replaced the hold of Interactive 0.5.34 and gate #34; the documents say what replaces it, which

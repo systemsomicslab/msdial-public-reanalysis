@@ -292,7 +292,10 @@ as `fe3f346`) implement the answers:
 
 - second-round answer 1, the members of an archive shared by several units that
   no sample row pairs with: "A: 除外して記録する", leave them out of every unit, on record,
-  as merged code does (the pairing of sample rows, below);
+  as merged code does (the pairing of sample rows, below), which in a
+  campaign's lease ran all the same a shared archive's readable twin of a
+  sample's admitted mzXML for that sample (question 1 under Open for the
+  user);
 - second-round answer 2, a multi-energy AIF unit whose inputs share a file name
   in different folders and record different energy sets: "A: 相対パスで区別するよう直してから使う", key
   each input's energy set by its relative path in Interactive #69 and gate #37
@@ -333,25 +336,42 @@ amendment's wording as a whole, and four questions about a readable twin that
 the wording does not settle and approving it does not answer. Where the
 wording states what Interactive #69 or gate #37 does in a case no answer
 covered, it says that this is the agent's reading in the code, kept from the
-behaviour before the answers where it was so: an encoding order that ranks two
-encodings of a sample equal where no sample row admits either, copies of one
-encoding taken nearest the raw data root, and a sample row's admission over an
-order that prefers its twin (the pairing of sample rows, below). Approving the
+behaviour before the answers where it was so, which within one folder it was
+and across folders it was not (the pairing of sample rows, below): an encoding
+order that ranks two encodings of a sample equal where no sample row admits
+either, copies of one encoding taken nearest the raw data root, and a sample
+row's admission over an order that prefers its twin. Approving the
 wording leaves each as the code does it, on record, until the user says
 otherwise. The four questions are the user's to answer. In each, two answers
 of the user's meet, or the extra answer says to use the readable twin and does
 not say which or whether it reaches the case; the agent does not choose between
-them. Until the user answers, the behaviour before #69 is the one to keep: the
-twin does not run, on record.
+them. Until the user answers, the behaviour before #69 is the one to keep,
+on record, wherever no answer of the user's rules it out. That behaviour is
+not one rule: Interactive 0.5.35 told one name in two encodings apart only
+within one folder, so across folders (`RAW/x.raw` beside `mzXML/x.mzXML`) it
+ran, as an unattributed input, a twin that within one folder it left out, and
+in a campaign's lease it ran a shared archive's readable twin of an admitted
+mzXML for its sample. Each question says what ran before #69 and what #69
+does.
 
-1. A readable twin in an archive shared by several units. Second-round answer
-   1, "A: 除外して記録する", leaves out of every unit the members of a shared archive that
-   no sample row pairs with; the extra answer, "A: 読める方をそのサンプルとして使う", runs the readable
+1. A readable twin of an admitted mzML that cannot be decoded, in an archive
+   shared by several units. Second-round answer 1, "A: 除外して記録する", leaves out of
+   every unit the members of a shared archive that no sample row pairs with,
+   as merged code does; the extra answer, "A: 読める方をそのサンプルとして使う", runs the readable
    twin of an admitted mzML that cannot be decoded and names no archive's
-   scope. Interactive #69 at `35d75ad` runs such a twin for its sample, which
-   no version before it did, and gate #37 at `e7b2901` accepts it where its
-   records agree, whatever the archive's scope. #69 does not merge running it
-   before the user answers (Merges).
+   scope. The merged code answer 1 endorsed did not leave out every such
+   member: in a campaign's lease Interactive 0.5.35 already ran a shared
+   archive's readable twin of a sample's admitted mzXML for that sample (the
+   convert stage's `encoding_choice`, `stands_for` the mzXML), while its record
+   listed the same member as left out (`two_encodings_of_one_name`, or
+   `shared_archive` across folders). Interactive #69 at `35d75ad` keeps running
+   that twin, records it as `analysed_for_an_admitted_sample`, and gate #37's
+   INP-1 accepts it; it does not hold #69. The twin of an undecodable mzML no
+   version before #69 ran from a shared archive, in one folder or across
+   folders. Interactive #69 at `35d75ad` runs it for its sample, and gate #37
+   at `e7b2901` accepts it where its records agree, whatever the archive's
+   scope. Until the user answers, that twin is to stay out, as before, and #69
+   does not merge running it before the user answers (Merges).
 2. A readable twin of a declared mzML that cannot be decoded, in a unit whose
    Catalog declared its inputs, where no declaration names the twin. The extra
    answer makes no exception for a declared unit; second-round answer 3 keeps
@@ -361,12 +381,24 @@ twin does not run, on record.
    running it.
 3. Two readable twins of an admitted mzML that cannot be decoded, which the
    encoding order ranks equal (`S1.raw` and `S1.d`). The extra answer does not
-   say which to use. #69 takes neither, and the sample has no input.
+   say which to use. #69 takes neither, and the sample has no input. Within
+   one folder that is as before (both `two_encodings_of_one_name`). Across
+   folders (`RAW/S1.raw` beside `WIFF/S1.wiff`) Interactive 0.5.35 ran both as
+   unattributed inputs, with no sample row, which second-round answer 3 (take
+   one) and the extra answer (never as an unattributed input) both rule out,
+   so no behaviour before #69 is left to keep, and #69's is the one kept until
+   the user answers.
 4. A readable twin of an admitted mzXML outside a campaign, where nothing
    converts the mzXML. The extra answer names an mzML that cannot be decoded,
    and second-round answer 3 the members a unit-scoped archive left unpaired.
    #69 keeps the twin out (`admitted_mzxml_not_converted`), and the sample has
-   no input.
+   no input. That is as before only where the twin lies in the mzXML's
+   folder (`two_encodings_of_one_name`). In another folder (`RAW/S2.raw`
+   beside `mzXML/S2.mzXML`) Interactive 0.5.35 saw no twin, and in a
+   unit-scoped archive ran it as an unattributed input, with no sample row;
+   #69 at `35d75ad` no longer runs it, so data 0.5.35 analysed is not
+   analysed. No answer of the user's rules the earlier behaviour out, and #69
+   does not merge with that change before the user answers (Merges).
 
 Before selecting units or proposing Class, ask what the user wants to learn from
 the reanalysis. Record the scientific question, intended biological comparison,
@@ -455,10 +487,17 @@ same day that they are left out of every unit, on record (second-round answer
 each member in `left_out`, and INP-1 FAILs any that reach a run. Interactive
 leaves out the same way, with the reason `download_scope_not_unit_scoped`, the
 members where the Catalog's download scope does not show the download to be
-the unit's own. One member of such an archive is an exception in Interactive
-#69 at `35d75ad`: the readable twin of a sample's admitted mzML that cannot be
-decoded runs for that sample, whatever the archive's scope, and INP-1 does not
-FAIL it. Whether answer 1 or the extra answer governs that twin is question 1
+the unit's own. Two kinds of member of such an archive run all the same. In a
+campaign's lease, where a sample row admits an mzXML and a readable twin of it
+came out of the archive, the convert stage analyses the twin for that sample
+(`encoding_choice`, `stands_for` the mzXML), whatever the archive's scope.
+Interactive 0.5.35 already did so, while its record listed the same member as
+left out (`two_encodings_of_one_name`, or `shared_archive` across folders);
+Interactive #69 records it as `analysed_for_an_admitted_sample`, and INP-1
+does not FAIL it. And in Interactive #69 at `35d75ad`, the readable twin of a
+sample's admitted mzML that cannot be decoded runs for that sample, whatever
+the archive's scope, which no version before it did, and INP-1 does not FAIL
+it. Whether answer 1 or the extra answer governs that twin is question 1
 under Open for the user, above.
 
 Within a unit-scoped archive, too, Interactive #64 did not take every member no
@@ -469,6 +508,14 @@ a member whose path names the polarity opposite to the unit's ion mode by a
 token of its own (`polarity_token_contradicts_ion_mode`); and a member whose
 name another member carries in another encoding (`two_encodings_of_one_name`),
 so that one name in two encodings MS-DIAL opens, neither paired, left both out.
+It compared each member's whole path below the data root less its suffix, so
+it saw one name in two encodings only within one folder: across folders
+(`RAW/x.raw` beside `mzML/x.mzML` or `mzXML/x.mzXML`) it saw no twin, and a
+member no row paired ran as an unattributed input, with no sample row, beside
+or instead of the encoding a row admitted. Interactive #69 pairs encodings
+across folders as the convert stage does (below), so where an item says that
+#69 keeps the behaviour before it, that holds within one folder, and the item
+says what changes across folders.
 It took none where the Catalog declared the unit's analysis inputs. No decision
 of the user's stood behind these exclusions either, until the user decided on
 2026-10-08 (second-round answer 3, "A: mzXMLは変換、同名2形式は1つ選ぶ"). Interactive #69 and gate #37
@@ -525,7 +572,9 @@ the code does until the user answers it:
   the order puts the admitted one first and `admitted_by_the_unit` where the
   order puts the twin first or ranks the two equal, since there the admission
   chose. Keeping the admitted one over a twin the order prefers is the agent's
-  reading, kept from the behaviour before the answer. In a campaign, where
+  reading, kept from the behaviour before the answer within one folder; across
+  folders Interactive 0.5.35 ran the twin as well, as an unattributed input,
+  which answer 3 (take one) rules out. In a campaign, where
   every encoding a sample row admits is an mzXML and the order puts one
   readable unpaired twin before it, the convert stage analyses that twin
   instead (`analysed_for_an_admitted_sample`, with `stands_for` the mzXML), and
@@ -535,12 +584,16 @@ the code does until the user answers it:
   `requires_conversion`), so that sample has no input, unless the row pairs by
   a leading identifier token, where the readable encoding is paired in the
   mzXML's place. Whether such a twin runs for its sample outside a campaign
-  neither answer says: it is question 4 under Open for the user, and until the
-  user answers it #69 keeps the behaviour before it.
+  neither answer says: it is question 4 under Open for the user. Within one
+  folder #69 keeps the behaviour before it; across folders it no longer runs a
+  twin Interactive 0.5.35 ran as an unattributed input, and it does not merge
+  with that change before the user answers (Merges).
   Where the order cannot choose and no sample row admits either, as between
   two vendor containers of one name, no encoding is taken: both are still left
   out as `two_encodings_of_one_name`, and that sample is not analysed, also
-  the agent's reading, kept from before.
+  the agent's reading, kept from before within one folder; across folders
+  0.5.35 ran each as an unattributed input, which answer 3 (take one) rules
+  out.
 - **A readable twin of an admitted mzML that cannot be decoded** (the extra
   question, "A: 読める方をそのサンプルとして使う"). Where a sample row admits an mzML RawDataHandler
   cannot decode and a twin of that sample can be read, a vendor file, folder or
@@ -561,16 +614,23 @@ the code does until the user answers it:
   campaign an mzXML twin stays left out (`requires_conversion`); either way the
   sample has no input. Which of two twins the order ranks equal should run, if
   either, the answer does not say (question 3 under Open for the user, above).
-  A twin in two folders is one twin, as above. Before #69 such a sample had no
-  input: Interactive 0.5.35 left a vendor twin out as
-  `two_encodings_of_one_name` and an mzXML twin as `requires_conversion`. At
+  A twin in two folders is one twin, as above. Before #69, within one folder,
+  such a sample had no input: Interactive 0.5.35 left a vendor twin out as
+  `two_encodings_of_one_name` and an mzXML twin as `requires_conversion`.
+  Across folders (`RAW/S1.raw` beside `mzML/S1.mzML`) 0.5.35 saw no twin and,
+  in a unit-scoped archive, ran a vendor twin as an unattributed input, with no
+  sample row; #69 runs it as the sample's own, as the answer has it. At
   `4722776`, #69 ran a vendor twin as an unattributed input outside the
   sample's Class and listed it in `taken_instead_of_undecodable`, a list its own
   count contradicted; that list is gone. Beside a shared archive, too, #69 at
-  `35d75ad` runs the twin for its sample, although second-round answer 1 leaves
-  a shared archive's unpaired members out of every unit: whether the twin runs
-  there is question 1 under Open for the user, and until the user answers it a
-  twin that is a member of a shared archive is to stay out, as before (Merges).
+  `35d75ad` runs the twin for its sample, which no version before it did,
+  although second-round answer 1 leaves a shared archive's unpaired members
+  out of every unit: whether the twin runs there is question 1 under Open for
+  the user, and until the user answers it the twin of an undecodable mzML that
+  is a member of a shared archive is to stay out, as before (Merges). A shared
+  archive's readable twin of an admitted mzXML, which the convert stage
+  analyses for its sample in a campaign, ran before #69 and still runs (the
+  archive shared by several units, above).
   Gate #37's INP-1 accepts a twin only
   where the four records above agree and the twin is an encoding of the mzML it
   replaces, and FAILs a twin that runs unattributed, as no sample or as another
@@ -940,18 +1000,24 @@ runs for an undecodable mzML without it.
 Both key each input's energy set by its relative path, as the user's
 second-round answer 2 of 2026-10-08 asked before #69 merges, and #69 runs a
 readable twin as that sample's own input, as the user's answer to the extra
-question of the same day has it (Evidence and decisions). One thing still holds
-#69 at `35d75ad`: it runs a readable twin that is a member of a shared archive
-for its sample, which second-round answer 1 leaves out of every unit, and
-which no version before it ran (question 1 under Open for the user, in Evidence and
-decisions). It merges once the user has answered that question, or once #69
-leaves such a twin out, on record, until the user does; the agent does not
-choose between the two answers. The other three questions, the two #69 names
-as its own (the twin of an undecodable mzML a Catalog declaration names, and
-the twin of an admitted mzXML outside a campaign) and two readable twins the
-order ranks equal, #69 leaves as before, on record (the twin does not run).
-They do not hold the merge, and they stay the user's to answer; approving the
-amendment's wording does not answer them.
+question of the same day has it (Evidence and decisions). Two things still
+hold #69 at `35d75ad`, each a change from the behaviour before it that no
+answer of the user's settles (Open for the user, in Evidence and decisions).
+It runs the readable twin of an undecodable mzML that is a member of a shared
+archive for its sample, which second-round answer 1 leaves out of every unit
+and which no version before it ran (question 1). And outside a campaign it
+leaves out the readable twin of an admitted mzXML that lies in another folder,
+which Interactive 0.5.35 ran as an unattributed input in a unit-scoped archive
+(question 4). It merges once the user has answered both questions, or once
+#69 keeps the behaviour before it in those two cases, on record, until the
+user does; the agent does not choose between the answers. A shared archive's
+readable twin of an admitted mzXML, which the convert stage analyses for its
+sample in a campaign, ran before #69 and does not hold it. Nor do the other
+two questions: the twin of an undecodable mzML a Catalog declaration names,
+one of the two #69 names as its own, which #69 keeps out as before; and two
+readable twins the order ranks equal, of which #69 runs neither, where
+0.5.35 ran both across folders, which both answers rule out. All four stay the
+user's to answer; approving the amendment's wording does not answer them.
 
 ## Feedback to Codex
 

@@ -117,9 +117,15 @@ For a repository range:
    questions for the user that no answer settles: a twin in an archive shared
    by several units, a twin of a declared mzML no declaration names, two twins
    the encoding order ranks equal, and a twin of an admitted mzXML outside a
-   campaign. Until the user answers, the twin is to stay out in each of them,
-   as before Interactive #69; #69 at `35d75ad` still runs the first, and does
-   not merge so (`CLAUDE.md`, Merges).
+   campaign. Until the user answers, the behaviour before Interactive #69 is
+   kept in each of them wherever no answer rules it out, and that behaviour
+   differs across folders: Interactive 0.5.35 ran a twin in another folder as
+   an unattributed input, and in a campaign ran a shared archive's twin of an
+   admitted mzXML for its sample. #69 at `35d75ad` runs a shared archive's twin
+   of an undecodable mzML, and outside a campaign leaves out an admitted
+   mzXML's twin in another folder that 0.5.35 ran; it does not merge with
+   either change before the user answers (`CLAUDE.md`, Evidence and decisions
+   and Merges).
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
