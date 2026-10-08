@@ -49,11 +49,20 @@ on the plan's own row.
 The decisions of 2026-10-06 to 2026-10-08 are recorded in the trial manifest and quoted in the contract in the
 user's words: the lower-end threshold, header-first acquisition (rule B2), inferred pairings on record, AIF by its
 collision energies, automatic RT correction, the local production Console, no Catalog recrawl, and merges left to
-Claude. PAIR-1 joined record_only on 2026-10-06 as the agent's reading of the pairing decision, and the manifest and
-the contract both say so; the lists are otherwise those of 2026-10-02. A unit Interactive's disposition holds
-(disposition_held) is stated as the operator's skip releases it, only on the user's word. What the user did not
-decide is not credited to the user: the unrecorded-energy AIF hold, the declared-only unit, the unattributed members
-and that skip are each the agent's entry in the manifest. The go signal of 2026-10-01 is the user's.
+Claude. PAIR-1 joined record_only on 2026-10-06 as the agent's reading of the pairing decision; the lists are
+otherwise those of 2026-10-02. A unit Interactive's disposition holds (disposition_held) is stated as the operator's
+skip releases it, only on the user's word. The go signal of 2026-10-01 is the user's.
+
+On 2026-10-08 the user answered the draft's eight open questions in a structured A-D form, and the trial manifest
+records the answers as one entry of the user's. Answers 1 to 5 settle what merged code did or the agent had read or
+proposed (PAIR-1 in record_only, the unattributed members, the unrecorded-energy AIF hold, the declared-only unit,
+the skip that releases a disposition hold): each is stated as the user's decision of 2026-10-08, quoting the chosen
+option, and each agent entry says the user decided it. Answer 3 replaces the warning-only rule of 2026-09-30, which
+the manifest marks as replaced. Answer 6 replaces the hold of differing AIF energy sets with a run on record, which
+Interactive #69 and gate #37 implement; the contract no longer states that hold as standing. Answers 7 and 8 revoke
+the first pilot's approval and scope its re-run. The contract says, as gate #36 does it, that a --policy override of
+the automatic RT correction is stated and covered by the digest rather than refused. No document marks a case as
+still open for the user.
 """
 
 from __future__ import annotations
@@ -116,8 +125,8 @@ _DECIDED_2026_10_02 = {
     "record_only": {"CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1", "PRE-1"},
 }
 # PAIR-1 came with the user's decision of 2026-10-06 that every inferred name pairing be kept on record. Its place
-# in record_only is the agent's reading of that decision (gate #31), recorded as such in the trial manifest and
-# stated as such in the contract, which the user has not yet been asked to confirm.
+# in record_only was the agent's reading of that decision (gate #31), and the user decided it on 2026-10-08 (answer
+# 1): the trial manifest's entry of that date lists record_only with PAIR-1 in it.
 _PLACED_2026_10_06 = {"record_only": {"PAIR-1"}}
 _DECIDED_NOW = {name: checks | _PLACED_2026_10_06.get(name, set()) for name, checks in _DECIDED_2026_10_02.items()}
 # The paragraph of the gate rule that names the before-production checks the user placed in neither
@@ -178,15 +187,26 @@ _DECIDED_CASES = {
         "not folded into a DDA run", "ACQ-1 FAILs",
     )),
     "AIF": (_SCOPE_SECTION, "- **AIF.**", (
-        "2026-10-07", "it runs as SWATH", "MsdialWorkbench #825", "same energies", "raw data kept",
-        "`aif_multi_ce_awaiting_console`", "`aif_collision_energies_differ_between_inputs`",
+        "2026-10-07 and 2026-10-08", "it runs as SWATH", "MsdialWorkbench #825", "raw data kept",
+        "`aif_multi_ce_awaiting_console`", "Interactive #64, #67 and #69 and gate #32, #34 and #37",
+    )),
+    # Settled on 2026-10-08 (answers 6 and 3).
+    "AIF, energy sets that differ": (_SCOPE_SECTION, "- **Energy sets that differ between inputs.**", (
+        "2026-10-08", 'answer 6, option C: "run as is"', "its own per-file representative collision energy",
+        "`aif_energy_sets_differ_between_inputs`", "WARNs, which stops no run", "Interactive #69", "gate #37",
+        "replaces the hold `aif_collision_energies_differ_between_inputs`", "the user had not decided",
+        "merged code still holds such a unit", "gate #37 merges first", "taken again by a recheck",
+    )),
+    "AIF, an unrecorded energy": (_SCOPE_SECTION, "- **An input that records no energy.**", (
         "`aif_collision_energy_unrecorded`", "any one input that runs", "holds all forty",
-        "`aif_collision_energy_targets_empty`", "no unit runs under the 2026-09-30 rule",
+        'answer 3, option A: "hold the unit, raw kept"', "replaces the user's rule of 2026-09-30",
+        "`aif_collision_energy_targets_empty`",
     )),
     "held by Interactive": (_GATE_RULE_SECTION, "**Held by Interactive.**", (
         "`disposition_held`", "raw data kept", "counted neither as a retry nor as a failure",
         "not rechecked by itself", "keeps no runner going", "operator's `skip`", "`operator_skip`",
-        "every held part",
+        "every held part", "only on the user's explicit word", "boundary 5 does not cover it",
+        'answer 5, option A: "the user\'s OK for each unit; a recheck needs none"', "made without asking",
     )),
 }
 # The user's own words for the decisions of 2026-10-06 to 2026-10-08, which the contract quotes and the trial
@@ -202,6 +222,26 @@ _WORDS_2026_10_06_TO_08 = {
                    "推奨でお願いします"),
     "2026-10-08": ("再クロールは必要ないです！",),
 }
+# The user's answers of 2026-10-08, each the option the user chose in a structured A-D question: the number, the
+# letter, the option's words as recorded, what the trial manifest says of it, and the section of the contract that
+# quotes it.
+_ANSWERS_2026_10_08 = {
+    1: ("A", "record only, the unit runs", "record only, the unit runs", _GATE_RULE_SECTION),
+    2: ("A", "include them as unattributed inputs, on record", "include them as unattributed inputs, on record",
+        "## Evidence and decisions"),
+    3: ("A", "hold the unit, raw kept", "hold the unit, raw kept", _SCOPE_SECTION),
+    4: ("A", "run on the declaration and record it", "run on the declaration and record it", _SCOPE_SECTION),
+    5: ("A", "the user's OK for each unit; a recheck needs none", "the user's OK for each unit; a recheck needs none",
+        _GATE_RULE_SECTION),
+    6: ("C", "run as is", "run as is", _SCOPE_SECTION),
+    7: ("A", "yes", "revoke it", "## Confirmation boundaries"),
+    8: ("A", "the 10 unfinished units", "its 10 unfinished units", "## Confirmation boundaries"),
+}
+# The user's request for that form, verbatim.
+_A_TO_D_REQUEST = "すみません、判断をしないといけない点に関して、A～Dあたりの質問形式で、順番に出してもらえますか？"
+# What marked a passage as a case the user had not settled before 2026-10-08.
+_OPEN_MARKS = ("open for the user", "not yet put to the user", "not yet accepted", "has not been asked",
+               "the user did not decide", "stands as the user's")
 # What the trial manifest's 2026-10-03 decision says, and the user's answer verbatim.
 _DECISION_2026_10_03_SAYS = (
     "option A", "unit-level evidence", "is not such evidence", "MTBKS217", "MTBKS219 and MTBKS220",
@@ -531,21 +571,24 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertEqual(gate[name], lists[name], "the contract's list is the gate's RUN_POLICY's")
 
     def test_the_lists_are_the_ones_the_user_gave_on_2026_10_02(self) -> None:
-        # With PAIR-1, placed on 2026-10-06 as the reading of the user's pairing decision, and nothing else.
+        # With PAIR-1, placed on 2026-10-06 as the reading of the user's pairing decision and decided by the user on
+        # 2026-10-08, and nothing else.
         self.assertEqual(_DECIDED_NOW, self._decided())
         self.assertEqual(_DECIDED_NOW, _gate_run_policy())
         self.assertEqual(set(self.stages["before-production"]), set().union(*_DECIDED_NOW.values()),
                          "every before-production check the gate runs is placed")
         entry = _latest_list_decision(_trial_decisions())
-        self.assertEqual("2026-10-06", entry["at"])
-        self.assertIn("not yet put to the user", entry.get("state", ""), "PAIR-1's place is a reading, said as such")
+        self.assertEqual("2026-10-08", entry["at"])
+        self.assertTrue(str(entry["by"]).startswith("user"), "PAIR-1's place is the user's since 2026-10-08")
+        self.assertIn("Answer 1", str(entry["decision"]))
 
-    def test_pair1s_place_is_stated_as_a_reading_of_the_users_decision(self) -> None:
+    def test_pair1s_place_is_stated_as_the_users_decision_of_2026_10_08(self) -> None:
         rule = " ".join(_section(self.contract, _GATE_RULE_SECTION).split())
-        for phrase in ("PAIR-1 came with the decision of 2026-10-06", "the reading of that decision",
-                       "has not been asked to confirm"):
+        for phrase in ("PAIR-1 came with the decision of 2026-10-06", "the agent's reading of that decision",
+                       'the user decided that place on 2026-10-08 (answer 1, option A: "record only, the unit runs")'):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, rule)
+        self.assertNotIn("has not been asked to confirm", rule)
 
     def test_the_batch_skill_gives_the_same_lists(self) -> None:
         skill = (_ROOT / _BATCH_SKILL).read_text(encoding="utf-8")
@@ -673,9 +716,10 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("no report:") for item in _case_problems(marked)))
 
     def test_the_latest_decision_settles_the_cases_in_the_users_words(self) -> None:
-        # The user's latest decision that placed checks, 2026-10-02; the entry of 2026-10-06 is the agent's reading.
+        # The user's decision of 2026-10-02 that placed every check then run; 2026-10-08 added only PAIR-1's place.
         decision = str(_latest_list_decision([entry for entry in _trial_decisions()
-                                              if str(entry.get("by", "")).startswith("user")])["decision"])
+                                              if str(entry.get("by", "")).startswith("user")
+                                              and str(entry.get("at", "")).startswith("2026-10-02")])["decision"])
         for phrase in _DECISION_SAYS:
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, decision)
@@ -694,10 +738,10 @@ class ContractGateChecksTests(unittest.TestCase):
         for day, words in _WORDS_2026_10_06_TO_08.items():
             entries = [entry for entry in decisions
                        if str(entry.get("at", "")).startswith(day) and str(entry.get("by", "")).startswith("user")]
-            self.assertEqual(1, len(entries), day)
+            self.assertTrue(entries, day)
             for phrase in words:
                 with self.subTest(day=day, phrase=phrase):
-                    self.assertIn(phrase, str(entries[0]["decision"]))
+                    self.assertEqual(1, len([entry for entry in entries if phrase in str(entry["decision"])]))
                     self.assertIn(phrase, self.contract)
 
     def test_the_rule_the_user_replaced_is_not_stated_as_standing(self) -> None:
@@ -708,27 +752,98 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertIn("still takes the user's explicit OK", merges)
         self.assertNotIn("It is not on Interactive main yet", self.contract)
 
-    def test_what_the_user_did_not_decide_is_not_credited_to_the_user(self) -> None:
-        """The unrecorded-energy AIF hold, the declared-only unit, the unattributed members and the release of a
-        disposition hold are merged behaviour or the agent's reading, not the user's decisions, and the
-        2026-09-30 warning-only rule for an empty energy list still stands."""
+    def test_the_answers_of_2026_10_08_are_the_users_and_recorded_as_chosen(self) -> None:
+        """The user answered in a structured A-D form, which the user asked for; the trial manifest records each
+        answer's number, letter and option, and the contract quotes each chosen option where it applies."""
+        entries = [entry for entry in _trial_decisions()
+                   if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])]
+        self.assertEqual(1, len(entries))
+        self.assertTrue(str(entries[0]["by"]).startswith("user"))
+        decision = str(entries[0]["decision"])
+        self.assertIn("structured question form, choosing one of options A to D", decision)
         contract = " ".join(self.contract.split())
-        for phrase in ("The user did not decide that hold", "which stands", "`acquisition_declared_only`",
-                       "the user has not been asked whether B2", "the user has not yet accepted it",
-                       "it is the agent's proposal, open for the user", "only on the user's explicit word",
-                       "boundary 5 does not cover it"):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, contract)
-        self.assertNotIn("no longer lets run", contract)
-        # The warning of 2026-09-30 and the hold read the same field, so whether they concern one list is not open.
-        self.assertNotIn("concern the same list", contract)
+        self.assertIn("in a structured question form: for each, the user chose one of options A to D", contract)
+        for number, (letter, option, recorded, heading) in _ANSWERS_2026_10_08.items():
+            with self.subTest(answer=number):
+                self.assertRegex(decision, rf"Answer {number}, [^.]*option {letter}\b")
+                self.assertIn(recorded, decision)
+                section = " ".join(_section(self.contract, heading).split())
+                self.assertIn(f'answer {number}, option {letter}: "{option}"', section)
+
+    def test_the_cases_the_agent_had_read_are_stated_as_decided_on_2026_10_08(self) -> None:
+        """Answers 1 to 5 settle what merged code did or the agent had read or proposed: each agent entry says the
+        user decided it, and the contract states each as the user's."""
         agent = [entry for entry in _trial_decisions() if entry.get("by") == "agent"]
-        for word in ("acquisition_declared_only", "aif_collision_energy_unrecorded", "unattributed_member",
-                     "disposition_held"):
+        for word, number in (("PAIR-1, the check", 1), ("unattributed_member", 2),
+                             ("aif_collision_energy_unrecorded", 3), ("acquisition_declared_only", 4),
+                             ("disposition_held", 5)):
             with self.subTest(word=word):
                 entries = [entry for entry in agent if word in str(entry["decision"])]
                 self.assertEqual(1, len(entries))
-                self.assertIn("user", entries[0]["state"])
+                self.assertRegex(entries[0]["state"], r"(decided|accepted) by the user on 2026-10-08")
+                self.assertIn(f"(answer {number}, the entry of that date)", entries[0]["state"])
+        contract = " ".join(self.contract.split())
+        for phrase in ("`acquisition_declared_only`", "the user accepted it on 2026-10-08",
+                       "the user decided on 2026-10-08 that this hold governs",
+                       "the user decided on 2026-10-08 that such a unit runs so",
+                       "only on the user's explicit word", "boundary 5 does not cover it"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, contract)
+        self.assertNotIn("no longer lets run", contract)
+        self.assertNotIn("concern the same list", contract)
+
+    def test_no_document_or_agent_entry_marks_a_case_as_still_open_for_the_user(self) -> None:
+        found = {}
+        for document in DOCUMENTS:
+            text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+            marks = [mark for mark in _OPEN_MARKS if mark in text]
+            if marks:
+                found[document] = marks
+        self.assertEqual({}, found)
+        for entry in _trial_decisions():
+            if entry.get("by") == "agent" and str(entry.get("at", "")) >= "2026-10-06":
+                with self.subTest(entry=str(entry["decision"])[:60]):
+                    self.assertEqual([], [mark for mark in _OPEN_MARKS if mark in str(entry.get("state", ""))])
+
+    def test_the_differing_energy_hold_is_not_stated_as_standing(self) -> None:
+        """Answer 6 replaced the hold of Interactive 0.5.34 and gate #34; the documents say what replaces it, which
+        pull requests implement it and in which order they go in."""
+        for document in ("CLAUDE.md", _BATCH_SKILL):
+            text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+            for phrase in ("`aif_energy_sets_differ_between_inputs`", "Interactive #69", "gate #37",
+                           "`aif_collision_energies_differ_between_inputs`", 'option C: "run as is"'):
+                with self.subTest(document=document, phrase=phrase):
+                    self.assertIn(phrase, text)
+            for earlier in ("only when every input records the same energies", "the same energies in every input"):
+                with self.subTest(document=document, earlier=earlier):
+                    self.assertNotIn(earlier, text)
+
+    def test_the_rule_replaced_on_2026_10_08_is_marked_in_the_trial_manifest(self) -> None:
+        """The warning-only rule of 2026-09-30 for an empty energy list was replaced by answer 3."""
+        entries = [entry for entry in _trial_decisions()
+                   if str(entry["decision"]).startswith("An AIF file whose collision-energy target list is empty")]
+        self.assertEqual(1, len(entries))
+        self.assertEqual("2026-09-30", entries[0]["at"])
+        self.assertIn("replaced on 2026-10-08", str(entries[0]["decision"]))
+        self.assertTrue(str(entries[0]["result"]).startswith("Replaced on 2026-10-08 by the user's answer 3"))
+        self.assertNotIn("Stands as the user's rule", str(entries[0]["result"]))
+
+    def test_the_first_pilot_is_revoked_and_its_re_run_scoped(self) -> None:
+        section = " ".join(_section(self.contract, "## Confirmation boundaries").split())
+        for phrase in ("it has been revoked", "the first pilot's 10 units that did not end done",
+                       "`plan --replan-from`", "a new manifest with its own approval",
+                       "The first pilot's profile, which turned RT correction off, is no longer approvable"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, section)
+
+    def test_a_policy_override_of_rt_correction_is_stated_and_covered_by_the_digest(self) -> None:
+        """The review asked whether "always on" could be undone by a --policy override; gate #36 answers it."""
+        section = " ".join(_section(self.contract, "## Evidence and decisions").split())
+        for phrase in ("`plan --policy`", "it is not refused", "Gate #36", "the summary's second line",
+                       "repeated on stderr", "`policy_overrides`", "the sha256 digest the person approves covers them",
+                       "no longer matches its own policy and profile is not approvable"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, section)
 
     def test_the_go_signal_is_the_users(self) -> None:
         words = "本番開始前には私がGoサインを出すので、聞いてください。"

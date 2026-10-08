@@ -1093,8 +1093,8 @@
     {
       "at": "2026-09-30",
       "by": "user, relayed through the campaign workflow",
-      "decision": "An AIF file whose collision-energy target list is empty only gets a recorded warning; it is neither skipped nor excluded.",
-      "result": "Stands as the user's rule; no later decision of the user's withdraws it. Since Interactive #64 (0.5.31) and #67 (0.5.34) merged code overrides it: an AIF unit is held with its raw data kept (aif_collision_energy_unrecorded) when any one input that runs records no MS2 collision energy above 0. The warning this rule gives (aif_collision_energy_targets_empty) and that hold read the same extractor field (acquisition.collisionEnergies), so every file the rule warns about is counted by the hold: the warning is recorded and the unit is then held, and no unit runs under this rule. The user did not decide the hold; which of the two governs is open for the user (the agent's entry of 2026-10-07)."
+      "decision": "An AIF file whose collision-energy target list is empty only gets a recorded warning; it is neither skipped nor excluded (replaced on 2026-10-08: the unit is held, its raw data kept).",
+      "result": "Replaced on 2026-10-08 by the user's answer 3 (the entry of that date): an AIF unit is held with its raw data kept (aif_collision_energy_unrecorded) when any one input that runs records no MS2 collision energy above 0. Merged code held so first, since Interactive #64 (0.5.31) and #67 (0.5.34), without a decision of the user's. The warning this rule gives (aif_collision_energy_targets_empty) and that hold read the same extractor field (acquisition.collisionEnergies), so every file the rule warns about is counted by the hold: the warning is recorded and the unit is then held, and no unit ran under this rule."
     },
     {
       "at": "2026-09-30",
@@ -1169,13 +1169,13 @@
     {
       "at": "2026-10-06",
       "by": "agent",
-      "state": "the agent's reading of the user's 2026-10-06 pairing decision, implemented in gate #31; not yet put to the user",
+      "state": "the agent's reading of the user's 2026-10-06 pairing decision, implemented in gate #31; decided by the user on 2026-10-08 (answer 1, the entry of that date)",
       "decision": "PAIR-1, the check that lists every inferred name pairing, is recorded and the unit runs, as CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1 and PRE-1 are (record_only). The other list of 2026-10-02 is unchanged."
     },
     {
       "at": "2026-10-06",
       "by": "agent",
-      "state": "the agent's reading of the user's rules of 2026-09-30 and 2026-10-06, as merged Interactive applies it; not yet put to the user",
+      "state": "the agent's reading of the user's rules of 2026-09-30 and 2026-10-06, as merged Interactive applies it; decided by the user on 2026-10-08 (answer 4, the entry of that date)",
       "decision": "Rule B2 decides a file by its read header. Where no input's header could be read and the repository declares a mode, Interactive's classify_preflight takes the unit at its declaration with the warning acquisition_declared_only: every file runs as the declared mode, or is excluded where that mode is out of scope, with no header behind it, as the 2026-09-30 rule read headers only where the metadata left the mode unknown. Whether B2 should exclude such a unit instead is the user's to say."
     },
     {
@@ -1187,13 +1187,13 @@
     {
       "at": "2026-10-07",
       "by": "agent",
-      "state": "implemented in Interactive #64 and #67 and gate #32 and #34; not decided by the user; open for the user",
+      "state": "implemented in Interactive #64 and #67 and gate #32 and #34, without a decision of the user's; decided by the user on 2026-10-08 (answer 3, the entry of that date)",
       "decision": "An AIF unit is held, its raw data kept (aif_collision_energy_unrecorded), when any one input that runs records no MS2 collision energy above 0: a header that lists no energy, lists only energies of 0 or below, or has a reference function with an MS level. One such file holds the whole unit. No one energy can be shown, and a #825 Console stops on such a file. The user's answer of 2026-10-07 covers single-energy and multi-energy AIF only. The user's rule of 2026-09-30 that an AIF file with an empty collision-energy list gets a recorded warning only stands as the user's, but it reads the same field as this hold, so merged Interactive records its warning and then holds the unit, and no unit runs under it."
     },
     {
       "at": "2026-10-07",
       "by": "agent",
-      "state": "the agent's proposal for the user's \u7121\u7406\u3084\u308a\u306b\u3067\u3082 (ST001264), implemented in Interactive #64 and gate #32; not yet accepted by the user",
+      "state": "the agent's proposal for the user's \u7121\u7406\u3084\u308a\u306b\u3067\u3082 (ST001264), implemented in Interactive #64 and gate #32; accepted by the user on 2026-10-08 (answer 2, the entry of that date)",
       "decision": "In a unit whose download is its own alone, an archive member that no sample row pairs with is an input all the same (unattributed_member), in the abstention's Class or Unattributed, on record; the members of an archive shared with other units are left out, on record, and INP-1 FAILs any that reach a run. Interactive's 0.5.31 changelog and the gate's PAIR-1 docstring call this the user's decision; it is the agent's proposal."
     },
     {
@@ -1205,8 +1205,14 @@
     {
       "at": "2026-10-08",
       "by": "agent",
-      "state": "the agent's reading of the user's 'held, raw kept' of 2026-10-07; not yet put to the user",
+      "state": "the agent's reading of the user's 'held, raw kept' of 2026-10-07; decided by the user on 2026-10-08 (answer 5, the entry of that date)",
       "decision": "An operator's skip releases a disposition_held unit and deletes the raw data the hold keeps, and the runner does not check who skips. Such a skip is made only on the user's explicit word in the conversation for that unit; the campaign approval's boundary 5 does not cover it."
+    },
+    {
+      "at": "2026-10-08",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "The user answered the eight questions the contract draft had left open, in a structured question form, choosing one of options A to D for each; the user asked for that form: \u3059\u307f\u307e\u305b\u3093\u3001\u5224\u65ad\u3092\u3057\u306a\u3044\u3068\u3044\u3051\u306a\u3044\u70b9\u306b\u95a2\u3057\u3066\u3001A\uff5eD\u3042\u305f\u308a\u306e\u8cea\u554f\u5f62\u5f0f\u3067\u3001\u9806\u756a\u306b\u51fa\u3057\u3066\u3082\u3089\u3048\u307e\u3059\u304b\uff1f The chosen options, as recorded. Answer 1, a PAIR-1 FAIL, option A (record only, the unit runs): PAIR-1 is recorded and the unit runs, beside CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1 and PRE-1 (record_only). Answer 2, the members of a unit-scoped archive that no row pairs with (ST001264-like), option A: include them as unattributed inputs, on record. Answer 3, an AIF unit with an input that records no collision energy, option A: hold the unit, raw kept. Answer 4, a declared unit whose raw headers cannot be read, option A: run on the declaration and record it. Answer 5, a skip that releases a held unit and so deletes its raw data, option A: the user's OK for each unit; a recheck needs none. Answer 6, a multi-energy AIF unit whose inputs record different energy sets, option C: run as is, each file processed by MsdialWorkbench #825 with its own per-file representative collision energy, and record that the sets differ. Answer 7, the approval of pilot-20261003, option A: revoke it. Answer 8, the scope of the pilot's re-run, option A: its 10 unfinished units.",
+      "result": "Answers 1 to 5 settle what merged code did and the agent had read or proposed: PAIR-1 in record_only (gate #31), unattributed members (Interactive #64, gate #32), the unrecorded-energy hold (Interactive #64 and #67, gate #32 and #34; it replaces the warning-only rule of 2026-09-30), the declared-only unit (acquisition_declared_only, Interactive's classify_preflight), and the release of a disposition hold only by an operator's skip (gate #32 and #34). Answer 6 replaces the hold aif_collision_energies_differ_between_inputs of Interactive #67 (0.5.34) and gate #34: Interactive #69 (0.5.36) runs such a unit as AIF with the warning aif_energy_sets_differ_between_inputs and each input's own set on record, and gate #37 holds each row to its own input's set and WARNs in ACQ-1; both were open on 2026-10-08, and the gate change merges before the campaign pins Interactive 0.5.36. Answer 7: the approval was revoked. Answer 8: the re-run is planned from pilot-20261003 with plan --replan-from, as a new manifest with its own approval. Gate #36, open on 2026-10-08, states the automatic RT correction in the plan a person approves: a --policy override that turns it off or changes the anchor count is not refused, but it is the summary's second line and is repeated on stderr, and the overridden fields and the statement are in the manifest the digest covers. The contract states them (docs/campaign-contract-amendment)."
     }
   ]
 }

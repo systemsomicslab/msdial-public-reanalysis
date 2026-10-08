@@ -110,37 +110,53 @@ location.
   read and the repository declares a mode, merged Interactive takes the unit at
   its declaration, warning `acquisition_declared_only`, so every file runs as
   the declared mode (or is excluded where that mode is out of scope) with no
-  header behind it. That follows the 2026-09-30 rule, which read headers only
-  where the metadata left the mode unknown; this is the agent's reading, and
-  the user has not been asked whether B2 should exclude such a unit instead.
-- **AIF.** The user decided it on 2026-10-07. An AIF unit is judged by the MS2
-  collision energies its inputs record (a Waters LockSpray reference function
-  records none, msrawdataworkbench #43). With one energy it runs as SWATH
-  (`single_ce_aif_as_swath_2026_10_07`), whatever the Console: the user's
-  proposal of 2026-10-06, adopted once the kept pilot data (ST004304,
-  MTBKS281) gave the same results. With more than one, the user held the unit
-  until a patched Console; it runs as AIF only on a Console that has
+  header behind it. Merged Interactive did this first, following the
+  2026-09-30 rule, which read headers only where the metadata left the mode
+  unknown; the user decided on 2026-10-08 that such a unit runs so (answer 4,
+  option A: "run on the declaration and record it"), and the warning, kept in
+  the unit's `campaign_disposition`, is that record.
+- **AIF.** The user decided it on 2026-10-07 and 2026-10-08. An AIF unit is
+  judged by the MS2 collision energies its inputs record (a Waters LockSpray
+  reference function records none, msrawdataworkbench #43). With one energy it
+  runs as SWATH (`single_ce_aif_as_swath_2026_10_07`), whatever the Console:
+  the user's proposal of 2026-10-06, adopted once the kept pilot data
+  (ST004304, MTBKS281) gave the same results. With more than one, the user held
+  the unit until a patched Console; it runs as AIF only on a Console that has
   MsdialWorkbench #825, which deconvolutes each energy and represents a peak by
   the energy of its MS/MS reference match, else by the energy with the most
-  product ions (the user's choice), and only when every input records the same
-  energies, since #825 chooses among one file's energies, never across files.
-  Otherwise the unit is held, its raw data kept: on a Console without
-  #825 (`aif_multi_ce_awaiting_console`) and where the inputs' energies differ
-  (`aif_collision_energies_differ_between_inputs`). Merged Interactive also
-  holds, raw data kept, the whole unit when any one input that runs records no
-  energy above 0 (`aif_collision_energy_unrecorded`): a header that lists no
-  energy, lists only energies of 0 or below, or has a reference function with
-  an MS level. One such file among forty holds all forty. No one energy can be
-  shown, and a #825 Console stops on such a file. The user did not decide that
-  hold. It overrides the user's rule of 2026-09-30 that an AIF file with an
-  empty collision-energy list gets a recorded warning only, which stands as the
-  user's until the user withdraws it. The two read the same header field (the
-  extractor's `collisionEnergies`), so every file that rule warns about is one
-  the hold counts: Interactive records the warning
-  (`aif_collision_energy_targets_empty`) and then holds the unit, and no unit
-  runs under the 2026-09-30 rule. Which of the two governs is open for the
-  user. Interactive #64 and #67 and gate #32 and #34 implement it; Gate
-  verdicts in a campaign says how a held unit ends.
+  product ions (the user's choice). On a Console without #825 the unit is held,
+  its raw data kept (`aif_multi_ce_awaiting_console`). Interactive #64, #67
+  and #69 and gate #32, #34 and #37 implement these rules; Gate verdicts in a
+  campaign says how a held unit ends.
+  - **Energy sets that differ between inputs.** The user decided on 2026-10-08
+    that such a unit runs as is and that the difference is recorded (answer 6,
+    option C: "run as is"). #825 chooses among one file's energies, never
+    across files, so each file is processed with its own per-file
+    representative collision energy, and the representative energies can
+    differ between files. Interactive records the warning
+    `aif_energy_sets_differ_between_inputs`, each distinct set with its file
+    count and each input's own set, and ACQ-1 holds each row to its own
+    input's set and WARNs, which stops no run (Interactive #69, 0.5.36, and
+    gate #37, both open on 2026-10-08). The answer replaces the hold
+    `aif_collision_energies_differ_between_inputs` that Interactive 0.5.34
+    (#67) and gate #34 implemented, which the user had not decided. Until both
+    are merged and the campaign pins Interactive 0.5.36, merged code still
+    holds such a unit, and gate #37 merges first: the gate of #34 FAILs ACQ-1,
+    a `blocks_run` check, for such a unit run under 0.5.36, so the unit would
+    fail, be retried and lose its raw data without a run. A unit the old hold
+    kept is taken again by a recheck on the #825 Console once both are in.
+  - **An input that records no energy.** The whole unit is held, its raw data
+    kept, when any one input that runs records no energy above 0
+    (`aif_collision_energy_unrecorded`): a header that lists no energy, lists
+    only energies of 0 or below, or has a reference function with an MS
+    level. One such file among forty holds all forty. No one energy can be
+    shown, and a #825 Console stops on such a file. Merged Interactive held
+    so first (#64, #67); the user decided on 2026-10-08 that this hold governs
+    (answer 3, option A: "hold the unit, raw kept"). It replaces the user's
+    rule of 2026-09-30 that an AIF file with an empty collision-energy list
+    gets a recorded warning only. The two read the same header field (the
+    extractor's `collisionEnergies`), so Interactive records that warning
+    (`aif_collision_energy_targets_empty`) and then holds the unit.
 - mzML is supported, and so is a vendor folder: a Waters `.raw`, or an Agilent
   or Bruker `.d` directory, or an archive holding one. A folder is one data
   file, one input and one row of the analysis CSV, which is generated from the
@@ -224,6 +240,13 @@ Repository fields and raw headers are evidence. Class, contrast, target omics,
 internal-standard ions, and annotation policy are scientific decisions. Keep
 source facts, model inferences, and accepted decisions separate.
 
+On 2026-10-08 the user answered eight questions the draft of this amendment
+had left open, in a structured question form: for each, the user chose one of
+options A to D. This contract cites each answer by its number and quotes the
+chosen option as it was recorded. The options' words are the question's; the
+choice is the user's. Where an answer settles what merged code did or the
+agent had read or proposed, the passage says so.
+
 Before selecting units or proposing Class, ask what the user wants to learn from
 the reanalysis. Record the scientific question, intended biological comparison,
 whether annotation or comparative profiling is central, and required outputs as
@@ -255,7 +278,16 @@ user's decision of 2026-10-07, "12で確認解析を回してください。#826
 after an evaluation on MTBLS417 and confirmatory runs on MTBKS236 and
 MTBKS217). The runner sends it to every Console start, and a manifest whose
 profile says otherwise, or whose Console lacks #826's local test, is not
-approvable (Interactive #65, gate #33). Two defaults the user accepted as
+approvable (Interactive #65, gate #33). The campaign policy can still be
+overridden at plan time (`plan --policy`): an override may turn the correction
+off or change the anchor count, and it is not refused. Gate #36 (open on
+2026-10-08) makes such an override visible to the person who approves: the
+plan summary states the correction that will run and where the setting came
+from, a difference from this decision is the summary's second line, marked
+`!!` and repeated on stderr, and the manifest records the overridden fields
+(`policy_overrides`) and the statement itself, so the sha256 digest the person
+approves covers them. A manifest whose stored statement no longer matches its
+own policy and profile is not approvable. Two defaults the user accepted as
 recommended on 2026-10-07 ("推奨でお願いします"): when the Console cannot
 select anchors and exits before alignment, the unit's later attempts run
 uncorrected, on record (`automatic_rt_correction_fallback`); and a Blank is
@@ -276,13 +308,16 @@ records how each input was paired (`name_pairing.paired_by`), and PAIR-1 lists
 every inferred pairing (Interactive #58, gate #31). For ST001264, where 3 of 31
 rows paired, the user asked on 2026-10-07 that the unit be analysed
 "無理やりにでも". The agent proposed a rule for it, which Interactive #64 and
-gate #32 implement, and the user has not yet accepted it: in a unit whose
+gate #32 implement, and the user accepted it on 2026-10-08 (answer 2, option
+A: "include them as unattributed inputs, on record"): in a unit whose
 download is its own alone, an archive member that no row pairs with is an
 input all the same (`unattributed_member`), in the abstention's Class or
-`Unattributed`, on record. The members of an archive shared with other units
-are left out, on record, and INP-1 FAILs any that reach a run. Interactive's
-0.5.31 changelog and the gate's PAIR-1 docstring call the rule the user's
-decision; it is the agent's proposal, open for the user.
+`Unattributed`, on record. The question put to the user concerned such a
+unit-scoped archive. The members of an archive shared with other units are
+left out, on record, and INP-1 FAILs any that reach a run; that half is the
+implementation's, unchanged. Interactive's 0.5.31 changelog and the gate's
+PAIR-1 docstring called the rule the user's decision a day before the user
+accepted it.
 
 Where the Catalog abstains because no declared factor groups the samples, do not
 build Class from other columns. Show the abstention preview
@@ -325,9 +360,13 @@ A pilot is such a manifest of named units (`scripts/campaign-runner.py plan
 --units`), drawn from both pools, each held to its own pool's rules and
 recorded with it. The user started one on 2026-10-03, 15 units with their raw
 data kept, so its approval covers boundaries 1, 3 and 4 and the split, never 5.
-A pilot run again on the software of 2026-10-08 is a new manifest with its own
-approval; the first pilot's profile, which turned RT correction off, is no
-longer approvable (Evidence and decisions). The production campaign starts only
+On 2026-10-08 the user decided that pilot's approval be revoked (answer 7,
+option A: "yes"), and it has been revoked. The pilot run again on the
+software of 2026-10-08 covers the first pilot's 10 units that did not end
+done (answer 8, option A: "the 10 unfinished units"), planned from it with
+`plan --replan-from`; it is a new manifest with its own approval. The first
+pilot's profile, which turned RT correction off, is no longer approvable
+(Evidence and decisions). The production campaign starts only
 on the user's explicit go, asked for in the conversation once everything is
 ready: "本番開始前には私がGoサインを出すので、聞いてください。" (2026-10-01).
 No approved manifest, pilot approval or authorization record is that go, and
@@ -452,8 +491,8 @@ in one of two lists (PAIR-1, added on 2026-10-06, is placed below):
   only from a new download. PRE-1 never FAILs: it reports PASS, WARN or
   not_evaluable. PAIR-1 came with the decision of 2026-10-06 that every
   inferred name pairing be kept on record; the gate placed it here as the
-  reading of that decision (gate #31), which the user has not been asked to
-  confirm.
+  agent's reading of that decision (gate #31), and the user decided that place
+  on 2026-10-08 (answer 1, option A: "record only, the unit runs").
 
 The gate states each check's list as its `run_policy`, and the runner holds
 the `blocks_run` list itself, whatever a report states.
@@ -536,8 +575,10 @@ only once every held part has been skipped so (gate #32 and #34, Interactive
 skip deletes raw data the hold keeps, as the user ordered for multi-energy AIF
 on 2026-10-07. So a skip that releases a `disposition_held` unit is made only
 on the user's explicit word in the conversation for that unit; the campaign
-approval's boundary 5 does not cover it. This is the agent's reading of the
-user's "raw kept", and the user has not been asked to confirm it.
+approval's boundary 5 does not cover it. The agent read the user's "raw kept"
+so, and the user decided it on 2026-10-08 (answer 5, option A: "the user's
+OK for each unit; a recheck needs none"): a recheck deletes nothing, so
+`recheck-held` is made without asking.
 
 The gate lifts none of Interactive's own refusals: a unit Interactive refuses
 to start does not run, whatever the gate said.
