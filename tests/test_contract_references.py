@@ -57,9 +57,13 @@ On 2026-10-08 the user answered the draft's eight open questions in a structured
 records the answers as one entry of the user's. Answers 1 to 5 settle what merged code did or the agent had read or
 proposed (PAIR-1 in record_only, the unattributed members, the unrecorded-energy AIF hold, the declared-only unit,
 the skip that releases a disposition hold): each is stated as the user's decision of 2026-10-08, quoting the chosen
-option, and each agent entry says the user decided it. Answer 3 replaces the warning-only rule of 2026-09-30, which
+option's Japanese label (and its description where that carries the rule) verbatim from the question, never an
+English paraphrase in quotation marks, and each agent entry says the user decided it. Answer 2 is stated as far as
+question 2 reached: it did not distinguish a shared archive, so leaving a shared archive's members out is named as
+the implementation's rule. Answer 3 replaces the warning-only rule of 2026-09-30, which
 the manifest marks as replaced. Answer 6 replaces the hold of differing AIF energy sets with a run on record, which
-Interactive #69 and gate #37 implement; the contract no longer states that hold as standing. Answers 7 and 8 revoke
+Interactive #69 and gate #37 implement; the contract no longer states that hold as standing, and it names the case
+those PRs leave open (two inputs sharing a file name), which question 6 did not cover. Answers 7 and 8 revoke
 the first pilot's approval and scope its re-run. The contract says, as gate #36 does it, that a --policy override of
 the automatic RT correction is stated and covered by the digest rather than refused. No document marks a case as
 still open for the user.
@@ -192,21 +196,30 @@ _DECIDED_CASES = {
     )),
     # Settled on 2026-10-08 (answers 6 and 3).
     "AIF, energy sets that differ": (_SCOPE_SECTION, "- **Energy sets that differ between inputs.**", (
-        "2026-10-08", 'answer 6, option C: "run as is"', "its own per-file representative collision energy",
+        "2026-10-08", 'answer 6, option C, "そのまま解析する"', "its own per-file representative collision energy",
+        'over the hold the agent had recommended (option A, "ユニットごと保留")',
         "`aif_energy_sets_differ_between_inputs`", "WARNs, which stops no run", "Interactive #69", "gate #37",
         "replaces the hold `aif_collision_energies_differ_between_inputs`", "the user had not decided",
         "merged code still holds such a unit", "gate #37 merges first", "taken again by a recheck",
     )),
+    # The case Interactive #69 and gate #37 leave open, which question 6 did not cover.
+    "AIF, inputs that share a file name": (_SCOPE_SECTION, "- **Inputs that share a file name.**", (
+        "does not run as answer 6 says", "by its file name alone", "`aif_collision_energies_by_input`",
+        "refused by Interactive's own check before the Console starts", "FAILs ACQ-1", "`blocks_run`",
+        "loses its raw data without a run", "Gate #37 names this as a limit it leaves open",
+        "Question 6 did not cover this case", "no decision of the user's stands behind any treatment of it",
+        "before a manifest is approved", "the agent's precaution, not a rule the user gave",
+    )),
     "AIF, an unrecorded energy": (_SCOPE_SECTION, "- **An input that records no energy.**", (
         "`aif_collision_energy_unrecorded`", "any one input that runs", "holds all forty",
-        'answer 3, option A: "hold the unit, raw kept"', "replaces the user's rule of 2026-09-30",
+        'answer 3, option A, "ユニットごと保留"', "replaces the user's rule of 2026-09-30",
         "`aif_collision_energy_targets_empty`",
     )),
     "held by Interactive": (_GATE_RULE_SECTION, "**Held by Interactive.**", (
         "`disposition_held`", "raw data kept", "counted neither as a retry nor as a failure",
         "not rechecked by itself", "keeps no runner going", "operator's `skip`", "`operator_skip`",
         "every held part", "only on the user's explicit word", "boundary 5 does not cover it",
-        'answer 5, option A: "the user\'s OK for each unit; a recheck needs none"', "made without asking",
+        'answer 5, option A, "1件ずつ先生の了承"', "made without asking",
     )),
 }
 # The user's own words for the decisions of 2026-10-06 to 2026-10-08, which the contract quotes and the trial
@@ -222,21 +235,38 @@ _WORDS_2026_10_06_TO_08 = {
                    "推奨でお願いします"),
     "2026-10-08": ("再クロールは必要ないです！",),
 }
-# The user's answers of 2026-10-08, each the option the user chose in a structured A-D question: the number, the
-# letter, the option's words as recorded, what the trial manifest says of it, and the section of the contract that
-# quotes it.
+# The user's answers of 2026-10-08, each the option the user chose in a structured question the agent put in
+# Japanese: the number, the letter, the option's label and description verbatim from the question (None where the
+# documents quote the label alone), the English rendering the trial manifest gives beside it, and the section of the
+# contract that quotes it. The labels carried a letter prefix and, on option A, the agent's recommendation mark,
+# neither of which is quoted.
 _ANSWERS_2026_10_08 = {
-    1: ("A", "record only, the unit runs", "record only, the unit runs", _GATE_RULE_SECTION),
-    2: ("A", "include them as unattributed inputs, on record", "include them as unattributed inputs, on record",
-        "## Evidence and decisions"),
-    3: ("A", "hold the unit, raw kept", "hold the unit, raw kept", _SCOPE_SECTION),
-    4: ("A", "run on the declaration and record it", "run on the declaration and record it", _SCOPE_SECTION),
-    5: ("A", "the user's OK for each unit; a recheck needs none", "the user's OK for each unit; a recheck needs none",
+    1: ("A", "記録だけ", "不一致は必ず記録に残し、そのユニットの解析は続けます。", "record only, the unit runs",
         _GATE_RULE_SECTION),
-    6: ("C", "run as is", "run as is", _SCOPE_SECTION),
-    7: ("A", "yes", "revoke it", "## Confirmation boundaries"),
-    8: ("A", "the 10 unfinished units", "its 10 unfinished units", "## Confirmation boundaries"),
+    2: ("A", "出所不明の入力として含める",
+        "対応が取れないファイルも、出所不明の入力として解析に含め、記録に残します。",
+        "include them as unattributed inputs, on record", "## Evidence and decisions"),
+    3: ("A", "ユニットごと保留", "生データを残して保留にします。", "hold the unit, raw kept", _SCOPE_SECTION),
+    4: ("A", "メタデータで解析＋記録",
+        "メタデータの取得モードで解析し、ヘッダーが読めなかったことを記録します。",
+        "run on the declaration and record it", _SCOPE_SECTION),
+    5: ("A", "1件ずつ先生の了承",
+        "スキップ（生データ削除）は1件ごとに了承をいただきます。修正後の Console での再判定（recheck）は了承不要です。",
+        "the user's OK for each unit; a recheck needs none", _GATE_RULE_SECTION),
+    6: ("C", "そのまま解析する", "ファイルごとの代表 CE でそのまま解析し、CE がそろっていないことを記録します。",
+        "run as is", _SCOPE_SECTION),
+    7: ("A", "取り消してよい", None, "revoke it", "## Confirmation boundaries"),
+    8: ("A", "未完了の10ユニット",
+        "前回完了しなかった10ユニットを新しい構成（自動 RT 補正 ON）で回します。",
+        "its 10 unfinished units", "## Confirmation boundaries"),
 }
+# Question 2 verbatim: it names ST001264 and does not distinguish a unit's own archive from a shared one.
+_QUESTION_2 = "ST001264 のように、アーカイブ内のファイルの一部しかサンプル表と対応が取れない場合、どうしますか？"
+# The English renderings an earlier draft put in quotation marks as if they were the options' words.
+_PARAPHRASES_QUOTED = ('"record only, the unit runs"', '"include them as unattributed inputs, on record"',
+                       '"hold the unit, raw kept"', '"run on the declaration and record it"',
+                       '"the user\'s OK for each unit; a recheck needs none"', '"run as is"', '"yes"',
+                       '"the 10 unfinished units"')
 # The user's request for that form, verbatim.
 _A_TO_D_REQUEST = "すみません、判断をしないといけない点に関して、A～Dあたりの質問形式で、順番に出してもらえますか？"
 # What marked a passage as a case the user had not settled before 2026-10-08.
@@ -585,7 +615,7 @@ class ContractGateChecksTests(unittest.TestCase):
     def test_pair1s_place_is_stated_as_the_users_decision_of_2026_10_08(self) -> None:
         rule = " ".join(_section(self.contract, _GATE_RULE_SECTION).split())
         for phrase in ("PAIR-1 came with the decision of 2026-10-06", "the agent's reading of that decision",
-                       'the user decided that place on 2026-10-08 (answer 1, option A: "record only, the unit runs")'):
+                       'the user decided that place on 2026-10-08 (answer 1, option A, "記録だけ"'):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, rule)
         self.assertNotIn("has not been asked to confirm", rule)
@@ -753,22 +783,83 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertNotIn("It is not on Interactive main yet", self.contract)
 
     def test_the_answers_of_2026_10_08_are_the_users_and_recorded_as_chosen(self) -> None:
-        """The user answered in a structured A-D form, which the user asked for; the trial manifest records each
-        answer's number, letter and option, and the contract quotes each chosen option where it applies."""
+        """The user answered in a structured question form, which the user asked for; the trial manifest records each
+        answer's number, letter and option, and the contract quotes each chosen option's label (and description)
+        verbatim from the Japanese question, never an English rendering in quotation marks."""
         entries = [entry for entry in _trial_decisions()
                    if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])]
         self.assertEqual(1, len(entries))
         self.assertTrue(str(entries[0]["by"]).startswith("user"))
         decision = str(entries[0]["decision"])
-        self.assertIn("structured question form, choosing one of options A to D", decision)
+        for phrase in ("in a structured question form the user asked for", "two or three options lettered from A",
+                       "marked option A of every question as its recommendation",
+                       "option A for seven questions and option C for question 6", "the agent's rendering"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, decision)
+        self.assertNotIn("options A to D", decision)
         contract = " ".join(self.contract.split())
-        self.assertIn("in a structured question form: for each, the user chose one of options A to D", contract)
-        for number, (letter, option, recorded, heading) in _ANSWERS_2026_10_08.items():
+        self.assertIn(_A_TO_D_REQUEST, contract)
+        for phrase in ("two or three options lettered from A",
+                       "marked option A of every question as its recommendation",
+                       "for question 6 chose option C over it", "verbatim from the question",
+                       "English beside such a quote is the agent's rendering, not a quote"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, contract)
+        self.assertNotIn("options A to D", contract)
+        for number, (letter, label, description, rendering, heading) in _ANSWERS_2026_10_08.items():
             with self.subTest(answer=number):
-                self.assertRegex(decision, rf"Answer {number}, [^.]*option {letter}\b")
-                self.assertIn(recorded, decision)
+                self.assertRegex(decision, rf"Answer {number}, [^.]*option {letter}, {re.escape(label)}")
+                self.assertIn(f"({rendering}", decision)
                 section = " ".join(_section(self.contract, heading).split())
-                self.assertIn(f'answer {number}, option {letter}: "{option}"', section)
+                quoted = f'answer {number}, option {letter}, "{label}"'
+                self.assertIn(quoted + (f': "{description}"' if description else ""), section)
+                if description:
+                    self.assertIn(f"{label}: {description}", decision)
+        for document in DOCUMENTS:
+            text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+            for paraphrase in _PARAPHRASES_QUOTED:
+                with self.subTest(document=document, paraphrase=paraphrase):
+                    self.assertIsNone(re.search(r"option [A-D][:,] " + re.escape(paraphrase), text))
+
+    def test_answer_2_is_stated_only_as_far_as_question_2_reached(self) -> None:
+        """Question 2 named ST001264 and did not distinguish a unit's own archive from a shared one; leaving a shared
+        archive's members out is the implementation's rule, and no document narrows the question to say otherwise."""
+        section = " ".join(_section(self.contract, "## Evidence and decisions").split())
+        for phrase in (_QUESTION_2, "the user accepted it on 2026-10-08 so far as the question reached",
+                       "The question did not distinguish an archive that is the unit's own from one shared with "
+                       "other units", "could reach a shared archive's members too",
+                       "Leaving those members out is the implementation's rule",
+                       "no decision of the user's stands behind it"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, section)
+        for document in DOCUMENTS:
+            text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+            with self.subTest(document=document):
+                self.assertNotIn("The question put to the user concerned such a unit-scoped archive", text)
+        decisions = _trial_decisions()
+        user = [entry for entry in decisions
+                if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])][0]
+        self.assertIn(_QUESTION_2, str(user["decision"]))
+        self.assertIn("The question did not distinguish an archive that is the unit's own from one shared with other "
+                      "units", str(user["decision"]))
+        agent = [entry for entry in decisions
+                 if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
+        self.assertIn("for its unit-scoped half", str(agent["state"]))
+        self.assertIn("which no decision of the user's settles", str(agent["state"]))
+
+    def test_the_shared_file_name_case_is_named_as_left_open(self) -> None:
+        """Interactive #69 and gate #37 key each input's energy set by file name alone; the skill and the trial
+        manifest name the case as well as the contract (whose passage _SECTIONS holds)."""
+        skill = " ".join((_ROOT / _BATCH_SKILL).read_text(encoding="utf-8").split())
+        for phrase in ("two inputs of the unit share a file name", "key each input's set by file name alone",
+                       "loses its raw data without a run", "question 6 did not cover it",
+                       "before its manifest is approved"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
+        user = [entry for entry in _trial_decisions()
+                if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])][0]
+        self.assertIn("share a file name", str(user["result"]))
+        self.assertIn("question 6 did not cover it", str(user["result"]))
 
     def test_the_cases_the_agent_had_read_are_stated_as_decided_on_2026_10_08(self) -> None:
         """Answers 1 to 5 settle what merged code did or the agent had read or proposed: each agent entry says the
@@ -811,7 +902,7 @@ class ContractGateChecksTests(unittest.TestCase):
         for document in ("CLAUDE.md", _BATCH_SKILL):
             text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
             for phrase in ("`aif_energy_sets_differ_between_inputs`", "Interactive #69", "gate #37",
-                           "`aif_collision_energies_differ_between_inputs`", 'option C: "run as is"'):
+                           "`aif_collision_energies_differ_between_inputs`", 'option C, "そのまま解析する"'):
                 with self.subTest(document=document, phrase=phrase):
                     self.assertIn(phrase, text)
             for earlier in ("only when every input records the same energies", "the same energies in every input"):

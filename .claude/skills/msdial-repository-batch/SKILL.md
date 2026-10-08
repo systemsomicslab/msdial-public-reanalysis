@@ -53,18 +53,23 @@ For a repository range:
    its raw data kept. Where the inputs record different energy sets, the unit
    runs as is, each file with its own representative energy, and the
    difference is recorded (`aif_energy_sets_differ_between_inputs`; the
-   user's answer 6 of 2026-10-08, option C: "run as is"; Interactive #69 and
+   user's answer 6 of 2026-10-08, option C, "そのまま解析する"; Interactive #69 and
    gate #37, open on 2026-10-08, replace the hold
    `aif_collision_energies_differ_between_inputs` of Interactive 0.5.34, and
-   the gate change merges before the campaign pins Interactive 0.5.36).
+   the gate change merges before the campaign pins Interactive 0.5.36). Not
+   so where two inputs of the unit share a file name: both PRs key each
+   input's set by file name alone, so where those two inputs' sets differ the
+   unit is refused, FAILs ACQ-1 and loses its raw data without a run (gate #37 leaves this open, and question
+   6 did not cover it). Until that is fixed, name every unit whose inputs
+   share a file name to the user before its manifest is approved
+   (`CLAUDE.md`, Supported production scope).
    Interactive holds the whole unit when any one input records no energy above
    0 (`aif_collision_energy_unrecorded`), and the user decided on 2026-10-08
    that this hold governs over the 2026-09-30 warning-only rule (answer 3,
-   option A: "hold the unit, raw kept"). Where no header could be read,
+   option A, "ユニットごと保留"). Where no header could be read,
    Interactive takes a declared unit at its declaration
    (`acquisition_declared_only`), with no header behind its files, and records
-   it: the user's answer 4 of 2026-10-08 (option A: "run on the declaration
-   and record it").
+   it: the user's answer 4 of 2026-10-08 (option A, "メタデータで解析＋記録").
    Ion-mobility data are
    excluded, with the reason recorded (LC-MS only), and a unit counts as ion
    mobility only on its own evidence (option A, 2026-10-03; `CLAUDE.md`,
@@ -310,9 +315,9 @@ Server-side state on `msdial_interactive_app` `main`:
   holds is never discarded unless an operator's skip passes
   `release_disposition_hold`, and that skip is made only on the user's explicit
   word for the unit: it deletes raw data the hold keeps (`CLAUDE.md`, Held by
-  Interactive; the user's answer 5 of 2026-10-08, option A: "the user's OK
-  for each unit; a recheck needs none"). A `recheck-held` deletes nothing and
-  needs no OK.
+  Interactive; the user's answer 5 of 2026-10-08, option A, "1件ずつ先生の了承":
+  "スキップ（生データ削除）は1件ごとに了承をいただきます。修正後の Console での再判定（recheck）は了承不要です。").
+  A `recheck-held` deletes nothing and needs no OK.
 - A unit whose manifest says `execution_allowed` is not true is refused before
   MS-DIAL starts, and so is a workflow whose polarity, output directory or input
   set disagrees with the manifest.
