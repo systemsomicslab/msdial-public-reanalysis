@@ -283,7 +283,8 @@ _PARAPHRASES_QUOTED = ('"record only, the unit runs"', '"include them as unattri
                        '"the 10 unfinished units"')
 # The user's request for that form, verbatim.
 _A_TO_D_REQUEST = "すみません、判断をしないといけない点に関して、A～Dあたりの質問形式で、順番に出してもらえますか？"
-# What marked a passage as a case the user had not settled. After the second round of 2026-10-08 no passage carries it.
+# What marks a passage as a case the user has not settled. After the second round of 2026-10-08 one passage carries
+# it: the two points of answer 3 that review found the code does not meet or the answer did not cover.
 _OPEN_MARKS = ("open for the user", "not yet put to the user", "not yet accepted", "has not been asked",
                "the user did not decide", "stands as the user's")
 # The user's second-round answers of 2026-10-08, each: the label exactly as the question showed it (letter included),
@@ -296,6 +297,12 @@ _SECOND_ROUND = {
     4: "なんのことかわからないのですが、デフォルトでは補正ON、ということで良いんじゃないですか？",
 }
 _SECOND_ROUND_HEADING = "**The second round.**"
+# The passage after the second round's list that leaves two points of answer 3 to the user, and its two items.
+_SECOND_ROUND_UNSETTLED = "Review after the second round found two points of answer 3"
+_SECOND_ROUND_UNSETTLED_ITEMS = (
+    "- **The record of the members a Catalog declaration does not name.**",
+    "- **The cases the encoding order does not decide.**",
+)
 # The heads of the pull requests that implement the second round, as the documents cite them.
 _SECOND_ROUND_HEADS = {"Interactive #69": "4722776", "gate #37": "c716368", "gate #36": "f043ab1"}
 # The reasons Interactive records for the members it leaves out of a unit-scoped archive, and the records it keeps of
@@ -973,16 +980,17 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertNotIn("no longer lets run", contract)
         self.assertNotIn("concern the same list", contract)
 
-    def test_no_document_marks_a_point_as_open_for_the_user(self) -> None:
-        """The answers of 2026-10-08 settled every case the draft had left open, and the second round settled the
-        points review found after them: no document, and no agent entry since 2026-10-06, marks a passage open."""
+    def test_only_the_two_points_of_answer_3_are_marked_open_for_the_user(self) -> None:
+        """The answers of 2026-10-08 settled every case the draft had left open, and the second round the points review
+        found after them, but for two points of its answer 3 that review found after it: only the passage that states
+        those two is marked open, and no agent entry since 2026-10-06 marks a passage open."""
         found = {}
         for document in DOCUMENTS:
             for block in _blocks((_ROOT / document).read_text(encoding="utf-8")):
                 marks = [mark for mark in _OPEN_MARKS if mark in block]
                 if marks:
-                    found.setdefault(document, []).append(block[:80])
-        self.assertEqual({}, found)
+                    found.setdefault(document, []).append(block[:len(_SECOND_ROUND_UNSETTLED)])
+        self.assertEqual({"CLAUDE.md": [_SECOND_ROUND_UNSETTLED]}, found)
         for entry in _trial_decisions():
             if entry.get("by") == "agent" and str(entry.get("at", "")) >= "2026-10-06":
                 state = str(entry.get("state", ""))
@@ -1013,8 +1021,9 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertIn(f'"{words}"', item)
         self.assertIn("The agent reads the rest as the decision", items[3])
         self.assertIn("with no exception for one planned before the statement", items[3])
-        self.assertTrue(blocks[heads[0] + 1 + len(_SECOND_ROUND)].startswith(
-            "The second round leaves none of this amendment's rules to the user's decision."))
+        self.assertIn("implement the answers, but for the two points of answer 3 after the list", blocks[heads[0]])
+        self.assertTrue(blocks[heads[0] + 1 + len(_SECOND_ROUND)].startswith(_SECOND_ROUND_UNSETTLED))
+        self.assertNotIn("leaves none of this amendment's rules", " ".join(self.contract.split()))
         second = _second_round_entry()
         self.assertTrue(str(second["by"]).startswith("user"))
         decision, result = str(second["decision"]), str(second["result"])
@@ -1027,6 +1036,52 @@ class ContractGateChecksTests(unittest.TestCase):
             with self.subTest(pull_request=name):
                 self.assertIn(f"{name} (", result)
                 self.assertIn(head, result)
+
+    def test_the_two_points_of_answer_3_the_code_does_not_settle_are_left_to_the_user(self) -> None:
+        """Answer 3 keeps the members a Catalog declaration does not name left out, on record, but Interactive #69
+        records nothing of its own for them; and where the encoding order cannot choose, or a sample row admits an
+        encoding the order puts after an unpaired twin, #69 follows the agent's reading, which the answer did not
+        cover. The documents state both as the user's to settle, not as the answer implemented."""
+        blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
+        start = [index for index, block in enumerate(blocks) if block.startswith(_SECOND_ROUND_UNSETTLED)]
+        self.assertEqual(1, len(start))
+        for phrase in ("the code does not meet or that the answer did not cover", "Each is open for the user",
+                       "decides neither"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, blocks[start[0]])
+        record, order = blocks[start[0] + 1:start[0] + 3]
+        self.assertTrue(record.startswith(_SECOND_ROUND_UNSETTLED_ITEMS[0]), record[:80])
+        self.assertTrue(order.startswith(_SECOND_ROUND_UNSETTLED_ITEMS[1]), order[:80])
+        for phrase in ("records nothing of its own for them", "the archive's member listing is their only record",
+                       "The code does not meet this part of the answer as written", "is the user's to say",
+                       "with no reason recorded for it"):
+            with self.subTest(item="record", phrase=phrase):
+                self.assertIn(phrase, record)
+        for phrase in ("takes neither and leaves both out (`two_encodings_of_one_name`)", "not analysed at all",
+                       "`admitted_by_the_unit`", "The answer covers neither case",
+                       "the agent's reading in #69", "not the user's decision"):
+            with self.subTest(item="order", phrase=phrase):
+                self.assertIn(phrase, order)
+        self.assertTrue(blocks[start[0] + 3].startswith("Beyond these two points, what remains is the user's approval"))
+        section = " ".join(_section(self.contract, "## Evidence and decisions").split())
+        for phrase in ("implement it where it covers the case. Where they go beyond it or fall short of it, the item "
+                       "says so", "That much is the answer.", "The rest of this item is the agent's reading in #69",
+                       "which the answer did not cover and the user has not decided",
+                       "no encoding is taken: both are still left out as `two_encodings_of_one_name`",
+                       'That falls short of answer 3\'s "on record" as written, and the code has not closed the gap'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, section)
+        self.assertNotIn("Interactive #69 and gate #37 implement the answer:", section)
+        result = str(_second_round_entry()["result"])
+        for phrase in ("These two cases are the agent's reading in Interactive #69",
+                       "the answer did not cover and the user has not decided",
+                       'That falls short of the answer\'s "on record" as written', "is the user's to say",
+                       "the code has not closed the gap"):
+            with self.subTest(entry="second round", phrase=phrase):
+                self.assertIn(phrase, result)
+        agent = [entry for entry in _trial_decisions()
+                 if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
+        self.assertIn("two points of that answer review found unmet or uncovered and left to the user", agent["state"])
 
     def test_the_members_a_unit_scoped_archive_leaves_out_are_stated_as_the_second_round_decided_them(self) -> None:
         """Interactive #64 left out of a unit-scoped archive an mzXML that only converts, a member whose path names the

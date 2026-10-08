@@ -288,7 +288,8 @@ This contract cites each as a second-round answer by its number and quotes the
 chosen option's label exactly as the question showed it, its letter included;
 English beside such a quote is the agent's rendering, not a quote. Interactive
 #69 (at `4722776`) and gates #37 (at `c716368`) and #36 (at `f043ab1`), all
-open on 2026-10-08, implement the answers:
+open on 2026-10-08, implement the answers, but for the two points of answer 3
+after the list:
 
 - second-round answer 1, the members of an archive shared by several units that
   no sample row pairs with: "A: 除外して記録する", leave them out of every unit, on record,
@@ -313,8 +314,31 @@ open on 2026-10-08, implement the answers:
   correction statement, with no exception for one planned before the
   statement, and the person plans again (the automatic RT correction, below).
 
-The second round leaves none of this amendment's rules to the user's
-decision. What remains is the user's approval of its wording.
+Review after the second round found two points of answer 3 that the code does
+not meet or that the answer did not cover. Each is open for the user; this
+contract states what the code does and decides neither:
+
+- **The record of the members a Catalog declaration does not name.** The
+  answer keeps them left out, on record. Interactive #69 leaves them out but
+  records nothing of its own for them: the archive's member listing is their
+  only record, and nothing names them as left out or says why (the pairing of
+  sample rows, below). The code does not meet this part of the answer as
+  written. Whether that listing is the record the user meant, or Interactive
+  must name each such member as left out with its reason, is the user's to say;
+  until then such a member's raw data can be deleted with the unit's, with no
+  reason recorded for it.
+- **The cases the encoding order does not decide.** The answer takes one of two
+  encodings of a name by the existing encoding order. Where the order cannot
+  choose, as between two vendor containers of one name, Interactive #69 takes
+  neither and leaves both out (`two_encodings_of_one_name`), so that sample is
+  not analysed at all; and where a sample row admits an encoding the order puts
+  after an unpaired twin, #69 keeps the admitted one (`chosen_by`
+  `admitted_by_the_unit`). The answer covers neither case. Both are the
+  agent's reading in #69, kept from the behaviour before the answer, not the
+  user's decision.
+
+Beyond these two points, what remains is the user's approval of the
+amendment's wording.
 
 Before selecting units or proposing Class, ask what the user wants to learn from
 the reanalysis. Record the scientific question, intended biological comparison,
@@ -416,7 +440,9 @@ so that one name in two encodings MS-DIAL opens, neither paired, left both out.
 It took none where the Catalog declared the unit's analysis inputs. No decision
 of the user's stood behind these exclusions either, until the user decided on
 2026-10-08 (second-round answer 3, "A: mzXMLは変換、同名2形式は1つ選ぶ"). Interactive #69 and gate #37
-implement the answer:
+implement it where it covers the case. Where they go beyond it or fall short of
+it, the item says so; those two points are the user's to settle (the second
+round, above):
 
 - **An unpaired mzXML.** In a campaign's lease it is converted like any other
   mzXML input, as the rule of 2026-09-30 converts mzXML-only data: the mzML
@@ -431,15 +457,19 @@ implement the answer:
   encodings, the existing encoding order (a vendor folder or container, then
   mzML, then mzXML) takes one, and each other is left out as
   `chosen_other_encoding`, with the one taken (`chosen`, `chosen_by`
-  `encoding_order`). Where a sample row admits an encoding of that sample, that
-  one stays the sample's input and an unpaired twin is left out the same way
-  (`chosen_by` `admitted_by_the_unit` where the order would have preferred the
-  twin), unless a campaign's conversion analyses that twin instead of the
-  sample's mzXML (`analysed_for_an_admitted_sample`). An mzML RawDataHandler cannot decode competes with none
-  (`undecodable_mzml_set_aside`), since a convertible mzXML outranks an
-  unreadable twin. Where the order cannot choose, as between two vendor
-  containers of one name, both are still left out as
-  `two_encodings_of_one_name`.
+  `encoding_order`). That much is the answer. An mzML RawDataHandler cannot
+  decode competes with none (`undecodable_mzml_set_aside`), since a convertible
+  mzXML outranks an unreadable twin (the rule of 2026-09-30). The rest of this
+  item is the agent's reading in #69, kept from the behaviour before the
+  answer, which the answer did not cover and the user has not decided. Where a
+  sample row admits an encoding of that sample, that one stays the sample's
+  input and an unpaired twin is left out the same way, even where the order
+  would have preferred the twin (`chosen_by` `admitted_by_the_unit`), unless a
+  campaign's conversion analyses that twin instead of the sample's mzXML
+  (`analysed_for_an_admitted_sample`). Where the order cannot choose, as
+  between two vendor containers of one name, no encoding is taken: both are
+  still left out as `two_encodings_of_one_name`, and that sample is not
+  analysed.
 - **A member whose path names the opposite polarity** is still left out, on
   record (`polarity_token_contradicts_ion_mode`).
 - **A unit whose Catalog declared its inputs** takes only the declared ones,
@@ -448,7 +478,8 @@ implement the answer:
   carries no `unattributed_members`, and those members appear only in the
   archive's member listing (its extraction record's `members_tsv`), beside
   every other member. For them the record is that listing alone; nothing names
-  them as left out or says why.
+  them as left out or says why. That falls short of answer 3's "on record"
+  as written, and the code has not closed the gap (the second round, above).
 
 INP-1, a `blocks_run` check, FAILs a left-out member that reaches a run, a
 converted unattributed input that is not the conversion of the mzXML it names,
