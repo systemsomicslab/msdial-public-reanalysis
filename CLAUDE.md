@@ -348,17 +348,33 @@ contract states what the code does and decides none of them:
   admits an mzML that RawDataHandler cannot decode, and an unpaired encoding of
   the same sample can be read, Interactive #69 sets the admitted mzML aside
   (the lease excludes it, `unsupported_mzml_encoding`) and takes the unpaired
-  twin in its place as an unattributed input, converted first where it is an
-  mzXML in a campaign. That twin has no sample row: it runs in the abstention's
-  Class or `Unattributed`, not in the sample's Class, so the sample's data
-  leave its contrast group. Only
+  twin the order takes in its place. What the twin then runs as depends on its
+  kind, although #69 means it as an unattributed input in both cases. A vendor
+  twin (`S1.raw` beside an admitted `S1.mzML`) runs as an unattributed input:
+  it has no sample row, so it runs in the abstention's Class or
+  `Unattributed`, not in the sample's Class, so the sample's data leave its
+  contrast group. Only
   `unattributed_members.taken_instead_of_undecodable` records the
-  substitution, and gate #37 does not read it. Before #69 that
-  sample had no input at all. Neither answer 3 nor the rule of 2026-09-30, that
-  a convertible mzXML outranks an unreadable twin, moves a sample row's data
-  out of its sample and its Class. This is the agent's reading in #69, not the
-  user's decision; whether the twin runs as that sample's input, as an
-  unattributed one or not at all is the user's to say.
+  substitution. An mzXML twin is converted in a campaign, and the mzML written
+  from it carries the twin's stem (`S1.mzML`), so the attribute stage pairs it
+  with the sample row by that name before it looks at the unattributed
+  members: the converted twin runs as the sample's own input, in the sample's
+  Class, its lineage row giving the sample's `sample_id` and no
+  `name_pairing`. Its record contradicts that: `unattributed_members` gives
+  `count` 0 and no member, yet `taken_instead_of_undecodable` lists the mzXML
+  as taken instead of the mzML, a defect in #69's record that Interactive has
+  not corrected. Outside a campaign an mzXML twin stays left out
+  (`requires_conversion`), and the sample has no input. Gate #37 does not read
+  `taken_instead_of_undecodable`. Before #69 that sample had no input at all:
+  Interactive 0.5.35 left a vendor twin out as `two_encodings_of_one_name` and
+  an mzXML twin as `requires_conversion`, in a campaign too. Neither answer 3
+  nor the rule of 2026-09-30, that a convertible mzXML outranks an unreadable
+  twin, moves a sample row's data out of its sample and its Class, and neither
+  says what a twin taken in place of an admitted encoding runs as. Taking the
+  twin, as an unattributed input where it is a vendor container and, by its
+  converted name, as the sample's own where it is an mzXML, is the agent's
+  reading in #69, not the user's decision; whether a twin runs as that
+  sample's input, as an unattributed one or not at all is the user's to say.
 
 Beyond these three points, what remains is the user's approval of the
 amendment's wording.
@@ -480,10 +496,22 @@ round, above):
   encodings, the existing encoding order (a vendor folder or container, then
   mzML, then mzXML) takes one, and each other is left out as
   `chosen_other_encoding`, with the one taken (`chosen`, `chosen_by`
-  `encoding_order`). That much is the answer. An unpaired mzML RawDataHandler
-  cannot decode competes with none and is left out with `chosen_by`
+  `encoding_order`). That much is the answer. Where another unpaired encoding
+  of the same sample can be read, an unpaired mzML RawDataHandler cannot
+  decode competes with none and is left out with `chosen_by`
   `undecodable_mzml_set_aside`, since a convertible mzXML outranks an
-  unreadable twin (the rule of 2026-09-30). The rest of this item is the
+  unreadable twin (the rule of 2026-09-30). #69 sets it aside only then. Where
+  it is the sample's only unpaired member and a sample row admits another
+  encoding of that sample, it stays in the comparison with the admitted one:
+  it is left out as `chosen_other_encoding` all the same, with the admitted
+  one kept, but its record names `chosen_by` `admitted_by_the_unit` (beside an
+  admitted mzXML) or `encoding_order` (beside an admitted vendor container),
+  never `undecodable_mzml_set_aside`, so nothing in the record says that the
+  mzML could not be decoded. That is a gap in #69's record, which Interactive
+  has not corrected. Where no sample row admits that sample and no other
+  unpaired encoding of it is left to compare, it is an unattributed input the
+  lease excludes (`unattributed_members.excluded`,
+  `unsupported_mzml_encoding`). The rest of this item is the
   agent's reading in #69, which the answer did not cover and the user has not
   decided. Where a sample row admits a readable encoding of that sample, that
   one stays the sample's input and an unpaired twin is left out the same way,
@@ -494,13 +522,15 @@ round, above):
   (`analysed_for_an_admitted_sample`); this much is kept from the behaviour
   before the answer. Where the encoding a sample row admits is an mzML
   RawDataHandler cannot decode and an unpaired twin can be read, #69 sets the
-  admitted one aside too and takes the twin the order takes in its place, as
-  an unattributed input outside the sample's Class
-  (`unattributed_members.taken_instead_of_undecodable`); before #69 that sample
-  had no input. Where the order cannot choose and no sample row
-  admits either, as between two vendor containers of one name, no encoding is
-  taken: both are still left out as `two_encodings_of_one_name`, and that
-  sample is not analysed.
+  admitted one aside too and takes the twin the order takes in its place: a
+  vendor twin as an unattributed input outside the sample's Class
+  (`unattributed_members.taken_instead_of_undecodable`), and in a campaign an
+  mzXML twin, converted, as the sample's own input in the sample's Class,
+  although `taken_instead_of_undecodable` lists it too (the second round,
+  above); before #69 that sample had no input. Where the order cannot choose
+  and no sample row admits either, as between two vendor containers of one
+  name, no encoding is taken: both are still left out as
+  `two_encodings_of_one_name`, and that sample is not analysed.
 - **A member whose path names the opposite polarity** is still left out, on
   record (`polarity_token_contradicts_ion_mode`).
 - **A unit whose Catalog declared its inputs** takes only the declared ones,
