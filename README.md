@@ -169,8 +169,12 @@ run, and one whose energies differ from the unit's or are unrecorded, FAIL.
 Inputs whose energy sets differ run as they are, on record (the user's decision
 of 2026-10-08; Interactive 0.5.36): where `aif_multi_ce_run` records
 `energy_sets_differ` true, each row must record the set the disposition's
-`aif_collision_energies_by_input` records for its file, within the unit's
-energies, and ACQ-1 is a WARN that names each set and the decision
+`aif_collision_energies_by_input` records for its input, within the unit's
+energies. Those sets are keyed by each input's path relative to the manifest's
+`input_directory` (`/`-separated, compared without case:
+`path_relative_to_input_directory`, the second-round answer of 2026-10-08), so
+`POS/QC_01.mzML` and `NEG/QC_01.mzML` are each held to their own set; a record
+keyed by another scheme is not read. ACQ-1 is then a WARN that names each set and the decision
 (`aif_energy_sets_differ_between_inputs`), which stops no run. Without that
 record, differing sets still FAIL. A
 single-energy AIF unit is still expected as SWATH whatever the Console.
@@ -184,7 +188,16 @@ CLS-3 and PAIR-1: each WARNs listing them with
 with no attributed input beside them is listed under
 `samples_without_attributed_input`, not as missing or undelivered). INP-1 FAILs
 them only from a download shared with other units, and PAIR-1 FAILs where their
-record falls short of the rule. CLS-2 reads what the download
+record falls short of the rule. Interactive 0.5.36 converts an unpaired mzXML
+in a campaign into an unattributed input (its lineage row the conversion, named
+after the mzXML, listed in `unattributed_members.converted`), and of one
+sample's unpaired encodings takes one by the encoding order, recording each
+other in `unattributed_members.left_out` as `chosen_other_encoding` (with
+`chosen` and `chosen_by`). INP-1 accepts both as recorded and FAILs, blocking
+the run, where a member `left_out` names reaches the run, a converted
+unattributed input is not the conversion of the mzXML it names, or one sample
+runs in two encodings beside an unattributed member; PAIR-1 FAILs, on record
+only, where `converted` or `left_out` falls short. CLS-2 reads what the download
 delivered from the archive member listings and the downloads, counting a
 vendor folder fetched file by file (a Waters `.raw`) as one input and a
 companion file (`.wiff.scan`) as none: an approved sample whose file was

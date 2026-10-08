@@ -19,6 +19,7 @@ The fixtures are test_verify_inputs_and_acquisition's Unit; the Console assembli
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -60,15 +61,20 @@ class MultiEnergyAifTests(unittest.TestCase):
               record_run: bool = True, probe: "str | bool" = "same", console_markers=MARKERS,
               manifest: bool = True, files: int = 2, hold: bool = False, disposition: bool = True,
               rows: "str | None" = None, console_type: str = "AIF", by_input: "dict | None" = None,
-              sets_differ: bool = False):
+              sets_differ: bool = False, names: "list[str] | None" = None,
+              key_scheme: "str | None" = "path_relative_to_input_directory"):
         """probe: "same" (the probe read the Console the run manifest records), "other" (another Console with
         #825), "absent" (the probe found no #825 in the Console the run manifest records), False (no probe).
         sets_differ: aif_multi_ce_run records energy_sets_differ true and collision_energy_sets, and the
         disposition the warning (Interactive 0.5.36, the run-as-is decision of 2026-10-08); by_input: the
-        disposition's aif_collision_energies_by_input, by file name (by default, each row's own energies)."""
+        disposition's aif_collision_energies_by_input, keyed as Interactive 0.5.36 keys it, by each input's path
+        relative to the data root (by default, each row's own energies), and key_scheme its
+        aif_collision_energies_by_input_key (None: not recorded). names: the inputs under the data root."""
         with tempfile.TemporaryDirectory() as temporary:
             unit = acquisition.Unit(temporary)
-            paths = unit.inputs([f"S{index}.mzML" for index in range(files)])
+            names = names or [f"S{index}.mzML" for index in range(files)]
+            files = len(names)
+            paths = unit.inputs(names)
             own = list(row_energies) if row_energies is not None else [list(energies)] * files
             records = [acquisition._record(path, "AIF", console_type, confidence=0.9,
                                            console_acquisition_basis=basis,
@@ -87,7 +93,8 @@ class MultiEnergyAifTests(unittest.TestCase):
                     record["aif_multi_ce_run"] = {"collision_energies": list(energies), "rule": rule}
                 if sets_differ:
                     recorded = by_input if by_input is not None else {
-                        Path(path).name: values for path, values in zip(paths, own) if values is not None}
+                        Path(path).relative_to(unit.data).as_posix(): values
+                        for path, values in zip(paths, own) if values is not None}
                     counted: dict = {}
                     for values in recorded.values():
                         counted[tuple(values)] = counted.get(tuple(values), 0) + 1
@@ -95,6 +102,8 @@ class MultiEnergyAifTests(unittest.TestCase):
                         {"collision_energies": list(values), "file_count": count}
                         for values, count in sorted(counted.items())])
                     record["aif_collision_energies_by_input"] = recorded
+                    if key_scheme is not None:
+                        record["aif_collision_energies_by_input_key"] = key_scheme
                     record["warnings"] = [DIFFER]
                 if probe == "same":
                     record["multi_energy_aif_console"] = _probe(sha)
@@ -262,12 +271,93 @@ class DifferingEnergySetsTests(unittest.TestCase):
         self.assertEqual(verifier.WARN, check.status, check.detail)
 
     def test_the_sets_are_keyed_by_the_records_file_name(self) -> None:
-        """The CSV's file_name is the stem; Interactive keys aif_collision_energies_by_input by the file name."""
+        """The CSV's file_name is the stem; Interactive keys aif_collision_energies_by_input by the record's file, under
+        the data root (an input in the root itself by its file name)."""
         check = self._acq1(energies=self.UNION, row_energies=self.SETS, sets_differ=True,
                            by_input={"S0": self.SETS[0], "S1": self.SETS[1]})
 
         self.assertEqual(verifier.FAIL, check.status, check.detail)
-        self.assertIn("records no set for S0.mzML", check.detail)
+        self.assertIn("records no set for S0.mzML (its path relative to the data root", check.detail)
+
+
+class InputsOfOneNameInTwoFoldersTests(unittest.TestCase):
+    """Second-round answer 2 of 2026-10-08 (Interactive 0.5.36, raw_metadata_preflight.aif_input_key): the per-input
+    sets are keyed by each input's path relative to the data root, so POS/QC_01.mzML and NEG/QC_01.mzML each keep
+    their own set, and ACQ-1 holds each row to its own."""
+
+    NAMES = ["POS/QC_01.mzML", "NEG/QC_01.mzML"]
+    UNION = (10.0, 20.0, 40.0)
+    SETS = [[10.0, 20.0], [20.0, 40.0]]
+    _acq1 = MultiEnergyAifTests._acq1
+
+    def test_two_inputs_of_one_name_in_two_folders_each_keep_their_own_set(self) -> None:
+        check = self._acq1(energies=self.UNION, row_energies=self.SETS, sets_differ=True, names=self.NAMES)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertFalse(check.blocks_run)
+        self.assertIn("10, 20 eV in 1 row(s); 20, 40 eV in 1 row(s)", check.detail)
+        self.assertIn("by its path relative to the data root", check.detail)
+        multi = check.evidence["multi_energy_aif"]
+        self.assertEqual("path_relative_to_input_directory", multi["aif_collision_energies_by_input_key"])
+
+    def test_keys_are_compared_without_case_and_with_either_separator(self) -> None:
+        for keys in (["pos/qc_01.mzml", "NEG/QC_01.MZML"], ["POS\\QC_01.mzML", "NEG\\QC_01.mzML"]):
+            with self.subTest(keys=keys):
+                check = self._acq1(energies=self.UNION, row_energies=self.SETS, sets_differ=True, names=self.NAMES,
+                                   by_input=dict(zip(keys, self.SETS)))
+                self.assertEqual(verifier.WARN, check.status, check.detail)
+
+    def test_a_record_keyed_by_basename_is_refused(self) -> None:
+        """A basename names both inputs: no set can be told to be either one's."""
+        check = self._acq1(energies=self.UNION, row_energies=self.SETS, sets_differ=True, names=self.NAMES,
+                           by_input={"QC_01.mzML": self.SETS[1]})
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        failures = " ".join(check.evidence["failures"])
+        self.assertIn("records no set for POS/QC_01.mzML", failures)
+        self.assertIn("records no set for NEG/QC_01.mzML", failures)
+
+    def test_each_input_is_held_to_its_own_folders_set(self) -> None:
+        """The sets recorded the other way round: the NEG input records POS's set."""
+        check = self._acq1(energies=self.UNION, row_energies=self.SETS, sets_differ=True, names=self.NAMES,
+                           by_input={"POS/QC_01.mzML": self.SETS[0], "NEG/QC_01.mzML": self.SETS[0]})
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("QC_01: records 20, 40 eV, not the 10, 20 eV the campaign disposition's "
+                      "aif_collision_energies_by_input records for NEG/QC_01.mzML", check.detail)
+        self.assertNotIn("POS/QC_01.mzML", check.detail)
+
+    def test_a_record_that_names_another_key_scheme_is_not_read(self) -> None:
+        check = self._acq1(energies=self.UNION, row_energies=self.SETS, sets_differ=True, names=self.NAMES,
+                           key_scheme="basename")
+
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("is keyed by 'basename' (aif_collision_energies_by_input_key)", check.detail)
+
+    def test_a_record_that_states_no_key_scheme_is_read_by_relative_path(self) -> None:
+        check = self._acq1(energies=self.UNION, row_energies=self.SETS, sets_differ=True, names=self.NAMES,
+                           key_scheme=None)
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIsNone(check.evidence["multi_energy_aif"]["aif_collision_energies_by_input_key"])
+
+    def test_the_key_as_interactive_gives_it(self) -> None:
+        root = str(Path(tempfile.gettempdir()) / "unit" / "raw" / "data")
+        self.assertEqual("POS/QC_01.mzML", verifier._aif_input_key(str(Path(root) / "POS" / "QC_01.mzML"), root))
+        self.assertEqual("QC_01.mzML", verifier._aif_input_key(str(Path(root) / "QC_01.mzML"), root))
+        self.assertEqual("../converted/QC_01.mzML",
+                         verifier._aif_input_key(str(Path(root).parent / "converted" / "QC_01.mzML"), root))
+        self.assertEqual("POS/QC_01.mzML", verifier._aif_input_key("POS\\QC_01.mzML", root))
+        self.assertEqual("C:/x/POS/QC_01.mzML", verifier._aif_input_key("C:\\x\\POS\\QC_01.mzML", ""))
+
+    def test_a_split_part_without_its_own_data_root_reads_its_parents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = {"input_directory": str(Path(temporary) / "raw" / "data")}
+            path = Path(temporary) / "parent-run-manifest.json"
+            path.write_text(json.dumps(parent), encoding="utf-8")
+            part = {"split_from": {"manifest_path": str(path)}}
+            self.assertEqual(parent["input_directory"], verifier._data_root(part))
+            self.assertEqual("own", verifier._data_root({"input_directory": "own", "split_from": {}}))
 
     def test_a_row_whose_energies_are_not_its_recorded_set_is_refused(self) -> None:
         check = self._acq1(energies=self.UNION, row_energies=self.SETS, sets_differ=True,
@@ -393,12 +483,23 @@ class MirroredConstantsTests(unittest.TestCase):
         self.assertEqual(tuple(workflow.MULTI_ENERGY_AIF_CONSOLE_MARKERS), verifier.MULTI_ENERGY_AIF_CONSOLE_MARKERS)
         if hasattr(raw_metadata_preflight, "AIF_CE_SETS_DIFFER_RECORDED"):  # Interactive 0.5.36 on
             self.assertEqual(raw_metadata_preflight.AIF_CE_SETS_DIFFER_RECORDED, verifier.AIF_CE_SETS_DIFFER_WARNING)
+        if hasattr(raw_metadata_preflight, "aif_input_key"):  # Interactive 0.5.36, keyed by relative path
+            self.assertEqual(raw_metadata_preflight.AIF_CE_BY_INPUT_KEY, verifier.AIF_CE_BY_INPUT_KEY)
+            root = str(Path(tempfile.gettempdir()) / "unit" / "raw" / "data")
+            for path in (str(Path(root) / "POS" / "QC_01.mzML"), str(Path(root) / "QC_01.mzML"),
+                         str(Path(root).parent / "converted" / "a" / "QC_01.mzML"), "POS\\QC_01.mzML",
+                         "QC_01.mzML"):
+                for directory in (root, None, ""):
+                    self.assertEqual(raw_metadata_preflight.aif_input_key(path, directory),
+                                     verifier._aif_input_key(path, directory), (path, directory))
 
     def test_the_differing_sets_names(self) -> None:
         self.assertEqual(DIFFER, verifier.AIF_CE_SETS_DIFFER_WARNING)
         self.assertEqual("energy_sets_differ", verifier.AIF_CE_SETS_DIFFER_FIELD)
         self.assertEqual("collision_energy_sets", verifier.AIF_CE_SETS_FIELD)
         self.assertEqual("aif_collision_energies_by_input", verifier.AIF_CE_BY_INPUT_FIELD)
+        self.assertEqual("aif_collision_energies_by_input_key", verifier.AIF_CE_BY_INPUT_KEY_FIELD)
+        self.assertEqual("path_relative_to_input_directory", verifier.AIF_CE_BY_INPUT_KEY)
         self.assertEqual(verifier.RECORD_ONLY, verifier.AIF_CE_SETS_DIFFER_POLICY)
 
 
