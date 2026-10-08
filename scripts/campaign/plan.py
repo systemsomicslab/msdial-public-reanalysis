@@ -505,6 +505,33 @@ def _strings(value: Any) -> Iterable[str]:
             yield from _strings(item)
 
 
+def profile_shape_problems(profile: Mapping[str, Any]) -> list[str]:
+    """An ion mode's answers, or a workflow_overrides, that is present but not an object.
+
+    The gate reads these only as objects (what it states and refuses about the RT corrections walks objects),
+    but the runner does not: Runner.answers merges an ion mode's answers with dict(...) and then takes
+    dict(answers.get("workflow_overrides") or {}). So a list of [key, value] pairs there would run settings the
+    statement never names and no refusal sees, and a null (or any other non-object) for an ion mode's
+    workflow_overrides would replace the answers' workflow_overrides for that mode's units, which would then run
+    otherwise than stated. Neither has a meaning the gate states, so both are refused, null included.
+    """
+    problems = []
+    answers = profile.get("answers") if isinstance(profile.get("answers"), Mapping) else {}
+    by_mode = profile.get("by_ion_mode") if isinstance(profile.get("by_ion_mode"), Mapping) else {}
+    places: list[tuple[str, Mapping[str, Any]]] = [("answers", answers)]
+    for mode in sorted(by_mode, key=str):
+        if isinstance(by_mode[mode], Mapping):
+            places.append((f"by_ion_mode.{mode}", by_mode[mode]))
+        else:
+            problems.append(f"by_ion_mode.{mode} is {_clip(json.dumps(by_mode[mode], default=str))}: write an object")
+    for where, settings in places:
+        if "workflow_overrides" in settings and not isinstance(settings["workflow_overrides"], Mapping):
+            value = _clip(json.dumps(settings["workflow_overrides"], default=str))
+            problems.append(f"{where}.workflow_overrides is {value}, which the runner would apply as the gate "
+                            "cannot read it: write an object, or leave it out")
+    return problems
+
+
 def profile_problems(profile: Mapping[str, Any] | None, library_names: Iterable[str]) -> list[str]:
     """Why a profile cannot be approved, or nothing.
 
@@ -522,6 +549,7 @@ def profile_problems(profile: Mapping[str, Any] | None, library_names: Iterable[
     unknown_modes = sorted(set(profile.get("by_ion_mode") or {}) - {"Positive", "Negative"})
     if unknown_modes:
         problems.append(f"by_ion_mode names {', '.join(unknown_modes)}; only Positive and Negative")
+    problems.extend(profile_shape_problems(profile))
     for text in _strings(profile):
         if _ABSOLUTE.search(text):
             problems.append("the profile names a location; name libraries as library:<file name>")

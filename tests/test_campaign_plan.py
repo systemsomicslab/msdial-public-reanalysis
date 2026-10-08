@@ -1229,6 +1229,62 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
                 self.assertEqual(plan.automatic_rt_statement_missing_problems(manifest), [])
                 self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]), [])
 
+    def test_a_workflow_overrides_or_ion_mode_that_is_not_an_object_is_refused(self) -> None:
+        """The review of #36 (round 3): the gate reads a workflow_overrides only as an object, but Runner.answers
+        takes dict(answers.get("workflow_overrides") or {}), so a list of pairs ran settings no statement named and
+        no refusal saw, and an ion mode's null replaced the answers' workflow_overrides for that mode's units."""
+        from campaign import machine
+        plain = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}
+        console = {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_LOCAL_SUPPORT}
+        legacy = {key: value for key, value in policy.CampaignPolicy().as_dict().items() if not key.startswith("automatic_rt")}
+        unpinned = policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()
+        pairs = [["automatic_rt_correction_outlier_mad_threshold", 1000], ["execute_automatic_rt_correction", True]]
+        cases = {
+            # (1) Pinned: the outlier threshold and the switch, applied over the pinned answer and its fallback.
+            "pairs under the pin": (
+                policy.CampaignPolicy().as_dict(), {**plain, "answers": {**plain["answers"], "workflow_overrides": pairs}},
+                False, "Positive", {"automatic_rt_correction_outlier_mad_threshold": 1000,
+                                    "execute_automatic_rt_correction": True},
+                "answers.workflow_overrides is [["),
+            # (2) Before the statement: the anchor-library correction in every unit, with no words about it.
+            "pairs before the statement": (
+                legacy, {**plain, "answers": {**plain["answers"], "rt_correction_anchor_path": "library:P.msp",
+                                              "workflow_overrides": [["execute_rt_correction", True]]}},
+                True, "Negative", {"execute_rt_correction": True}, "answers.workflow_overrides is [["),
+            # (3) Unpinned and stated OFF: the Positive null wipes the answers' OFF override, so the answer's ON runs.
+            "an ion mode's null": (
+                unpinned, {**plain, "answers": {**plain["answers"], "execute_automatic_rt_correction": True,
+                                                "workflow_overrides": {"execute_automatic_rt_correction": False}},
+                           "by_ion_mode": {"Positive": {"workflow_overrides": None}}},
+                False, "Positive", {}, "by_ion_mode.Positive.workflow_overrides is null"),
+        }
+        for name, (recorded, profile, before, mode, runner_overrides, words) in cases.items():
+            with self.subTest(name):
+                # What Runner.answers would hand Interactive for a unit of that mode: not what the gate reads.
+                merged = machine._merge(dict(profile["answers"]), dict(profile["by_ion_mode"].get(mode) or {}))
+                self.assertEqual(dict(merged.get("workflow_overrides") or {}), runner_overrides)
+                manifest = self.manifest(profile, console, recorded)
+                if before:
+                    manifest = self.planned_before_the_statement(manifest)
+                problems = plan.approval_problems(manifest, ["1", "3", "4"])
+                self.assertTrue(any(words in problem and problem.endswith("write an object, or leave it out")
+                                    for problem in problems), problems)
+        # The third case's statement said OFF for Positive, where the runner would have run the correction.
+        self.assertFalse(plan.automatic_rt_correction_by_ion_mode(cases["an ion mode's null"][1])["Positive"]["correction"])
+        # An ion mode that is not an object is refused too: the runner would dict() a list of pairs.
+        for value, words in (([["execute_automatic_rt_correction", True]], 'by_ion_mode.Negative is [["'),
+                             (None, "by_ion_mode.Negative is null")):
+            with self.subTest(mode_value=value):
+                problems = plan.profile_problems({**plain, "by_ion_mode": {"Negative": value}}, ["P.msp"])
+                self.assertTrue(any(words in problem and problem.endswith("write an object") for problem in problems),
+                                problems)
+        # An object, empty or not, and no workflow_overrides at all, are refused for nothing here.
+        for profile in (plain, {**plain, "answers": {**plain["answers"], "workflow_overrides": {}}},
+                        {**plain, "by_ion_mode": {"Positive": {"workflow_overrides": {"x": 1}}, "Negative": {}}}):
+            with self.subTest(profile=profile):
+                self.assertEqual(plan.profile_shape_problems(profile), [])
+                self.assertEqual(plan.profile_problems(profile, ["P.msp"]), [])
+
     def test_under_the_pin_every_other_automatic_setting_is_refused(self) -> None:
         """The review of #36 (round 2): a profile's outlier threshold, reference file, coverage or tolerance runs in
         every unit, since the runner pins none of them, and the pinned statement named none of them."""
