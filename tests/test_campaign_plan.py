@@ -667,6 +667,21 @@ class PlanTests(unittest.TestCase):
         code, _out, err = self.cli("approve", "--campaign", "c1", "--digest", digest, "--approval-id", "A1",
                                    "--by", "Test Person", "--statement", "Yes.", "--covers", "1,3,4,5,split,6")
         self.assertEqual(code, runner_cli.EXIT_REFUSED, "boundary 6 is never covered")
+        # The same manifest as a plan made before the RT statement wrote it: the policy pins the correction, and the
+        # digest a person would approve covers no words about it, so approve refuses it and says to plan again.
+        planned = manifest_path.read_bytes()
+        earlier = json.loads(planned)
+        earlier.pop("automatic_rt_correction")
+        earlier.pop("policy_overrides")
+        earlier_digest = plan.write_manifest(manifest_path, earlier)
+        code, _out, err = self.cli("approve", "--campaign", "c1", "--digest", earlier_digest, "--approval-id", "A1",
+                                   "--by", "Test Person", "--statement", "Yes.", "--covers", "1,3,4,5,split")
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("carries no automatic RT correction statement", err)
+        self.assertIn("plan again", err)
+        self.assertFalse((directory / "ledger.sqlite").exists())
+        self.assertFalse((directory / "campaign-authorization.json").exists())
+        manifest_path.write_bytes(planned)
         code, out, err = self.cli("approve", "--campaign", "c1", "--digest", digest, "--approval-id", "A1",
                                   "--by", "Test Person", "--statement", "Yes, run it.", "--covers", "1,3,4,5,split")
         self.assertEqual(code, 0, err)
@@ -853,11 +868,24 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
                               "automatic_rt_correction_maximum_anchors": 12},
                   "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}}}}
 
-    def manifest(self, profile: dict, console: dict) -> dict:
+    def manifest(self, profile: dict, console: dict, recorded_policy: dict | None = None) -> dict:
+        """A manifest as the plan writes it now: with the automatic RT correction statement its digest covers."""
         pins = json.loads(json.dumps(APPROVABLE_PINS))
         pins["console"] = console
-        return {"pins": pins, "profile": json.loads(json.dumps(profile)), "units": [{"unit_key": "uA"}],
-                "raw_retention_policy": "keep"}
+        built = {"pins": pins, "profile": json.loads(json.dumps(profile)), "units": [{"unit_key": "uA"}],
+                 "raw_retention_policy": "keep", "policy_overrides": []}
+        if recorded_policy is not None:
+            built["policy"] = json.loads(json.dumps(recorded_policy))
+        built["automatic_rt_correction"] = plan.automatic_rt_correction_record(built.get("policy"), built["profile"], [])
+        return built
+
+    @staticmethod
+    def planned_before_the_statement(manifest: dict) -> dict:
+        """The same manifest as a plan made before #36 wrote it: no statement, no policy_overrides."""
+        legacy = json.loads(json.dumps(manifest))
+        legacy.pop("automatic_rt_correction")
+        legacy.pop("policy_overrides")
+        return legacy
 
     def test_the_generation_is_read_from_the_method_keys_in_the_assembly(self) -> None:
         cases = {
@@ -917,9 +945,8 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
 
     def pinned(self, profile: dict, generation: str = policy.AUTOMATIC_RT_LOCAL_SUPPORT) -> dict:
         """A manifest whose campaign policy pins the correction, as every plan made since 2026-10-07 records it."""
-        manifest = self.manifest(profile, {**APPROVABLE_PINS["console"], "automatic_rt_correction": generation})
-        manifest["policy"] = policy.CampaignPolicy().as_dict()
-        return manifest
+        return self.manifest(profile, {**APPROVABLE_PINS["console"], "automatic_rt_correction": generation},
+                             policy.CampaignPolicy().as_dict())
 
     def test_the_campaign_policy_pins_the_correction_and_needs_a_console_of_826(self) -> None:
         plain = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}
@@ -1067,9 +1094,7 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
         self.assertNotIn(": OFF", text)
 
         def manifest(profile: dict, generation: str) -> dict:
-            built = self.manifest(profile, {**APPROVABLE_PINS["console"], "automatic_rt_correction": generation})
-            built["policy"] = unpinned
-            return built
+            return self.manifest(profile, {**APPROVABLE_PINS["console"], "automatic_rt_correction": generation}, unpinned)
 
         # A Console of 826: the words are refused, since they say the opposite of the run.
         problems = plan.approval_problems(manifest(written, policy.AUTOMATIC_RT_LOCAL_SUPPORT), ["1", "3", "4"])
@@ -1132,13 +1157,64 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
         off = json.loads(json.dumps(self.RT_PROFILE))
         off["answers"]["execute_automatic_rt_correction"] = False
         off["answers"]["automatic_rt_correction_maximum_anchors"] = 6
-        manifest = self.manifest(off, {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_NONE})
-        manifest["policy"] = legacy
+        manifest = self.planned_before_the_statement(self.manifest(
+            off, {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_NONE}, legacy))
         self.assertFalse(policy.automatic_rt_correction_pinned(legacy))
         self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]), [])
         self.assertTrue(policy.automatic_rt_correction_pinned(policy.CampaignPolicy().as_dict()))
         self.assertFalse(policy.automatic_rt_correction_pinned(
             policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()))
+
+    def test_a_manifest_planned_before_the_statement_is_refused_where_it_could_run_the_correction(self) -> None:
+        """The review of #36: approve accepted a manifest whose digest never covered an RT statement, one planned
+        with the correction turned off included. Now it is refused, and the person is told to plan again, wherever
+        the policy names the fields decided on 2026-10-07 or the profile turns the correction on."""
+        plain = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}
+        console = {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_LOCAL_SUPPORT}
+        legacy = {key: value for key, value in policy.CampaignPolicy().as_dict().items() if not key.startswith("automatic_rt")}
+        unpinned = policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()
+        cases = {
+            "the policy pins it on": (policy.CampaignPolicy().as_dict(), plain, "its campaign policy pins it on"),
+            "the policy turns it off": (unpinned, plain, "its campaign policy turns it off"),
+            "a policy from before 2026-10-07, a profile turning it on": (
+                legacy, self.RT_PROFILE, "and its profile turns it on"),
+            "a profile turning it on in an ion mode's override": (
+                legacy, {**plain, "by_ion_mode": {"Negative": {"workflow_overrides": {"execute_automatic_rt_correction": True}}}},
+                "and its profile turns it on"),
+            # Only one of the fields: still a policy that records a decision about the correction.
+            "the anchors alone": ({**legacy, "automatic_rt_correction_maximum_anchors": 12}, plain,
+                                  "its campaign policy records it (automatic_rt_correction_maximum_anchors)"),
+        }
+        for name, (recorded, profile, words) in cases.items():
+            with self.subTest(name):
+                planned = self.manifest(profile, console, recorded)
+                self.assertEqual(plan.approval_problems(planned, ["1", "3", "4"]), [], "approvable as the plan writes it now")
+                problems = plan.approval_problems(self.planned_before_the_statement(planned), ["1", "3", "4"])
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("carries no automatic RT correction statement", problems[0])
+                self.assertIn(words, problems[0])
+                self.assertTrue(problems[0].endswith("plan again (campaign-runner.py plan), read the automatic RT "
+                                                     "correction in the new summary, and approve the new digest"))
+        # A statement written as null is no statement.
+        nulled = self.manifest(plain, console, policy.CampaignPolicy().as_dict())
+        nulled["automatic_rt_correction"] = None
+        self.assertIn("carries no automatic RT correction statement", "; ".join(plan.approval_problems(nulled, ["1", "3", "4"])))
+
+    def test_a_manifest_planned_before_the_statement_that_runs_uncorrected_stays_approvable(self) -> None:
+        """A policy from before 2026-10-07 names none of the fields and is not pinned, and a profile that turns the
+        correction on nowhere runs every unit uncorrected, Interactive's default: nothing the digest covers could
+        run it, so there is nothing for an unread statement to have said otherwise."""
+        legacy = {key: value for key, value in policy.CampaignPolicy().as_dict().items() if not key.startswith("automatic_rt")}
+        console = {**APPROVABLE_PINS["console"], "automatic_rt_correction": policy.AUTOMATIC_RT_NONE}
+        for name, profile in {
+            "no RT setting": {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}},
+            "turned off": {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
+                "library_strategy": "existing", "execute_automatic_rt_correction": "false"}},
+        }.items():
+            with self.subTest(name):
+                manifest = self.planned_before_the_statement(self.manifest(profile, console, legacy))
+                self.assertEqual(plan.automatic_rt_statement_missing_problems(manifest), [])
+                self.assertEqual(plan.approval_problems(manifest, ["1", "3", "4"]), [])
 
     @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
     def test_the_console_pin_records_the_generation_of_its_assembly(self) -> None:

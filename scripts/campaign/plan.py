@@ -59,7 +59,9 @@ THE AUTOMATIC RT CORRECTION IS STATED IN WHAT A PERSON APPROVES. The campaign ru
 interpolated only by a recorded injection order (decided 2026-10-07). A --policy override may change that, and is
 not refused for it, but the manifest names the fields the override set (policy_overrides) and keeps the
 correction as the summary states it, words included (automatic_rt_correction), so the digest covers what the
-person read; where it differs from the decision the summary says so first, in capitals.
+person read; where it differs from the decision the summary says so first, in capitals. A manifest planned before
+that record carries no statement, and approve refuses it wherever its policy names the correction's fields or its
+profile turns the correction on, telling the person to plan again (automatic_rt_statement_missing_problems).
 """
 
 from __future__ import annotations
@@ -1093,6 +1095,44 @@ def read_manifest(path: Path) -> tuple[dict[str, Any], str]:
 
 # ---- the approval ------------------------------------------------------------------------------------------
 
+def automatic_rt_statement_missing_problems(manifest: Mapping[str, Any]) -> list[str]:
+    """Why a manifest that carries no automatic RT correction statement (one planned before the plan stated it)
+    cannot be approved, or nothing.
+
+    Its digest covers no words about the correction, so a person who approves it has read none. That is refused
+    wherever what the digest does cover could run the correction, or records a decision about it:
+    - a recorded policy that names any of the fields decided on 2026-10-07 (automatic_rt_correction, its anchors
+      or its fallback): the plan was made by a runner that pins the correction, on or deliberately off, and the
+      summary a person read said neither (nor that "off" differs from the decision);
+    - a profile that turns the correction on anywhere, as Interactive reads it (automatic_rt_correction_requested):
+      its units would run corrected, unpinned and with no fallback, and nobody read that either.
+    A manifest whose policy names none of those fields and whose profile turns the correction on nowhere stays
+    approvable: every unit runs uncorrected, Interactive's default, which is what the runner does with any policy
+    recorded before 2026-10-07 (policy.automatic_rt_correction_pinned), and nothing it covers says otherwise.
+    """
+    recorded = manifest.get("policy") if isinstance(manifest.get("policy"), Mapping) else {}
+    named = sorted(key for key in AUTOMATIC_RT_DECISION if key in recorded)
+    reasons = []
+    if named:
+        if policy.automatic_rt_correction_pinned(recorded):
+            state = "pins it on"
+        elif recorded.get("automatic_rt_correction") is False:
+            state = "turns it off"
+        else:
+            state = "records it"
+        reasons.append(f"its campaign policy {state} ({', '.join(named)})")
+    if automatic_rt_correction_requested(manifest.get("profile")):
+        reasons.append("its profile turns it on")
+    if not reasons:
+        return []
+    return [
+        "the manifest carries no automatic RT correction statement (it was planned before the plan stated the "
+        f"correction), and {' and '.join(reasons)}, so the digest a person approves covers no words saying how its "
+        "units are corrected: plan again (campaign-runner.py plan), read the automatic RT correction in the new "
+        "summary, and approve the new digest"
+    ]
+
+
 def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> list[str]:
     """Why a manifest cannot be approved as it stands, or nothing."""
     problems = []
@@ -1104,7 +1144,9 @@ def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> lis
         manifest.get("profile"), manifest.get("pins", {}).get("console"), manifest.get("policy")
     ))
     stated = manifest.get("automatic_rt_correction")
-    if stated is not None and stated != automatic_rt_correction_record(
+    if stated is None:
+        problems.extend(automatic_rt_statement_missing_problems(manifest))
+    elif stated != automatic_rt_correction_record(
             manifest.get("policy"), manifest.get("profile"), manifest.get("policy_overrides") or []):
         # The words a person reads must be the policy and profile the runner reads.
         problems.append("the manifest's automatic RT correction statement does not match its policy and profile: plan again")
