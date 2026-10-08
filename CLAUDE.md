@@ -366,8 +366,9 @@ unit's own from one shared with other units, and read literally the answer
 could reach a shared archive's members too. Leaving those members out is the
 implementation's rule, unchanged, and no decision of the user's stands
 behind it: whether they stay out is open for the user (Open points, above),
-and until the user answers they are left out, on record. Interactive's 0.5.31 changelog and the gate's PAIR-1 docstring
-called the rule the user's decision a day before the user accepted it.
+and until the user answers they are left out, on record. Interactive's
+0.5.31 changelog and the gate's PAIR-1 docstring called the rule the user's
+decision a day before the user accepted it.
 
 Where the Catalog abstains because no declared factor groups the samples, do not
 build Class from other columns. Show the abstention preview
