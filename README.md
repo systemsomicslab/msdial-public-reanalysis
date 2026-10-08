@@ -197,7 +197,17 @@ other in `unattributed_members.left_out` as `chosen_other_encoding` (with
 the run, where a member `left_out` names reaches the run, a converted
 unattributed input is not the conversion of the mzXML it names, or one sample
 runs in two encodings beside an unattributed member; PAIR-1 FAILs, on record
-only, where `converted` or `left_out` falls short. CLS-2 reads what the download
+only, where `converted` or `left_out` falls short. Where a sample's own mzML
+cannot be decoded, its readable twin runs as that sample's own input, in its
+Class (the user's answer of 2026-10-08): INP-1 accepts it where the twin's
+lineage row (`replaces_undecodable`), the mzML's excluded row (`replaced_by`),
+`left_out` (`analysed_for_an_admitted_sample`, `stands_for_reason`
+`undecodable_mzml`) and `unattributed_members.replaced_undecodable` all say so,
+and FAILs, blocking the run, a twin that runs without them, unattributed or as
+another sample, or an mzML that runs beside its twin. PAIR-1 lists each twin
+(WARN) and FAILs, on record only, where `replaced_undecodable` or a `left_out`
+entry does not say what ran; CONV-1 holds a converted twin to the mzXML the
+record names. CLS-2 reads what the download
 delivered from the archive member listings and the downloads, counting a
 vendor folder fetched file by file (a Waters `.raw`) as one input and a
 companion file (`.wiff.scan`) as none: an approved sample whose file was

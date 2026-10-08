@@ -1903,6 +1903,29 @@ def check_converted_inputs_are_their_conversions(
     if unrecorded:
         problems.append(f"{len(unrecorded)} input(s) in the raw tree's {CONVERTED_DIRECTORY} directory are the output "
                         f"of no conversion record ({', '.join(unrecorded[:5])})")
+    # A converted twin that runs as the sample whose own mzML cannot be decoded (the user's answer of 2026-10-08 to
+    # the extra question) is the conversion of the mzXML the record names as the twin that stands for that mzML.
+    data_root = _data_root(provenance)
+    replaced_record = _record_replaced(provenance)
+    replaced_by_path = {item["path"].casefold(): item for item in replaced_record}
+    converted_twins: list[str] = []
+    for row in _readable_twins(provenance):
+        source = _conversion_source(row)
+        if not source or _path_key(row["path"]) not in inputs:
+            continue
+        name = Path(str(row["path"]).rstrip("\\/")).name
+        read = _aif_input_key(source, data_root)
+        for path in _replaced_paths(row):
+            relative = _aif_input_key(path, data_root)
+            named = str((replaced_by_path.get(relative.casefold()) or {}).get("replaced_by") or "").replace("\\", "/")
+            if named.casefold() != read.casefold():
+                problems.append(f"{name}: it runs for {relative}, its sample's undecodable mzML, as the conversion of "
+                                f"{read}, and {UNATTRIBUTED_RECORD}.{REPLACED_UNDECODABLE} names "
+                                f"{named or 'no twin'} as the twin that stands for it")
+        converted_twins.append(f"{name} from {read} for "
+                               + " and ".join(_aif_input_key(path, data_root) for path in _replaced_paths(row)))
+    unreplaced = [f"{item['path']} ({item['replacement_excluded']})" for item in replaced_record
+                  if str(item.get("replacement_excluded") or "").strip()]
 
     evidence = {
         "records": len(records or []), "judged": len(judged), "converted": tally["converted"], "failed": len(failed),
@@ -1913,6 +1936,8 @@ def check_converted_inputs_are_their_conversions(
         "converted_inputs": tally["inputs"], "unreadable_candidates_excluded": set_aside,
         "input_candidates": len(candidates) if candidates is not None else None,
         "analysis_csv_rows": len(csv_rows) if csv_rows is not None else None,
+        **({"converted_readable_twins": converted_twins[:10]} if converted_twins else {}),
+        **({"undecodable_mzml_not_replaced": unreplaced[:10]} if unreplaced else {}),
     }
     if problems:
         report.add("CONV-1", stage, CONV1_TITLE, FAIL,
@@ -1952,11 +1977,16 @@ def check_converted_inputs_are_their_conversions(
     if set_aside:
         detail += (f" The campaign disposition excluded {set_aside} mzXML or mzData candidate(s), which stay where "
                    "they were found and are never opened.")
+    if converted_twins:
+        detail += (f" {len(converted_twins)} converted input(s) run as the sample whose own mzML RawDataHandler cannot "
+                   f"decode, each the conversion of the twin the record names ({'; '.join(converted_twins[:5])}).")
     if failed:
+        lost = (f" The record says the readable twin of {', '.join(unreplaced[:5])} did not run, so that sample, "
+                "whose own mzML cannot be decoded, has no input." if unreplaced else "")
         report.add("CONV-1", stage, CONV1_TITLE, WARN,
                    f"{len(failed)} conversion(s) did not complete, and none of their outputs is an input: "
                    + "; ".join(failed[:3]) + ". A sample whose only encoding was one of these mzXML is analysed by "
-                   "nothing. " + detail, failures=failed[:10], **evidence)
+                   "nothing." + lost + " " + detail, failures=failed[:10], **evidence)
         return
     report.add("CONV-1", stage, CONV1_TITLE, PASS, detail, **evidence)
 
@@ -2487,7 +2517,12 @@ def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
 # mzML RawDataHandler cannot decode). Where no order decides (two vendor containers of one name) each is left out
 # as two_encodings_of_one_name; a readable twin the convert stage analyses for an admitted mzXML is
 # analysed_for_an_admitted_sample, with stands_for. Opposite-polarity names (polarity_token_contradicts_ion_mode)
-# and a shared archive's members stay left out. Each left-out member is in unattributed_members.left_out
+# and a shared archive's members stay left out. Interactive's later rounds of #69 (at 35d75ad) add: a copy of the
+# member that runs in another folder (copy_of_the_chosen_member, with chosen and chosen_by nearest_the_data_root or
+# admitted_by_the_unit); an undecodable mzML of a sample nothing of which runs (undecodable_mzml); a readable twin of
+# an admitted mzXML a lease that converts nothing leaves out (admitted_mzxml_not_converted, with twin_of); and, in a
+# declared unit, each member no declaration names (not_named_by_the_catalog_declaration, record applied false).
+# Each left-out member is in unattributed_members.left_out
 # {member_name, path, reason, chosen, chosen_by, stands_for}, its path under the data root. INP-1 holds the run to
 # that record (_unattributed_choice_problems, blocks_run): no member the record leaves out reaches the run (but the
 # twin analysed for an admitted sample, as that sample's input), a converted unattributed input is the conversion of
@@ -2505,6 +2540,39 @@ CHOSEN_OTHER_ENCODING = "chosen_other_encoding"
 ANALYSED_FOR_AN_ADMITTED_SAMPLE = "analysed_for_an_admitted_sample"
 # What chose the encoding a chosen_other_encoding member gave way to.
 ENCODING_CHOICE_BASES = frozenset({"encoding_order", "admitted_by_the_unit", "undecodable_mzml_set_aside"})
+# A copy of the member that runs for its sample (one encoding in another folder; review of #69 at 418766b), and what
+# chose the copy that runs: the one nearest the data root, or the unit's own admission of it.
+COPY_OF_THE_CHOSEN = "copy_of_the_chosen_member"
+COPY_CHOICE_BASES = frozenset({"nearest_the_data_root", "admitted_by_the_unit"})
+# A readable twin of a sample the unit admitted as an mzXML, left out of a lease that converts nothing (no campaign),
+# with twin_of the mzXML and twin_of_reason why that does not run.
+ADMITTED_MZXML_NOT_CONVERTED = "admitted_mzxml_not_converted"
+# A member of a unit whose Catalog declared its inputs that no declaration names (record applied false, reason
+# catalog_declared_inputs, count 0), with twin_of where it is an encoding of a declared mzML that cannot be decoded.
+NOT_NAMED_BY_DECLARATION = "not_named_by_the_catalog_declaration"
+#
+# A READABLE TWIN THAT RUNS AS THE SAMPLE WHOSE OWN mzML CANNOT BE DECODED (user decision, 2026-10-08, the extra
+# question: "A: 読める方をそのサンプルとして使う"; Interactive 0.5.36, msdial-interactive-app#69). Where the unit admitted a
+# sample's mzML, RawDataHandler cannot decode it, and an unpaired twin of that sample can be read (a vendor file,
+# folder or container, or in a campaign an mzXML the convert stage converts), the twin runs as that sample's own
+# input, paired to its row and in its Class, never as an unattributed member. Interactive records it four times:
+# the twin's lineage row carries replaces_undecodable {path, the mzML on disk; reason undecodable_mzml; rule
+# UNDECODABLE_TWIN_RULE; other_paths, the sample's other admitted copies of it} and the mzML's sample; the mzML is a
+# lease-excluded row (unsupported_mzml_encoding) whose exclusion, like its excluded_input_candidates entry, names the
+# input that runs in its place (replaced_by); unattributed_members.left_out lists the twin as
+# analysed_for_an_admitted_sample, with stands_for the mzML and stands_for_reason undecodable_mzml; and
+# unattributed_members.replaced_undecodable lists the mzML {member_name, path, reason undecodable_mzml, replaced_by
+# the twin's path under the data root (an mzXML's, for a converted twin), and replaced_by_input the input that runs,
+# as aif_input_key names it, or replacement_excluded with the lease's reason where the twin did not run}. INP-1 holds
+# the run to those records (_undecodable_twin_problems, blocks_run): a twin runs for an undecodable mzML only where
+# all of them say so and it runs as that mzML's sample, and the mzML it replaces does not run. PAIR-1 lists each twin
+# and holds the record itself (_undecodable_twin_record_problems, record_only); CONV-1 holds a converted twin to the
+# mzXML the record names.
+UNDECODABLE_MZML = "undecodable_mzml"
+UNDECODABLE_TWIN_RULE = "readable_twin_runs_as_the_sample_2026_10_08"
+REPLACES_UNDECODABLE = "replaces_undecodable"
+REPLACED_UNDECODABLE = "replaced_undecodable"
+UNSUPPORTED_MZML_ENCODING = "unsupported_mzml_encoding"
 # Mirrored from Interactive's encoding_preference (the Catalog's rule): the container suffixes a sample's name is read
 # without, and the words that name an encoding in a folder (repository_reanalysis._ENCODING_FOLDER_WORDS: every such
 # suffix of three or more characters, so ".d" is none).
@@ -2832,6 +2900,44 @@ def _unattributed_csv_names(provenance: "dict | None", csv_rows: "list[dict] | N
     return [str(row.get("file_name") or "") for row in csv_rows if _input_key(row, aliases) in unattributed.keys]
 
 
+def _left_out_record_problems(record: "dict | None") -> list[str]:
+    """Why an unattributed_members record's left_out does not say why it leaves out each member, or []. Each entry
+    gives a reason, and the reasons that name what ran instead give it: chosen_other_encoding the encoding chosen
+    and what chose it, copy_of_the_chosen_member the copy chosen and what chose it, analysed_for_an_admitted_sample
+    stands_for, and admitted_mzxml_not_converted twin_of. Read wherever the record has a left_out: beside
+    unattributed members, and in a record that takes none (a twin that runs for an undecodable mzML, a shared
+    archive, a declared unit)."""
+    if not isinstance(record, dict):
+        return []
+    problems: list[str] = []
+    listed_out = record.get(UNATTRIBUTED_LEFT_OUT)
+    if listed_out is not None and not isinstance(listed_out, list):
+        problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} is no list")
+    unexplained: list[str] = []
+    for item in listed_out if isinstance(listed_out, list) else []:
+        entry = item if isinstance(item, dict) else {}
+        name = str(entry.get("path") or entry.get("member_name") or "").strip() or "an entry naming no member"
+        reason = str(entry.get("reason") or "").strip()
+        if not reason:
+            unexplained.append(f"{name} (no reason)")
+        elif reason == CHOSEN_OTHER_ENCODING and (not str(entry.get("chosen") or "").strip()
+                                                  or entry.get("chosen_by") not in ENCODING_CHOICE_BASES):
+            unexplained.append(f"{name} ({reason} without the encoding chosen and what chose it: chosen "
+                               f"{entry.get('chosen')!r}, chosen_by {entry.get('chosen_by')!r})")
+        elif reason == ANALYSED_FOR_AN_ADMITTED_SAMPLE and not str(entry.get("stands_for") or "").strip():
+            unexplained.append(f"{name} ({reason} without stands_for)")
+        elif reason == COPY_OF_THE_CHOSEN and (not str(entry.get("chosen") or "").strip()
+                                               or entry.get("chosen_by") not in COPY_CHOICE_BASES):
+            unexplained.append(f"{name} ({reason} without the copy chosen and what chose it: chosen "
+                               f"{entry.get('chosen')!r}, chosen_by {entry.get('chosen_by')!r})")
+        elif reason == ADMITTED_MZXML_NOT_CONVERTED and not str(entry.get("twin_of") or "").strip():
+            unexplained.append(f"{name} ({reason} without twin_of, the admitted mzXML it is a twin of)")
+    if unexplained:
+        problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} does not say why it leaves out "
+                        f"{'; '.join(unexplained[:5])}")
+    return problems
+
+
 def _unattributed_record_problems(provenance: dict, unattributed: _Unattributed) -> list[str]:
     """What keeps the unattributed members off the record the rule of 2026-10-07 requires, or []."""
     problems = []
@@ -2877,25 +2983,7 @@ def _unattributed_record_problems(provenance: dict, unattributed: _Unattributed)
             if unread:
                 problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_CONVERTED} lists {', '.join(unread[:5])}, which "
                                 "no converted unattributed input in the lineage was read from")
-        listed_out = record.get(UNATTRIBUTED_LEFT_OUT)
-        if listed_out is not None and not isinstance(listed_out, list):
-            problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} is no list")
-        unexplained: list[str] = []
-        for item in listed_out if isinstance(listed_out, list) else []:
-            entry = item if isinstance(item, dict) else {}
-            name = str(entry.get("path") or entry.get("member_name") or "").strip() or "an entry naming no member"
-            reason = str(entry.get("reason") or "").strip()
-            if not reason:
-                unexplained.append(f"{name} (no reason)")
-            elif reason == CHOSEN_OTHER_ENCODING and (not str(entry.get("chosen") or "").strip()
-                                                      or entry.get("chosen_by") not in ENCODING_CHOICE_BASES):
-                unexplained.append(f"{name} ({reason} without the encoding chosen and what chose it: chosen "
-                                   f"{entry.get('chosen')!r}, chosen_by {entry.get('chosen_by')!r})")
-            elif reason == ANALYSED_FOR_AN_ADMITTED_SAMPLE and not str(entry.get("stands_for") or "").strip():
-                unexplained.append(f"{name} ({reason} without stands_for)")
-        if unexplained:
-            problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} does not say why it leaves out "
-                            f"{'; '.join(unexplained[:5])}")
+        problems.extend(_left_out_record_problems(record))
     owner, _ = _raw_owner_manifest(provenance)
     warned = [manifest for manifest in (provenance, owner) if isinstance(manifest, dict)
               and UNATTRIBUTED_WARNING in (manifest.get("warnings") or [])]
@@ -2911,6 +2999,240 @@ def _unattributed_record_problems(provenance: dict, unattributed: _Unattributed)
     if scoped is not True:
         problems.append(f"the rule includes unattributed members only from a unit-scoped archive, and {why}")
     return problems
+
+
+def _record_replaced(provenance: dict) -> list[dict]:
+    """unattributed_members.replaced_undecodable, of the unit's own record and of its raw owner's, once per path:
+    each entry with its path under the data root ('/'-separated), as Interactive writes them."""
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for manifest in _lineage_manifests(provenance):
+        record = manifest.get(UNATTRIBUTED_RECORD)
+        listed = record.get(REPLACED_UNDECODABLE) if isinstance(record, dict) else None
+        for item in listed if isinstance(listed, list) else []:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("member_name") or "").replace("\\", "/").strip().strip("/")
+            if path and path.casefold() not in seen:
+                seen.add(path.casefold())
+                entries.append({**item, "path": path})
+    return entries
+
+
+def _replaced_paths(row: dict) -> list[str]:
+    """The mzML a twin's lineage row says it runs in place of (replaces_undecodable: path, then other_paths)."""
+    replaces = row.get(REPLACES_UNDECODABLE)
+    if not isinstance(replaces, dict):
+        return []
+    others = replaces.get("other_paths") if isinstance(replaces.get("other_paths"), list) else []
+    return [str(item) for item in [replaces.get("path"), *others] if str(item or "").strip()]
+
+
+def _readable_twins(provenance: dict) -> list[dict]:
+    """The unit's own input lineage rows that say they run in place of an undecodable mzML (replaces_undecodable)."""
+    seen: set[str] = set()
+    twins = []
+    for row in _own_lineage_rows(provenance, "rows"):
+        key = _path_key(row["path"])
+        if key not in seen and row.get(REPLACES_UNDECODABLE) is not None:
+            seen.add(key)
+            twins.append(row)
+    return twins
+
+
+def _twin_summary(provenance: dict, twins: list[dict]) -> "tuple[str, list[dict]]":
+    """The sentence and the evidence that list the readable twins that run for an undecodable mzML."""
+    root = _data_root(provenance)
+    listed = [{"input": Path(str(row["path"]).rstrip("\\/")).name,
+               "member": _aif_input_key(_conversion_source(row) or row["path"], root),
+               "replaces": [_aif_input_key(path, root) for path in _replaced_paths(row)],
+               "sample_id": str(row.get("sample_id") or "")} for row in twins]
+    if not listed:
+        return "", []
+    named = "; ".join(f"{item['member']} for {' and '.join(item['replaces']) or 'an unnamed mzML'} (sample "
+                      f"{item['sample_id'] or 'none'})" for item in listed[:5])
+    more = f"; and {len(listed) - 5} more" if len(listed) > 5 else ""
+    return (f"{len(listed)} input(s) run as the sample whose own mzML RawDataHandler cannot decode, the readable twin "
+            f"taken in its place under the rule {UNDECODABLE_TWIN_RULE} (the user's answer of 2026-10-08): "
+            f"{named}{more}"), listed[:10]
+
+
+def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") -> "tuple[list[str], dict]":
+    """Why a readable twin, or the mzML it replaces, reaches the run without the records that let it (the user's
+    answer of 2026-10-08 to the extra question), and the evidence; ([], {}) where no input says it replaces an
+    undecodable mzML and no record says one does.
+
+    The inputs are the unit's own input lineage rows (a split part's share of its raw owner's), those the analysis
+    CSV opens where there is one. A twin is an input whose row carries replaces_undecodable. It runs for the mzML it
+    names only where:
+
+    - its replaces_undecodable gives reason undecodable_mzml and the rule UNDECODABLE_TWIN_RULE;
+    - it runs as a sample (sample_id), never as an unattributed member, and as the sample the mzML's excluded row is;
+    - unattributed_members.left_out lists it (by its path under the data root, a converted twin by the mzXML it was
+      converted from) as analysed_for_an_admitted_sample, stands_for that mzML, stands_for_reason undecodable_mzml;
+    - unattributed_members.replaced_undecodable lists each mzML it replaces, with replaced_by the twin and
+      replaced_by_input the input that runs, and no replacement_excluded;
+    - each mzML it replaces is one the lease excluded as undecodable (unsupported_mzml_encoding), whose record
+      names this input as replaced_by, and none of them reaches the run.
+
+    And the other way: a member left_out lists as analysed_for an undecodable mzML (stands_for_reason
+    undecodable_mzml) that reaches the run without replaces_undecodable on its row is paired to no sample row by it,
+    and an mzML replaced_undecodable lists that reaches the run is run as well as its twin."""
+    twins = _readable_twins(provenance)
+    left_out = [item for item in _record_left_out(provenance)
+                if str(item.get("stands_for_reason") or "") == UNDECODABLE_MZML]
+    replaced = _record_replaced(provenance)
+    if not twins and not left_out and not replaced:
+        return [], {}
+    root = _data_root(provenance)
+    rows = _own_lineage_rows(provenance, "rows")
+    opened: "set[str] | None" = None
+    if csv_rows is not None:
+        aliases = _input_keys_by_console_path(provenance)
+        opened = {_input_key(row, aliases) for row in csv_rows}
+        rows = [row for row in rows if _path_key(row["path"]) in opened]
+    reaching = {_path_key(row["path"]) for row in rows} | (opened or set())
+    twins = [row for row in twins if _path_key(row["path"]) in reaching]
+    lease: dict[str, tuple[str, str]] = {}
+    excluded_rows: dict[str, dict] = {}
+    candidates: dict[str, dict] = {}
+    for manifest in _lineage_manifests(provenance):
+        for key, value in _lease_excluded(manifest).items():
+            lease.setdefault(key, value)
+        for row in _lineage_rows(manifest, "excluded"):
+            excluded_rows.setdefault(_path_key(row["path"]), row)
+        for item in manifest.get("excluded_input_candidates") or []:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                candidates.setdefault(_path_key(item["path"]), item)
+    left_by_path = {str(item["path"]).casefold(): item for item in left_out}
+    replaced_by_path = {str(item["path"]).casefold(): item for item in replaced}
+
+    def under_root(path: object) -> str:
+        return _aif_input_key(path, root)
+
+    problems: list[str] = []
+    for row in twins:
+        name = Path(str(row["path"]).rstrip("\\/")).name
+        replaces = row.get(REPLACES_UNDECODABLE)
+        paths = _replaced_paths(row)
+        if not paths:
+            problems.append(f"{name} says it replaces an undecodable mzML and names none ({REPLACES_UNDECODABLE} "
+                            f"{replaces!r})")
+            continue
+        if replaces.get("reason") != UNDECODABLE_MZML or replaces.get("rule") != UNDECODABLE_TWIN_RULE:
+            problems.append(f"{name} replaces {under_root(paths[0])} with reason {replaces.get('reason')!r} and rule "
+                            f"{replaces.get('rule')!r}, not {UNDECODABLE_MZML} under {UNDECODABLE_TWIN_RULE}")
+        member = under_root(_conversion_source(row) or row["path"])
+        own_input = under_root(row["path"])
+        sample = str(row.get("sample_id") or "").strip()
+        if _is_unattributed(row):
+            problems.append(f"{member} runs as an unattributed member, where a twin that replaces "
+                            f"{under_root(paths[0])} runs as that mzML's sample")
+        elif not sample:
+            problems.append(f"{member} replaces {under_root(paths[0])} and runs as no sample")
+        entry = left_by_path.get(member.casefold())
+        if entry is None or str(entry.get("reason") or "") != ANALYSED_FOR_AN_ADMITTED_SAMPLE \
+                or str(entry.get("stands_for") or "").replace("\\", "/").casefold() != under_root(paths[0]).casefold():
+            problems.append(f"{member} runs for {under_root(paths[0])}, and {UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} "
+                            f"does not list it as {ANALYSED_FOR_AN_ADMITTED_SAMPLE} for that mzML with stands_for_reason "
+                            f"{UNDECODABLE_MZML}")
+        for path in paths:
+            relative = under_root(path)
+            listed = replaced_by_path.get(relative.casefold())
+            if listed is None:
+                problems.append(f"{member} runs for {relative}, which {UNATTRIBUTED_RECORD}.{REPLACED_UNDECODABLE} "
+                                "does not list")
+            elif (str(listed.get("replaced_by") or "").replace("\\", "/").casefold() != member.casefold()
+                  or str(listed.get("replaced_by_input") or "").replace("\\", "/").casefold() != own_input.casefold()
+                  or listed.get("replacement_excluded")):
+                problems.append(f"{member} runs for {relative} as {own_input}, and {UNATTRIBUTED_RECORD}."
+                                f"{REPLACED_UNDECODABLE} names replaced_by {listed.get('replaced_by')!r}, "
+                                f"replaced_by_input {listed.get('replaced_by_input')!r}"
+                                + (f" and replacement_excluded {listed.get('replacement_excluded')!r}"
+                                   if listed.get("replacement_excluded") else ""))
+            key = _path_key(path)
+            if key in reaching:
+                problems.append(f"{relative} reaches the run beside {member}, the twin that replaces it")
+            elif key not in lease or lease[key][1] != UNSUPPORTED_MZML_ENCODING:
+                problems.append(f"{member} runs for {relative}, which is no input the lease excluded as undecodable "
+                                f"({UNSUPPORTED_MZML_ENCODING})")
+            for record in (excluded_rows.get(key), candidates.get(key)):
+                if record is None:
+                    continue
+                exclusion = record.get("exclusion") if isinstance(record.get("exclusion"), dict) else record
+                said = str(exclusion.get("replaced_by") or "").strip()
+                if not said or _path_key(said) != _path_key(row["path"]):
+                    problems.append(f"the lease's record of {relative} names {said or 'no input'} as replaced_by, "
+                                    f"not {own_input}, the twin that runs for it")
+                    break
+            excluded_sample = str((excluded_rows.get(key) or {}).get("sample_id") or "").strip()
+            if sample and excluded_sample and excluded_sample != sample:
+                problems.append(f"{member} runs as sample {sample}, and {relative}, the mzML it replaces, is sample "
+                                f"{excluded_sample}'s")
+    twin_members = {under_root(_conversion_source(row) or row["path"]).casefold() for row in twins}
+    for row in rows:
+        member = under_root(_conversion_source(row) or row["path"])
+        entry = left_by_path.get(member.casefold())
+        if entry is not None and member.casefold() not in twin_members \
+                and str(entry.get("reason") or "") == ANALYSED_FOR_AN_ADMITTED_SAMPLE:
+            problems.append(f"{member} runs for {entry.get('stands_for')}, an undecodable mzML by "
+                            f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT}, and its lineage row does not say it "
+                            f"replaces it ({REPLACES_UNDECODABLE}), so it is paired with no sample row by it")
+    for item in replaced:
+        if not root:
+            break
+        key = _path_key(os.path.join(root, str(item["path"])))
+        if key in reaching and not any(key == _path_key(path) for row in twins for path in _replaced_paths(row)):
+            problems.append(f"{item['path']} reaches the run, and {UNATTRIBUTED_RECORD}.{REPLACED_UNDECODABLE} "
+                            f"says {item.get('replaced_by') or 'a twin'} runs in its place")
+    problems = list(dict.fromkeys(problems))
+    _sentence, listed_twins = _twin_summary(provenance, twins)
+    evidence = {"readable_twins": listed_twins, REPLACED_UNDECODABLE: len(replaced)}
+    return problems, evidence
+
+
+def _undecodable_twin_record_problems(provenance: dict) -> list[str]:
+    """What keeps the record of the readable twins that replace an undecodable mzML from saying what ran, or [].
+
+    Each unattributed_members.replaced_undecodable entry names its mzML (path), gives reason undecodable_mzml and
+    the twin (replaced_by), and either the input that runs in its place (replaced_by_input, which some input row of
+    the lineage, the raw owner's for a split part, replaces it by) or why none does (replacement_excluded), never
+    both. A left_out entry whose stands_for_reason is given names undecodable_mzml, the one reason Interactive
+    writes, and its stands_for is an mzML replaced_undecodable lists."""
+    replaced = _record_replaced(provenance)
+    problems: list[str] = []
+    root = _data_root(provenance)
+    replaced_keys: set[str] = set()
+    for manifest in _lineage_manifests(provenance):
+        for row in _lineage_rows(manifest, "rows"):
+            for path in _replaced_paths(row):
+                replaced_keys.add(f"{_path_key(path)}|{_aif_input_key(row['path'], root).casefold()}")
+    for item in replaced:
+        name = item["path"]
+        runs = str(item.get("replaced_by_input") or "").strip()
+        excluded = str(item.get("replacement_excluded") or "").strip()
+        if str(item.get("reason") or "") != UNDECODABLE_MZML:
+            problems.append(f"{name} is listed with reason {item.get('reason')!r}, not {UNDECODABLE_MZML}")
+        if not str(item.get("replaced_by") or "").strip():
+            problems.append(f"{name} names no replaced_by, the twin that stands for it")
+        if bool(runs) == bool(excluded):
+            problems.append(f"{name} gives " + ("both replaced_by_input and replacement_excluded" if runs else
+                                                "neither replaced_by_input nor replacement_excluded"))
+        elif runs and root and f"{_path_key(os.path.join(root, name))}|{runs.replace(chr(92), '/').casefold()}" \
+                not in replaced_keys:
+            problems.append(f"{name} names {runs} as the input that runs in its place, and no input row of the lineage "
+                            f"replaces it ({REPLACES_UNDECODABLE})")
+    listed = {item["path"].casefold() for item in replaced}
+    for item in _record_left_out(provenance):
+        reason = item.get("stands_for_reason")
+        if reason is None:
+            continue
+        if reason != UNDECODABLE_MZML:
+            problems.append(f"{item['path']} is left out with stands_for_reason {reason!r}, not {UNDECODABLE_MZML}")
+        elif str(item.get("stands_for") or "").replace("\\", "/").strip("/").casefold() not in listed:
+            problems.append(f"{item['path']} stands for {item.get('stands_for')!r}, which "
+                            f"{UNATTRIBUTED_RECORD}.{REPLACED_UNDECODABLE} does not list")
+    return [f"{UNATTRIBUTED_RECORD}.{REPLACED_UNDECODABLE}: {problem}" for problem in dict.fromkeys(problems)]
 
 
 def check_analysis_inputs_are_the_inputs(
@@ -2974,6 +3296,13 @@ def check_analysis_inputs_are_the_inputs(
     conversion of the member it names, or one sample in two encodings beside an unattributed member. Read, like the
     shared-archive guard, before the declaration is found missing.
 
+    A READABLE TWIN THAT RUNS AS THE SAMPLE WHOSE OWN mzML CANNOT BE DECODED (user decision, 2026-10-08, the extra
+    question; Interactive 0.5.36). The twin is that sample's own input, paired to its row and in its Class: INP-1
+    accepts it where its lineage row (replaces_undecodable), the mzML's excluded row (replaced_by), left_out
+    (analysed_for_an_admitted_sample, stands_for_reason undecodable_mzml) and replaced_undecodable all say so, and
+    FAILs, with or without a declaration, a twin that runs without them, one that runs unattributed or as another
+    sample than the mzML's, and an mzML that runs beside the twin that replaces it (_undecodable_twin_problems).
+
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
     an input the run never opens, gives results for files that are not the unit's.
     """
@@ -3008,12 +3337,19 @@ def check_analysis_inputs_are_the_inputs(
         # What the lease left out, converted or chose among the unpaired members is held here too (2026-10-08,
         # second round, answer 3): the declaration is missing, the record is not.
         choices, choice_evidence = _unattributed_choice_problems(provenance, csv_rows, unattributed)
-        if choices:
+        # A readable twin that runs as the sample whose own mzML cannot be decoded (2026-10-08, the extra question)
+        # is held to its records here too.
+        twin_problems, twin_evidence = _undecodable_twin_problems(provenance, csv_rows)
+        if choices or twin_problems:
             report.add("INP-1", stage, INP1_TITLE, FAIL,
                        "What MS-DIAL will open is not what the lease's record of the archive's unpaired members lets "
-                       "it open: " + "; ".join(choices) + ". A member the record leaves out, or a second encoding of "
-                       "one sample, gives results for a file that is not the unit's input, or a sample measured twice.",
-                       unpaired_members=choice_evidence, **(unattributed.evidence() if unattributed else {}))
+                       "it open: " + "; ".join([*choices, *twin_problems]) + ". A member the record leaves out, a "
+                       "second encoding of one sample, or a twin run for an undecodable mzML without the records that "
+                       "pair it with that sample, gives results for a file that is not the unit's input, a sample "
+                       "measured twice, or a sample's data outside its Class.",
+                       **({"unpaired_members": choice_evidence} if choice_evidence else {}),
+                       **({"undecodable_mzml_twins": twin_evidence} if twin_evidence else {}),
+                       **(unattributed.evidence() if unattributed else {}))
             return
         held = ""
         if choice_evidence:
@@ -3021,10 +3357,15 @@ def check_analysis_inputs_are_the_inputs(
                     "the archive's unpaired members lets reach it: none is a member it leaves out, each converted "
                     "unattributed input is the conversion of the mzXML it names, and no sample runs in two "
                     "encodings.")
+        twin_sentence, _listed = _twin_summary(provenance, _readable_twins(provenance))
+        if twin_sentence and twin_evidence.get("readable_twins"):
+            held += (f" {twin_sentence}; each is on record as replacing that mzML, runs as its sample, and the mzML "
+                     "does not run.")
         report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
                    "The manifest declares no analysis inputs: the unit finds its inputs after the download, or "
                    "was prepared before the Catalog declared them." + held, required=False,
-                   **({"unpaired_members": choice_evidence} if choice_evidence else {}))
+                   **({"unpaired_members": choice_evidence} if choice_evidence else {}),
+                   **({"undecodable_mzml_twins": twin_evidence} if twin_evidence else {}))
         return
     if owner is None:
         report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
@@ -3107,6 +3448,11 @@ def check_analysis_inputs_are_the_inputs(
                             f"with, included unattributed, and {why}")
     choices, _choice_evidence = _unattributed_choice_problems(provenance, csv_rows, unattributed)
     problems.extend(choices)
+    # A declared unit's twin of an undecodable declared mzML does not run (Interactive 0.5.36: the declaration holds
+    # until the user says which answer governs it). One that runs here is held to its records as anywhere else, and
+    # the declaration's count above still holds: the twin is no declared input, and the mzML it replaces is counted.
+    twin_problems, _twin_evidence = _undecodable_twin_problems(provenance, csv_rows)
+    problems.extend(twin_problems)
     if len(own_candidates) - len(held) != len(csv_rows):
         problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
                         + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))
@@ -3226,6 +3572,15 @@ def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | N
     warnings carry the code, no such row carries a sample row, and the download is unit-scoped. A record that
     falls short of that is a FAIL here.
 
+    READABLE TWINS (user decision, 2026-10-08, the extra question). An input whose row says replaces_undecodable runs
+    as the sample whose own mzML RawDataHandler cannot decode, paired to that sample's row by the lease's reading that
+    the twin is its data. Each is listed (readable_twins: the input, its member under the data root, the mzML it
+    replaces and its sample) and the check WARNs. Its record is held here (_undecodable_twin_record_problems):
+    unattributed_members.replaced_undecodable says, of each mzML, which twin stands for it and either the input that
+    runs in its place, which a lineage row then replaces it by, or why none does; and a left_out entry's
+    stands_for_reason names undecodable_mzml and an mzML that list holds. A record short of that is a FAIL. Whether
+    the run holds what the record lets it hold is INP-1's (_undecodable_twin_problems).
+
     RUN POLICY: record_only, as the task of 2026-10-06 placed it. A pairing is a fact to be read, and
     listing it changes nothing in what MS-DIAL computes.
     """
@@ -3264,20 +3619,42 @@ def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | N
             entry["key"] = pairing.get("key")
         if part == "excluded":
             entry["excluded_by_the_lease"] = True
+        if _replaced_paths(row):
+            # A twin carries the pairing of the undecodable mzML it runs for (2026-10-08, the extra question).
+            entry["input"] = Path(str(row["path"]).rstrip("\\/")).name
         (inferred if entry["paired_by"] in INFERRED_PAIRING_RULES else unknown).append(entry)
     record_problems = _unattributed_record_problems(provenance, unattributed) if unattributed else []
+    twin_record_problems = _undecodable_twin_record_problems(provenance)
+    # A record that takes no unattributed member (a twin that runs for an undecodable mzML, a shared archive, a
+    # declared unit) still says why it leaves out each member it lists.
+    left_out_problems = [] if unattributed else _left_out_record_problems(unattributed.record)
     free_evidence = unattributed.evidence() if unattributed else {}
     free_sentence = (" " + unattributed.sentence() + "; which declared file each one is, if any, is not recorded."
                      if unattributed else "")
-    if record_problems:
-        report.add("PAIR-1", stage, PAIR1_TITLE, FAIL,
-                   f"{len(unattributed.members)} input(s) in the lineage are archive members included unattributed, "
-                   "and the record the rule of 2026-10-07 requires of them falls short: " + "; ".join(record_problems)
-                   + "." + free_sentence,
-                   inputs=len(rows), paired_by_inference=len(inferred) + len(unknown), record_problems=record_problems,
+    twins = _readable_twins(provenance)
+    twin_sentence, twin_listed = _twin_summary(provenance, twins)
+    if twin_sentence:
+        free_sentence += (f" {twin_sentence}. Each is the lease's reading that the twin is that sample's data; read "
+                          "them before the result is used.")
+        free_evidence = {**free_evidence, "readable_twins": twin_listed}
+    if record_problems or twin_record_problems or left_out_problems:
+        said = []
+        if record_problems:
+            said.append(f"{len(unattributed.members)} input(s) in the lineage are archive members included "
+                        "unattributed, and the record the rule of 2026-10-07 requires of them falls short: "
+                        + "; ".join(record_problems))
+        if left_out_problems:
+            said.append("the record of the archive members the lease left out falls short: "
+                        + "; ".join(left_out_problems))
+        if twin_record_problems:
+            said.append("the record of the readable twins that run for an undecodable mzML of their sample (the "
+                        "user's answer of 2026-10-08) does not say what ran: " + "; ".join(twin_record_problems))
+        report.add("PAIR-1", stage, PAIR1_TITLE, FAIL, ". ".join(said) + "." + free_sentence,
+                   inputs=len(rows), paired_by_inference=len(inferred) + len(unknown),
+                   record_problems=[*record_problems, *left_out_problems, *twin_record_problems],
                    pairings=inferred, **({"pairings_by_unknown_rule": unknown} if unknown else {}), **free_evidence)
         return
-    if not inferred and not unknown and not unattributed:
+    if not inferred and not unknown and not unattributed and not twins:
         report.add("PAIR-1", stage, PAIR1_TITLE, PASS,
                    f"None of the {len(rows)} input(s) in the lineage was paired with a declared raw file by "
                    "inference.", inputs=len(rows))
