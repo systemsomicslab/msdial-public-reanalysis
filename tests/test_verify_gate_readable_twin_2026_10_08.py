@@ -452,6 +452,148 @@ class TheRecordSaysWhatRanTests(unittest.TestCase):
         self.assertNotEqual(verifier.FAIL, _check(report, "PAIR-1").status, _check(report, "PAIR-1").detail)
 
 
+def _silent(unit: d07._UnattributedUnit, path: str, mzml: str, *, keep_replaced_by: bool = False) -> None:
+    """Every record of the twin gone, as no 0.5.36 lease writes it, and the twin still runs as the mzML's sample."""
+    _row(unit, path).pop("replaces_undecodable")
+    if not keep_replaced_by:
+        _row(unit, mzml, "excluded")["exclusion"].pop("replaced_by")
+        for item in unit.manifest["excluded_input_candidates"]:
+            item.pop("replaced_by", None)
+    attribute = unit._attribute_lineage
+
+    def attributed() -> None:
+        attribute()
+        _row(unit, path)["sample_id"] = "S1"
+    unit._attribute_lineage = attributed
+
+
+class TheTwinIsAnEncodingOfTheSampleTests(unittest.TestCase):
+    """The twin is a same-name encoding of the mzML it replaces (review of gate #37 at 681790d). Every record of it
+    comes from one grouping in Interactive, so records that agree with each other do not show it."""
+
+    def test_a_twin_of_another_name_is_refused_whatever_its_records_say(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _path, _mzml = _twin_unit(temporary, twin="S9.raw")
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("S9.raw runs for S1.mzML as its sample, and is no encoding of that mzML's sample: the rule takes "
+                      "a twin of the same name, in folders that agree but for the words naming an encoding",
+                      check.detail)
+        self.assertIn("INP-1", report.run_blocked_by)
+
+    def test_a_converted_twin_of_another_name_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _path, _mzml = _twin_unit(temporary, twin="S9.raw", converted=True)
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("S9.mzXML runs for S1.mzML as its sample, and is no encoding of that mzML's sample",
+                      check.detail)
+        self.assertIn("INP-1", report.run_blocked_by)
+
+    def test_a_twin_in_a_folder_named_for_its_encoding_is_accepted(self) -> None:
+        """RAW/S1.raw and S1.mzML are one sample's: a folder of encoding words alone is no place of its own."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _path, _mzml = _twin_unit(temporary, twin="RAW/S1.raw")
+            report = _gate(unit)
+        statuses = {check.check_id: check.status for check in report.checks}
+        self.assertEqual([], report.run_blocked_by, {key: statuses.get(key) for key in report.run_blocked_by})
+        self.assertNotIn("is no encoding of", _check(report, "INP-1").detail)
+
+    def test_a_twin_of_the_name_in_another_place_is_refused(self) -> None:
+        """POS/S1.raw is another place's S1, not the root S1.mzML's sample."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _path, _mzml = _twin_unit(temporary, twin="POS/S1.raw")
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("POS/S1.raw runs for S1.mzML as its sample, and is no encoding of that mzML's sample",
+                      check.detail)
+
+    def test_the_grouping_mirrors_interactives(self) -> None:
+        sample = verifier._encoding_sample
+        self.assertEqual(sample("S1.mzML"), sample("S1.raw"))
+        self.assertEqual(sample("S1.mzML"), sample("mzXML/S1.mzXML"))
+        self.assertEqual(sample("NEG_mzML/S1.mzML"), sample("NEG_RAW/S1.d"))
+        self.assertNotEqual(sample("S1.mzML"), sample("S9.raw"))
+        self.assertNotEqual(sample("POS/S1.mzML"), sample("NEG/S1.raw"))
+
+
+class AnInputRunningSilentlyForAnUndecodableMzmlTests(unittest.TestCase):
+    """An input that runs as an undecodable mzML's sample, as an encoding of it, with every record of the
+    replacement missing (review of gate #37 at 681790d): nothing of the twin's records is there to find it by."""
+
+    def test_no_record_at_all_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, path, mzml = _twin_unit(temporary, record=False)
+            _silent(unit, path, mzml)
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("S1.raw runs as sample S1, an encoding of S1.mzML, that sample's mzML the lease excluded as "
+                      "undecodable (unsupported_mzml_encoding), and nothing records that it replaces it: its lineage "
+                      "row carries no replaces_undecodable", check.detail)
+        self.assertIn("INP-1", report.run_blocked_by)
+
+    def test_a_converted_input_with_no_record_is_refused(self) -> None:
+        """The mzML the conversion wrote carries the sample's mzML's name; the mzXML it was read from does not."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, path, mzml = _twin_unit(temporary, record=False, converted=True)
+            _silent(unit, path, mzml)
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("S1.mzXML runs as sample S1, an encoding of S1.mzML", check.detail)
+
+    def test_the_lease_naming_an_input_its_row_does_not_say_it_replaces_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, path, mzml = _twin_unit(temporary, record=False)
+            _silent(unit, path, mzml, keep_replaced_by=True)
+            _row(unit, path)["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "S1.raw",
+                                                "member_name": "S1.raw"}
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("the lease's record of S1.mzML, an mzML it excluded as undecodable, names S1.raw as the input "
+                      "that runs in its place, and S1.raw's lineage row does not say it replaces it", check.detail)
+
+    def _not_silent(self, change) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, path, mzml = _twin_unit(temporary, record=False)
+            _silent(unit, path, mzml)
+            change(unit, path)
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+        self.assertNotIn("nothing records that it replaces it", check.detail)
+        self.assertNotIn("replaces_undecodable", check.detail)
+
+    def test_a_sample_row_naming_the_input_itself_is_its_own_basis(self) -> None:
+        """A row that names S1 without an extension pairs S1.raw by its own name: the unit admitted it itself, the
+        undecodable mzML is excluded and the rest of the unit runs."""
+        def change(unit, _path):
+            for item in unit.manifest["project"]["sample_metadata"]:
+                if item["sample_id"] == "S1":
+                    item["raw_file"] = "S1"
+        self._not_silent(change)
+
+    def test_its_own_inferred_pairing_is_its_own_basis(self) -> None:
+        def change(unit, path):
+            _row(unit, path)["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "S1",
+                                                "member_name": "S1.raw"}
+        self._not_silent(change)
+
+    def test_another_samples_input_is_not_held_here(self) -> None:
+        """S2.mzML runs as S2, which no undecodable mzML is: nothing to say of it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, path, mzml = _twin_unit(temporary, record=False)
+            _silent(unit, path, mzml)
+            problems = verifier._silent_twin_problems(
+                unit.manifest, [row for row in unit.manifest["input_lineage"]["rows"] if row["path"] != path],
+                {verifier._path_key(row["path"]) for row in unit.manifest["input_lineage"]["rows"]})
+        self.assertEqual([], problems)
+
+
 class SplitPartTests(unittest.TestCase):
     """A split part reads its raw owner's record of the mzML its twin replaces."""
 

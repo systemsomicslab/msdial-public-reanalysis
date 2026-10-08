@@ -2565,7 +2565,10 @@ NOT_NAMED_BY_DECLARATION = "not_named_by_the_catalog_declaration"
 # the twin's path under the data root (an mzXML's, for a converted twin), and replaced_by_input the input that runs,
 # as aif_input_key names it, or replacement_excluded with the lease's reason where the twin did not run}. INP-1 holds
 # the run to those records (_undecodable_twin_problems, blocks_run): a twin runs for an undecodable mzML only where
-# all of them say so and it runs as that mzML's sample, and the mzML it replaces does not run. PAIR-1 lists each twin
+# all of them say so, it runs as that mzML's sample and is an encoding of that sample (_encoding_sample: the same
+# name, in folders that agree but for the words naming an encoding), and the mzML it replaces does not run; and an
+# input that runs as such an mzML's sample, as an encoding of it, with none of those records and nothing of its own
+# that makes it that sample's, FAILs it as well (_silent_twin_problems). PAIR-1 lists each twin
 # and holds the record itself (_undecodable_twin_record_problems, record_only); CONV-1 holds a converted twin to the
 # mzXML the record names.
 UNDECODABLE_MZML = "undecodable_mzml"
@@ -3057,10 +3060,107 @@ def _twin_summary(provenance: dict, twins: list[dict]) -> "tuple[str, list[dict]
             f"{named}{more}"), listed[:10]
 
 
+def _own_sample_basis(provenance: dict, row: dict, member: str, sample: str) -> bool:
+    """Whether an input's own name, pairing, archive or declaration makes it this sample's, as Interactive's
+    build_input_lineage pairs an input by itself before a twin is given the sample of the mzML it replaces.
+
+    ``member`` is the input's path under the data root, a converted input's being the mzXML it was converted from
+    (the mzML the conversion wrote carries the name of the sample's own mzML, and is no basis). Any of these:
+
+    - a sample row of the sample names it: its raw_file is the member's base name, or that less its last extension,
+      or a packed container that unpacks to that name;
+    - its own inferred pairing (name_pairing whose member_name is its own base name, not the mzML's it was given);
+    - its own record of standing for an mzXML of the sample (encoding_choice);
+    - an archive it came out of is one a sample row of the sample names;
+    - the Catalog's declaration names it (its path, or a declared_names entry of its own base name) for the sample."""
+    base = _basename(member).casefold()
+    forms = {base, base.rsplit(".", 1)[0] if "." in base else base}
+    manifests = _lineage_manifests(provenance)
+    raw_names: set[str] = set()
+    for manifest in manifests:
+        for item in (manifest.get("project") or {}).get("sample_metadata") or []:
+            if isinstance(item, dict) and str(item.get("sample_id") or "").strip() == sample:
+                raw = _basename(str(item.get("raw_file") or "")).casefold()
+                if raw:
+                    raw_names.add(raw)
+                    unpacked = _strip_suffix(raw, ARCHIVE_SUFFIXES)
+                    if unpacked != raw and _strip_suffix(unpacked, CONTAINER_SUFFIXES) != unpacked:
+                        raw_names.add(unpacked)
+    if raw_names & forms:
+        return True
+    pairing = row.get("name_pairing")
+    if isinstance(pairing, dict) and not _is_unattributed(row) \
+            and _basename(str(pairing.get("member_name") or "")).casefold() == base:
+        return True
+    if isinstance(row.get("encoding_choice"), dict):
+        return True
+    source = row.get("source") if isinstance(row.get("source"), dict) else {}
+    archives = [source.get("archive"), *(source.get("archives") if isinstance(source.get("archives"), list) else [])]
+    if any(isinstance(item, dict) and _basename(str(item.get("download_path") or "")).casefold() in raw_names
+           for item in archives):
+        return True
+    names = row.get("declared_names") if isinstance(row.get("declared_names"), list) else []
+    own = {**row, "declared_names": [name for name in names if _basename(str(name or "")).casefold() == base]}
+    return any(_declared_sample_of(manifest, own, _declared_samples(manifest)) == sample for manifest in manifests)
+
+
+def _silent_twin_problems(provenance: dict, rows: list[dict], reaching: "set[str]") -> list[str]:
+    """Why an input reaches the run in place of an undecodable mzML with no record that it does, or [].
+
+    ``rows`` are the unit's own input lineage rows that reach the run, ``reaching`` their keys and the CSV's. Two
+    refusals, each of an input whose row carries no replaces_undecodable:
+
+    - it runs as the sample of an mzML the lease excluded as undecodable (unsupported_mzml_encoding), is an encoding
+      of that sample (_encoding_sample), and nothing of its own makes it that sample's (_own_sample_basis): the
+      sample it runs as can only have come from the mzML it replaces, which no record says;
+    - the lease's record of such an mzML names it as replaced_by."""
+    root = _data_root(provenance)
+    samples = _input_samples(provenance, ("rows", "excluded"))
+    undecodable: dict[str, dict] = {}
+    for manifest in _lineage_manifests(provenance):
+        records = [*(item for item in manifest.get("excluded_input_candidates") or [] if isinstance(item, dict)),
+                   *_lineage_rows(manifest, "excluded")]
+        for key, (path, reason) in _lease_excluded(manifest).items():
+            if reason != UNSUPPORTED_MZML_ENCODING:
+                continue
+            entry = undecodable.setdefault(key, {"relative": _aif_input_key(path, root), "replaced_by": set()})
+            for record in records:
+                if str(record.get("path") or "").strip() and _path_key(record["path"]) == key:
+                    exclusion = record.get("exclusion") if isinstance(record.get("exclusion"), dict) else record
+                    said = str(exclusion.get("replaced_by") or "").strip()
+                    if said:
+                        entry["replaced_by"].add(_path_key(said))
+    if not undecodable:
+        return []
+    problems: list[str] = []
+    for row in rows:
+        key = _path_key(row["path"])
+        if row.get(REPLACES_UNDECODABLE) is not None or key in undecodable or key not in reaching:
+            continue
+        member = _aif_input_key(_conversion_source(row) or row["path"], root)
+        sample = samples.get(key, "")
+        for mzml_key, entry in undecodable.items():
+            relative = entry["relative"]
+            if key in entry["replaced_by"]:
+                problems.append(f"the lease's record of {relative}, an mzML it excluded as undecodable, names "
+                                f"{member} as the input that runs in its place, and {member}'s lineage row does not "
+                                f"say it replaces it ({REPLACES_UNDECODABLE})")
+                continue
+            if _is_unattributed(row) or not sample or samples.get(mzml_key, "") != sample \
+                    or _encoding_sample(member) != _encoding_sample(relative):
+                continue
+            if not _own_sample_basis(provenance, row, member, sample):
+                problems.append(f"{member} runs as sample {sample}, an encoding of {relative}, that sample's mzML the "
+                                f"lease excluded as undecodable ({UNSUPPORTED_MZML_ENCODING}), and nothing records "
+                                f"that it replaces it: its lineage row carries no {REPLACES_UNDECODABLE}, and its own "
+                                "name, pairing, archive and declaration make it no sample's")
+    return problems
+
+
 def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") -> "tuple[list[str], dict]":
     """Why a readable twin, or the mzML it replaces, reaches the run without the records that let it (the user's
     answer of 2026-10-08 to the extra question), and the evidence; ([], {}) where no input says it replaces an
-    undecodable mzML and no record says one does.
+    undecodable mzML, no record says one does, and no input runs for one silently.
 
     The inputs are the unit's own input lineage rows (a split part's share of its raw owner's), those the analysis
     CSV opens where there is one. A twin is an input whose row carries replaces_undecodable. It runs for the mzML it
@@ -3068,6 +3168,9 @@ def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") 
 
     - its replaces_undecodable gives reason undecodable_mzml and the rule UNDECODABLE_TWIN_RULE;
     - it runs as a sample (sample_id), never as an unattributed member, and as the sample the mzML's excluded row is;
+    - it is an encoding of that mzML's sample (_encoding_sample, as Interactive's lease groups one sample's
+      encodings): the rule takes a twin of the same name, and every record of it comes from that one grouping, so
+      records that agree with each other do not show the grouping was right;
     - unattributed_members.left_out lists it (by its path under the data root, a converted twin by the mzXML it was
       converted from) as analysed_for_an_admitted_sample, stands_for that mzML, stands_for_reason undecodable_mzml;
     - unattributed_members.replaced_undecodable lists each mzML it replaces, with replaced_by the twin and
@@ -3077,13 +3180,14 @@ def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") 
 
     And the other way: a member left_out lists as analysed_for an undecodable mzML (stands_for_reason
     undecodable_mzml) that reaches the run without replaces_undecodable on its row is paired to no sample row by it,
-    and an mzML replaced_undecodable lists that reaches the run is run as well as its twin."""
+    and an mzML replaced_undecodable lists that reaches the run is run as well as its twin. And with no record at
+    all: an input that runs as an undecodable mzML's sample, as an encoding of it, with nothing of its own that makes
+    it that sample's, or that the mzML's exclusion names as replaced_by, without replaces_undecodable on its row
+    (_silent_twin_problems)."""
     twins = _readable_twins(provenance)
     left_out = [item for item in _record_left_out(provenance)
                 if str(item.get("stands_for_reason") or "") == UNDECODABLE_MZML]
     replaced = _record_replaced(provenance)
-    if not twins and not left_out and not replaced:
-        return [], {}
     root = _data_root(provenance)
     rows = _own_lineage_rows(provenance, "rows")
     opened: "set[str] | None" = None
@@ -3092,6 +3196,11 @@ def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") 
         opened = {_input_key(row, aliases) for row in csv_rows}
         rows = [row for row in rows if _path_key(row["path"]) in opened]
     reaching = {_path_key(row["path"]) for row in rows} | (opened or set())
+    # An input that runs as an undecodable mzML's sample, an encoding of it, with no record that it replaces it
+    # (review of gate #37 at 681790d): with every record of a twin missing, nothing below finds it.
+    silent = _silent_twin_problems(provenance, rows, reaching)
+    if not twins and not left_out and not replaced:
+        return (silent, {"inputs_without_a_record": len(silent)}) if silent else ([], {})
     twins = [row for row in twins if _path_key(row["path"]) in reaching]
     lease: dict[str, tuple[str, str]] = {}
     excluded_rows: dict[str, dict] = {}
@@ -3138,6 +3247,13 @@ def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") 
                             f"{UNDECODABLE_MZML}")
         for path in paths:
             relative = under_root(path)
+            if _encoding_sample(member) != _encoding_sample(relative):
+                # The rule takes a twin of the same name (the user's answer of 2026-10-08): one sample's encoding,
+                # grouped as Interactive's lease groups them (_member_encoding_sample). Every record of it comes
+                # from that one grouping, so the records agreeing does not show the grouping was right.
+                problems.append(f"{member} runs for {relative} as its sample, and is no encoding of that mzML's "
+                                "sample: the rule takes a twin of the same name, in folders that agree but for the "
+                                "words naming an encoding")
             listed = replaced_by_path.get(relative.casefold())
             if listed is None:
                 problems.append(f"{member} runs for {relative}, which {UNATTRIBUTED_RECORD}.{REPLACED_UNDECODABLE} "
@@ -3185,6 +3301,7 @@ def _undecodable_twin_problems(provenance: dict, csv_rows: "list[dict] | None") 
         if key in reaching and not any(key == _path_key(path) for row in twins for path in _replaced_paths(row)):
             problems.append(f"{item['path']} reaches the run, and {UNATTRIBUTED_RECORD}.{REPLACED_UNDECODABLE} "
                             f"says {item.get('replaced_by') or 'a twin'} runs in its place")
+    problems.extend(silent)
     problems = list(dict.fromkeys(problems))
     _sentence, listed_twins = _twin_summary(provenance, twins)
     evidence = {"readable_twins": listed_twins, REPLACED_UNDECODABLE: len(replaced)}
@@ -3301,7 +3418,10 @@ def check_analysis_inputs_are_the_inputs(
     accepts it where its lineage row (replaces_undecodable), the mzML's excluded row (replaced_by), left_out
     (analysed_for_an_admitted_sample, stands_for_reason undecodable_mzml) and replaced_undecodable all say so, and
     FAILs, with or without a declaration, a twin that runs without them, one that runs unattributed or as another
-    sample than the mzML's, and an mzML that runs beside the twin that replaces it (_undecodable_twin_problems).
+    sample than the mzML's, one that is no encoding of the mzML's sample (another name, whatever its records say),
+    and an mzML that runs beside the twin that replaces it (_undecodable_twin_problems). An input that runs as an
+    undecodable mzML's sample, as an encoding of it, with no record of the replacement at all and nothing of its own
+    that makes it that sample's, FAILs too (_silent_twin_problems).
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
     an input the run never opens, gives results for files that are not the unit's.

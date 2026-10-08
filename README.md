@@ -204,7 +204,11 @@ lineage row (`replaces_undecodable`), the mzML's excluded row (`replaced_by`),
 `left_out` (`analysed_for_an_admitted_sample`, `stands_for_reason`
 `undecodable_mzml`) and `unattributed_members.replaced_undecodable` all say so,
 and FAILs, blocking the run, a twin that runs without them, unattributed or as
-another sample, or an mzML that runs beside its twin. PAIR-1 lists each twin
+another sample, a twin that is no encoding of that mzML's sample (another name,
+whatever its records say), or an mzML that runs beside its twin. An input that
+runs as an undecodable mzML's sample, as an encoding of it, with none of those
+records and nothing of its own (name, pairing, archive or declaration) that
+makes it that sample's FAILs INP-1 too. PAIR-1 lists each twin
 (WARN) and FAILs, on record only, where `replaced_undecodable` or a `left_out`
 entry does not say what ran; CONV-1 holds a converted twin to the mzXML the
 record names. CLS-2 reads what the download
