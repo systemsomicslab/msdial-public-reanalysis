@@ -1032,16 +1032,89 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
             {"answers": {**off, "workflow_overrides": on}, "by_ion_mode": {"Positive": {"workflow_overrides": off}}},
             {"answers": {"workflow_overrides": {"x": 1}}, "by_ion_mode": {"Negative": {**on, "workflow_overrides": {}}}},
             {"answers": {}, "by_ion_mode": {}},
+            # Interactive applies workflow_overrides unconverted and reads them by truthiness: these run ON.
+            {"answers": {"workflow_overrides": {"execute_automatic_rt_correction": "false"}}, "by_ion_mode": {}},
+            {"answers": off, "by_ion_mode": {"Negative": {"workflow_overrides": {"execute_automatic_rt_correction": "off"}},
+                                             "Positive": {"workflow_overrides": {"execute_automatic_rt_correction": 2}}}},
+            {"answers": on, "by_ion_mode": {"Positive": {"workflow_overrides": {"execute_automatic_rt_correction": ""}},
+                                            "Negative": {"workflow_overrides": {"execute_automatic_rt_correction": 0}}}},
         ]
         for profile in profiles:
             stated = plan.automatic_rt_correction_by_ion_mode(profile)
             for mode in plan.ION_MODES:
                 with self.subTest(profile=profile, mode=mode):
-                    # As Runner.answers merges the profile for a unit; Interactive then applies workflow_overrides.
+                    # As Runner.answers merges the profile for a unit. Interactive then converts the answer with
+                    # agent_workflow._as_bool, applies workflow_overrides unconverted (state.update(overrides)), and
+                    # runs the correction where bool(state.get("execute_automatic_rt_correction", False)).
                     merged = machine._merge(dict(profile.get("answers") or {}), dict(profile["by_ion_mode"].get(mode) or {}))
-                    state = {**merged, **dict(merged.get("workflow_overrides") or {})}
-                    runs = plan._true(state.get("execute_automatic_rt_correction", False))
+                    state = {"execute_automatic_rt_correction": plan._true(merged.get("execute_automatic_rt_correction", False))}
+                    state.update(dict(merged.get("workflow_overrides") or {}))
+                    runs = bool(state.get("execute_automatic_rt_correction", False))
                     self.assertEqual(stated[mode]["correction"], runs)
+
+    def test_a_workflow_overrides_string_is_stated_as_interactive_runs_it_and_refused(self) -> None:
+        # Interactive applies workflow_overrides unconverted, after it converts the answers, and runs the correction
+        # where bool(state["execute_automatic_rt_correction"]): the string "false" there runs it ON.
+        unpinned = policy.CampaignPolicy.from_dict({"automatic_rt_correction": False}).as_dict()
+        written = {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
+            "library_strategy": "existing", "workflow_overrides": {"execute_automatic_rt_correction": "false"}}}
+        self.assertTrue(plan.automatic_rt_correction_requested(written))
+        record = plan.automatic_rt_correction_record(unpinned, written, ["automatic_rt_correction"])
+        self.assertEqual(record["correction"], True)
+        text = "\n".join(record["statement"])
+        self.assertIn("Each unit runs as the profile says: ON (set by answers.workflow_overrides: 'false', which "
+                      "Interactive applies unconverted and reads as true)", text)
+        self.assertNotIn(": OFF", text)
+
+        def manifest(profile: dict, generation: str) -> dict:
+            built = self.manifest(profile, {**APPROVABLE_PINS["console"], "automatic_rt_correction": generation})
+            built["policy"] = unpinned
+            return built
+
+        # A Console of 826: the words are refused, since they say the opposite of the run.
+        problems = plan.approval_problems(manifest(written, policy.AUTOMATIC_RT_LOCAL_SUPPORT), ["1", "3", "4"])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("execute_automatic_rt_correction to 'false', which Interactive applies unconverted and reads "
+                      "as true (answers.workflow_overrides): write true or false there", problems[0])
+        # A Console of 810 alone: the run asks for the correction, so the Console check is made too.
+        problems = plan.approval_problems(manifest(written, policy.AUTOMATIC_RT_RUN_WIDE), ["1", "3", "4"])
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("the profile turns automatic RT correction on, and the pinned Console implements "
+                      "MsdialWorkbench #810's run-wide outlier test only", "; ".join(problems))
+        # The anchor-library switch is read the same way.
+        anchor = json.loads(json.dumps(written))
+        anchor["answers"]["workflow_overrides"] = {"execute_rt_correction": "no"}
+        problems = plan.approval_problems(manifest(anchor, policy.AUTOMATIC_RT_NONE), ["1", "3", "4"])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("execute_rt_correction to 'no', which Interactive applies unconverted and reads as true", problems[0])
+        # JSON false there is false to Interactive too: stated OFF, not refused, any Console.
+        plain = json.loads(json.dumps(written))
+        plain["answers"]["workflow_overrides"] = {"execute_automatic_rt_correction": False}
+        self.assertFalse(plan.automatic_rt_correction_requested(plain))
+        record = plan.automatic_rt_correction_record(unpinned, plain, ["automatic_rt_correction"])
+        self.assertIn("Each unit runs as the profile says: OFF (set by answers.workflow_overrides)", "\n".join(record["statement"]))
+        self.assertEqual(plan.approval_problems(manifest(plain, policy.AUTOMATIC_RT_NONE), ["1", "3", "4"]), [])
+
+    def test_under_the_pin_a_workflow_overrides_switch_is_refused_since_it_would_beat_the_fallback(self) -> None:
+        # Runner.answers writes the pin and the uncorrected fallback as an answer; Interactive applies
+        # workflow_overrides over it, so even true there would keep a unit whose anchors failed corrected.
+        for name, overrides, words in (
+            ("true", {"execute_automatic_rt_correction": True}, "in a workflow_overrides (answers.workflow_overrides) to true;"),
+            ("the string false", {"execute_automatic_rt_correction": "false"},
+             "(answers.workflow_overrides) to 'false', which Interactive applies unconverted and reads as true;"),
+            ("the anchor-library switch as a string", {"execute_rt_correction": "false"},
+             "turns the anchor-library RT correction on (answers.workflow_overrides: 'false', which Interactive"),
+        ):
+            with self.subTest(name):
+                profile = {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
+                    "library_strategy": "existing", "workflow_overrides": overrides}}
+                problems = plan.approval_problems(self.pinned(profile), ["1", "3", "4"])
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(words, problems[0])
+        self.assertIn("uncorrected fallback", plan.approval_problems(self.pinned(
+            {"schema": plan.PROFILE_SCHEMA, "by_ion_mode": {}, "answers": {
+                "library_strategy": "existing", "workflow_overrides": {"execute_automatic_rt_correction": True}}}),
+            ["1", "3", "4"])[0])
 
     def test_a_statement_that_does_not_match_the_policy_is_not_approvable(self) -> None:
         plain = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"}, "by_ion_mode": {}}

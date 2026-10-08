@@ -538,6 +538,37 @@ def _true(value: Any) -> bool:
     return value if isinstance(value, bool) else str(value).strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _in_overrides(where: str) -> bool:
+    """Whether a setting found at `where` (as _profile_settings names it) sits directly in a workflow_overrides."""
+    return where == "workflow_overrides" or where.endswith(".workflow_overrides")
+
+
+def _setting_true(where: str, value: Any) -> bool:
+    """Whether Interactive runs a boolean setting the profile gives at `where` as true. An answer goes through
+    agent_workflow._as_bool, so "false" is false. A workflow_overrides value does not: Interactive applies
+    workflow_overrides unconverted over its state (state.update(overrides)) and then reads the setting by its
+    truthiness (workflow.py: bool(state.get("execute_automatic_rt_correction", False))), so the string "false",
+    like any non-empty string or 2, is true there."""
+    return bool(value) if _in_overrides(where) else _true(value)
+
+
+def _override_reading(where: str, value: Any) -> str:
+    """What a non-bool workflow_overrides value of a boolean setting means to Interactive, or "" for any other."""
+    if not _in_overrides(where) or isinstance(value, bool):
+        return ""
+    return f"{value!r}, which Interactive applies unconverted and reads as {json.dumps(bool(value))}"
+
+
+def automatic_rt_override_value_problems(profile: Mapping[str, Any] | None) -> list[str]:
+    """A non-bool value for a correction switch in a workflow_overrides: Interactive applies it unconverted and
+    reads it by truthiness, so the profile's words (the string "false") could say the opposite of the run."""
+    return [
+        f"the profile sets {key} to {_override_reading(where, value)} ({where}): write true or false there"
+        for where, key, value in _profile_settings(profile)
+        if key in (AUTOMATIC_RT_ANSWER, ANCHOR_LIBRARY_RT_ANSWER) and _override_reading(where, value)
+    ]
+
+
 def _profile_settings(profile: Mapping[str, Any] | None) -> Iterable[tuple[str, str, Any]]:
     """Every (where, key, value) the profile sets: in its answers, for an ion mode, or in a workflow_overrides
     beneath either (Interactive applies those over the answers)."""
@@ -557,7 +588,7 @@ def _profile_settings(profile: Mapping[str, Any] | None) -> Iterable[tuple[str, 
 def automatic_rt_correction_requested(profile: Mapping[str, Any] | None) -> bool:
     """Whether the profile turns automatic alignment RT correction on anywhere: in its answers, for an ion
     mode, or in a workflow_overrides beneath either."""
-    return any(key == AUTOMATIC_RT_ANSWER and _true(value) for _where, key, value in _profile_settings(profile))
+    return any(key == AUTOMATIC_RT_ANSWER and _setting_true(where, value) for where, key, value in _profile_settings(profile))
 
 
 def _number(value: Any) -> float | None:
@@ -575,13 +606,21 @@ def automatic_rt_profile_conflicts(profile: Mapping[str, Any] | None, campaign_p
     problems = []
     anchors = int(campaign_policy.automatic_rt_correction_maximum_anchors)
     for where, key, value in _profile_settings(profile):
-        if key == AUTOMATIC_RT_ANSWER and not _true(value):
+        if key == AUTOMATIC_RT_ANSWER and _in_overrides(where):
+            # Runner.answers writes the pin, and the uncorrected fallback, as an answer; Interactive applies
+            # workflow_overrides over the answers, so a value here would decide every unit's run, fallback or not.
+            reading = _override_reading(where, value) or json.dumps(value)
+            problems.append(f"the profile sets {key} in a workflow_overrides ({where}) to {reading}; Interactive applies "
+                            "workflow_overrides over the answer the runner pins and over its uncorrected fallback: leave "
+                            "it to the campaign policy")
+        elif key == AUTOMATIC_RT_ANSWER and not _true(value):
             problems.append(f"the profile turns automatic RT correction off ({where}), and the campaign policy pins it on")
         elif key == AUTOMATIC_RT_ANCHORS_ANSWER and _number(value) != anchors:
             problems.append(f"the profile sets {key} {value!r} ({where}), and the campaign policy pins {anchors}")
-        elif key == ANCHOR_LIBRARY_RT_ANSWER and _true(value):
-            problems.append(f"the profile turns the anchor-library RT correction on ({where}); the campaign runs the "
-                            "automatic correction alone")
+        elif key == ANCHOR_LIBRARY_RT_ANSWER and _setting_true(where, value):
+            reading = _override_reading(where, value)
+            problems.append(f"the profile turns the anchor-library RT correction on ({where}"
+                            + (f": {reading}" if reading else "") + "); the campaign runs the automatic correction alone")
         elif key == AUTOMATIC_RT_WINDOW_ANSWER and _number(value) != policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW:
             problems.append(f"the profile sets {key} {value!r} ({where}); the campaign runs #826's default window of "
                             f"{policy.AUTOMATIC_RT_LOCAL_SUPPORT_RT_WINDOW} min")
@@ -611,6 +650,9 @@ def automatic_rt_correction_problems(
             return [f"the manifest's campaign policy cannot be read: {error}"]
         if campaign_policy.automatic_rt_correction:
             problems.extend(automatic_rt_profile_conflicts(profile, campaign_policy))
+    else:
+        # Under the pin, automatic_rt_profile_conflicts refuses a workflow_overrides switch outright.
+        problems.extend(automatic_rt_override_value_problems(profile))
     if not (pinned or automatic_rt_correction_requested(profile)):
         return problems
     turned_on = "the campaign policy pins automatic RT correction on" if pinned else "the profile turns automatic RT correction on"
@@ -666,7 +708,9 @@ def automatic_rt_correction_by_ion_mode(profile: Mapping[str, Any] | None) -> di
     applies). Runner.answers merges the profile's answers, then by_ion_mode for the unit's ion mode, nested
     objects key by key; Interactive then applies workflow_overrides over the answers. So the first of these that
     sets it decides: by_ion_mode.<mode>.workflow_overrides, answers.workflow_overrides, by_ion_mode.<mode>,
-    answers. Interactive's answer seed does not set it."""
+    answers. Interactive's answer seed does not set it. An answer is read as agent_workflow._as_bool reads it, a
+    workflow_overrides value by its truthiness, as Interactive runs it (_setting_true); a non-bool value there is
+    kept with what Interactive makes of it (read_as), so the statement says it."""
     profile = profile or {}
     answers = profile.get("answers") if isinstance(profile.get("answers"), Mapping) else {}
     by_mode = profile.get("by_ion_mode") if isinstance(profile.get("by_ion_mode"), Mapping) else {}
@@ -680,7 +724,10 @@ def automatic_rt_correction_by_ion_mode(profile: Mapping[str, Any] | None) -> di
             ("answers", answers),
         ):
             if isinstance(settings, Mapping) and AUTOMATIC_RT_ANSWER in settings:
-                result[mode] = {"correction": _true(settings[AUTOMATIC_RT_ANSWER]), "set_by": where}
+                value = settings[AUTOMATIC_RT_ANSWER]
+                result[mode] = {"correction": _setting_true(where, value), "set_by": where}
+                if _override_reading(where, value):
+                    result[mode]["read_as"] = _override_reading(where, value)
                 break
         else:
             result[mode] = {"correction": False, "set_by": None}
@@ -688,8 +735,10 @@ def automatic_rt_correction_by_ion_mode(profile: Mapping[str, Any] | None) -> di
 
 
 def automatic_rt_mode_state(item: Mapping[str, Any]) -> str:
-    return _on(item["correction"]) + (f" (set by {item['set_by']})" if item["set_by"]
-                                      else " (not set; Interactive's default is off)")
+    if not item["set_by"]:
+        return _on(item["correction"]) + " (not set; Interactive's default is off)"
+    read_as = f": {item['read_as']}" if item.get("read_as") else ""
+    return _on(item["correction"]) + f" (set by {item['set_by']}{read_as})"
 
 
 def automatic_rt_correction_record(
