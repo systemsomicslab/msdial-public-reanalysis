@@ -594,6 +594,181 @@ class AnInputRunningSilentlyForAnUndecodableMzmlTests(unittest.TestCase):
         self.assertEqual([], problems)
 
 
+SILENT = "nothing records that it replaces it"
+
+
+class AnEncodingChoiceIsABasisOnlyForTheSamplesMzxmlTests(unittest.TestCase):
+    """encoding_choice makes an input its sample's only through the mzXML it stands for (review of gate #37 at
+    07db837): Interactive's build_input_lineage gives such a row the sample of that mzXML's own naming, so a record
+    of standing for an mzXML that is no encoding of this input's sample, or that nothing makes the sample's, is no
+    basis, and the input that runs as the undecodable mzML's sample with no record of the replacement stops the run."""
+
+    def _gate_with(self, change) -> "verifier.Report":
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, path, mzml = _twin_unit(temporary, record=False)
+            _silent(unit, path, mzml)
+            change(unit, path)
+            return _gate(unit)
+
+    def _refused(self, change) -> None:
+        report = self._gate_with(change)
+        check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("S1.raw runs as sample S1, an encoding of S1.mzML, that sample's mzML the lease excluded as "
+                      f"undecodable (unsupported_mzml_encoding), and {SILENT}", check.detail)
+        self.assertIn("INP-1", report.run_blocked_by)
+
+    def _accepted(self, change) -> None:
+        check = _check(self._gate_with(change), "INP-1")
+        self.assertNotIn(SILENT, check.detail)
+
+    @staticmethod
+    def _choice(unit: d07._UnattributedUnit, path: str, stands_for: str) -> None:
+        _row(unit, path)["encoding_choice"] = {"stands_for": stands_for, "rule": "encoding_preference.v1"}
+
+    def test_an_mzxml_of_another_sample_is_no_basis(self) -> None:
+        self._refused(lambda unit, path: self._choice(unit, path, "S2.mzXML"))
+
+    def test_an_mzxml_nothing_makes_the_samples_is_no_basis(self) -> None:
+        """S1.mzXML is an encoding of S1.raw's sample, and no sample row, lineage row, pairing or declaration names
+        it for S1 (it is not even in the unit)."""
+        self._refused(lambda unit, path: self._choice(unit, path, str(unit.data / "S1.mzXML")))
+
+    def test_an_mzxml_of_the_name_in_another_place_is_no_basis(self) -> None:
+        def change(unit, path):
+            self._choice(unit, path, str(unit.data / "POS" / "S1.mzXML"))
+            _row(unit, path)["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "S1.mzML",
+                                                "member_name": "S1.mzXML"}
+        self._refused(change)
+
+    def test_a_choice_that_stands_for_no_mzxml_is_no_basis(self) -> None:
+        def change(unit, path):
+            self._choice(unit, path, str(unit.data / "S1.wiff"))
+            _row(unit, path)["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "S1.mzML",
+                                                "member_name": "S1.wiff"}
+        self._refused(change)
+
+    def test_the_samples_mzxml_by_the_pairing_that_named_it_is_a_basis(self) -> None:
+        """As Interactive writes it where the mzXML was paired with the sample's row by a rule: the twin's row
+        carries the mzXML's pairing, whose declared_raw_file is the sample's."""
+        def change(unit, path):
+            self._choice(unit, path, str(unit.data / "S1.mzXML"))
+            _row(unit, path)["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "S1.mzML",
+                                                "member_name": "S1.mzXML"}
+        self._accepted(change)
+
+    def test_the_samples_mzxml_by_its_lineage_is_a_basis(self) -> None:
+        def change(unit, path):
+            stand = str(unit.data / "S1.mzXML")
+            self._choice(unit, path, stand)
+            unit.manifest["input_lineage"]["excluded"].append(
+                {"path": stand, "kind": "file", "declared_names": [], "sample_id": "",
+                 "exclusion": {"reason": "requires_conversion"}})
+            attribute = unit._attribute_lineage
+
+            def attributed() -> None:
+                attribute()
+                _row(unit, stand, "excluded")["sample_id"] = "S1"
+            unit._attribute_lineage = attributed
+        self._accepted(change)
+
+    def test_the_basis_reads_the_sample_rows_name_of_the_mzxml(self) -> None:
+        """A sample row of S1 that names S1.mzXML makes it S1's (read directly: the fixture pairs the undecodable
+        mzML by that same row)."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, path, _mzml = _twin_unit(temporary, record=False)
+            row = dict(_row(unit, path))
+            row["encoding_choice"] = {"stands_for": str(unit.data / "S1.mzXML"), "rule": "encoding_preference.v1"}
+            row.pop("name_pairing", None)
+            self.assertFalse(verifier._own_sample_basis(unit.manifest, row, "S1.raw", "S1"))
+            unit.manifest["project"]["sample_metadata"].append({"sample_id": "S1", "raw_file": "S1.mzXML"})
+            self.assertTrue(verifier._own_sample_basis(unit.manifest, row, "S1.raw", "S1"))
+            self.assertFalse(verifier._own_sample_basis(unit.manifest, row, "S1.raw", "S2"))
+
+
+def _unattributed_twin(temporary: str, *, converted: bool = False, twin: str = "S1.raw",
+                       abstain: bool = False) -> "tuple[_TwinUnit, str, str]":
+    """The shape before 0.5.36: S1's mzML, which a sample row admits, cannot be decoded, and its readable twin runs
+    as an unattributed member, outside S1's row and Class, with no record of the replacement."""
+    unit, path, mzml = _twin_unit(temporary, record=False, twin=twin, converted=converted)
+    row = _row(unit, path)
+    row.pop("replaces_undecodable")
+    _row(unit, mzml, "excluded")["exclusion"].pop("replaced_by")
+    for item in unit.manifest["excluded_input_candidates"]:
+        item.pop("replaced_by", None)
+    member = Path(twin).stem + ".mzXML" if converted else Path(twin).name
+    row["name_pairing"] = {"paired_by": "unattributed_member", "member_name": member}
+    if abstain:
+        d07._abstention(unit, "All")
+        for item in unit.manifest["project"]["class_proposal"]["assignments"]:
+            item["class_label"] = "All"
+        for key in list(unit.labels):
+            unit.labels[key] = "All"
+    unit._attribute_lineage()
+    unit.manifest["unattributed_members"] = {
+        "rule": d07.MEMBER_RULE, "applied": True, "count": 1, "members": [member], "paths": [member],
+        "scope": "bundle_urls_unit_scoped", **({"converted": [member]} if converted else {})}
+    unit.manifest.setdefault("warnings", []).append("unattributed_members_included")
+    return unit, path, mzml
+
+
+class ATwinRunningUnattributedWithNoRecordTests(unittest.TestCase):
+    """A readable twin of a sample whose admitted mzML cannot be decoded runs as that sample's own input, never
+    unattributed (the user's answer of 2026-10-08). One that runs unattributed with no record of the replacement
+    leaves the sample's data outside its row and Class, and stops the run (review of gate #37 at 07db837)."""
+
+    def _refused(self, member: str, **options) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _path, _mzml = _unattributed_twin(temporary, **options)
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn(f"{member} runs as an unattributed member, an encoding of S1.mzML, the mzML the unit admitted "
+                      "for sample S1 and the lease excluded as undecodable (unsupported_mzml_encoding), and nothing "
+                      "records that it replaces it: a readable twin of that sample runs as that sample's own input, "
+                      "in its Class, never unattributed", check.detail)
+        self.assertIn("INP-1", report.run_blocked_by)
+
+    def test_a_vendor_twin_running_unattributed_is_refused(self) -> None:
+        self._refused("S1.raw")
+
+    def test_under_a_ratified_abstention_too(self) -> None:
+        """Every sample in Class 'All': the Class is the same, the sample row is still left without its data."""
+        self._refused("S1.raw", abstain=True)
+
+    def test_a_converted_twin_running_unattributed_is_refused(self) -> None:
+        """Judged by the mzXML it was converted from, not the mzML the conversion wrote."""
+        self._refused("S1.mzXML", converted=True, abstain=True)
+
+    def test_an_unattributed_member_of_another_name_is_not_held_here(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _path, _mzml = _unattributed_twin(temporary, twin="S9.raw")
+            report = _gate(unit)
+        self.assertNotIn("runs as an unattributed member, an encoding of", _check(report, "INP-1").detail)
+
+    def test_beside_an_unattributed_undecodable_mzml_it_is_not_held_here(self) -> None:
+        """No sample row admits U_8.mzML: it is an unpaired member set aside for the readable U_8.raw, which runs
+        unattributed as Interactive takes it (chosen_other_encoding, undecodable_mzml_set_aside)."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = d08._unit(temporary, plain=("U_8.raw",), converted=(), on_disk=("U_8.mzML",),
+                             left_out=[d08._left("U_8.mzML", "chosen_other_encoding", chosen="U_8.raw",
+                                                 chosen_by="undecodable_mzml_set_aside")])
+            mzml = str(unit.data / "U_8.mzML")
+            unit.manifest.setdefault("excluded_input_candidates", []).append(
+                {"path": mzml, "reason": "unsupported_mzml_encoding"})
+            unit.manifest["input_lineage"]["excluded"].append(
+                {"path": mzml, "kind": "file", "declared_names": [], "sample_id": "",
+                 "name_pairing": {"paired_by": "unattributed_member", "member_name": "U_8.mzML"},
+                 "exclusion": {"reason": "unsupported_mzml_encoding"}})
+            report = _gate(unit)
+            check = _check(report, "INP-1")
+            rows = unit.manifest["input_lineage"]["rows"]
+            problems = verifier._silent_twin_problems(unit.manifest, rows,
+                                                      {verifier._path_key(row["path"]) for row in rows})
+        self.assertEqual([], problems)
+        self.assertNotIn("runs as an unattributed member, an encoding of", check.detail)
+
+
 class SplitPartTests(unittest.TestCase):
     """A split part reads its raw owner's record of the mzML its twin replaces."""
 
