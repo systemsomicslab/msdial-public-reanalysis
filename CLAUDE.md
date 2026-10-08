@@ -332,22 +332,26 @@ reason. Interactive #69 implements it from `06d2891` on, and gate #37 holds the
 run to its record (the pairing of sample rows, below).
 
 **Open for the user.** What is open for the user is the approval of this
-amendment's wording as a whole, and four questions about a readable twin that
-the wording does not settle and approving it does not answer. Where the
-wording states what Interactive #69 or gate #37 does in a case no answer
-covered, it says that this is the agent's reading in the code, kept from the
-behaviour before the answers where it was so, which within one folder it was
-and across folders it was not (the pairing of sample rows, below): an encoding
-order that ranks two encodings of a sample equal where no sample row admits
-either, copies of one encoding taken nearest the raw data root, and a sample
-row's admission over an order that prefers its twin. Approving the
-wording leaves each as the code does it, on record, until the user says
-otherwise. The four questions are the user's to answer. In each, two answers
-of the user's meet, or the extra answer says to use the readable twin and does
-not say which or whether it reaches the case; the agent does not choose between
-them. Until the user answers, the behaviour before #69 is the one to keep,
-on record, wherever no answer of the user's rules it out. That behaviour is
-not one rule: Interactive 0.5.35 told one name in two encodings apart only
+amendment's wording as a whole, and five questions about one sample's
+encodings that the wording does not settle and approving it does not answer:
+three about a readable twin, and two in which Interactive #69 does not take one
+encoding by the encoding order, as second-round answer 3, "A: mzXMLは変換、同名2形式は1つ選ぶ", says
+to. Where the wording states what Interactive #69 or gate #37 does in a case no
+answer covered, it says that this is the agent's reading in the code, kept from
+the behaviour before the answers where it was so (the pairing of sample rows,
+below): copies of one encoding in two folders, which the order cannot tell
+apart, taken nearest the raw data root, and of an admitted encoding and a twin
+the order ranks equal, the admitted one taken. Approving the wording leaves
+each as the code does it, on record, until the user says otherwise. The five
+questions are the user's to answer. In each, two answers of the user's meet, or an answer
+says to take one encoding or to use the readable twin and does not say which or
+whether it reaches the case, or the code takes another encoding than the order
+the answer names; the agent does not choose between them, and does not call
+them cases no answer covered. Until the user answers, the behaviour before #69
+is the one to keep, on record, wherever no answer of the user's rules it out;
+in questions 3 and 5 no behaviour before #69 meets answer 3 better than #69's,
+and #69's is kept, on record, until the user answers. The behaviour before
+#69 is not one rule: Interactive 0.5.35 told one name in two encodings apart only
 within one folder, so across folders (`RAW/x.raw` beside `mzXML/x.mzXML`) it
 ran, as an unattributed input, a twin that within one folder it left out, and
 in a campaign's lease it ran a shared archive's readable twin of an admitted
@@ -379,15 +383,26 @@ does.
    record. In a campaign the convert stage already analyses a readable twin no
    declaration names in a declared mzXML's place, a precedent #69 names for
    running it.
-3. Two readable twins of an admitted mzML that cannot be decoded, which the
-   encoding order ranks equal (`S1.raw` and `S1.d`). The extra answer does not
-   say which to use. #69 takes neither, and the sample has no input. Within
-   one folder that is as before (both `two_encodings_of_one_name`). Across
-   folders (`RAW/S1.raw` beside `WIFF/S1.wiff`) Interactive 0.5.35 ran both as
-   unattributed inputs, with no sample row, which second-round answer 3 (take
-   one) and the extra answer (never as an unattributed input) both rule out,
-   so no behaviour before #69 is left to keep, and #69's is the one kept until
-   the user answers.
+3. Two readable encodings of one sample that the encoding order ranks equal
+   (`S1.raw` and `S1.d`, or `S1.raw` and `S1.wiff`), whether no sample row
+   admits either or both are twins of an admitted mzML that cannot be decoded.
+   Second-round answer 3 says to take one of them ("1つ選ぶ"), and the extra
+   answer to use the readable one; neither says which of two the order ranks
+   equal. #69 at `35d75ad` takes neither: both are left out as
+   `two_encodings_of_one_name`, and the sample has no input. Taking none
+   departs from "1つ選ぶ" as plainly as running both would, so the answer does
+   not settle it, and it is not a case no answer covered. Within one folder
+   that is what Interactive 0.5.35 did (both `two_encodings_of_one_name`), the
+   code answer 3 was asked to change. Across folders (`RAW/S1.raw` beside
+   `WIFF/S1.wiff`) 0.5.35 ran both as unattributed inputs, with no sample row,
+   which answer 3 (take one) and, for the twins of an undecodable mzML, the
+   extra answer (never as an unattributed input) rule out; so no behaviour
+   before #69 is left to keep, #69's is the one kept until the user answers,
+   and across folders data 0.5.35 analysed is not analysed. Which of the two
+   to take, by what rule (the first by path, say), or none, is the user's to
+   say, and so is whether this holds #69's merge; as the contract stands it
+   does not, since no behaviour before #69 that the answers allow is left to
+   return to (Merges).
 4. A readable twin of an admitted mzXML outside a campaign, where nothing
    converts the mzXML. The extra answer names an mzML that cannot be decoded,
    and second-round answer 3 the members a unit-scoped archive left unpaired.
@@ -399,6 +414,28 @@ does.
    #69 at `35d75ad` no longer runs it, so data 0.5.35 analysed is not
    analysed. No answer of the user's rules the earlier behaviour out, and #69
    does not merge with that change before the user answers (Merges).
+5. A sample row admits a readable encoding of a sample, and an unpaired twin
+   of it that the encoding order puts first lies beside it (a sample row admits
+   `mzML/S1.mzML`, and `RAW/S1.raw` is unpaired). Second-round answer 3 says
+   to take one of one name's two encodings by the existing order, a vendor
+   folder or container first, and the members its question asked about
+   included this twin: Interactive 0.5.35 left out as
+   `two_encodings_of_one_name` "a member whose name another member carries in
+   another encoding, an admitted one or another unpaired one". #69 at
+   `35d75ad` keeps the admitted encoding and leaves the twin out as
+   `chosen_other_encoding` with `chosen_by` `admitted_by_the_unit`, so the
+   vendor data the order puts first is not analysed. That departs from the
+   order the answer names, and it is not a case no answer covered. In a
+   campaign, where every encoding a row admits of the sample is an mzXML, #69
+   follows the order: the convert stage analyses the twin instead. Within one
+   folder 0.5.35 ran the admitted encoding and left the twin out; across
+   folders it ran both, the twin as an unattributed input, which answer 3
+   (take one) rules out. Either way the sample runs from one encoding; the
+   question is which. Until the user answers, #69 keeps the admitted one, on
+   record, as 0.5.35 did within one folder. Whether the order or the row's
+   admission chooses is the user's to say, and so is whether this holds #69's
+   merge; as the contract stands it does not, since the sample runs either way
+   and the encoding kept is the one 0.5.35 ran for it (Merges).
 
 Before selecting units or proposing Class, ask what the user wants to learn from
 the reanalysis. Record the scientific question, intended biological comparison,
@@ -521,7 +558,7 @@ of the user's stood behind these exclusions either, until the user decided on
 2026-10-08 (second-round answer 3, "A: mzXMLは変換、同名2形式は1つ選ぶ"). Interactive #69 and gate #37
 implement it, and the user's answer to the extra question of the same day
 (above). Where they decide a case neither answer covered, the item says that
-it is the agent's reading in the code; where the case is one of the four
+it is the agent's reading in the code; where the case is one of the five
 questions the answers leave to the user, the item names the question and what
 the code does until the user answers it:
 
@@ -571,10 +608,14 @@ the code does until the user answers it:
   `chosen_other_encoding` naming it, with `chosen_by` `encoding_order` where
   the order puts the admitted one first and `admitted_by_the_unit` where the
   order puts the twin first or ranks the two equal, since there the admission
-  chose. Keeping the admitted one over a twin the order prefers is the agent's
-  reading, kept from the behaviour before the answer within one folder; across
-  folders Interactive 0.5.35 ran the twin as well, as an unattributed input,
-  which answer 3 (take one) rules out. In a campaign, where
+  chose. Where the order ranks the two equal, keeping the admitted one is the
+  agent's reading: answer 3 takes one, and the order does not say which.
+  Keeping the admitted one over a twin the order puts first departs from the
+  order answer 3 names, whose question asked about the twin of an admitted
+  member too: it is question 5 under Open for the user, and until the user
+  answers #69 keeps the admitted one, on record, as Interactive 0.5.35 did
+  within one folder; across folders 0.5.35 ran the twin as well, as an
+  unattributed input, which answer 3 (take one) rules out. In a campaign, where
   every encoding a sample row admits is an mzXML and the order puts one
   readable unpaired twin before it, the convert stage analyses that twin
   instead (`analysed_for_an_admitted_sample`, with `stands_for` the mzXML), and
@@ -590,10 +631,12 @@ the code does until the user answers it:
   with that change before the user answers (Merges).
   Where the order cannot choose and no sample row admits either, as between
   two vendor containers of one name, no encoding is taken: both are still left
-  out as `two_encodings_of_one_name`, and that sample is not analysed, also
-  the agent's reading, kept from before within one folder; across folders
-  0.5.35 ran each as an unattributed input, which answer 3 (take one) rules
-  out.
+  out as `two_encodings_of_one_name`, and that sample is not analysed. Taking
+  none departs from answer 3 (take one) as running both would: which to take,
+  if any, is question 3 under Open for the user. Until the user answers #69
+  takes none, on record, as 0.5.35 did within one folder; across folders
+  0.5.35 ran each as an unattributed input, which answer 3 rules out, so data
+  0.5.35 analysed is not analysed.
 - **A readable twin of an admitted mzML that cannot be decoded** (the extra
   question, "A: 読める方をそのサンプルとして使う"). Where a sample row admits an mzML RawDataHandler
   cannot decode and a twin of that sample can be read, a vendor file, folder or
@@ -1012,12 +1055,18 @@ which Interactive 0.5.35 ran as an unattributed input in a unit-scoped archive
 #69 keeps the behaviour before it in those two cases, on record, until the
 user does; the agent does not choose between the answers. A shared archive's
 readable twin of an admitted mzXML, which the convert stage analyses for its
-sample in a campaign, ran before #69 and does not hold it. Nor do the other
-two questions: the twin of an undecodable mzML a Catalog declaration names,
-one of the two #69 names as its own, which #69 keeps out as before; and two
-readable twins the order ranks equal, of which #69 runs neither, where
-0.5.35 ran both across folders, which both answers rule out. All four stay the
-user's to answer; approving the amendment's wording does not answer them.
+sample in a campaign, ran before #69 and does not hold it. As this contract
+stands, nor do the other three questions. The twin of an undecodable mzML a
+Catalog declaration names, one of the two #69 names as its own, #69 keeps out
+as before (question 2). Of two encodings the order ranks equal #69 takes
+neither, which departs from second-round answer 3's "1つ選ぶ", but 0.5.35's
+behaviour across folders, both run as unattributed inputs, is one the answers
+rule out, so none that they allow is left to return to (question 3). And #69
+keeps a sample row's admitted encoding over a twin the order puts first, which
+departs from the order answer 3 names, but the sample runs from one encoding
+either way, the one 0.5.35 ran for it (question 5). Whether question 3 or 5
+should hold the merge as well is the user's to say. All five stay the user's
+to answer; approving the amendment's wording does not answer them.
 
 ## Feedback to Codex
 

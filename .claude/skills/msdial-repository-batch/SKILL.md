@@ -125,7 +125,12 @@ For a repository range:
    of an undecodable mzML, and outside a campaign leaves out an admitted
    mzXML's twin in another folder that 0.5.35 ran; it does not merge with
    either change before the user answers (`CLAUDE.md`, Evidence and decisions
-   and Merges).
+   and Merges). Two more cases of one name in two encodings are questions for
+   the user, because #69 does not take one by the encoding order as
+   second-round answer 3 ("A: mzXMLは変換、同名2形式は1つ選ぶ") says: of two encodings the
+   order ranks equal it takes neither, and it keeps a sample row's admitted
+   encoding over an unpaired twin the order puts first. Neither is a case no
+   answer covered.
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
