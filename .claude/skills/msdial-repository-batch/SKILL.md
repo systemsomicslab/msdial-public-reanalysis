@@ -56,18 +56,16 @@ For a repository range:
    user's answer 6 of 2026-10-08, option C, "そのまま解析する"; Interactive #69 and
    gate #37, open on 2026-10-08, replace the hold
    `aif_collision_energies_differ_between_inputs` of Interactive 0.5.34, and
-   the gate change merges before the campaign pins Interactive 0.5.36). Not
-   so where two inputs of the unit share a file name: both PRs key each
-   input's set by file name alone, so where those two inputs' sets differ the
-   unit is refused, FAILs ACQ-1 and loses its raw data without a run (gate
-   #37 leaves this open, and question 6 did not cover it). The case is open
-   for the user (`CLAUDE.md`, Open points). Nothing holds such a unit, and its
-   input names are not known before approval (an archive's members only once it
-   is downloaded), so it cannot be named then. Merged Interactive 0.5.35 holds
-   every unit whose sets differ, whatever the names, raw data kept; until the
-   user answers, Interactive #69 is not merged and no campaign pins 0.5.36 or
-   later without a fix, so answer 6 takes effect for no unit until then (a
-   manifest approval is not an answer to this point).
+   the gate change merges before the campaign pins Interactive 0.5.36). That
+   holds where two inputs of the unit share a file name in different folders
+   too: as first opened, both PRs keyed each input's set by file name alone,
+   which would have refused such a unit and lost its raw data without a run,
+   and the user's second-round answer 2 of 2026-10-08 ("A: 相対パスで区別するよう直してから使う")
+   had both key each input's set by its relative path under the unit's raw data
+   root (`aif_collision_energies_by_input_key`
+   `path_relative_to_input_directory`) before #69 merges. Until both are
+   merged, merged Interactive 0.5.35 holds every unit whose sets differ,
+   whatever the names, raw data kept.
    Interactive holds the whole unit when any one input records no energy above
    0 (`aif_collision_energy_unrecorded`), and the user decided on 2026-10-08
    that this hold governs over the 2026-09-30 warning-only rule (answer 3,
@@ -129,6 +127,11 @@ For a repository range:
    user's explicit go, asked for in the conversation once everything is ready
    ("本番開始前には私がGoサインを出すので、聞いてください。", 2026-10-01): no
    approved manifest, pilot approval or authorization record is that go.
+   Show the person the plan summary's automatic RT correction statement
+   before the approval: the campaign corrects by default, and a manifest that
+   carries no such statement, one planned before the plan stated it included,
+   is refused and planned again (the user's second-round answer 4 of
+   2026-10-08; gate #36).
 10. Call `msdial_repository_reanalysis_plan` and
    `msdial_download_repository_raw` with the same `analysis_unit_handoff_path` for
    each approved unit. For accession-bundle downloads, verify the resulting

@@ -62,11 +62,21 @@ English paraphrase in quotation marks, and each agent entry says the user decide
 question 2 reached: it did not distinguish a shared archive, so leaving a shared archive's members out is named as
 the implementation's rule. Answer 3 replaces the warning-only rule of 2026-09-30, which
 the manifest marks as replaced. Answer 6 replaces the hold of differing AIF energy sets with a run on record, which
-Interactive #69 and gate #37 implement; the contract no longer states that hold as standing, and it names the case
-those PRs leave open (two inputs sharing a file name), which question 6 did not cover. Answers 7 and 8 revoke
+Interactive #69 and gate #37 implement; the contract no longer states that hold as standing. Answers 7 and 8 revoke
 the first pilot's approval and scope its re-run. The contract says, as gate #36 does it, that a --policy override of
-the automatic RT correction is stated and covered by the digest rather than refused. No document marks a case as
-still open for the user.
+the automatic RT correction is stated and covered by the digest rather than refused.
+
+Review then found three points no answer covered, and gate #36 left one choice to the user; the user answered all
+four the same day in a second round of the same form, and the trial manifest records them as one more entry of the
+user's. Each chosen option's label is quoted exactly as the question showed it, its letter included, and the fourth
+answer, given in the user's own words, verbatim, with the agent's reading beside it. The documents state each as
+decided and as the open pull requests implement it: a shared archive's members left out of every unit, on record;
+each multi-energy AIF input's energy set keyed by its relative path (Interactive #69, gate #37), so Interactive #69
+no longer waits and gate #37 merges before or with it; an unpaired mzXML of a unit-scoped archive converted in a
+campaign and one of a name's two encodings taken by the encoding order, with what Interactive records for the
+members a Catalog declaration does not name stated as it is (nothing of its own); and every manifest without an
+automatic RT correction statement refused, to be planned again (gate #36). No document marks a case as still open
+for the user.
 """
 
 from __future__ import annotations
@@ -201,30 +211,18 @@ _DECIDED_CASES = {
         "`aif_energy_sets_differ_between_inputs`", "WARNs, which stops no run", "Interactive #69", "gate #37",
         "replaces the hold `aif_collision_energies_differ_between_inputs`", "the user had not decided",
         "merged code still holds such a unit", "gate #37 merges first", "taken again by a recheck",
-        # #69 waits for the user's answer on inputs that share a file name, so answer 6 is not yet in force.
-        "Interactive #69 itself waits for the user's answer", "answer 6 takes effect for no unit",
     )),
-    # The case Interactive #69 and gate #37 leave open, which question 6 did not cover: open for the user, and
-    # nothing guards against it, since a unit's input names are not known before its manifest is approved.
+    # The case Interactive #69 and gate #37 first left open, which question 6 did not cover: the user's second-round
+    # answer 2 of 2026-10-08 had both key each input's set by its relative path before #69 merges.
     "AIF, inputs that share a file name": (_SCOPE_SECTION, "- **Inputs that share a file name.**", (
-        "does not run as answer 6 says", "by its file name alone", "`aif_collision_energies_by_input`",
-        "share a file name and record different sets",
-        "refused by Interactive's own check before the Console starts", "FAILs ACQ-1", "`blocks_run`",
-        "loses its raw data without a run", "Gate #37 names this as a limit it leaves open",
-        "Question 6 did not cover this case", "no decision of the user's stands behind any treatment of it",
-        "it is open for the user", "Nothing guards against it yet",
-        "the agent cannot name it before a manifest is approved",
-        "the plan records whether a unit has an archive, not its input names", "after the approval",
+        "share a file name and record different sets", "Question 6 did not cover this case",
+        "As first opened", "by its file name alone", "lost its raw data without a run",
+        'second-round answer 2, "A: 相対パスで区別するよう直してから使う"', "before #69 merges",
+        "`aif_collision_energies_by_input`", "the manifest's `input_directory`", "compared without case",
+        "`aif_collision_energies_by_input_key` `path_relative_to_input_directory`", "keeps its basename as its key",
+        "looks each input up by the same key", "`POS/QC_01.mzML`", "a record keyed by basename",
+        "FAILs ACQ-1 for an input in a subfolder", "Answer 6 then holds for such a unit too",
         "merged Interactive (0.5.35) holds every unit whose inputs record different sets",
-        # The interim stays fixed until the user answers: #69 is not merged under the delegation, since the next plan
-        # would pin it, and an approval is no answer.
-        "Interactive #69 is not merged", "the delegation of merges notwithstanding",
-        "a manifest approval is not an answer to this point",
-        "Until then every unit whose sets differ stays held under 0.5.35", "Either way out needs a code change",
-        # The second way out is a preflight hold; the runner alone would not hold such a unit.
-        "a hold at Interactive's preflight, raw data kept (`disposition_held`)",
-        "A change in the runner alone would not hold such a unit", "when the run is prepared and again when it starts",
-        "the gate FAILs its ACQ-1",
     )),
     "AIF, an unrecorded energy": (_SCOPE_SECTION, "- **An input that records no energy.**", (
         "`aif_collision_energy_unrecorded`", "any one input that runs", "holds all forty",
@@ -285,28 +283,33 @@ _PARAPHRASES_QUOTED = ('"record only, the unit runs"', '"include them as unattri
                        '"the 10 unfinished units"')
 # The user's request for that form, verbatim.
 _A_TO_D_REQUEST = "すみません、判断をしないといけない点に関して、A～Dあたりの質問形式で、順番に出してもらえますか？"
-# What marked a passage as a case the user had not settled before 2026-10-08.
+# What marked a passage as a case the user had not settled. After the second round of 2026-10-08 no passage carries it.
 _OPEN_MARKS = ("open for the user", "not yet put to the user", "not yet accepted", "has not been asked",
                "the user did not decide", "stands as the user's")
-# The three points review found after the answers of 2026-10-08, which no answer covers: open for the user until the
-# user answers them. A passage may carry an open mark only where it names one of them (or is the list itself).
-_OPEN_POINTS = {
-    "shared archive": "shared with other units",
-    "shared file name": "share a file name",
-    "members a unit-scoped archive leaves out": "leaves out of a unit-scoped archive",
+# The user's second-round answers of 2026-10-08, each: the label exactly as the question showed it (letter included),
+# or for answer 4 the user's own words, and the passage of the contract that states what it decides (its section and
+# its lead).
+_SECOND_ROUND = {
+    1: "A: 除外して記録する",
+    2: "A: 相対パスで区別するよう直してから使う",
+    3: "A: mzXMLは変換、同名2形式は1つ選ぶ",
+    4: "なんのことかわからないのですが、デフォルトでは補正ON、ということで良いんじゃないですか？",
 }
-# The members Interactive #64 leaves out of a unit-scoped archive, each with its reason, and the scope the rule does
-# not reach: stated as the implementation's, not as answer 2.
+_SECOND_ROUND_HEADING = "**The second round.**"
+# The heads of the pull requests that implement the second round, as the documents cite them.
+_SECOND_ROUND_HEADS = {"Interactive #69": "4722776", "gate #37": "c716368", "gate #36": "f043ab1"}
+# The reasons Interactive records for the members it leaves out of a unit-scoped archive, and the records it keeps of
+# what it took, after the second round's answer 3 (Interactive #69).
 _UNIT_SCOPED_LEFT_OUT = ("`requires_conversion`", "`polarity_token_contradicts_ion_mode`",
                          "`two_encodings_of_one_name`", "`download_scope_not_unit_scoped`",
-                         "`unattributed_members.left_out`")
-# An interim an earlier draft stated for the shared-file-name point, which left the worst option to the timing of a
-# merge: a statement in the approval request, with #69 free to merge.
-_WITHDRAWN_INTERIM = ("states this case and what it costs",)
-_OPEN_POINTS_HEADING = "**Open points.**"
-# The step a review found could not be carried out: a unit's input names are not known before approval.
-_WITHDRAWN_PRECAUTION = ("the agent's precaution", "name every unit whose inputs share a file name",
-                         "names to the user, before a manifest is approved")
+                         "`unattributed_members.left_out`", "`chosen_other_encoding`",
+                         "`unattributed_members.converted`", "`shared_archive`")
+# What the documents stated while the shared-file-name point was open, and no longer state: the interim, the naming
+# step a review found could not be carried out, and #69 held back from the delegation of merges.
+_WITHDRAWN = ("states this case and what it costs", "the agent's precaution",
+              "name every unit whose inputs share a file name", "names to the user, before a manifest is approved",
+              "Interactive #69 is not merged", "answer 6 takes effect for no unit",
+              "a manifest approval is not an answer to this point", "**Open points.**", "Open points)")
 # What the trial manifest's 2026-10-03 decision says, and the user's answer verbatim.
 _DECISION_2026_10_03_SAYS = (
     "option A", "unit-level evidence", "is not such evidence", "MTBKS217", "MTBKS219 and MTBKS220",
@@ -462,6 +465,14 @@ def _trial_decisions() -> list[dict]:
     return json.loads(
         (_ROOT / "trials" / "2026-09-20-ten-unit-trial-manifest.json").read_text(encoding="utf-8")
     )["decisions"]
+
+
+def _second_round_entry() -> dict:
+    """The trial manifest's one entry of the user's second-round answers of 2026-10-08."""
+    entries = [entry for entry in _trial_decisions()
+               if entry.get("at") == "2026-10-08" and "Second-round answer 1" in str(entry.get("decision"))]
+    assert len(entries) == 1, len(entries)
+    return entries[0]
 
 
 def _gate_rule_disagreements(
@@ -874,13 +885,16 @@ class ContractGateChecksTests(unittest.TestCase):
 
     def test_answer_2_is_stated_only_as_far_as_question_2_reached(self) -> None:
         """Question 2 named ST001264 and did not distinguish a unit's own archive from a shared one; leaving a shared
-        archive's members out is the implementation's rule, and no document narrows the question to say otherwise."""
+        archive's members out was the implementation's rule until the user's second-round answer 1 decided it, and no
+        document narrows question 2 to say otherwise."""
         section = " ".join(_section(self.contract, "## Evidence and decisions").split())
         for phrase in (_QUESTION_2, "the user accepted it on 2026-10-08 so far as the question reached",
                        "The question did not distinguish an archive that is the unit's own from one shared with "
                        "other units", "could reach a shared archive's members too",
-                       "Leaving those members out is the implementation's rule",
-                       "no decision of the user's stands behind it"):
+                       "Leaving those members out was the implementation's rule",
+                       "no decision of the user's stood behind it until the second round",
+                       f'second-round answer 1, "{_SECOND_ROUND[1]}"', "left out of every unit, on record",
+                       "with `applied` false, the reason `shared_archive`"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, section)
         for document in DOCUMENTS:
@@ -895,42 +909,47 @@ class ContractGateChecksTests(unittest.TestCase):
                       "units", str(user["decision"]))
         agent = [entry for entry in decisions
                  if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
-        self.assertIn("for its unit-scoped half", str(agent["state"]))
-        self.assertIn("which no decision of the user's settles", str(agent["state"]))
-        self.assertIn("whether they stay out is open for the user", str(agent["state"]))
-        self.assertIn("and until the user answers they are left out, on record", section)
+        for phrase in ("for its unit-scoped half", "which no decision of the user's settled then",
+                       "(second-round answer 1, the last entry of that date)", "second-round answer 3"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, str(agent["state"]))
 
-    def test_the_shared_file_name_case_is_named_as_left_open(self) -> None:
-        """Interactive #69 and gate #37 key each input's energy set by file name alone; the skill and the trial
-        manifest name the case as well as the contract (whose passage _SECTIONS holds)."""
+    def test_the_shared_file_name_case_is_stated_as_decided_in_the_second_round(self) -> None:
+        """Interactive #69 and gate #37 first keyed each input's energy set by file name alone; the user's second-round
+        answer 2 had both key it by relative path before #69 merges. The skill and the trial manifest say so as well as
+        the contract (whose passage _DECIDED_CASES holds), and no document still states the interim of the open
+        point."""
         skill = " ".join((_ROOT / _BATCH_SKILL).read_text(encoding="utf-8").split())
-        for phrase in ("two inputs of the unit share a file name", "key each input's set by file name alone",
-                       "where those two inputs' sets differ", "loses its raw data without a run",
-                       "question 6 did not cover it", "open for the user", "cannot be named then",
-                       "holds every unit whose sets differ, whatever the names",
-                       "Interactive #69 is not merged", "answer 6 takes effect for no unit until then",
-                       "a manifest approval is not an answer to this point"):
+        for phrase in ("two inputs of the unit share a file name in different folders",
+                       "keyed each input's set by file name alone", "lost its raw data without a run",
+                       f'second-round answer 2 of 2026-10-08 ("{_SECOND_ROUND[2]}")', "by its relative path",
+                       "`path_relative_to_input_directory`", "before #69 merges",
+                       "holds every unit whose sets differ, whatever the names"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, skill)
-        user = [entry for entry in _trial_decisions()
-                if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])][0]
-        result = str(user["result"])
-        for phrase in ("share a file name, in different folders, and record different energy sets is refused",
-                       "question 6 did not cover it, and it is open for the user",
-                       "its input names are not known before a manifest is approved",
-                       "the case arises only once the campaign pins 0.5.36",
-                       "Until the user answers, Interactive #69 is not merged",
-                       "a manifest approval is not an answer to this point",
-                       "a change in the runner alone would not hold it"):
+        decisions = _trial_decisions()
+        first = [entry for entry in decisions
+                 if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])][0]
+        for phrase in ("As first opened, both keyed each input's set by its file name alone",
+                       "question 6 did not cover that case, and the second round of the same date decided it",
+                       "both now key each input's set by its relative path"):
             with self.subTest(phrase=phrase):
-                self.assertIn(phrase, result)
-        # The naming step an earlier draft stated cannot be carried out before approval, and the approval-request
-        # statement left the interim to the timing of #69's merge; no document states either.
+                self.assertIn(phrase, str(first["result"]))
+        second = _second_round_entry()
+        for phrase in ("aif_collision_energies_by_input_key path_relative_to_input_directory",
+                       "FAILs a record keyed by basename for an input in a subfolder",
+                       "gate #37 merges with or before the campaign's pin to Interactive 0.5.36"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, str(second["result"]))
         for document in DOCUMENTS:
             text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
-            for words in (*_WITHDRAWN_PRECAUTION, *_WITHDRAWN_INTERIM):
+            for words in _WITHDRAWN:
                 with self.subTest(document=document, words=words):
                     self.assertNotIn(words, text)
+        for entry in decisions:
+            for words in _WITHDRAWN:
+                with self.subTest(entry=str(entry["decision"])[:60], words=words):
+                    self.assertNotIn(words, json.dumps(entry, ensure_ascii=False))
 
     def test_the_cases_the_agent_had_read_are_stated_as_decided_on_2026_10_08(self) -> None:
         """Answers 1 to 5 settle what merged code did or the agent had read or proposed: each agent entry says the
@@ -954,83 +973,109 @@ class ContractGateChecksTests(unittest.TestCase):
         self.assertNotIn("no longer lets run", contract)
         self.assertNotIn("concern the same list", contract)
 
-    def test_only_the_three_points_no_answer_covers_are_marked_open_for_the_user(self) -> None:
-        """The answers of 2026-10-08 settled every case the draft had left open; review then found three points no
-        answer covers. Each document marks a passage open only where it names one of those three, and the agent's
-        entries likewise."""
+    def test_no_document_marks_a_point_as_open_for_the_user(self) -> None:
+        """The answers of 2026-10-08 settled every case the draft had left open, and the second round settled the
+        points review found after them: no document, and no agent entry since 2026-10-06, marks a passage open."""
         found = {}
         for document in DOCUMENTS:
             for block in _blocks((_ROOT / document).read_text(encoding="utf-8")):
                 marks = [mark for mark in _OPEN_MARKS if mark in block]
-                named = block.startswith(_OPEN_POINTS_HEADING) or any(key in block for key in _OPEN_POINTS.values())
-                if marks and not named:
+                if marks:
                     found.setdefault(document, []).append(block[:80])
         self.assertEqual({}, found)
         for entry in _trial_decisions():
             if entry.get("by") == "agent" and str(entry.get("at", "")) >= "2026-10-06":
                 state = str(entry.get("state", ""))
                 with self.subTest(entry=str(entry["decision"])[:60]):
-                    if any(mark in state for mark in _OPEN_MARKS):
-                        self.assertIn("shared archive", state)
+                    self.assertFalse([mark for mark in _OPEN_MARKS if mark in state])
+        marked = self.contract.replace(_SECOND_ROUND_HEADING, _SECOND_ROUND_HEADING + " One point is open for the user.")
+        self.assertTrue(any(mark in block for block in _blocks(marked) for mark in _OPEN_MARKS))
 
-    def test_the_three_open_points_are_listed_as_open_for_the_user(self) -> None:
-        """Until the user answers them, the contract lists the three points as open, in Evidence and decisions, and
-        the passage of each says so; none is stated as settled."""
+    def test_the_second_round_answers_are_the_users_and_quoted_as_the_question_showed_them(self) -> None:
+        """The contract lists the four second-round answers in Evidence and decisions, each quoting the chosen option's
+        label exactly as the question showed it (or the user's own words), and the trial manifest records them as the
+        user's, with the pull requests and heads that implement them."""
         blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
-        heads = [index for index, block in enumerate(blocks) if block.startswith(_OPEN_POINTS_HEADING)]
+        heads = [index for index, block in enumerate(blocks) if block.startswith(_SECOND_ROUND_HEADING)]
         self.assertEqual(1, len(heads))
-        self.assertIn("All three are open for the user", blocks[heads[0]])
-        self.assertIn("the same question form", blocks[heads[0]])
-        self.assertIn("only because Interactive #69 is not merged before the user answers it", blocks[heads[0]])
-        count = len(_OPEN_POINTS)
-        items = blocks[heads[0] + 1:heads[0] + 1 + count]
-        self.assertTrue(all(item.startswith("- ") for item in items))
-        for point, key in _OPEN_POINTS.items():
-            with self.subTest(point=point):
-                self.assertEqual(1, sum(key in item for item in items))
-        if heads[0] + 1 + count < len(blocks):
-            self.assertFalse(blocks[heads[0] + 1 + count].startswith("- "))
-        normalised = " ".join(self.contract.split())
-        for phrase in ("whether they stay out is open for the user (Open points, above)",
-                       "whether the members merged code leaves out of a unit-scoped archive stay out is open for "
-                       "the user (Open points, above)",
-                       "it is open for the user (Open points, Evidence and decisions)"):
+        for phrase in ("three points that no answer of 2026-10-08 covered", "gate #36 had left one choice to the user",
+                       "the same question form", "answered all four on 2026-10-08",
+                       "exactly as the question showed it, its letter included", "the agent's rendering, not a quote",
+                       *(f"{name} (at `{head}`)" for name, head in (("Interactive #69", "4722776"),)),
+                       "#37 (at `c716368`)", "#36 (at `f043ab1`)"):
             with self.subTest(phrase=phrase):
-                self.assertIn(phrase, normalised)
+                self.assertIn(phrase, blocks[heads[0]])
+        items = blocks[heads[0] + 1:heads[0] + 1 + len(_SECOND_ROUND)]
+        for number, words in _SECOND_ROUND.items():
+            with self.subTest(answer=number):
+                item = items[number - 1]
+                self.assertTrue(item.startswith(f"- second-round answer {number}, "), item[:60])
+                self.assertIn(f'"{words}"', item)
+        self.assertIn("The agent reads the rest as the decision", items[3])
+        self.assertIn("with no exception for one planned before the statement", items[3])
+        self.assertTrue(blocks[heads[0] + 1 + len(_SECOND_ROUND)].startswith(
+            "The second round leaves none of this amendment's rules to the user's decision."))
+        second = _second_round_entry()
+        self.assertTrue(str(second["by"]).startswith("user"))
+        decision, result = str(second["decision"]), str(second["result"])
+        for number, words in _SECOND_ROUND.items():
+            with self.subTest(answer=number):
+                self.assertRegex(decision, rf"Second-round answer {number}, [^.]*" + re.escape(words))
+        self.assertIn("exactly as the question showed it, its letter included", decision)
+        self.assertIn("the agent reads the rest as", decision)
+        for name, head in _SECOND_ROUND_HEADS.items():
+            with self.subTest(pull_request=name):
+                self.assertIn(f"{name} (", result)
+                self.assertIn(head, result)
 
-    def test_the_members_a_unit_scoped_archive_leaves_out_are_stated_as_the_implementations(self) -> None:
-        """Interactive #64 does not take every unpaired member of a unit-scoped archive: it leaves out, on record, an
-        mzXML that only converts, a member whose path names the opposite polarity and one name in two encodings, and
-        takes none where the Catalog declared the inputs. The contract and the trial manifest say so, as the
-        implementation's rule and open for the user, not as answer 2."""
+    def test_the_members_a_unit_scoped_archive_leaves_out_are_stated_as_the_second_round_decided_them(self) -> None:
+        """Interactive #64 left out of a unit-scoped archive an mzXML that only converts, a member whose path names the
+        opposite polarity and one name in two encodings, and took none where the Catalog declared the inputs. The
+        second round's answer 3 converts the mzXML in a campaign and takes one of two encodings by the encoding order
+        (Interactive #69, gate #37). For the members a declaration does not name, Interactive records nothing of its
+        own, and the documents say so rather than that they are in unattributed_members.left_out."""
         section = " ".join(_section(self.contract, "## Evidence and decisions").split())
         for phrase in (*_UNIT_SCOPED_LEFT_OUT, "for the members the implementation takes",
-                       "the implementation does not take every member no row pairs with (Interactive #64)",
-                       "It takes none where the Catalog declared the unit's analysis inputs",
-                       "a campaign's conversion does not convert either",
-                       "one name in two encodings MS-DIAL opens, neither paired, leaves both out",
-                       "the rule of 2026-09-30 converts mzXML-only data",
-                       "No decision of the user's stands behind these exclusions either"):
+                       "Interactive #64 did not take every member no row pairs with",
+                       "It took none where the Catalog declared the unit's analysis inputs",
+                       "No decision of the user's stood behind these exclusions either, until the user decided on "
+                       f'2026-10-08 (second-round answer 3, "{_SECOND_ROUND[3]}")',
+                       "the rule of 2026-09-30 converts mzXML-only data", "Outside a campaign nothing is converted",
+                       "the existing encoding order (a vendor folder or container, then mzML, then mzXML) takes one",
+                       "Where the order cannot choose", "both are still left out as `two_encodings_of_one_name`",
+                       "is still left out, on record (`polarity_token_contradicts_ion_mode`)",
+                       "Interactive records nothing of its own for the members no declaration names",
+                       "such a unit's manifest carries no `unattributed_members`",
+                       "nothing names them as left out or says why", "INP-1, a `blocks_run` check, FAILs a left-out "
+                       "member that reaches a run"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, section)
         self.assertNotIn("That settles the unit-scoped half.", section)
         decisions = _trial_decisions()
         agent = [entry for entry in decisions
                  if entry.get("by") == "agent" and "unattributed_member" in str(entry["decision"])][0]
-        for reason in _UNIT_SCOPED_LEFT_OUT:
+        for reason in _UNIT_SCOPED_LEFT_OUT[:5]:
             with self.subTest(reason=reason):
                 self.assertIn(reason.strip("`"), str(agent["decision"]))
-        self.assertIn("so are the members it leaves out of a unit-scoped archive", str(agent["state"]))
-        user = [entry for entry in decisions
-                if entry.get("at") == "2026-10-08" and _A_TO_D_REQUEST in str(entry["decision"])][0]
-        self.assertIn("the members Interactive #64 leaves out of a unit-scoped archive", str(user["result"]))
+        self.assertIn("so were the members it leaves out of a unit-scoped archive", str(agent["state"]))
+        result = str(_second_round_entry()["result"])
+        for phrase in ("unattributed_members.converted", "chosen_other_encoding",
+                       "two_encodings_of_one_name remains only where the order cannot choose",
+                       "Interactive records nothing of its own for the members no declaration names",
+                       "the manifest carries no unattributed_members"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, result)
 
-    def test_interactive_69_waits_for_the_users_answer_whatever_the_delegation_of_merges(self) -> None:
-        """Until the shared-file-name point is answered, merging #69 would put its loss of raw data into force at the
-        next plan; the Merges section holds it back from the delegation."""
+    def test_gate_37_merges_before_interactive_69_and_69_waits_for_no_answer(self) -> None:
+        """The second round's answer 2 is met, so #69 no longer waits for the user; the next plan pins what Interactive
+        main carries, so gate #37 goes in first or with it."""
         merges = " ".join(_section(self.contract, "## Merges").split())
-        self.assertIn("Interactive #69 is not merged under this delegation before the user answers the open point on "
-                      "multi-energy AIF inputs that share a file name", merges)
+        for phrase in ("Gate #37 merges before, or with, Interactive #69",
+                       "no campaign pins Interactive 0.5.36 before it is in",
+                       "no longer waits for an answer of the user's", "second-round answer 2 of 2026-10-08"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, merges)
+        self.assertNotIn("is not merged under this delegation", merges)
 
     def test_the_differing_energy_hold_is_not_stated_as_standing(self) -> None:
         """Answer 6 replaced the hold of Interactive 0.5.34 and gate #34; the documents say what replaces it, which
@@ -1064,13 +1109,24 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertIn(phrase, section)
 
     def test_a_policy_override_of_rt_correction_is_stated_and_covered_by_the_digest(self) -> None:
-        """The review asked whether "always on" could be undone by a --policy override; gate #36 answers it."""
+        """The review asked whether "always on" could be undone by a --policy override; gate #36 answers it. The
+        second round's answer 4 refuses every manifest without the statement, with no exception for older ones."""
         section = " ".join(_section(self.contract, "## Evidence and decisions").split())
         for phrase in ("`plan --policy`", "it is not refused", "Gate #36", "the summary's second line",
                        "repeated on stderr", "`policy_overrides`", "the sha256 digest the person approves covers them",
-                       "no longer matches its own policy and profile is not approvable"):
+                       "no longer matches its own policy and profile is not approvable",
+                       "the correction is on by default (second-round answer 4, above)",
+                       "every manifest that carries no automatic RT correction statement",
+                       "with no exception for one planned before the statement", "tells the person to plan again",
+                       "a manifest planned now with the default policy states the correction on"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, section)
+        self.assertNotIn("legacy manifest", section)
+        skill = " ".join((_ROOT / _BATCH_SKILL).read_text(encoding="utf-8").split())
+        for phrase in ("automatic RT correction statement", "is refused and planned again",
+                       "second-round answer 4 of 2026-10-08"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
 
     def test_the_go_signal_is_the_users(self) -> None:
         words = "本番開始前には私がGoサインを出すので、聞いてください。"

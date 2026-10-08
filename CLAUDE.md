@@ -144,42 +144,32 @@ location.
     are merged and the campaign pins Interactive 0.5.36, merged code still
     holds such a unit, and gate #37 merges first: the gate of #34 FAILs ACQ-1,
     a `blocks_run` check, for such a unit run under 0.5.36, so the unit would
-    fail, be retried and lose its raw data without a run. Interactive #69
-    itself waits for the user's answer on inputs that share a file name (the
-    next item), so until then answer 6 takes effect for no unit. A unit the old
-    hold kept is taken again by a recheck on the #825 Console once both are in.
-  - **Inputs that share a file name.** One case does not run as answer 6
-    says. Interactive #69 records each input's own set by its file name alone
-    (`aif_collision_energies_by_input`), and gate #37 reads it so. Where two
-    inputs of one unit, in different folders, share a file name and record
-    different sets, they share one entry, and the input whose set differs
-    from that entry is refused by Interactive's own check before the Console
-    starts and FAILs ACQ-1, a `blocks_run` check: the unit fails, is retried
-    twice and loses its raw data without a run. Gate #37 names this as a
-    limit it leaves open; keying by the input's relative path needs a change
-    on both sides. Question 6 did not cover this case, and no decision of the
-    user's stands behind any treatment of it: it is open for the user (Open
-    points, Evidence and decisions). Nothing guards against it yet. The plan,
-    the runner and the gate do not hold such a unit, and the agent cannot
-    name it before a manifest is approved: the plan records whether a unit
-    has an archive, not its input names, and an archive's members are known
-    only once it is downloaded and extracted, after the approval. The case
-    arises only once the campaign pins an Interactive that carries #69 (0.5.36
-    or later): merged Interactive (0.5.35) holds every unit whose inputs record
-    different sets, raw data kept, whatever their names. So until the user
-    answers, Interactive #69 is not merged and no campaign pins an Interactive
-    that carries it without a fix, the delegation of merges notwithstanding
-    (Merges): once #69 were merged, the next plan would pin it and the loss
-    would come into force with no answer behind it, and a manifest approval is
-    not an answer to this point. Until then every unit whose sets differ stays
-    held under 0.5.35, raw data kept, whatever its file names. Either way out
-    needs a code change: keying each input's set by its relative path in
-    Interactive and the gate before #69 merges, or a hold at Interactive's
-    preflight, raw data kept (`disposition_held`), for a unit whose inputs
-    share a file name and record different sets. A change in the runner alone
-    would not hold such a unit: Interactive refuses it when the run is prepared
-    and again when it starts, the gate FAILs its ACQ-1, a `blocks_run` check,
-    and the runner takes each as a failure.
+    fail, be retried and lose its raw data without a run. A unit the old hold
+    kept is taken again by a recheck on the #825 Console once both are in.
+  - **Inputs that share a file name.** Two inputs of one unit, in different
+    folders, may share a file name and record different sets. Question 6 did
+    not cover this case. As first opened, Interactive #69 and gate #37 keyed
+    each input's set by its file name alone, so such inputs shared one entry,
+    and the unit would have been refused before the Console started, FAILed
+    ACQ-1, a `blocks_run` check, and lost its raw data without a run. The user
+    decided on 2026-10-08, in the second round of questions (Evidence and
+    decisions), that each input's set is keyed by its relative path in
+    Interactive #69 and gate #37 before #69 merges (second-round answer 2,
+    "A: 相対パスで区別するよう直してから使う"). Interactive #69 now records each input's own set
+    (`aif_collision_energies_by_input`) under the input's path relative to the
+    unit's raw data root, the manifest's `input_directory` (for a split part,
+    its parent's), `/`-separated and compared without case, and names the
+    scheme (`aif_collision_energies_by_input_key`
+    `path_relative_to_input_directory`); an input directly in the root keeps
+    its basename as its key, so records of that shape do not change.
+    Interactive's own check before the Console starts looks each input up by
+    the same key. Gate #37 reads the record so: `POS/QC_01.mzML` and
+    `NEG/QC_01.mzML` are each held to their own set, and a record keyed by
+    basename, or by a scheme it does not name, FAILs ACQ-1 for an input in a
+    subfolder. Answer 6 then holds for such a unit too. Until both are merged
+    and the campaign pins Interactive 0.5.36, merged Interactive (0.5.35) holds
+    every unit whose inputs record different sets, raw data kept, whatever
+    their names.
   - **An input that records no energy.** The whole unit is held, its raw data
     kept, when any one input that runs records no energy above 0
     (`aif_collision_energy_unrecorded`): a header that lists no energy, lists
@@ -290,23 +280,41 @@ beside such a quote is the agent's rendering, not a quote. The options' words
 are the agent's; the choice is the user's. Where an answer settles what
 merged code did or the agent had read or proposed, the passage says so.
 
-**Open points.** Review after the answers found three points that no answer of
-2026-10-08 covers. All three are open for the user, to be put in the same
-question form, and until the user answers each stays as merged code has it. For
-the second, that holds only because Interactive #69 is not merged before the
-user answers it (Supported production scope, AIF):
+**The second round.** Review after the answers found three points that no
+answer of 2026-10-08 covered, and gate #36 had left one choice to the user. The
+agent put the four to the user the same day in the same question form, a
+second round numbered 1 to 4, and the user answered all four on 2026-10-08.
+This contract cites each as a second-round answer by its number and quotes the
+chosen option's label exactly as the question showed it, its letter included;
+English beside such a quote is the agent's rendering, not a quote. Interactive
+#69 (at `4722776`) and gates #37 (at `c716368`) and #36 (at `f043ab1`), all
+open on 2026-10-08, implement the answers:
 
-- whether the members of an archive shared with other units, or of one the
-  Catalog does not show to be the unit's own, are left out of a unit, as merged
-  code does, or included as answer 2 read literally would include them (the
-  pairing of sample rows, below);
-- how a multi-energy AIF unit is treated whose inputs share a file name and
-  record different energy sets, which under Interactive 0.5.36 would lose its
-  raw data without a run (Supported production scope, AIF);
-- whether the members merged code leaves out of a unit-scoped archive stay out:
-  an mzXML that only converts, one name in two encodings, a member whose path
-  names the opposite polarity, and, where the Catalog declared the unit's
-  inputs, every member it does not name (the pairing of sample rows, below).
+- second-round answer 1, the members of an archive shared by several units that
+  no sample row pairs with: "A: 除外して記録する", leave them out of every unit, on record,
+  as merged code does (the pairing of sample rows, below);
+- second-round answer 2, a multi-energy AIF unit whose inputs share a file name
+  in different folders and record different energy sets: "A: 相対パスで区別するよう直してから使う", key
+  each input's energy set by its relative path in Interactive #69 and gate #37
+  before #69 merges (Supported production scope, AIF);
+- second-round answer 3, the members the implementation left out of a
+  unit-scoped archive: "A: mzXMLは変換、同名2形式は1つ選ぶ", in a campaign convert an unpaired mzXML
+  like any other mzXML input, of one name in two encodings take one by the
+  existing encoding order, keep leaving out a member whose path names the
+  opposite polarity and the members a Catalog declaration does not name, and
+  keep all of it on record (the pairing of sample rows, below);
+- second-round answer 4, whether a manifest planned before the plan stated the
+  automatic RT correction stays approvable: the user answered in words of the
+  user's own rather than by an option, "なんのことかわからないのですが、デフォルトでは補正ON、ということで良いんじゃないですか？".
+  The answer begins by saying the user did not see what the question was
+  about. The agent reads the rest as the decision that the correction is on by
+  default, so that a manifest stating no correction is never taken as
+  uncorrected: approval refuses every manifest that carries no automatic RT
+  correction statement, with no exception for one planned before the
+  statement, and the person plans again (the automatic RT correction, below).
+
+The second round leaves none of this amendment's rules to the user's
+decision. What remains is the user's approval of its wording.
 
 Before selecting units or proposing Class, ask what the user wants to learn from
 the reanalysis. Record the scientific question, intended biological comparison,
@@ -348,7 +356,13 @@ from, a difference from this decision is the summary's second line, marked
 `!!` and repeated on stderr, and the manifest records the overridden fields
 (`policy_overrides`) and the statement itself, so the sha256 digest the person
 approves covers them. A manifest whose stored statement no longer matches its
-own policy and profile is not approvable. Two defaults the user accepted as
+own policy and profile is not approvable. The user decided on 2026-10-08
+that the correction is on by default (second-round answer 4, above): gate #36
+refuses the approval of every manifest that carries no automatic RT correction
+statement, with no exception for one planned before the statement and whatever
+its policy and profile say, and tells the person to plan again, while a
+manifest planned now with the default policy states the correction on, pinned
+by the campaign policy. Two defaults the user accepted as
 recommended on 2026-10-07 ("推奨でお願いします"): when the Console cannot
 select anchors and exits before alignment, the unit's later attempts run
 uncorrected, on record (`automatic_rt_correction_fallback`); and a Blank is
@@ -381,29 +395,67 @@ A, "出所不明の入力として含める": "対応が取れないファイル
 unit-scoped half, for the members the implementation takes. The question did
 not distinguish an archive that is the unit's own from one shared with other
 units, and read literally the answer could reach a shared archive's members
-too. Leaving those members out is the implementation's rule, unchanged, and no
-decision of the user's stands behind it: whether they stay out is open for the
-user (Open points, above), and until the user answers they are left out, on
-record. So are the members where the Catalog's download scope does not show the
-download to be the unit's own (`download_scope_not_unit_scoped`). Within a
-unit-scoped archive, too, the implementation does not take every member no row
-pairs with (Interactive #64). It takes none where the Catalog declared the
-unit's analysis inputs, whose declaration then names them. And it leaves out,
-on record, each with its reason (the manifest's
-`unattributed_members.left_out`): an mzXML, or another member that only
-converts to mzML (`requires_conversion`), which a campaign's conversion does
-not convert either, since it converts only an mzXML the unit's file listing or
-a sample row admits; a member whose path names the polarity opposite to the
-unit's ion mode by a token of its own (`polarity_token_contradicts_ion_mode`);
-and a member whose name another member carries in another encoding
-(`two_encodings_of_one_name`), so that one name in two encodings MS-DIAL opens,
-neither paired, leaves both out. Answer 2 read literally would include them,
-and in a campaign the rule of 2026-09-30 converts mzXML-only data and runs
-them. No decision of the user's stands behind these exclusions either: whether
-the members merged code leaves out of a unit-scoped archive stay out is open
-for the user (Open points, above), and until the user answers they are left
-out, on record. Interactive's 0.5.31 changelog and the gate's PAIR-1 docstring
-called the rule the user's decision a day before the user accepted it.
+too. Leaving those members out was the implementation's rule, and no decision
+of the user's stood behind it until the second round: the user decided the
+same day that they are left out of every unit, on record (second-round answer
+1, "A: 除外して記録する"), as merged code does. Interactive records them in the manifest's
+`unattributed_members`, with `applied` false, the reason `shared_archive` and
+each member in `left_out`, and INP-1 FAILs any that reach a run. Interactive
+leaves out the same way, with the reason `download_scope_not_unit_scoped`, the
+members where the Catalog's download scope does not show the download to be
+the unit's own.
+
+Within a unit-scoped archive, too, Interactive #64 did not take every member no
+row pairs with. It left out, on record (`unattributed_members.left_out`, each
+with its reason), an mzXML or another member that only converts to mzML
+(`requires_conversion`), which a campaign's conversion did not convert either;
+a member whose path names the polarity opposite to the unit's ion mode by a
+token of its own (`polarity_token_contradicts_ion_mode`); and a member whose
+name another member carries in another encoding (`two_encodings_of_one_name`),
+so that one name in two encodings MS-DIAL opens, neither paired, left both out.
+It took none where the Catalog declared the unit's analysis inputs. No decision
+of the user's stood behind these exclusions either, until the user decided on
+2026-10-08 (second-round answer 3, "A: mzXMLは変換、同名2形式は1つ選ぶ"). Interactive #69 and gate #37
+implement the answer:
+
+- **An unpaired mzXML.** In a campaign's lease it is converted like any other
+  mzXML input, as the rule of 2026-09-30 converts mzXML-only data: the mzML
+  written from it is the unattributed input, its lineage row carries the
+  conversion and the mzXML's name (`name_pairing.member_name`), and
+  `unattributed_members.converted` lists it. Outside a campaign nothing is
+  converted, and it stays left out as `requires_conversion`.
+- **One name in two encodings.** Members are one sample's where their names
+  agree once the container suffix is set aside and their folders agree once
+  the words naming an encoding are, so `RAW/x.raw` and `mzML/x.mzML` are one
+  sample and `POS/x.raw` and `NEG/x.raw` are two. Of one sample's unpaired
+  encodings, the existing encoding order (a vendor folder or container, then
+  mzML, then mzXML) takes one, and each other is left out as
+  `chosen_other_encoding`, with the one taken (`chosen`, `chosen_by`
+  `encoding_order`). Where a sample row admits an encoding of that sample, that
+  one stays the sample's input and an unpaired twin is left out the same way
+  (`chosen_by` `admitted_by_the_unit` where the order would have preferred the
+  twin), unless a campaign's conversion analyses that twin instead of the
+  sample's mzXML (`analysed_for_an_admitted_sample`). An mzML RawDataHandler cannot decode competes with none
+  (`undecodable_mzml_set_aside`), since a convertible mzXML outranks an
+  unreadable twin. Where the order cannot choose, as between two vendor
+  containers of one name, both are still left out as
+  `two_encodings_of_one_name`.
+- **A member whose path names the opposite polarity** is still left out, on
+  record (`polarity_token_contradicts_ion_mode`).
+- **A unit whose Catalog declared its inputs** takes only the declared ones,
+  matched by path, and no member as unattributed. Interactive records nothing
+  of its own for the members no declaration names: such a unit's manifest
+  carries no `unattributed_members`, and those members appear only in the
+  archive's member listing (its extraction record's `members_tsv`), beside
+  every other member. For them the record is that listing alone; nothing names
+  them as left out or says why.
+
+INP-1, a `blocks_run` check, FAILs a left-out member that reaches a run, a
+converted unattributed input that is not the conversion of the mzXML it names,
+and one sample run in two encodings beside an unattributed member; PAIR-1,
+`record_only`, holds the record itself to what ran (gate #37). Interactive's
+0.5.31 changelog and the gate's PAIR-1 docstring called the rule the user's
+decision a day before the user accepted it.
 
 Where the Catalog abstains because no declared factor groups the samples, do not
 build Class from other columns. Show the abstention preview
@@ -721,10 +773,14 @@ a review comes back clean and the change is validated
 merges. A merge into MsdialWorkbench master still takes the user's explicit
 OK, as #825 and #826 each had, and this amendment merges only once the user
 has approved its wording. A merge here changes the gate pin and pauses a
-running campaign (Confirmation boundaries). Interactive #69 is not merged under
-this delegation before the user answers the open point on multi-energy AIF
-inputs that share a file name (Evidence and decisions, Open points), since the
-next plan would pin it.
+running campaign (Confirmation boundaries). Gate #37 merges before, or with,
+Interactive #69, and no campaign pins Interactive 0.5.36 before it is in: the
+next plan pins what Interactive main carries, and the gate of #34 FAILs ACQ-1, a
+`blocks_run` check, for a multi-energy AIF unit whose inputs record different
+sets and runs under 0.5.36 (Supported production scope, AIF). Interactive #69
+no longer waits for an answer of the user's: both now key each input's energy
+set by its relative path, as the user's second-round answer 2 of 2026-10-08
+asked before #69 merges (Evidence and decisions).
 
 ## Feedback to Codex
 
