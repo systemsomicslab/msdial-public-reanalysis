@@ -3300,11 +3300,27 @@ AIF_AS_SWATH_BASIS = "aif_single_ce_as_swath"
 # type AIF, row AIF, so no mapping is involved): the disposition records aif_multi_ce_run = {"collision_energies",
 # "rule": AIF_MULTI_CE_RULE} beside its probe of that Console (multi_energy_aif_console: capability, available,
 # probe, assembly_sha256), and each input's record carries console_acquisition_basis AIF_MULTI_CE_BASIS and its own
-# ms2_collision_energies. Without #825 the unit is held as before; with it, inputs whose energies differ from one
-# another are held too (#825 chooses among one file's energies, never across files). ACQ-1 reads those records:
-# a multi-energy AIF row passes only where they say so and the Console the run manifest names is the one the probe
-# found #825 in (or, where it is another, the gate finds #825's markers in that Console's assembly itself).
+# ms2_collision_energies. Without #825 the unit is held as before. ACQ-1 reads those records: a multi-energy AIF
+# row passes only where they say so and the Console the run manifest names is the one the probe found #825 in (or,
+# where it is another, the gate finds #825's markers in that Console's assembly itself).
+#
+# ENERGY SETS THAT DIFFER BETWEEN INPUTS (user decision, 2026-10-08, answer 6 "run as is"; Interactive 0.5.36,
+# msdial-interactive-app#69). #825 chooses a representative energy among one file's energies, never across files,
+# so inputs whose energy sets differ (one energy each but not the same one, different sets, or a multi-energy file
+# beside a single-energy one) are each processed with their own per-file representative energy. Interactive
+# 0.5.34-0.5.35 held such a unit (aif_collision_energies_differ_between_inputs); 0.5.36 runs it as AIF under the
+# same rule and records it: aif_multi_ce_run.energy_sets_differ true, aif_multi_ce_run.collision_energy_sets (each
+# distinct set with its file count), the disposition's aif_collision_energies_by_input (each input's own set, by
+# file name) and the warning aif_energy_sets_differ_between_inputs. ACQ-1 then holds each row to its own recorded
+# set instead of the unit's union, and reports that the sets differ as a WARN: recorded, never a reason to stop
+# the run (AIF_CE_SETS_DIFFER_POLICY).
 AIF_MULTI_CE_FIELD = "aif_multi_ce_run"
+AIF_CE_SETS_DIFFER_FIELD = "energy_sets_differ"
+AIF_CE_SETS_FIELD = "collision_energy_sets"
+AIF_CE_BY_INPUT_FIELD = "aif_collision_energies_by_input"
+AIF_CE_SETS_DIFFER_WARNING = "aif_energy_sets_differ_between_inputs"
+AIF_CE_SETS_DIFFER_DECISION = "run_as_is_2026_10_08"
+AIF_CE_SETS_DIFFER_POLICY = RECORD_ONLY
 AIF_MULTI_CE_RULE = "multi_ce_aif_with_console_825"
 AIF_MULTI_CE_BASIS = "aif_multi_ce_console_825"
 MULTI_ENERGY_AIF_PROBE_FIELD = "multi_energy_aif_console"
@@ -3484,15 +3500,21 @@ def _multi_energy_aif_console(probe: object, run_manifest: "dict | None") -> "tu
 
 
 def _multi_energy_aif_failures(
-    rows: "list[tuple[str, tuple[float, ...] | None, str]]", dispositions: list[dict], run_manifest: "dict | None",
+    rows: "list[tuple[str, tuple[float, ...] | None, str, str]]", dispositions: list[dict],
+    run_manifest: "dict | None",
 ) -> "tuple[list[str], dict]":
     """Why the rows that run as multi-energy AIF may not, and the evidence. Each row is (name, its record's
-    ms2_collision_energies, its record's console_acquisition_basis).
+    ms2_collision_energies, its record's console_acquisition_basis, its record's file name).
 
     Under a binding disposition its aif_multi_ce_run decides: without one naming AIF_MULTI_CE_RULE and two or more
-    energies nothing runs as multi-energy AIF, and each row's basis must be AIF_MULTI_CE_BASIS and its energies the
-    recorded ones. Without a binding disposition (no campaign) the rows' energies must agree. Either way the Console
-    the run manifest names must be shown to have #825 (_multi_energy_aif_console)."""
+    energies nothing runs as multi-energy AIF, and each row's basis must be AIF_MULTI_CE_BASIS. Each row must record
+    its energies, and they must be the recorded ones: the unit's, or, where aif_multi_ce_run records
+    energy_sets_differ true (the run-as-is decision of 2026-10-08), the set the disposition's
+    aif_collision_energies_by_input records for its file, which must be among the unit's energies. Without a
+    binding disposition (no campaign) no such decision is recorded, and the rows' energies must agree. Either way
+    the Console the run manifest names must be shown to have #825 (_multi_energy_aif_console). Where the decision
+    is recorded, evidence["energy_sets_differ"] is true and evidence["collision_energy_sets"] gives each set the
+    rows record and how many rows record it."""
     failures: list[str] = []
     record, energies, why = _aif_multi_ce_record(dispositions)
     evidence: dict = {"rows": len(rows), "rule": AIF_MULTI_CE_RULE}
@@ -3504,18 +3526,52 @@ def _multi_energy_aif_failures(
             "and is held otherwise (aif_multi_ce_awaiting_console)")
         return failures, evidence
     if record is not None:
-        evidence[AIF_MULTI_CE_FIELD] = record.get(AIF_MULTI_CE_FIELD)
-        for name, own, basis in rows:
+        run = record.get(AIF_MULTI_CE_FIELD)
+        evidence[AIF_MULTI_CE_FIELD] = run
+        differ = isinstance(run, dict) and run.get(AIF_CE_SETS_DIFFER_FIELD) is True
+        by_input = record.get(AIF_CE_BY_INPUT_FIELD) if differ else None
+        by_input = by_input if isinstance(by_input, dict) else {}
+        for name, own, basis, file_name in rows:
             if basis != AIF_MULTI_CE_BASIS:
                 failures.append(f"{name}: runs as multi-energy AIF, and its record's console_acquisition_basis is "
                                 f"{basis or 'none'!r}, not {AIF_MULTI_CE_BASIS}")
+            elif not own:
+                # Interactive holds a unit with an input that records no energy (aif_collision_energy_unrecorded),
+                # whether the inputs' sets differ or not.
+                failures.append(f"{name}: records no ms2_collision_energies, and {AIF_MULTI_CE_RULE} runs a unit only "
+                                "where every input records its MS2 collision energies (Interactive holds one that does "
+                                "not: aif_collision_energy_unrecorded)")
+            elif differ:
+                recorded = _energy_set(by_input.get(file_name))
+                if not recorded:
+                    failures.append(f"{name}: records {_energies_text(own)}, and the campaign disposition's "
+                                    f"{AIF_CE_BY_INPUT_FIELD} records no set for {file_name}, though its "
+                                    f"{AIF_MULTI_CE_FIELD} says the inputs' sets differ")
+                elif own != recorded:
+                    failures.append(f"{name}: records {_energies_text(own)}, not the {_energies_text(recorded)} the "
+                                    f"campaign disposition's {AIF_CE_BY_INPUT_FIELD} records for {file_name}")
+                elif not set(own) <= set(energies):
+                    failures.append(f"{name}: records {_energies_text(own)}, which are not all among the unit's "
+                                    f"{_energies_text(energies)} that its {AIF_MULTI_CE_FIELD} records")
             elif own != energies:
-                failures.append(f"{name}: records {_energies_text(own) if own is not None else 'no ms2_collision_energies'}"
-                                f", not the unit's {_energies_text(energies)}, and {AIF_MULTI_CE_RULE} holds only where "
-                                "every input records the same energies (#825 chooses among one file's energies, never "
-                                "across files)")
+                failures.append(f"{name}: records {_energies_text(own)}, not the unit's {_energies_text(energies)}, "
+                                f"and its {AIF_MULTI_CE_FIELD} does not record that the inputs' sets differ "
+                                f"({AIF_CE_SETS_DIFFER_FIELD}, the run-as-is decision of 2026-10-08): #825 chooses among "
+                                "one file's energies, never across files, so only that decision runs inputs whose "
+                                "sets differ")
+        if differ:
+            counted = Counter(own for _name, own, _basis, _file in rows if own)
+            warned = record.get("warnings")
+            evidence.update({
+                AIF_CE_SETS_DIFFER_FIELD: True, "decision": AIF_CE_SETS_DIFFER_DECISION,
+                "energy_sets_differ_run_policy": AIF_CE_SETS_DIFFER_POLICY,
+                AIF_CE_SETS_FIELD: [{"collision_energies": list(values), "rows": count}
+                                    for values, count in sorted(counted.items())],
+                "recorded_" + AIF_CE_SETS_FIELD: run.get(AIF_CE_SETS_FIELD),
+                "disposition_warning": AIF_CE_SETS_DIFFER_WARNING in (warned if isinstance(warned, list) else []),
+            })
     else:
-        sets = {own for _name, own, _basis in rows}
+        sets = {own for _name, own, _basis, _file in rows}
         energies = next(iter(sets)) if len(sets) == 1 and None not in sets else ()
         if len(sets) > 1:
             failures.append(f"{len(rows)} row(s) run as multi-energy AIF, and their inputs record different MS2 "
@@ -3600,12 +3656,16 @@ def check_acquisition_type_is_the_headers(
     aif_multi_ce_console_825, or where a binding disposition records aif_multi_ce_run. It runs as its header gives,
     so it PASSes only where (_multi_energy_aif_failures): a binding disposition records aif_multi_ce_run under the
     rule multi_ce_aif_with_console_825 with two or more energies, and each such row's record carries that basis and
-    those energies (inputs whose energies differ are held by Interactive, so a row with others FAILs); and the
+    records its energies, which are those energies, or, where aif_multi_ce_run records energy_sets_differ true (the
+    user's run-as-is decision of 2026-10-08, Interactive 0.5.36), the set the disposition's
+    aif_collision_energies_by_input records for its file, among the unit's energies; and the
     Console the run manifest (output/run-manifest.json) records is shown to have MsdialWorkbench#825: the
     disposition's multi_energy_aif_console probe found it in the assembly whose sha256 the run manifest records,
     or the gate finds both of #825's markers in that assembly itself. A multi-energy AIF row on a Console without
     #825 FAILs, and so does one whose disposition holds the unit or records no such run. Without a binding
-    disposition (no campaign) the rows' energies must agree and the Console must be shown the same way. A
+    disposition (no campaign) the rows' energies must agree and the Console must be shown the same way. Where the
+    inputs' sets differ and nothing is refused, ACQ-1 is a WARN that names each set and the decision: that the sets
+    differ is recorded (record_only) and never stops the run, while every refusal above still does. A
     single-energy AIF unit is still expected as SWATH under single_ce_aif_as_swath_2026_10_07, whatever the
     Console. A record written before header_console_acquisition_type existed gives DDA,
     SWATH or AIF as its acquisition_mode says, and the extractor's own verdict is read beside it, as before;
@@ -3642,7 +3702,7 @@ def check_acquisition_type_is_the_headers(
     type_text = ", ".join(f"{key} {count}" for key, count in sorted(types.items()))
 
     # The rows that run as multi-energy AIF (name, recorded energies, basis), and why they may not.
-    multi_rows: "list[tuple[str, tuple[float, ...] | None, str]]" = []
+    multi_rows: "list[tuple[str, tuple[float, ...] | None, str, str]]" = []
     multi_failures: list[str] = []
 
     def refuse(**evidence) -> None:
@@ -3734,7 +3794,9 @@ def check_acquisition_type_is_the_headers(
                 energies = _energy_set(record.get("ms2_collision_energies"))
                 basis_text = str(record.get("console_acquisition_basis") or "")
                 if (energies and len(energies) > 1) or basis_text == AIF_MULTI_CE_BASIS or multi_ce_recorded:
-                    multi_rows.append((name, energies, basis_text))
+                    # The file name aif_collision_energies_by_input is keyed by, as Interactive keys it.
+                    file_name = PureWindowsPath(str(record.get("file") or "")).name or Path(path).name or name
+                    multi_rows.append((name, energies, basis_text, file_name))
             if mapped:
                 sanctioned += 1
                 sources["sanctioned"] += 1
@@ -3800,6 +3862,7 @@ def check_acquisition_type_is_the_headers(
         evidence["declaration_sources"] = dict(Counter(str(entry.get("declaration_source") or "unrecorded")
                                                        for entry in overrides))
     multi_text = ""
+    differing = ""
     if multi_rows:
         refused, evidence["multi_energy_aif"] = _multi_energy_aif_failures(multi_rows, dispositions, run_manifest)
         multi_failures.extend(refused)
@@ -3810,6 +3873,17 @@ def check_acquisition_type_is_the_headers(
                       f"under {AIF_MULTI_CE_RULE}: {multi.get('console_detail')}"
                       + (f" ({sha[:12]})" if sha else "") + ", and that Console represents each peak by the energy of "
                       "its MS/MS reference-spectrum match, else the energy with the most product ions.")
+        sets = multi.get(AIF_CE_SETS_FIELD) or []
+        if multi.get(AIF_CE_SETS_DIFFER_FIELD) is True and not refused:
+            differing = (
+                f"The {len(multi_rows)} multi-energy AIF row(s) record {len(sets)} different set(s) of MS2 collision "
+                "energies (" + "; ".join(f"{_energies_text(item['collision_energies'])} in {item['rows']} row(s)"
+                                          for item in sets)
+                + "): #825 chooses among one file's energies only, so each file is processed with its own "
+                "representative collision energy, and representative energies can differ between files. Each row "
+                f"records the set the campaign disposition's {AIF_CE_BY_INPUT_FIELD} records for its file. The unit "
+                f"runs as it is, on record (user decision, 2026-10-08; {AIF_CE_SETS_DIFFER_WARNING}); that the sets "
+                "differ is recorded here and stops no run.")
     if sanctioned:
         evidence["sanctioned_mappings"] = sanctioned
         evidence["sanctioned_rule"] = AIF_AS_SWATH_RULE
@@ -3818,8 +3892,8 @@ def check_acquisition_type_is_the_headers(
     if failures:
         refuse(warnings=warnings[:10], **({"sanctioned": sanctioned_rows[:10]} if sanctioned_rows else {}), **evidence)
         return
-    if warnings or sanctioned_rows:
-        sentences = []
+    if warnings or sanctioned_rows or differing:
+        sentences = [differing] if differing else []
         if sanctioned_rows:
             energies, _why = _aif_as_swath_energies(evidence.get(AIF_AS_SWATH_FIELD))
             energy = f"{energies[0]:g} eV" if energies else "one collision energy"

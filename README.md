@@ -165,7 +165,14 @@ those same `ms2_collision_energies`, and the Console the run manifest records
 the disposition's `multi_energy_aif_console` probe found it in that assembly, or
 the gate finds both of #825's markers there itself. A multi-energy AIF row on a
 Console without #825, one whose disposition holds the unit or records no such
-run, and one whose energies differ from the unit's or are unrecorded, FAIL. A
+run, and one whose energies differ from the unit's or are unrecorded, FAIL.
+Inputs whose energy sets differ run as they are, on record (the user's decision
+of 2026-10-08; Interactive 0.5.36): where `aif_multi_ce_run` records
+`energy_sets_differ` true, each row must record the set the disposition's
+`aif_collision_energies_by_input` records for its file, within the unit's
+energies, and ACQ-1 is a WARN that names each set and the decision
+(`aif_energy_sets_differ_between_inputs`), which stops no run. Without that
+record, differing sets still FAIL. A
 single-energy AIF unit is still expected as SWATH whatever the Console.
 Archive members of a unit-scoped
 archive that no sample row pairs with, which Interactive 0.5.31 includes as
@@ -217,8 +224,13 @@ decides for it: with #825 a multi-energy AIF unit runs as AIF
 (`multi_ce_aif_with_console_825`; its disposition records `aif_multi_ce_run`
 and the probe), without it the unit is held as before. A recheck that releases a
 held unit writes a `disposition_hold_lifted` event, and `status` counts such
-runs under `multi_energy_aif_runs`. Inputs whose energies differ, or an input
-with no recorded energy, still hold the unit with that Console. The plan records
+runs under `multi_energy_aif_runs`. An input with no recorded energy still holds
+the unit with that Console. Inputs whose energy sets differ run with Interactive
+0.5.36 (0.5.34-0.5.35 held them as `aif_collision_energies_differ_between_inputs`,
+which a recheck decides again): the unit's `status` warning says it ran as it is,
+on record, and `status` counts it under `multi_energy_aif_runs.energy_sets_differ`;
+the `preflighted` transition and a `disposition_hold_lifted` event carry the
+same. The plan records
 Interactive's probe in the Console pin (`multi_energy_aif`) and prints what it
 means, and refuses neither, since a Console without #825 only holds such units.
 A campaign pinned to a Console without #825 cannot change it in place (a changed
