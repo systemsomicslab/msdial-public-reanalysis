@@ -206,12 +206,22 @@ is taken where the chosen one cannot be read or converted; the file used is that
 sample's own input; and every other is recorded with its reason. The gate
 recomputes the rule from Interactive's record (`manifest.encoding_choices` and
 each used input's lineage `encoding_choice`): INP-1 FAILs, blocking the run, a
-choice the rule does not make, a choice missing from the lineage row or the
-manifest, a file left unused that runs, a file used that runs unattributed or as
-another sample, a vendor file excluded for its raw header with the sample's next
-encoding not taken (`encoding_fallback_not_taken`), two files of one sample
-(one stem, the same polarities, not two sample rows' own) that both run, and an
-input beside a lease-excluded encoding of its sample that no choice records. A
+choice the rule does not make (a file passed over as unreadable must carry a
+reason that applies to its encoding: `undecodable` an mzML's,
+`conversion_failed`, `requires_conversion` and `polarity_contradicts_declaration`
+an mzXML's, `incomplete_container` and a raw-header reason a vendor file's), a
+choice missing from the lineage row or the manifest, a file left unused that
+runs (in a split part, by its raw owner's choices too), a file used that runs
+unattributed or as another sample than its rows, or a pairing rule's inference
+(`name_pairing`, `inferred_name_pairings`), give it, a vendor file excluded for
+its raw header with the sample's next encoding not taken
+(`encoding_fallback_not_taken`), two files of one sample (one stem, polarities
+that make one sample as Interactive merges them, so a path stating none is one
+sample's with one stating the unit's own; not two sample rows' own) that both
+run, an input beside a lease-excluded encoding of its sample that no choice
+records, and a file of a running input's sample that the archive member listing
+shows extracted and that no choice, input, exclusion or `left_out` record names.
+A sample whose file used was excluded is named as running on no file. A
 declared input the rule left unused is counted beside the candidates, not as
 missing. CONV-1 FAILs a choice that uses an mzXML whose conversion did not
 complete, or leaves one unused as `conversion_failed` whose conversion did.

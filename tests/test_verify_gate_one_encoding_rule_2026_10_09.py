@@ -20,6 +20,7 @@ test_verify_lineage_built_csv's FolderBranchUnit for a declared unit.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -135,6 +136,46 @@ class TheRuleRecomputedTests(unittest.TestCase):
         # In a campaign an mzXML is converted, so requires_conversion is no reason there.
         self.assertEqual([], _problems(_choice(None, ("S1.mzXML", "requires_conversion"))))
         self.assertTrue(_problems(_choice(None, ("S1.mzXML", "requires_conversion")), campaign=True))
+
+    def test_clause_3_a_reason_that_cannot_apply_to_the_encoding_passes_nothing_over(self) -> None:
+        """Interactive gives each reason a file could not be read to one encoding: undecodable an mzML's;
+        conversion_failed, requires_conversion and polarity_contradicts_declaration an mzXML's; incomplete_container
+        and a raw-header reason a vendor file's or a re-encoding's. Any other pairing passes a readable file over."""
+        for choice, said in (
+            (_choice("S1.mzML", ("S1.raw", "requires_conversion")),
+             "leaves S1.raw unused as requires_conversion, a reason only an mzXML is left unused for, and S1.raw is a "
+             "vendor format"),
+            (_choice("S1.mzML", ("S1.raw", "undecodable")),
+             "leaves S1.raw unused as undecodable, a reason only an mzML is left unused for, and S1.raw is a vendor "
+             "format"),
+            (_choice("S1.mzXML", ("S1.mzML", "incomplete_container")),
+             "leaves S1.mzML unused as incomplete_container, a reason only a vendor format or a re-encoding is left "
+             "unused for, and S1.mzML is an mzML"),
+            (_choice("S1.mzXML", ("S1.mzML", "raw_header_unreadable")),
+             "leaves S1.mzML unused as raw_header_unreadable, a reason only a vendor format or a re-encoding is left "
+             "unused for, and S1.mzML is an mzML"),
+            (_choice("b/S1.raw", ("A/S1.raw", "undecodable")),
+             "leaves A/S1.raw unused as undecodable, a reason only an mzML is left unused for"),
+            (_choice("S1.raw", ("S1.mzML", "conversion_failed")),
+             "leaves S1.mzML unused as conversion_failed, a reason only an mzXML is left unused for"),
+        ):
+            for campaign in (False, True):
+                with self.subTest(choice=choice, campaign=campaign):
+                    problems = _problems(choice, campaign=campaign)
+                    if campaign and choice["unused"][0]["reason"] == "requires_conversion":
+                        self.assertTrue(problems)
+                        continue
+                    self.assertTrue(any(said in item for item in problems), problems)
+        # Each reason on the encoding it belongs to passes, a re-encoding's header included.
+        for choice in (_choice("S1.mzML", ("S1.raw", "raw_header_unsupported_format")),
+                       _choice("S1.mzML", ("S1.cdf", "raw_header_unreadable")),
+                       _choice("S1.mzML", ("S1.d", "incomplete_container")),
+                       _choice("S1.mzXML", ("S1.mzML", "undecodable")),
+                       _choice("S1.raw", ("S1.mzXML", "polarity_contradicts_declaration")),
+                       _choice(None, ("S1.raw", "raw_header_unreadable"), ("S1.mzML", "undecodable"),
+                               ("S1.mzXML", "conversion_failed"))):
+            with self.subTest(choice=choice):
+                self.assertEqual([], _problems(choice, campaign=True))
 
     def test_against_interactive_where_it_is_importable(self) -> None:
         """Every choice Interactive's encoding_rule makes passes the gate's recomputation, and the same choice with
@@ -321,6 +362,149 @@ class UnattributedUnitTests(unittest.TestCase):
         self.assertIn("U_8.raw, the file the rule used for its sample, is excluded for a raw header the preflight "
                       "could not read (raw_header_unreadable), and the sample's next encoding, U_8.mzML, was not "
                       "taken (encoding_fallback_not_taken)", check.detail)
+
+
+class ReviewRound1Tests(unittest.TestCase):
+    """The review of 686e400: a split part read against its raw owner's choices, clause 4 through an inferred
+    pairing, a listed copy no record names, one sample's polarities merged as Interactive merges them, and the
+    sentence for a sample whose file used was excluded."""
+
+    PREFIXED_RAW = "021518_387057_CSHp_BioRec1.raw"
+    PREFIXED_D = "021518_387057_CSHp_BioRec1.d"
+
+    def test_a_split_part_that_runs_a_file_its_owner_left_unused_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "raw" / "data"
+            root.mkdir(parents=True)
+            raw, mzml = str(root / "U_8.raw"), str(root / "U_8.mzML")
+            choice = _choice("U_8.raw", ("U_8.mzML", LOWER))
+            owner = {"input_directory": str(root), "input_candidates": [raw], "encoding_choices": [choice],
+                     "input_lineage": {"rows": [{"path": raw, "sample_id": "S8", "encoding_choice": choice}],
+                                       "excluded": []},
+                     "project": {"sample_metadata": [{"sample_id": "S8", "raw_file": "U_8.raw"}]}}
+            owner_path = Path(temporary) / "owner.json"
+            owner_path.write_text(json.dumps(owner), encoding="utf-8")
+            part = {"split_from": {"manifest_path": str(owner_path)}, "input_directory": str(root),
+                    "input_candidates": [mzml],
+                    "input_lineage": {"rows": [{"path": mzml, "sample_id": "S8"}], "excluded": []}}
+            problems, _evidence = verifier._encoding_run_problems(part, None)
+            self.assertIn("1 file(s) the one encoding rule left unused reach the run all the same: U_8.mzML "
+                          "(lower_in_encoding_order; U_8.raw used) (clause 1: exactly one file of a sample is used)",
+                          problems)
+            # The part that runs the file used, with its own sample's choice, passes.
+            part["input_candidates"] = [raw]
+            part["encoding_choices"] = [choice]
+            part["input_lineage"]["rows"] = [{"path": raw, "sample_id": "S8"}]
+            self.assertEqual([], verifier._encoding_run_problems(part, None)[0])
+
+    def _prefixed_unit(self, temporary: str):
+        """ST001264's shape: the row naming BioRec1.raw paired behind a prefix with the .raw, and the .d of that stem
+        the rule used (a tie, by path), recorded as Interactive 0.5.36 records it."""
+        unit = d08._unit(temporary, plain=(self.PREFIXED_D,), converted=())
+        raw_path = str(unit.data / self.PREFIXED_RAW)
+        manifest = unit.manifest
+        manifest["input_candidates"] = [item for item in manifest["input_candidates"]
+                                        if Path(item).name != self.PREFIXED_RAW]
+        manifest["input_lineage"]["rows"] = [row for row in manifest["input_lineage"]["rows"]
+                                             if Path(row["path"]).name != self.PREFIXED_RAW]
+        for row in manifest["input_lineage"]["rows"]:
+            if Path(row["path"]).name == self.PREFIXED_D:
+                row["name_pairing"] = {"paired_by": "prefixed_member_name", "declared_raw_file": "BioRec1.raw",
+                                       "member_name": self.PREFIXED_RAW}
+        manifest["unattributed_members"] = {"rule": d08.d07.MEMBER_RULE, "applied": False, "count": 0,
+                                            "members": [], "paths": []}
+        manifest["warnings"] = ["input_names_paired_by_inference"]
+        manifest["inferred_name_pairings"] = [{"member_name": self.PREFIXED_RAW, "declared_raw_file": "BioRec1.raw",
+                                               "paired_by": "prefixed_member_name", "encoding_used": self.PREFIXED_D}]
+        _record(unit, _choice(self.PREFIXED_D, (self.PREFIXED_RAW, TIE)), stands_for=raw_path)
+        return unit
+
+    def test_clause_4_through_an_inferred_pairing(self) -> None:
+        said = (f"{self.PREFIXED_D} runs as sample Biorec2, the file the rule used for the sample of Biorec1, whose "
+                "rows name its sample's files or were paired with one of them (clause 4)")
+        for sample, refused in (("Biorec1", False), ("Biorec2", True)):
+            with self.subTest(sample=sample), tempfile.TemporaryDirectory() as temporary:
+                unit = self._prefixed_unit(temporary)
+                unit.prepare()
+                for row in unit.manifest["input_lineage"]["rows"]:
+                    if Path(row["path"]).name == self.PREFIXED_D:
+                        row["sample_id"] = sample
+                problems, _evidence = verifier._encoding_run_problems(unit.manifest, None)
+                if refused:
+                    self.assertIn(said, problems)
+                else:
+                    self.assertEqual([], problems)
+
+    def test_a_listed_copy_no_record_names_blocks_the_run(self) -> None:
+        said = ("the archive listing shows 1 file(s) extracted of a sample whose input runs, and no choice of the one "
+                "encoding rule, input, exclusion or left_out record names them (every file not used is recorded with "
+                "its reason, and a copy no record names may be the one the rule uses; clauses 2 and 5): A/U_8.raw "
+                "beside B/U_8.raw")
+        for name, recorded in (("left out of the choice", True), ("no record at all", False)):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=("B/U_8.raw",),
+                                 on_disk=("A/U_8.raw", *(("B/U_8.mzML",) if recorded else ())))
+                if recorded:
+                    _record(unit, _choice("B/U_8.raw", ("B/U_8.mzML", LOWER)))
+                report = d08._gate(unit)
+                inp1 = _check(report, "INP-1")
+                self.assertEqual(verifier.FAIL, inp1.status, inp1.detail)
+                self.assertIn(said, inp1.detail)
+                self.assertIn("INP-1", report.run_blocked_by)
+
+    def test_a_listed_file_on_record_or_of_another_sample_is_accounted_for(self) -> None:
+        def left_out(unit) -> None:
+            unit.manifest["unattributed_members"]["left_out"] = [d08._left("B/U_8.raw", "opposite_polarity_name")]
+            unit.manifest["unattributed_members"]["left_out_count"] = 1
+
+        cases = {
+            "in the choice": (lambda unit: _record(unit, _choice("A/U_8.raw", ("B/U_8.raw", TIE))),
+                              ("A/U_8.raw",), ("B/U_8.raw",)),
+            "left out on record": (left_out, ("A/U_8.raw",), ("B/U_8.raw",)),
+            "another stem": (lambda unit: None, ("U_8.raw",), ("U_80.raw",)),
+            "the other polarity": (lambda unit: None, ("U_8.raw",), ("NEG/U_8.raw",)),
+        }
+        for name, (record, plain, on_disk) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=plain, on_disk=on_disk)
+                unit.manifest["project"]["ion_mode"] = "Positive"
+                record(unit)
+                report = d08._gate(unit)
+                inp1 = _check(report, "INP-1")
+                self.assertNotIn("the archive listing shows", inp1.detail)
+
+    def test_a_path_stating_no_polarity_is_one_sample_with_one_stating_the_units(self) -> None:
+        said = ("1 sample(s) reach the run in more than one file, where the one encoding rule uses exactly one file of "
+                "a sample (clauses 1 and 2): POS/U_8.raw and U_8.raw")
+        for ion_mode, refused in (("Positive", True), ("", True), ("Negative", False)):
+            with self.subTest(ion_mode=ion_mode), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=("POS/U_8.raw", "U_8.raw"))
+                unit.manifest["project"]["ion_mode"] = ion_mode
+                report = d08._gate(unit)
+                inp1 = _check(report, "INP-1")
+                if refused:
+                    self.assertEqual(verifier.FAIL, inp1.status, inp1.detail)
+                    self.assertIn(said, inp1.detail)
+                else:
+                    self.assertNotIn(said, inp1.detail)
+        positive = frozenset({"Positive"})
+        self.assertEqual({frozenset(): positive, positive: positive},
+                         verifier._one_sample_polarities([frozenset(), positive], "Positive"))
+        self.assertEqual({}, verifier._one_sample_polarities([positive, frozenset({"Negative"})], ""))
+
+    def test_the_sentence_names_a_sample_whose_file_used_was_excluded(self) -> None:
+        for reason in ("raw_header_unreadable", "polarity_mismatch"):
+            with self.subTest(reason), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, on_disk=("U_8.mzML",))
+                _record(unit, _choice("U_8.raw", ("U_8.mzML", "undecodable")))
+                unit.exclude(str(unit.data / "U_8.raw"), reason)
+                report = d08._gate(unit)
+                inp1 = _check(report, "INP-1")
+                self.assertEqual([], report.run_blocked_by)
+                self.assertIn("U_8.raw used (U_8.mzML undecodable). 1 of these sample(s) run on no file: the file "
+                              "used is excluded or none could be read, and no other file of the sample runs in its "
+                              f"place: U_8.raw (excluded, {reason})", inp1.detail)
+                self.assertNotIn("the file used runs for each", inp1.detail)
 
 
 class ConversionTests(unittest.TestCase):
