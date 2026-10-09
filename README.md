@@ -217,13 +217,17 @@ unattributed or as another sample than its rows, or a pairing rule's inference
 its raw header with the sample's next encoding not taken
 (`encoding_fallback_not_taken`), two files of one sample (one stem, polarities
 that make one sample as Interactive merges them, so a path stating none is one
-sample's with one stating the unit's own; not two sample rows' own) that both
-run, an input beside a lease-excluded encoding of its sample that no choice
-records, and a file of a sample the unit records (a running input's, a
-candidate's of any choice, the used file excluded or none used included, or an
-excluded file's) that an archive member listing shows extracted, or a download
-that is no archive delivered, and that no choice, input, exclusion or
-`left_out` record names, nor, in a declared unit, leaves out by not declaring it.
+sample's with one stating the unit's own, or paired to one sample row whatever
+their stems, by an exact name, a prefix or a leading identifier, under one
+polarity; not two sample rows' own) that both run, an input beside a
+lease-excluded encoding of its sample that no choice records, and a file of a
+sample the unit records (a running input's, a candidate's of any choice, the
+used file excluded or none used included, or an excluded file's) that an
+archive member listing shows extracted, or a download that is no archive
+delivered, and that no choice, input, exclusion or `left_out` record names,
+nor, in a declared unit, leaves out by not declaring it (a plain download only:
+an archive member no declaration names stays out on Interactive's `left_out`
+record, `not_named_by_the_catalog_declaration`).
 A sample whose file used was excluded is named as running on no file. A
 declared input the rule left unused is counted beside the candidates, not as
 missing. CONV-1 FAILs a choice that uses an mzXML whose conversion did not

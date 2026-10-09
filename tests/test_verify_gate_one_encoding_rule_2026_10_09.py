@@ -601,6 +601,115 @@ class ReviewRound2Tests(unittest.TestCase):
             self.assertNotIn(UNACCOUNTED, inp1.detail)
 
 
+class ReviewRound3Tests(unittest.TestCase):
+    """The review of 909f7da: one sample row's files are one sample's whatever their stems (a member paired by a
+    prefix and the file the row names exactly), and in a declared unit an archive member no declaration names stays
+    out only on Interactive's left_out record (R2-3), as a plain download stays out by the declaration alone."""
+
+    PREFIXED = "021518_387057_CSHp_BioRec1.raw"
+
+    def _refused(self, report, said: str) -> None:
+        inp1 = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, inp1.status, inp1.detail)
+        self.assertIn(said, inp1.detail)
+        self.assertIn("INP-1", report.run_blocked_by)
+
+    def test_a_copy_of_another_stem_paired_to_the_same_row_no_record_names_blocks_the_run(self) -> None:
+        """The row naming BioRec1.raw runs the prefixed member; the archive also holds BioRec1.raw (or a copy in a
+        folder), which the row names exactly. Both are that row's sample's (clauses 1 and 2 name the exact copy:
+        '000/' sorts before '0215'), and no record names it."""
+        for copy in ("BioRec1.raw", "RAW/BioRec1.raw", "000/BioRec1.raw"):
+            for recorded in (False, True):
+                with self.subTest(copy=copy, recorded=recorded), tempfile.TemporaryDirectory() as temporary:
+                    unit = d08._unit(temporary, plain=(), converted=(), on_disk=(copy,))
+                    if recorded:
+                        # A one-candidate choice that leaves the row's own copy out of the sample.
+                        _record(unit, _choice(self.PREFIXED))
+                    self._refused(d08._gate(unit), UNACCOUNTED + f"{copy} beside {self.PREFIXED}")
+
+    def _both_run(self, temporary: str):
+        """The prefixed member runs for the row naming BioRec1.raw, and 000/BioRec1.raw, which that row names
+        exactly, runs as well (an input of its own, sample Biorec1)."""
+        unit = d08._unit(temporary, plain=(), converted=())
+        download = unit._download(unit.data / "000" / "BioRec1.raw", b"000/BioRec1.raw", verified=True)
+        unit._input(download["path"], "file", {"url": download["source_url"], "download_path": download["path"]},
+                    {"sha256": download["sha256"], "md5": download["md5"], "declared": download["md5"],
+                     "declared_algorithm": "md5", "declared_verified": True})
+        return unit
+
+    def test_two_files_of_one_row_of_different_stems_that_both_run_block_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = self._both_run(temporary)
+            rows = unit.prepare()
+            self.assertEqual(2, sum(1 for row in rows if row["file_name"] in ("BioRec1", Path(self.PREFIXED).stem)))
+            self._refused(unit.gate(), "1 sample(s) reach the run in more than one file, where the one encoding rule "
+                                       f"uses exactly one file of a sample (clauses 1 and 2): 000/BioRec1.raw and "
+                                       f"{self.PREFIXED}")
+
+    def test_the_rule_followed_across_stems_passes(self) -> None:
+        """000/BioRec1.raw runs for the row, and the prefixed member is on record as its tie."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = self._both_run(temporary)
+            manifest = unit.manifest
+            manifest["input_candidates"] = [item for item in manifest["input_candidates"]
+                                            if Path(item).name != self.PREFIXED]
+            manifest["input_lineage"]["rows"] = [row for row in manifest["input_lineage"]["rows"]
+                                                 if Path(row["path"]).name != self.PREFIXED]
+            manifest["inferred_name_pairings"] = [{"member_name": self.PREFIXED, "declared_raw_file": "BioRec1.raw",
+                                                   "paired_by": "prefixed_member_name",
+                                                   "encoding_used": "000/BioRec1.raw"}]
+            _record(unit, _choice("000/BioRec1.raw", (self.PREFIXED, TIE)))
+            unit.prepare()
+            for row in manifest["input_lineage"]["rows"]:
+                if Path(row["path"]).name == "BioRec1.raw":
+                    self.assertEqual("Biorec1", row["sample_id"])
+            self.assertEqual([], verifier._encoding_run_problems(manifest, None)[0])
+
+    def test_two_rows_and_two_polarities_stay_two_samples_across_stems(self) -> None:
+        """Outside the rule's words, as before: a file each of two rows, and files of two polarities paired to one
+        row, are two samples' (_sample_groups)."""
+        names = [(0, "biorec1.raw", "Biorec1"), (1, "biorec2.raw", "Biorec2")]
+        paired = {self.PREFIXED.casefold(): {"BioRec1.raw"}, "x_biorec2.raw": {"BioRec2.raw"}}
+        keys = verifier._sample_groups([self.PREFIXED, "000/BioRec1.raw", "x_BioRec2.raw", "BioRec2.raw"], "",
+                                       names, paired)
+        self.assertEqual(keys[self.PREFIXED], keys["000/BioRec1.raw"])
+        self.assertEqual(keys["x_BioRec2.raw"], keys["BioRec2.raw"])
+        self.assertNotEqual(keys[self.PREFIXED], keys["BioRec2.raw"])
+        keys = verifier._sample_groups(["POS/X_BioRec1.raw", "NEG/BioRec1.raw", "BioRec1.raw"], "Positive",
+                                       names, {"pos/x_biorec1.raw": {"BioRec1.raw"}})
+        self.assertEqual(keys["POS/X_BioRec1.raw"], keys["BioRec1.raw"])
+        self.assertNotEqual(keys["NEG/BioRec1.raw"], keys["BioRec1.raw"])
+
+    def _declared_archive(self, temporary: str, *, left_out: bool) -> FolderBranchUnit:
+        """A declared unit whose unit-scoped archive also extracted RAW/S1.raw, which no declaration names, beside
+        the declared S1.mzML; Interactive records it as left out (not_named_by_the_catalog_declaration)."""
+        unit = FolderBranchUnit(temporary)
+        unit.file("S1.mzML", "S1", "A")
+        unit.file("S2.mzML", "S2", "B")
+        (unit.data / "RAW").mkdir()
+        (unit.data / "RAW" / "S1.raw").write_bytes(b"x")
+        d08.earlier._archive(unit, ["S1.mzML", "S2.mzML", "RAW/S1.raw"], shared=1)
+        if left_out:
+            unit.manifest["unattributed_members"] = {
+                "rule": d08.d07.MEMBER_RULE, "applied": False, "count": 0, "members": [], "paths": [],
+                "reason": "catalog_declared_inputs", "left_out_count": 1,
+                "left_out": [d08._left("RAW/S1.raw", "not_named_by_the_catalog_declaration")]}
+        return unit
+
+    def test_in_a_declared_unit_an_undeclared_archive_member_stays_out_only_on_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = self._declared_archive(temporary, left_out=False)
+            unit.prepare()
+            self._refused(unit.gate(), UNACCOUNTED + "RAW/S1.raw beside S1.mzML")
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = self._declared_archive(temporary, left_out=True)
+            unit.prepare()
+            report = unit.gate()
+            inp1 = _check(report, "INP-1")
+        self.assertEqual(verifier.PASS, inp1.status, inp1.detail)
+        self.assertNotIn("INP-1", report.run_blocked_by)
+
+
 class ConversionTests(unittest.TestCase):
     """CONV-1 holds each choice to the conversions."""
 

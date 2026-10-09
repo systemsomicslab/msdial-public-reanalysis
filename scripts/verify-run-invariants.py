@@ -3326,14 +3326,52 @@ def _rows_naming(member: str, rows: list[tuple[int, str, str]], *, by_stem: bool
     return stemmed if len(stemmed) == 1 else set()
 
 
-def _two_samples(first: str, second: str, rows: list[tuple[int, str, str]]) -> bool:
-    """Whether two files of one stem and polarity are two samples' all the same: two different sample rows name them
-    (rows naming S1.raw and S1.mzML each keep their own; MTBKS64's two rows of S01 naming raw/batch1/QC.RAW and
-    raw/batch2/QC.RAW), or the same two or more rows name both and no one row is theirs. Outside the rule's words,
-    the existing behaviour is kept for both."""
-    named_first, named_second = _rows_naming(first, rows), _rows_naming(second, rows)
+def _tied_rows(member: str, rows: list[tuple[int, str, str]],
+               paired: "dict[str, set[str]] | None" = None) -> set[int]:
+    """The sample rows a file under the data root is paired to: those that name it (_rows_naming, exact), and those
+    that name a raw file a pairing rule paired it with (``paired``, _paired_raw_files: a prefixed or
+    leading-identifier member paired to the row naming S7.raw)."""
+    tied = set(_rows_naming(member, rows))
+    paired = paired or {}
+    for raw_file in paired.get(_slashed(member).casefold(), set()) | paired.get(_basename(member).casefold(), set()):
+        tied |= _rows_naming(raw_file, rows)
+    return tied
+
+
+def _two_samples(first: str, second: str, rows: list[tuple[int, str, str]],
+                 paired: "dict[str, set[str]] | None" = None) -> bool:
+    """Whether two files of one sample by name or by row are two samples' all the same: two different sample rows
+    are theirs (_tied_rows: rows naming S1.raw and S1.mzML each keep their own; MTBKS64's two rows of S01 naming
+    raw/batch1/QC.RAW and raw/batch2/QC.RAW), or the same two or more rows are both's and no one row is theirs.
+    Outside the rule's words, the existing behaviour is kept for both."""
+    named_first, named_second = _tied_rows(first, rows, paired), _tied_rows(second, rows, paired)
     return bool(named_first and named_second and named_first.isdisjoint(named_second)) \
         or (named_first == named_second and len(named_first) >= 2)
+
+
+def _sample_groups(paths: "Iterable[str]", unit_polarity: str, rows: list[tuple[int, str, str]],
+                   paired: "dict[str, set[str]] | None" = None) -> dict:
+    """Each path's sample as the rule reads 'the same sample', {path: a key one sample's files share}: the files of
+    one stem whose polarities make one sample (_sample_keys), joined with every file paired to the same sample row
+    (_tied_rows: exact, prefixed or leading-identifier pairing) under the same polarity, a path stating none taken
+    as stating the unit's. So 021518_387057_CSHp_BioRec1.raw, paired by prefix to the row naming BioRec1.raw, and
+    000/BioRec1.raw, which that row names, are one sample's files; POS/S1.raw and NEG/S1.raw stay two samples'."""
+    keys = _sample_keys(paths, unit_polarity)
+    parent: dict = {key: key for key in keys.values()}
+
+    def find(key):
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    first_of: dict[tuple, tuple] = {}
+    for path, key in keys.items():
+        polarity = key[1] or (frozenset({unit_polarity}) if unit_polarity else frozenset())
+        for index in _tied_rows(path, rows, paired):
+            other = first_of.setdefault((index, polarity), key)
+            parent[find(key)] = find(other)
+    return {path: find(key) for path, key in keys.items()}
 
 
 def _owner_encoding_choices(provenance: dict) -> list:
@@ -3417,9 +3455,10 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
     - a file used that runs unattributed or as another sample than the sample rows give that name its sample's
       files, or that a pairing rule paired one of them with (_paired_raw_files: name_pairing, inferred_name_pairings),
       or with a stands_for and no sample (clause 4);
-    - two files of one sample that both reach the run (_sample_keys: one stem, the same sample's polarities, and no
-      two sample rows of their own: _two_samples); an input beside a lease-excluded encoding of its own sample that
-      no choice records; and a file of a sample the unit records (a running input's, a choice's, an excluded one's)
+    - two files of one sample that both reach the run (_sample_groups: one stem and the same sample's polarities,
+      or one sample row by any pairing under one polarity, and no two sample rows of their own: _two_samples); an
+      input beside a lease-excluded encoding of its own sample that no choice records; and a file of a sample the
+      unit records (a running input's, a choice's, an excluded one's)
       that the raw owner's record shows delivered, by an archive listing or a download that is no archive, and that
       no choice, input, exclusion, left_out record or declaration accounts for (_unaccounted_listed_members): the
       run departs from the rule, or the rule's record of it is missing (clauses 2, 3 and 5)."""
@@ -3486,19 +3525,22 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
         problems.append(f"the campaign disposition warns {ENCODING_FALLBACK_NOT_TAKEN}: a file the rule used was "
                         "excluded for its raw header, and its sample's next encoding was not taken (clause 3)")
     unit_polarity = _unit_polarity(provenance)
-    problems.extend(_unrecorded_encoding_problems(provenance, rows, record, names, every_choice, unit_polarity))
-    problems.extend(_unaccounted_listed_members(provenance, rows, record, every_choice, unit_polarity))
+    problems.extend(_unrecorded_encoding_problems(provenance, rows, record, names, every_choice, unit_polarity,
+                                                  paired))
+    problems.extend(_unaccounted_listed_members(provenance, rows, record, every_choice, unit_polarity, names, paired))
     return list(dict.fromkeys(problems)), _encoding_evidence(record)
 
 
 def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _EncodingRecord,
                                   names: list[tuple[int, str, str]], choices: "list | None" = None,
-                                  unit_polarity: str = "") -> list[str]:
+                                  unit_polarity: str = "", paired: "dict[str, set[str]] | None" = None) -> list[str]:
     """A run that departs from the one encoding rule where its record says nothing: two files of one sample that
     both reach the run, and an input beside a lease-excluded encoding of its own sample that no choice holds with it
     (``choices``: the unit's, and a split part's raw owner's). One sample's files are those of one stem
     (_encoding_stem, whatever folders they lie in) whose polarities make one sample (_sample_keys: a path stating
-    none is one sample's with one stating the unit's own) and that are not two sample rows' (_two_samples)."""
+    none is one sample's with one stating the unit's own), and those paired to one sample row (_sample_groups: an
+    exact name, a prefixed or a leading-identifier pairing, ``paired``), that are not two sample rows'
+    (_two_samples)."""
     root = record.root
     together = [{path.casefold() for path in entry.candidates}
                 for entry in (record.choices if choices is None else choices)]
@@ -3516,18 +3558,18 @@ def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _E
         running.append(member)
     excluded = [(_aif_input_key(path, root), reason) for path, reason in lease.values()]
     excluded = [(member, reason) for member, reason in excluded if _encoding_rank(member) is not None]
-    keys = _sample_keys([*running, *(member for member, _reason in excluded)], unit_polarity)
+    keys = _sample_groups([*running, *(member for member, _reason in excluded)], unit_polarity, names, paired)
     groups: dict[tuple, list[str]] = {}
     for member in running:
         groups.setdefault(keys[member], []).append(member)
     problems: list[str] = []
     twice: list[str] = []
     for members in groups.values():
-        paired = sorted({item for index, first in enumerate(members) for second in members[index + 1:]
-                         if not _two_samples(first, second, names) for item in (first, second)},
-                        key=_encoding_order_key)
-        if paired:
-            twice.append(" and ".join(paired))
+        both = sorted({item for index, first in enumerate(members) for second in members[index + 1:]
+                       if not _two_samples(first, second, names, paired) for item in (first, second)},
+                      key=_encoding_order_key)
+        if both:
+            twice.append(" and ".join(both))
     if twice:
         problems.append(f"{len(twice)} sample(s) reach the run in more than one file, where the one encoding rule uses "
                         "exactly one file of a sample (clauses 1 and 2): " + "; ".join(twice[:5]))
@@ -3536,7 +3578,7 @@ def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _E
         for other in groups.get(keys[member], []):
             if other.casefold() == member.casefold() \
                     or any(member.casefold() in group and other.casefold() in group for group in together) \
-                    or _two_samples(member, other, names):
+                    or _two_samples(member, other, names, paired):
                 continue
             beside.append(f"{member} ({reason or 'no reason recorded'}) beside {other}")
     if beside:
@@ -3546,20 +3588,22 @@ def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _E
     return problems
 
 
-def _listed_inputs(owner: dict, root: str) -> list[str]:
+def _listed_inputs(owner: dict, root: str) -> dict[str, bool]:
     """Every input container the raw owner's record shows delivered under the data root, as the rule names it
-    (relative, '/'-separated), as _delivery_of reads the delivery: each container an archive member listing
+    (relative, '/'-separated), with whether an archive listing shows it ({path: archived}), as _delivery_of reads the
+    delivery: each container an archive member listing
     (archive_extractions[].members_tsv, its sha256 checked) shows extracted, at the listing's path under the
     extraction's destination (or as listed where none is recorded), and each container a download that is no archive
     is or is inside (_download_container: a Waters .raw folder fetched file by file is one input, and a .wiff.scan
     companion is none). A container the rule ranks no encoding of, one outside the data root, and a listing that
     cannot be read give nothing."""
-    found: dict[str, str] = {}
+    found: dict[str, tuple[str, bool]] = {}
 
-    def add(relative: str) -> None:
+    def add(relative: str, archived: bool = False) -> None:
         if relative and not relative.startswith("../") and relative != ".." and not os.path.isabs(relative) \
                 and _encoding_rank(relative) is not None:
-            found.setdefault(relative.casefold(), relative)
+            known, before = found.get(relative.casefold(), (relative, False))
+            found[relative.casefold()] = (known, before or archived)
 
     for item in owner.get("archive_extractions") or []:
         if not isinstance(item, dict):
@@ -3573,7 +3617,7 @@ def _listed_inputs(owner: dict, root: str) -> list[str]:
             if not container:
                 continue
             add(_aif_input_key(os.path.join(destination, container.replace("/", os.sep)), root)
-                if destination and root else container)
+                if destination and root else container, archived=True)
     for item in owner.get("downloads") or []:
         if not isinstance(item, dict) or not str(item.get("path") or "").strip() or _is_archive_download(item):
             continue
@@ -3584,7 +3628,7 @@ def _listed_inputs(owner: dict, root: str) -> list[str]:
                 else "")
         else:
             add(_download_container(path, str(owner.get("raw_directory") or "")))
-    return list(found.values())
+    return dict(found.values())
 
 
 def _undeclared(owner: dict, provenance: dict) -> "Callable[[str], bool] | None":
@@ -3603,12 +3647,17 @@ def _undeclared(owner: dict, provenance: dict) -> "Callable[[str], bool] | None"
 
 
 def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _EncodingRecord,
-                                choices: list, unit_polarity: str) -> list[str]:
+                                choices: list, unit_polarity: str, names: "list[tuple[int, str, str]] | None" = None,
+                                paired: "dict[str, set[str]] | None" = None) -> list[str]:
     """The files the raw owner's record shows delivered (_listed_inputs: an archive listing, or a download that is no
-    archive) that are of a sample the unit records (_sample_keys) and that nothing accounts for: no choice of the one
+    archive) that are of a sample the unit records (_sample_groups: one stem's, or paired to one sample row by an
+    exact name or a prefixed or leading-identifier pairing) and that nothing accounts for: no choice of the one
     encoding rule names them, and they are no input candidate, no lineage row (an input or an excluded one, the raw
-    owner's included), no excluded candidate, no unattributed or left_out member, and, in a declared unit, a file the
-    declaration names (one it does not name is kept out by the declaration, R2-3). A sample the unit records is that
+    owner's included), no excluded candidate, no unattributed or left_out member, and, in a declared unit, no
+    download that is no archive and that the declaration does not name (the declaration keeps it out, and Interactive
+    writes no other record of it). An archive member no declaration names stays out on record: Interactive lists it
+    in unattributed_members.left_out (not_named_by_the_catalog_declaration, R2-3), and without that record it is
+    unaccounted for here. A sample the unit records is that
     of an input that reaches the run, of a candidate of any choice (one whose file used was excluded, or that used
     none, included), and of any lineage row or excluded candidate. Every file of a sample not used is recorded with
     its reason (clause 5), and a copy no record names may be the one the rule names (clauses 2 and 3)."""
@@ -3656,13 +3705,13 @@ def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _Enc
     for item in _record_left_out(provenance):
         account(item["path"], of_a_sample=False)
     undeclared = _undeclared(owner, provenance)
-    keys = _sample_keys([*known, *listed], unit_polarity)
+    keys = _sample_groups([*known, *listed], unit_polarity, names or [], paired)
     by_sample: dict[tuple, str] = {}
     for member in known:
         by_sample.setdefault(keys[member], member)
     unaccounted = [f"{path} beside {by_sample[keys[path]]}" for path in sorted(listed, key=_encoding_order_key)
                    if path.casefold() not in accounted and keys[path] in by_sample
-                   and not (undeclared is not None and undeclared(path))]
+                   and not (undeclared is not None and not listed[path] and undeclared(path))]
     if not unaccounted:
         return []
     return [f"the raw owner's record shows {len(unaccounted)} file(s) delivered (an archive listing, or a download "
