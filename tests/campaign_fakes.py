@@ -75,7 +75,9 @@ class UnitScript:
     # run, split, skip, exclude, none, malformed; aif_hold (Interactive 0.5.31: a skip with hold true for a
     # multi-collision-energy AIF unit, aif_multi_ce_awaiting_console); aif_multi_ce (Interactive 0.5.34: such a unit
     # decided for the Console the preflight is given, else the saved one (World.saved_console): run as AIF under
-    # multi_ce_aif_with_console_825 where that Console is in World.consoles_825, held as aif_hold otherwise)
+    # multi_ce_aif_with_console_825 where that Console is in World.consoles_825, held as aif_hold otherwise);
+    # aif_multi_ce_differing (the same, its inputs' energy sets differing: Interactive 0.5.36 runs it on record,
+    # 0.5.34-0.5.35 held it as aif_collision_energies_differ_between_inputs, World.differing_sets_run)
     disposition: str = "run"
     # Whether the preflight applies its disposition (a campaign unit, Interactive 0.5.17), and whether
     # classify_preflight then does; held: what disposition_hold holds the unit for, if anything.
@@ -384,7 +386,9 @@ class FakeInteractive:
             return {"completed": False, "extractor_found": True, "preflight_held": {"reason": script.held, "detail": "held"}}
         disposition = script.disposition
         multi = {}
-        if disposition == "aif_multi_ce":
+        hold_reason = "aif_multi_ce_awaiting_console"
+        warnings: list[str] = []
+        if disposition in ("aif_multi_ce", "aif_multi_ce_differing"):
             # Interactive 0.5.34: decided for console_path, else the saved setting, and probed for #825.
             console = (console_path if self.world.preflight_takes_console else "") or self.world.saved_console
             ready = bool(console) and console in self.world.consoles_825
@@ -393,8 +397,20 @@ class FakeInteractive:
                      "console_assembly": "MSDIALCUI.exe", "assembly_sha256": SHA["console"] if ready else "",
                      "probe": "multi_energy_aif_marker" if ready else ("marker_absent" if console else "no_console_configured")}
             multi = {"multi_energy_aif_console": probe}
+            differing = disposition == "aif_multi_ce_differing"
+            if ready and differing and not self.world.differing_sets_run:
+                # Interactive 0.5.34-0.5.35: inputs whose energy sets differ are held with the #825 Console.
+                ready, hold_reason = False, policy.HOLD_CE_DIFFERS
             if ready:
-                multi["aif_multi_ce_run"] = {"collision_energies": [10.0, 20.0], "rule": "multi_ce_aif_with_console_825"}
+                multi["aif_multi_ce_run"] = {"collision_energies": [10.0, 20.0, 40.0] if differing else [10.0, 20.0],
+                                             "rule": "multi_ce_aif_with_console_825"}
+                if differing:
+                    # Interactive 0.5.36 (user decision, 2026-10-08): run as is, on record.
+                    multi["aif_multi_ce_run"].update(energy_sets_differ=True, collision_energy_sets=[
+                        {"collision_energies": [10.0, 20.0], "file_count": 1},
+                        {"collision_energies": [20.0, 40.0], "file_count": 1}])
+                    multi["aif_collision_energies_by_input"] = {"A.mzML": [10.0, 20.0], "B.mzML": [20.0, 40.0]}
+                    warnings.append(policy.AIF_CE_SETS_DIFFER_RECORDED)
             disposition = "run" if ready else "aif_hold"
         hold = disposition == "aif_hold"
         if hold:
@@ -403,8 +419,8 @@ class FakeInteractive:
             record = {
                 "schema": policy.DISPOSITION_SCHEMA, "disposition": disposition,
                 "reasons": [] if disposition in ("run", "split") else
-                ["aif_multi_ce_awaiting_console"] if hold else [f"test_{disposition}"],
-                "warnings": [], "excluded_inputs": [], "split_key": {"acquisition": True} if disposition == "split" else None,
+                [hold_reason] if hold else [f"test_{disposition}"],
+                "warnings": warnings, "excluded_inputs": [], "split_key": {"acquisition": True} if disposition == "split" else None,
                 "decided_at": self._stamp(),
                 "extractor": {"sha256": self.world.extractor_sha, "inventory_sha256": SHA["extractor"],
                               "provenance_status": "verified", "pinned": True},
@@ -833,6 +849,9 @@ class World:
         # While false, a preflight decides for the saved Console whatever console_path it is sent, as Interactive
         # did for a runner that sent none.
         self.preflight_takes_console = True
+        # Interactive 0.5.36 runs a multi-energy AIF unit whose inputs' energy sets differ (disposition
+        # "aif_multi_ce_differing"), on record; while false it holds it as 0.5.34-0.5.35 did.
+        self.differing_sets_run = True
         self.extractor_sha = SHA["extractor"]
         self.instrument_family = "QTOF"
         self.instrument_family_source = "mzml_instrument_configuration"

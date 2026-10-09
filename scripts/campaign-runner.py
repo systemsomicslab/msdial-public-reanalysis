@@ -90,8 +90,10 @@ and Interactive decides a multi-energy AIF unit for it: with #825 the unit runs 
 multi_ce_aif_with_console_825 (its disposition records aif_multi_ce_run and the probe of that Console), without
 #825 it is held as above. The plan prints which (pins.console.multi_energy_aif) and refuses neither. A recheck that
 releases a held unit writes a disposition_hold_lifted event (what held it, and aif_multi_ce_run), and status
-counts such runs under multi_energy_aif_runs. A unit whose AIF inputs' energies differ, or one with an input whose
-energy is unrecorded, is still held with that Console. A campaign pinned to a Console without #825 cannot take it
+counts such runs under multi_energy_aif_runs. A unit with an input whose energy is unrecorded is still held with
+that Console. One whose AIF inputs' energy sets differ runs as is with Interactive 0.5.36 (user decision,
+2026-10-08), on record: its status warning says why it ran, and status counts it under
+multi_energy_aif_runs.energy_sets_differ. A campaign pinned to a Console without #825 cannot take it
 up in place, since a changed pin pauses the campaign: plan a new campaign pinning the #825 Console with
 --replan-from, which takes its disposition_held units again.
 

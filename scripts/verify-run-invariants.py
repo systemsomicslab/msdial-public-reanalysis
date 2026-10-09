@@ -1803,6 +1803,12 @@ def check_converted_inputs_are_their_conversions(
     whose only encoding that mzXML was is then analysed by nothing. A candidate a binding campaign
     disposition excluded stays where it was found and is never opened, so it is not held against the unit.
 
+    THE ONE ENCODING RULE (user decision, 2026-10-09; Interactive 0.5.36). Each sample's choice is held to the
+    conversions (_encoding_conversion_problems): an mzXML a choice uses has a completed conversion record, and an
+    mzXML a choice leaves unused as conversion_failed has one that did not complete, so the rule took the next
+    file of that sample (clause 3). A record that says otherwise is a FAIL. Whether what runs is what the rule
+    names is INP-1's.
+
     PASS where nothing was converted and nothing MS-DIAL cannot open is an input: every unit prepared
     before the converter existed.
 
@@ -1903,6 +1909,10 @@ def check_converted_inputs_are_their_conversions(
     if unrecorded:
         problems.append(f"{len(unrecorded)} input(s) in the raw tree's {CONVERTED_DIRECTORY} directory are the output "
                         f"of no conversion record ({', '.join(unrecorded[:5])})")
+    # The one encoding rule of 2026-10-09 (clauses 1 and 3): an mzXML a sample's choice uses is a completed conversion,
+    # and one it leaves unused as conversion_failed is one whose conversion did not complete.
+    encoding_problems, passed_over = _encoding_conversion_problems(provenance, records)
+    problems.extend(encoding_problems)
 
     evidence = {
         "records": len(records or []), "judged": len(judged), "converted": tally["converted"], "failed": len(failed),
@@ -1913,6 +1923,7 @@ def check_converted_inputs_are_their_conversions(
         "converted_inputs": tally["inputs"], "unreadable_candidates_excluded": set_aside,
         "input_candidates": len(candidates) if candidates is not None else None,
         "analysis_csv_rows": len(csv_rows) if csv_rows is not None else None,
+        **({"conversion_failed_next_encoding_used": passed_over[:10]} if passed_over else {}),
     }
     if problems:
         report.add("CONV-1", stage, CONV1_TITLE, FAIL,
@@ -1953,10 +1964,12 @@ def check_converted_inputs_are_their_conversions(
         detail += (f" The campaign disposition excluded {set_aside} mzXML or mzData candidate(s), which stay where "
                    "they were found and are never opened.")
     if failed:
+        lost = (f" Under the one encoding rule of 2026-10-09 the next file of {len(passed_over)} such sample(s) runs "
+                f"instead ({'; '.join(passed_over[:5])})." if passed_over else "")
         report.add("CONV-1", stage, CONV1_TITLE, WARN,
                    f"{len(failed)} conversion(s) did not complete, and none of their outputs is an input: "
                    + "; ".join(failed[:3]) + ". A sample whose only encoding was one of these mzXML is analysed by "
-                   "nothing. " + detail, failures=failed[:10], **evidence)
+                   "nothing." + lost + " " + detail, failures=failed[:10], **evidence)
         return
     report.add("CONV-1", stage, CONV1_TITLE, PASS, detail, **evidence)
 
@@ -2474,12 +2487,120 @@ def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
 # split part: the agreed contract of 2026-10-07); and the manifest's and the disposition's
 # warnings carry UNATTRIBUTED_WARNING. INP-1, CLS-1, CLS-2, CLS-3 and PAIR-1 read them as explained inputs:
 # never a FAIL for being there, always a WARN that lists them, and never an approved sample.
+#
+# WHAT THE LEASE LEAVES OUT, AND WHAT IT CONVERTS (user decision, 2026-10-08, second round, answer 3; Interactive
+# 0.5.36, msdial-interactive-app#69). In a campaign an unpaired mzXML is converted like any other mzXML input (the
+# rule of 2026-09-30): the mzML written from it is the unattributed input, its lineage row a conversion
+# (source.conversion.source_path the mzXML) whose name_pairing.member_name is the mzXML's basename, and
+# unattributed_members.converted lists the mzXML by its path under the data root. What the lease leaves out of the
+# unit, and no sample's choice of encoding accounts for, is in unattributed_members.left_out {member_name, path,
+# reason}, its path under the data root: opposite-polarity names (polarity_token_contradicts_ion_mode), a shared
+# archive's members of no admitted file's stem (2026-10-08, second round, answer 1), in a declared unit each member
+# no declaration names (not_named_by_the_catalog_declaration, second round, answer 3), and an unattributed member of
+# a stem two sample rows share (stem_of_several_sample_rows). INP-1 holds the run to that record
+# (_unattributed_choice_problems, blocks_run): no member the record leaves out reaches the run, and a converted
+# unattributed input is the conversion of the mzXML it names. PAIR-1 holds the record itself (record_only):
+# converted lists every converted member, and each left-out entry gives a reason. Which one of a sample's
+# encodings runs is the one encoding rule's (below), never left_out's.
 UNATTRIBUTED_PAIRING = "unattributed_member"
 UNATTRIBUTED_WARNING = "unattributed_members_included"
 UNATTRIBUTED_RULE = "unit_scoped_archive_2026_10_07"
 UNATTRIBUTED_CLASS = "Unattributed"
 UNATTRIBUTED_RECORD = "unattributed_members"
 UNIT_SCOPED_DOWNLOAD_KIND = "unit_files"
+UNATTRIBUTED_LEFT_OUT = "left_out"
+UNATTRIBUTED_CONVERTED = "converted"
+UNSUPPORTED_MZML_ENCODING = "unsupported_mzml_encoding"
+# The left_out reasons that are no reason a file could not be read (Interactive's _unattributed_members,
+# _members_no_declaration_names and _encoding_groups): each removes a file from the unit only where what it says holds
+# of that file (_left_out_removal_problem).
+POLARITY_TOKEN_CONTRADICTS_ION_MODE = "polarity_token_contradicts_ion_mode"
+NOT_NAMED_BY_DECLARATION = "not_named_by_the_catalog_declaration"
+STEM_OF_SEVERAL_SAMPLE_ROWS = "stem_of_several_sample_rows"
+#
+# ONE ENCODING PER SAMPLE (the user's one rule of 2026-10-09, "A: この一つのルールで統一"; Interactive 0.5.36,
+# msdial-interactive-app#69, msdial_app.encoding_rule). It supersedes every earlier case-by-case answer about a
+# sample whose data arrive more than once (the readable twin of an undecodable mzML of 2026-10-08, the encoding
+# order between unpaired members, a copy nearest the data root), and the gate's checks of them are gone with them.
+# When one sample's data arrive in several encodings (S1.raw, S1.mzML, S1.mzXML; copies in other folders included):
+#   1. among the READABLE ones exactly one is used: the highest in the order vendor format (a folder or container)
+#      -> mzML -> mzXML (converted to mzML in a campaign; outside a campaign an mzXML is no input);
+#   2. a tie (the same rank) goes to the first by path name in lexicographic order: the path relative to the data
+#      root, '/'-separated, compared without case;
+#   3. where the chosen one cannot be read or decoded, or its conversion fails, the next in order is taken;
+#   4. the file used is that sample's own input, paired to its sample row and in its Class, whatever encoding the
+#      sample row names;
+#   5. every file not used is recorded with its reason, naming the file that was used.
+# A re-encoding MS-DIAL opens that no instrument writes (.cdf, .abf, .ibf) is in none of the rule's ranks; Interactive
+# ranks it after every vendor format and before mzML, where it stood before the rule (outside the rule's words, the
+# existing behaviour kept), and so does the gate (ENCODING_RE_ENCODING_RANK).
+#
+# Interactive records it twice. manifest.encoding_choices lists each sample the rule chose for among more than one
+# candidate, {rule ENCODING_RULE, used, unused: [{path, reason}]}, paths relative to the data root; used is null
+# where no candidate could be read (each then keeps the exclusion the lease records for it). The lineage row of each
+# input used carries the same choice as encoding_choice, with stands_for (the absolute path of the file its sample
+# row pairs with) where the row names another file of the sample; a split part carries its own samples' choices. An
+# unused file is no input and no excluded candidate: its sample's choice is its only record.
+#
+# The gate recomputes the rule from that record (_encoding_rule_problems): it orders a choice's candidates by the
+# rule (rank, then path without case) and holds that every candidate before the one used carries a reason it could
+# not be read (ENCODING_UNREADABLE_REASONS, each on the encoding it applies to: ENCODING_REASON_RANKS), every one
+# after it lower_in_encoding_order or tie_lexicographic as its rank against the used one gives (or its own reason it
+# could not be read, as Interactive keeps where only a header stood in the way), and, where none was used, every
+# candidate a reason it could not be read. INP-1 (blocks_run) holds the run to it (_encoding_run_problems): the
+# record follows the rule, the file used is what runs for its sample (a converted mzML through the mzXML it was
+# converted from), runs as the sample its rows name or a pairing rule paired with its files, never unattributed, and
+# no unused file reaches the run, a split part's raw owner's choices included; and a run that departs from the rule
+# without the record (two encodings of one sample that both run, an input beside a lease-excluded encoding of its own
+# sample that no choice records, or a listed archive member of a running input's sample that no record names) is
+# refused as well. CONV-1 holds each choice to the conversions: an mzXML used is a completed
+# conversion, and one unused as conversion_failed is one whose conversion did not complete. PAIR-1 (record_only)
+# lists every choice and holds the record itself (_encoding_record_problems).
+ENCODING_RULE = "one_encoding_per_sample_2026_10_09"
+ENCODING_CHOICES = "encoding_choices"
+ENCODING_CHOICE = "encoding_choice"
+LOWER_IN_ENCODING_ORDER = "lower_in_encoding_order"
+TIE_LEXICOGRAPHIC = "tie_lexicographic"
+ENCODING_ORDER_REASONS = frozenset({LOWER_IN_ENCODING_ORDER, TIE_LEXICOGRAPHIC})
+CONVERSION_FAILED = "conversion_failed"
+REQUIRES_CONVERSION = "requires_conversion"
+RAW_HEADER_REASONS = frozenset({"raw_header_unreadable", "raw_header_unsupported_format"})
+# Why a candidate could not be read (clause 3), as encoding_rule names it: an mzML RawDataHandler cannot decode, an
+# mzXML whose conversion failed or whose scans contradict the declared polarity, an mzXML outside a campaign, a
+# listed vendor folder that did not arrive whole, and a vendor header the raw-metadata extractor could not read.
+ENCODING_UNREADABLE_REASONS = frozenset({
+    "undecodable", CONVERSION_FAILED, "polarity_contradicts_declaration", REQUIRES_CONVERSION,
+    "incomplete_container", *RAW_HEADER_REASONS})
+# The preflight's warning where a vendor file the rule used was excluded for a header it could not read, and the
+# sample's next encoding was not taken (the lease read no header for the rule).
+ENCODING_FALLBACK_NOT_TAKEN = "encoding_fallback_not_taken"
+# The rule's ranks (encoding_rule.encoding_rank), with the suffixes Interactive's encoding_preference reads.
+ENCODING_VENDOR_SUFFIXES = (".raw", ".d", ".wiff", ".wiff2", ".lcd", ".qgd", ".abf", ".ibf", ".cdf", ".lrp")
+ENCODING_RE_ENCODING_SUFFIXES = (".cdf", ".abf", ".ibf")
+ENCODING_OPEN_SUFFIXES = (".mzml", ".imzml")
+ENCODING_UNREADABLE_SUFFIXES = (".mzxml", ".mzdata", ".mgf", ".ibd", ".dat", ".scan")
+ENCODING_SIDECAR_SUFFIXES = (".wiff2.scan", ".wiff.scan", ".timeseries.data")
+ENCODING_VENDOR_RANK, ENCODING_RE_ENCODING_RANK, ENCODING_MZML_RANK, ENCODING_MZXML_RANK = 0, 1, 2, 3
+ENCODING_UNRANKED = 9
+# The encodings each reason a candidate could not be read applies to, as Interactive's lease gives them
+# (repository_reanalysis._choose_encodings' readability): undecodable to an mzML RawDataHandler scanned;
+# conversion_failed, polarity_contradicts_declaration and requires_conversion to an mzXML; incomplete_container and a
+# raw-header reason to a vendor file or a re-encoding (a file neither an mzML nor an mzXML). A reason given to a file
+# of another encoding passes a readable file over, which clause 3 does not allow.
+ENCODING_REASON_RANKS = {
+    "undecodable": frozenset({ENCODING_MZML_RANK}),
+    CONVERSION_FAILED: frozenset({ENCODING_MZXML_RANK}),
+    "polarity_contradicts_declaration": frozenset({ENCODING_MZXML_RANK}),
+    REQUIRES_CONVERSION: frozenset({ENCODING_MZXML_RANK}),
+    "incomplete_container": frozenset({ENCODING_VENDOR_RANK, ENCODING_RE_ENCODING_RANK}),
+    **{reason: frozenset({ENCODING_VENDOR_RANK, ENCODING_RE_ENCODING_RANK}) for reason in RAW_HEADER_REASONS},
+}
+ENCODING_RANK_NAMES = {ENCODING_VENDOR_RANK: "a vendor format", ENCODING_RE_ENCODING_RANK: "a re-encoding",
+                       ENCODING_MZML_RANK: "an mzML", ENCODING_MZXML_RANK: "an mzXML"}
+# The pos/neg tokens a path states a polarity by (repository_reanalysis.POLARITY_NAME_TOKENS), and those beside
+# which a token in the file name names a sample rather than a polarity (POLARITY_EXEMPTING_TOKENS).
+POLARITY_NAME_TOKENS = {"pos": "Positive", "positive": "Positive", "neg": "Negative", "negative": "Negative"}
+POLARITY_EXEMPTING_TOKENS = frozenset({"control", "ctrl", "blank", "qc"})
 
 
 def _is_unattributed(row: object) -> bool:
@@ -2548,6 +2669,8 @@ class _Unattributed:
     record_rows: int = 0                           # the unattributed lineage rows of the manifest that holds it
     class_label: str = UNATTRIBUTED_CLASS          # the Class their CSV rows carry
     abstention: bool = False
+    left_out: list = field(default_factory=list)   # unattributed_members.left_out, the unit's and its raw owner's
+    converted: list = field(default_factory=list)  # the mzXML members converted to their unattributed input
 
     def __bool__(self) -> bool:
         return bool(self.rows)
@@ -2560,15 +2683,25 @@ class _Unattributed:
     def sentence(self) -> str:
         names = ", ".join(self.members[:5]) + (f", and {len(self.members) - 5} more" if len(self.members) > 5 else "")
         count = self.recorded_count
-        return (f"{len(self.members)} input(s) are archive members no sample row pairs with, included unattributed "
+        text = (f"{len(self.members)} input(s) are archive members no sample row pairs with, included unattributed "
                 f"under the rule {UNATTRIBUTED_RULE} (manifest.unattributed_members.count "
                 f"{count if count is not None else 'not recorded'}) in Class {self.class_label!r}: {names}")
+        if self.converted:
+            text += (f"; {len(self.converted)} of them converted from mzXML, as any mzXML input of a campaign is "
+                     f"({', '.join(self.converted[:5])})")
+        if self.left_out:
+            reasons = Counter(str(item.get("reason") or "no reason recorded") for item in self.left_out)
+            text += (f"; {len(self.left_out)} other member(s) left out, on record ("
+                     + ", ".join(f"{reason} {number}" for reason, number in sorted(reasons.items())) + ")")
+        return text
 
     def evidence(self) -> dict:
         paths = (self.record or {}).get("paths")
         return {"warning": UNATTRIBUTED_WARNING, UNATTRIBUTED_RECORD: {
             "count": self.recorded_count, "lineage_rows": len(self.members), "members": self.members[:10],
             **({"paths": [str(item) for item in paths[:10]]} if isinstance(paths, list) else {}),
+            **({UNATTRIBUTED_CONVERTED: self.converted[:10]} if self.converted else {}),
+            **({UNATTRIBUTED_LEFT_OUT: _left_out_summary(self.left_out)} if self.left_out else {}),
             "rule": (self.record or {}).get("rule"), "class": self.class_label}}
 
 
@@ -2596,6 +2729,8 @@ def _unattributed_members(provenance: "dict | None") -> _Unattributed:
             holder = owner
     record = holder.get(UNATTRIBUTED_RECORD)
     result.record = record if isinstance(record, dict) else None
+    result.left_out = _record_left_out(provenance)
+    result.converted = [_member_name(row) for row in result.rows if _conversion_source(row)]
     rows = _own_lineage_rows(provenance, "rows") + _own_lineage_rows(provenance, "excluded") \
         if holder is provenance else _lineage_rows(holder, "rows") + _lineage_rows(holder, "excluded")
     result.record_rows = len({_path_key(row["path"]) for row in rows if _is_unattributed(row)})
@@ -2607,6 +2742,126 @@ def _unattributed_members(provenance: "dict | None") -> _Unattributed:
     return result
 
 
+def _data_root(provenance: dict) -> str:
+    """The unit's raw data root, as the manifest records it (input_directory): a split part's repeats its parent's,
+    and a part that does not is read through its raw owner. The root Interactive names members and inputs under
+    (unattributed_members.paths and left_out, aif_collision_energies_by_input)."""
+    root = str(provenance.get("input_directory") or "").strip()
+    if not root and isinstance(provenance.get("split_from"), dict):
+        owner, _ = _raw_owner_manifest(provenance)
+        root = str((owner or {}).get("input_directory") or "").strip()
+    return root
+
+
+def _conversion_source(row: dict) -> str:
+    """The mzXML a converted input's lineage row was read from (source.conversion.source_path), or ""."""
+    source = row.get("source") if isinstance(row.get("source"), dict) else {}
+    conversion = source.get("conversion") if isinstance(source.get("conversion"), dict) else {}
+    return str(conversion.get("source_path") or "").strip()
+
+
+def _record_left_out(provenance: dict) -> list[dict]:
+    """unattributed_members.left_out, of the unit's own record and of its raw owner's, once per path and reason:
+    each entry with its path under the data root ('/'-separated) and its reason, as Interactive writes them."""
+    manifests = [provenance]
+    if isinstance(provenance.get("split_from"), dict):
+        owner, _ = _raw_owner_manifest(provenance)
+        if isinstance(owner, dict):
+            manifests.append(owner)
+    entries: list[dict] = []
+    seen: set = set()
+    for manifest in manifests:
+        record = manifest.get(UNATTRIBUTED_RECORD)
+        listed = record.get(UNATTRIBUTED_LEFT_OUT) if isinstance(record, dict) else None
+        for item in listed if isinstance(listed, list) else []:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("member_name") or "").replace("\\", "/").strip().strip("/")
+            mark = (path.casefold(), str(item.get("reason") or ""))
+            if path and mark not in seen:
+                seen.add(mark)
+                entries.append({**item, "path": path})
+    return entries
+
+
+def _left_out_summary(left_out: list[dict]) -> dict:
+    """The evidence's account of the members the lease left out: how many for each reason, and the first ten."""
+    return {"count": len(left_out),
+            "reasons": dict(sorted(Counter(str(item.get("reason") or "") for item in left_out).items())),
+            "members": [{key: item[key] for key in ("path", "reason") if key in item} for item in left_out[:10]]}
+
+
+def _reaching_rows(provenance: dict, csv_rows: "list[dict] | None") -> "tuple[list[dict], set[str]]":
+    """The unit's own input lineage rows that reach the run (a split part's share of its raw owner's), those the
+    analysis CSV opens where there is one, each once; and the keys of what reaches it, the CSV's included."""
+    rows = _own_lineage_rows(provenance, "rows")
+    opened: "set[str] | None" = None
+    if csv_rows is not None:
+        aliases = _input_keys_by_console_path(provenance)
+        opened = {_input_key(row, aliases) for row in csv_rows}
+        rows = [row for row in rows if _path_key(row["path"]) in opened]
+    seen: set[str] = set()
+    unique = []
+    for row in rows:
+        key = _path_key(row["path"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(row)
+    return unique, seen | (opened or set())
+
+
+def _unattributed_choice_problems(provenance: dict, csv_rows: "list[dict] | None",
+                                  unattributed: _Unattributed) -> "tuple[list[str], dict]":
+    """Why the inputs that reach the run are not what Interactive's record of an archive's unpaired members lets
+    reach it (the second-round answer 3 of 2026-10-08), and the evidence; ([], {}) where the unit has neither
+    unattributed members nor a record of members left out.
+
+    The inputs are the unit's own input lineage rows that reach the run (_reaching_rows), each named by the member it
+    is under the data root (_data_root): a converted input by the mzXML its conversion read. Two refusals:
+
+    - a member unattributed_members.left_out leaves out reaches the run: whatever the reason (an opposite-polarity
+      name, a shared archive's member, a member no declaration names, an mzXML not converted), the record says it is
+      no input of the unit;
+    - a converted unattributed input is not the conversion of the mzXML its name_pairing names (member_name is the
+      basename of its conversion's source_path, an mzXML).
+
+    Which one of a sample's encodings runs is the one encoding rule's, held by _encoding_run_problems."""
+    left_out = unattributed.left_out
+    if not unattributed and not left_out:
+        return [], {}
+    root = _data_root(provenance)
+    rows, _reaching = _reaching_rows(provenance, csv_rows)
+    inputs = [(row, _aif_input_key(_conversion_source(row) or row["path"], root), _conversion_source(row))
+              for row in rows]
+    problems: list[str] = []
+    out_of = {}
+    for item in left_out:
+        out_of.setdefault(item["path"].casefold(), item)
+    reached = [f"{member} ({out_of[member.casefold()].get('reason') or 'no reason recorded'})"
+               for _row, member, _source in inputs if member.casefold() in out_of]
+    if reached:
+        problems.append(f"{len(reached)} input(s) are archive members that {UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} "
+                        f"leaves out, and they reach the run all the same: {'; '.join(reached[:5])}")
+    misnamed: list[str] = []
+    for row, _member, source in inputs:
+        if not source or not _is_unattributed(row):
+            continue
+        named, read = _member_name(row), _basename(source)
+        if not read.casefold().endswith(".mzxml"):
+            misnamed.append(f"{Path(str(row['path'])).name} is converted from {read}, which is no mzXML")
+        elif named.casefold() != read.casefold():
+            misnamed.append(f"{Path(str(row['path'])).name} is converted from {read}, and its name_pairing names "
+                            f"{named}")
+    if misnamed:
+        problems.append(f"{len(misnamed)} converted unattributed input(s) are not the conversion of the member they "
+                        f"name: {'; '.join(misnamed[:5])}")
+    evidence = {"inputs_read": len(inputs),
+                "converted_unattributed_inputs": sum(1 for row, _m, source in inputs if source and _is_unattributed(row))}
+    if left_out:
+        evidence[UNATTRIBUTED_LEFT_OUT] = _left_out_summary(left_out)
+    return problems, evidence
+
+
 def _unattributed_csv_names(provenance: "dict | None", csv_rows: "list[dict] | None",
                             unattributed: "_Unattributed | None" = None) -> list[str]:
     """The file_name of each analysis-CSV row that opens an unattributed member, through its Console alias where
@@ -2616,6 +2871,28 @@ def _unattributed_csv_names(provenance: "dict | None", csv_rows: "list[dict] | N
         return []
     aliases = _input_keys_by_console_path(provenance)
     return [str(row.get("file_name") or "") for row in csv_rows if _input_key(row, aliases) in unattributed.keys]
+
+
+def _left_out_record_problems(record: "dict | None") -> list[str]:
+    """Why an unattributed_members record's left_out does not say why it leaves out each member, or []: each entry
+    gives a reason. Read wherever the record has a left_out: beside unattributed members, and in a record that takes
+    none (a shared archive, a declared unit, a stem two sample rows share)."""
+    if not isinstance(record, dict):
+        return []
+    problems: list[str] = []
+    listed_out = record.get(UNATTRIBUTED_LEFT_OUT)
+    if listed_out is not None and not isinstance(listed_out, list):
+        problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} is no list")
+    unexplained: list[str] = []
+    for item in listed_out if isinstance(listed_out, list) else []:
+        entry = item if isinstance(item, dict) else {}
+        name = str(entry.get("path") or entry.get("member_name") or "").strip() or "an entry naming no member"
+        if not str(entry.get("reason") or "").strip():
+            unexplained.append(f"{name} (no reason)")
+    if unexplained:
+        problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} does not say why it leaves out "
+                        f"{'; '.join(unexplained[:5])}")
+    return problems
 
 
 def _unattributed_record_problems(provenance: dict, unattributed: _Unattributed) -> list[str]:
@@ -2641,6 +2918,29 @@ def _unattributed_record_problems(provenance: dict, unattributed: _Unattributed)
                 problems.append(f"{UNATTRIBUTED_RECORD}.members does not list {', '.join(missing[:5])}")
         else:
             problems.append(f"{UNATTRIBUTED_RECORD}.members is no list")
+        # The mzXML members converted to their unattributed input (2026-10-08, second round, answer 3): listed in
+        # converted by their path under the data root, compared here by basename, as members is.
+        converted_rows = [row for row in unattributed.rows if _conversion_source(row)]
+        listed_converted = record.get(UNATTRIBUTED_CONVERTED)
+        if listed_converted is not None and not isinstance(listed_converted, list):
+            problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_CONVERTED} is no list")
+        else:
+            said = {_basename(str(item)).casefold() for item in listed_converted or []}
+            read = {_basename(_conversion_source(row)).casefold() for row in converted_rows}
+            unlisted = [_basename(_conversion_source(row)) for row in converted_rows
+                        if _basename(_conversion_source(row)).casefold() not in said]
+            if unlisted:
+                problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_CONVERTED} does not list "
+                                f"{', '.join(unlisted[:5])}, converted to an unattributed input")
+            # Only a record of the unit's own lists nothing beyond its own rows: a split part that carries none reads
+            # its raw owner's, which lists every part's.
+            own_record = record is provenance.get(UNATTRIBUTED_RECORD)
+            unread = [str(item) for item in listed_converted or []
+                      if own_record and _basename(str(item)).casefold() not in read]
+            if unread:
+                problems.append(f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_CONVERTED} lists {', '.join(unread[:5])}, which "
+                                "no converted unattributed input in the lineage was read from")
+        problems.extend(_left_out_record_problems(record))
     owner, _ = _raw_owner_manifest(provenance)
     warned = [manifest for manifest in (provenance, owner) if isinstance(manifest, dict)
               and UNATTRIBUTED_WARNING in (manifest.get("warnings") or [])]
@@ -2656,6 +2956,989 @@ def _unattributed_record_problems(provenance: dict, unattributed: _Unattributed)
     if scoped is not True:
         problems.append(f"the rule includes unattributed members only from a unit-scoped archive, and {why}")
     return problems
+
+
+def _slashed(value: object) -> str:
+    """A path as the record names one: '/'-separated, without a leading or trailing separator."""
+    return str(value or "").replace("\\", "/").strip().strip("/")
+
+
+def _encoding_name(path: object) -> str:
+    """A path's last part as the rule reads it, without case: a packed name (x.d.zip, x.mzML.gz) as the file it
+    unpacks to (encoding_preference.unpacked)."""
+    name = _basename(_slashed(path)).casefold()
+    packed = next((suffix for suffix in ARCHIVE_SUFFIXES if name.endswith(suffix) and len(name) > len(suffix)), "")
+    if packed:
+        inner = name[: -len(packed)]
+        known = next((suffix for suffix in (*ENCODING_SIDECAR_SUFFIXES, *ENCODING_VENDOR_SUFFIXES,
+                                            *ENCODING_OPEN_SUFFIXES, *ENCODING_UNREADABLE_SUFFIXES)
+                      if inner.endswith(suffix)), "")
+        if known and len(inner) > len(known):
+            return inner
+    return name
+
+
+def _encoding_rank(path: object) -> "int | None":
+    """The rule's rank of a path's encoding (encoding_rule.encoding_rank): 0 a vendor format (a folder or a
+    container), 1 a re-encoding MS-DIAL opens that no instrument writes (.cdf, .abf, .ibf), 2 mzML, 3 mzXML; None
+    for anything else (mzData, mgf, a SCIEX sidecar)."""
+    name = _encoding_name(path)
+    if name.endswith(".mzxml"):
+        return ENCODING_MZXML_RANK
+    if name.endswith(ENCODING_UNREADABLE_SUFFIXES):
+        return None
+    if name.endswith(ENCODING_OPEN_SUFFIXES):
+        return ENCODING_MZML_RANK
+    if name.endswith(ENCODING_VENDOR_SUFFIXES):
+        return ENCODING_RE_ENCODING_RANK if name.endswith(ENCODING_RE_ENCODING_SUFFIXES) else ENCODING_VENDOR_RANK
+    return None
+
+
+def _encoding_order_key(path: object) -> tuple:
+    """Where a candidate stands in the rule's order (encoding_rule.order_key): by rank (clause 1), then by its path
+    relative to the data root, '/'-separated, without case (clause 2)."""
+    text = _slashed(path)
+    rank = _encoding_rank(text)
+    return (ENCODING_UNRANKED if rank is None else rank, text.casefold(), text)
+
+
+def _encoding_stem(path: object) -> str:
+    """The sample a file is an encoding of, by name (encoding_preference.stem): its last part, unpacked, less its
+    container suffix, without case. Folders do not part one stem's files (the rule's 'copies in other folders')."""
+    name = _encoding_name(path)
+    _, dot, extension = name.rpartition(".")
+    suffix = f".{extension}" if dot else ""
+    if suffix in (*ENCODING_VENDOR_SUFFIXES, *ENCODING_OPEN_SUFFIXES, *ENCODING_UNREADABLE_SUFFIXES) \
+            and len(name) > len(suffix):
+        return name[: -len(suffix)]
+    return name
+
+
+def _path_polarities(path: object) -> frozenset:
+    """The polarities a path's folders and name state by a pos/neg token of their own, as Interactive's
+    _polarity_token_reading reads them: a token in the file name beside a control, ctrl, blank or QC token names a
+    sample, not a polarity. Two paths of one stem that state different polarities are two acquisitions."""
+    parts = [part for part in _slashed(path).split("/") if part.strip()]
+    stated: set[str] = set()
+    for position, part in enumerate(parts):
+        tokens = [token for token in re.split(r"[_\-. ]+", part.casefold()) if token]
+        for index, token in enumerate(tokens):
+            if token not in POLARITY_NAME_TOKENS:
+                continue
+            beside = tokens[max(index - 1, 0):index] + tokens[index + 1:index + 2]
+            if position == len(parts) - 1 and any(word in POLARITY_EXEMPTING_TOKENS for word in beside):
+                continue
+            stated.add(POLARITY_NAME_TOKENS[token])
+    return frozenset(stated)
+
+
+def _one_sample_polarities(stated: "Iterable[frozenset]", unit_polarity: str) -> dict:
+    """How the polarities the paths of one stem state make samples of them, as Interactive's _one_sample_polarities
+    reads them: {a path's polarities: its sample's}. The paths of one stem that state one polarity, and those that
+    state none, are one sample's where that polarity is the unit's own, or the unit gives none (POS/S1.raw and S1.raw
+    in a positive unit). Where they state two, or one that is not the unit's, each set is a sample of its own (an
+    empty mapping)."""
+    found = {frozenset(item) for item in stated if item}
+    if len(found) != 1:
+        return {}
+    (only,) = found
+    if unit_polarity and only != frozenset({unit_polarity}):
+        return {}
+    return {frozenset(): only, only: only}
+
+
+def _unit_polarity(provenance: dict) -> str:
+    """The unit's polarity as the lease grouped by it ("Positive", "Negative" or ""): the raw owner's declared ion mode
+    (_declared_ion_mode), else the project record's ion_mode, the unit's own and then its raw owner's."""
+    owner, _ = _raw_owner_manifest(provenance)
+    owner = owner if isinstance(owner, dict) else provenance
+    declared = _declared_ion_mode(owner)[0]
+    if declared:
+        return declared.capitalize()
+    for manifest in (provenance, owner):
+        project = manifest.get("project") if isinstance(manifest.get("project"), dict) else {}
+        mode = str(project.get("ion_mode") or "").strip().casefold()
+        if mode.startswith("pos"):
+            return "Positive"
+        if mode.startswith("neg"):
+            return "Negative"
+    return ""
+
+
+def _sample_keys(paths: "Iterable[str]", unit_polarity: str) -> dict:
+    """Each path's sample by name, as the lease groups one stem's files: {path: (stem, the sample's polarities)}, the
+    polarities a path states merged with none as _one_sample_polarities merges them, stem by stem."""
+    paths = list(dict.fromkeys(paths))
+    by_stem: dict[str, list[str]] = {}
+    for path in paths:
+        by_stem.setdefault(_encoding_stem(path), []).append(path)
+    keys: dict = {}
+    for stem, members in by_stem.items():
+        stated = {path: _path_polarities(path) for path in members}
+        merged = _one_sample_polarities(stated.values(), unit_polarity)
+        for path in members:
+            keys[path] = (stem, merged.get(stated[path], stated[path]))
+    return keys
+
+
+@dataclass
+class _EncodingChoice:
+    """One sample's choice under the one encoding rule, as a record gives it: the file used ('' where none could be
+    read) and every other candidate with its reason, paths relative to the data root; where the record holds it;
+    and what is wrong with its shape."""
+    used: str = ""
+    unused: list = field(default_factory=list)     # [(path, reason)]
+    where: str = ""
+    problems: list = field(default_factory=list)
+
+    @property
+    def candidates(self) -> list[str]:
+        return [*([self.used] if self.used else []), *(path for path, _reason in self.unused)]
+
+    @property
+    def identity(self) -> tuple:
+        return self.used.casefold(), frozenset((path.casefold(), reason) for path, reason in self.unused)
+
+    @property
+    def label(self) -> str:
+        return self.used or (self.unused[0][0] if self.unused else "an empty choice")
+
+    def described(self) -> str:
+        unused = ", ".join(f"{path} {reason or 'with no reason'}" for path, reason in self.unused[:4])
+        more = f", and {len(self.unused) - 4} more" if len(self.unused) > 4 else ""
+        return f"{self.used or 'no file'} used" + (f" ({unused}{more})" if unused else "")
+
+
+def _read_encoding_choice(value: object, where: str) -> _EncodingChoice:
+    """A recorded choice ({rule, used, unused: [{path, reason}]}) read into an _EncodingChoice."""
+    entry = _EncodingChoice(where=where)
+    if not isinstance(value, dict):
+        entry.problems.append("is no object")
+        return entry
+    if value.get("rule") != ENCODING_RULE:
+        entry.problems.append(f"names the rule {value.get('rule')!r}, not {ENCODING_RULE}")
+    used = value.get("used")
+    if used is not None and (not isinstance(used, str) or not used.strip()):
+        entry.problems.append(f"names {used!r} as the file used")
+    entry.used = _slashed(used) if isinstance(used, str) else ""
+    unused = value.get("unused")
+    if not isinstance(unused, list):
+        entry.problems.append("lists no unused files (unused is no list)")
+        return entry
+    for item in unused:
+        path = _slashed(item.get("path")) if isinstance(item, dict) else ""
+        if not path:
+            entry.problems.append("lists an unused file that names no path")
+            continue
+        entry.unused.append((path, str(item.get("reason") or "").strip()))
+    return entry
+
+
+@dataclass
+class _EncodingRecord:
+    """A unit's record of the one encoding rule: manifest.encoding_choices (listed), and each of its own lineage rows'
+    encoding_choice (carried, with the row), under the data root (root)."""
+    root: str = ""
+    listed: list = field(default_factory=list)
+    carried: list = field(default_factory=list)    # [(lineage row, _EncodingChoice)]
+    shape: list = field(default_factory=list)
+
+    @property
+    def choices(self) -> list:
+        """Every choice the record holds, each once: the listed first, then those only a lineage row carries."""
+        seen: set = set()
+        result = []
+        for entry in [*self.listed, *(entry for _row, entry in self.carried)]:
+            if entry.identity not in seen:
+                seen.add(entry.identity)
+                result.append(entry)
+        return result
+
+    @property
+    def contested(self) -> list:
+        """The choices made among more than one candidate: the samples whose data arrived in several encodings."""
+        return [entry for entry in self.choices if len(entry.candidates) > 1]
+
+
+def _row_member(row: dict, root: str) -> str:
+    """The file a lineage row's input is under the data root, as the rule names it: a converted input by the mzXML
+    its conversion read (source.conversion.source_path), any other by its own path."""
+    return _aif_input_key(_conversion_source(row) or row["path"], root)
+
+
+def _row_name(row: dict) -> str:
+    return Path(str(row["path"]).rstrip("\\/")).name
+
+
+def _encoding_record(provenance: dict) -> _EncodingRecord:
+    """The unit's record of the one encoding rule: its own manifest.encoding_choices (a split part's are its own
+    samples'), and the encoding_choice of each of its own lineage rows (_own_lineage_rows: a split part's share of
+    its raw owner's), inputs and lease-excluded alike."""
+    record = _EncodingRecord(root=_data_root(provenance))
+    listed = provenance.get(ENCODING_CHOICES)
+    if listed is not None and not isinstance(listed, list):
+        record.shape.append(f"manifest.{ENCODING_CHOICES} is no list")
+    for number, item in enumerate(listed if isinstance(listed, list) else [], start=1):
+        record.listed.append(_read_encoding_choice(item, f"{ENCODING_CHOICES}[{number}]"))
+    seen: set[str] = set()
+    for part in ("rows", "excluded"):
+        for row in _own_lineage_rows(provenance, part):
+            key = _path_key(row["path"])
+            if key in seen or row.get(ENCODING_CHOICE) is None:
+                continue
+            seen.add(key)
+            record.carried.append((row, _read_encoding_choice(row[ENCODING_CHOICE],
+                                                              f"the {ENCODING_CHOICE} of {_row_name(row)}")))
+    return record
+
+
+def _encoding_rule_problems(entry: _EncodingChoice, campaign: bool) -> list[str]:
+    """Where one recorded choice departs from the rule, recomputed from its candidates and the reasons it gives, or
+    []. The candidates are ordered by the rule (_encoding_order_key: rank, then path without case); then:
+
+    - each candidate is one the rule ranks, named once, and each unused one gives a reason the rule gives
+      (ENCODING_ORDER_REASONS, ENCODING_UNREADABLE_REASONS; clause 5); in a campaign an mzXML is converted, so
+      requires_conversion is none there (clause 1);
+    - a reason it could not be read is one that applies to the candidate's encoding (ENCODING_REASON_RANKS):
+      undecodable an mzML's, conversion_failed, requires_conversion and polarity_contradicts_declaration an mzXML's,
+      incomplete_container and a raw-header reason a vendor file's or a re-encoding's (clause 3);
+    - every candidate before the one used carries a reason it could not be read (clause 3): one passed over for the
+      order alone was readable and higher, and the rule names it;
+    - every candidate after it is tie_lexicographic where its rank is the used one's and lower_in_encoding_order
+      where it is lower (clauses 1, 2 and 5), or carries a reason of its own it could not be read (Interactive keeps
+      that where only a header stood in the way);
+    - where none is used, every candidate carries a reason it could not be read."""
+    problems = list(entry.problems)
+    seen: set[str] = set()
+    for path in entry.candidates:
+        if path.casefold() in seen:
+            problems.append(f"names {path} more than once")
+        seen.add(path.casefold())
+        if _encoding_rank(path) is None:
+            problems.append(f"names {path}, which is no encoding the rule ranks (a vendor format, mzML or mzXML)")
+    for path, reason in entry.unused:
+        if not reason:
+            problems.append(f"gives no reason for leaving {path} unused (clause 5)")
+        elif reason not in ENCODING_ORDER_REASONS | ENCODING_UNREADABLE_REASONS:
+            problems.append(f"leaves {path} unused as {reason!r}, which is no reason the rule gives")
+        elif reason == REQUIRES_CONVERSION and campaign:
+            problems.append(f"leaves {path} unused as {REQUIRES_CONVERSION}, and in a campaign an mzXML is converted "
+                            "to mzML (clause 1)")
+        elif reason in ENCODING_REASON_RANKS and _encoding_rank(path) is not None \
+                and _encoding_rank(path) not in ENCODING_REASON_RANKS[reason]:
+            owners = " or ".join(ENCODING_RANK_NAMES[rank] for rank in sorted(ENCODING_REASON_RANKS[reason]))
+            problems.append(f"leaves {path} unused as {reason}, a reason only {owners} is left unused for, and "
+                            f"{path} is {ENCODING_RANK_NAMES[_encoding_rank(path)]}: a file is passed over as "
+                            "unreadable only for a reason that applies to its encoding (clause 3)")
+    if not entry.used:
+        ordered = [f"{path} ({reason})" for path, reason in entry.unused if reason in ENCODING_ORDER_REASONS]
+        if ordered:
+            problems.append("uses no file and leaves " + ", ".join(ordered[:5]) + " unused for the rule's order, which "
+                            "passes a readable file over only beside the one it uses (clauses 1 and 3)")
+        return problems
+    used_key = _encoding_order_key(entry.used)
+    for path, reason in entry.unused:
+        if reason not in ENCODING_ORDER_REASONS:
+            continue
+        key = _encoding_order_key(path)
+        if key < used_key:
+            problems.append(f"uses {entry.used} and leaves {path}, before it in the rule's order, unused as {reason}: "
+                            "a file before the one used is passed over only where it cannot be read (clause 3)")
+            continue
+        expected = TIE_LEXICOGRAPHIC if key[0] == used_key[0] else LOWER_IN_ENCODING_ORDER
+        if reason != expected:
+            problems.append(f"leaves {path} unused as {reason}, where its rank against {entry.used} makes it "
+                            f"{expected}")
+    return problems
+
+
+def _encoding_record_problems(provenance: dict, record: "_EncodingRecord | None" = None) -> list[str]:
+    """What keeps the unit's record of the one encoding rule from saying, by the rule, which file each sample used,
+    or []:
+
+    - every choice, listed or carried, follows the rule (_encoding_rule_problems);
+    - a lineage row's encoding_choice uses that row's own file (a converted input's mzXML), and one made among more
+      than one candidate is listed in manifest.encoding_choices; its stands_for, where given, is one of its
+      sample's candidates;
+    - every listed choice whose file used is an input of the lineage is carried by that input's row, the same."""
+    record = record if record is not None else _encoding_record(provenance)
+    campaign = bool(_binding_dispositions(provenance))
+    problems = list(record.shape)
+    for entry in record.choices:
+        problems.extend(f"the choice of {entry.label} ({entry.where}) {problem}"
+                        for problem in _encoding_rule_problems(entry, campaign))
+    listed = {entry.identity for entry in record.listed}
+    carried: dict[str, _EncodingChoice] = {}
+    for row, entry in record.carried:
+        name = _row_name(row)
+        member = _row_member(row, record.root)
+        carried[member.casefold()] = entry
+        if not entry.used:
+            problems.append(f"{name}'s {ENCODING_CHOICE} uses no file, and {name} is an input of the lineage")
+        elif entry.used.casefold() != member.casefold():
+            problems.append(f"{name}'s {ENCODING_CHOICE} uses {entry.used}, and {name} is {member}")
+        if entry.unused and entry.identity not in listed:
+            problems.append(f"{name}'s {ENCODING_CHOICE} ({entry.described()}) is not in manifest.{ENCODING_CHOICES}")
+        choice = row.get(ENCODING_CHOICE) if isinstance(row.get(ENCODING_CHOICE), dict) else {}
+        if "stands_for" in choice:
+            stand = str(choice.get("stands_for") or "").strip()
+            relative = _aif_input_key(stand, record.root) if stand else ""
+            if relative.casefold() not in {path.casefold() for path in entry.candidates}:
+                problems.append(f"{name}'s {ENCODING_CHOICE} stands for {stand or 'nothing'}, which is none of its "
+                                "sample's candidates")
+    members = {_row_member(row, record.root).casefold()
+               for part in ("rows", "excluded") for row in _own_lineage_rows(provenance, part)}
+    for entry in record.listed:
+        if not entry.used or entry.used.casefold() not in members:
+            continue
+        own = carried.get(entry.used.casefold())
+        if own is None:
+            problems.append(f"manifest.{ENCODING_CHOICES} uses {entry.used} for its sample, and its lineage row carries "
+                            f"no {ENCODING_CHOICE}")
+        elif own.identity != entry.identity:
+            problems.append(f"manifest.{ENCODING_CHOICES} ({entry.described()}) and the lineage row of {entry.used} "
+                            f"({own.described()}) record different choices for its sample")
+    return list(dict.fromkeys(problems))
+
+
+def _sample_row_names(provenance: dict) -> list[tuple[int, str, str]]:
+    """The unit's sample rows (its own project's, else its raw owner's) as (index, the raw_file it names,
+    '/'-separated without case, its sample_id)."""
+    for manifest in _lineage_manifests(provenance):
+        project = manifest.get("project") if isinstance(manifest.get("project"), dict) else {}
+        rows = [(index, _slashed(item.get("raw_file")).casefold(), str(item.get("sample_id") or "").strip())
+                for index, item in enumerate(project.get("sample_metadata") or []) if isinstance(item, dict)]
+        rows = [row for row in rows if row[1]]
+        if rows:
+            return rows
+    return []
+
+
+def _rows_naming(member: str, rows: list[tuple[int, str, str]], *, by_stem: bool = False) -> set[int]:
+    """The sample rows that name a file under the data root by their own raw_file: by its path where a raw_file
+    gives folders, else by its name (a packed name as what it unpacks to, an extensionless one as a stem); and, with
+    ``by_stem``, where none does, the one row whose named file has its stem (S7.raw for a row naming S7.mzML)."""
+    relative = _slashed(member).casefold()
+    by_path = {index for index, raw, _sample in rows
+               if "/" in raw and (relative == raw or relative.endswith("/" + raw) or raw.endswith("/" + relative))}
+    if by_path:
+        return by_path
+    name, stem = _encoding_name(relative), _encoding_stem(relative)
+    named = {index for index, raw, _sample in rows
+             if _encoding_name(raw) == name or ("." not in _basename(raw) and _basename(raw) == stem)}
+    if named or not by_stem:
+        return named
+    stemmed = {index for index, raw, _sample in rows if _encoding_stem(raw) == stem}
+    return stemmed if len(stemmed) == 1 else set()
+
+
+def _tied_rows(member: str, rows: list[tuple[int, str, str]],
+               paired: "dict[str, set[str]] | None" = None) -> set[int]:
+    """The sample rows a file under the data root is paired to: those that name it (_rows_naming, exact), and those
+    that name a raw file a pairing rule paired it with (``paired``, _paired_raw_files: a prefixed or
+    leading-identifier member paired to the row naming S7.raw); where none is, the one row whose named file has its
+    stem (S7.mzML for the row naming S7.raw, in any encoding: clause 4), as Interactive's _encoding_groups reads a
+    candidate's sample row (sample_row_of). One row's files are one sample's whatever their stems, so S7.mzML and
+    021518_387057_CSHp_S7.raw, paired by a prefix to that row, are one sample's."""
+    tied = set(_rows_naming(member, rows))
+    paired = paired or {}
+    for raw_file in paired.get(_slashed(member).casefold(), set()) | paired.get(_basename(member).casefold(), set()):
+        tied |= _rows_naming(raw_file, rows)
+    return tied or _rows_naming(member, rows, by_stem=True)
+
+
+def _two_samples(first: str, second: str, rows: list[tuple[int, str, str]],
+                 paired: "dict[str, set[str]] | None" = None) -> bool:
+    """Whether two files of one sample by name or by row are two samples' all the same: two different sample rows
+    are theirs (_tied_rows: rows naming S1.raw and S1.mzML each keep their own; MTBKS64's two rows of S01 naming
+    raw/batch1/QC.RAW and raw/batch2/QC.RAW), or the same two or more rows are both's and no one row is theirs.
+    Outside the rule's words, the existing behaviour is kept for both."""
+    named_first, named_second = _tied_rows(first, rows, paired), _tied_rows(second, rows, paired)
+    return bool(named_first and named_second and named_first.isdisjoint(named_second)) \
+        or (named_first == named_second and len(named_first) >= 2)
+
+
+def _sample_groups(paths: "Iterable[str]", unit_polarity: str, rows: list[tuple[int, str, str]],
+                   paired: "dict[str, set[str]] | None" = None) -> dict:
+    """Each path's sample as the rule reads 'the same sample', {path: a key one sample's files share}: the files of
+    one stem whose polarities make one sample (_sample_keys), joined with every file paired to the same sample row
+    (_tied_rows: exact, prefixed or leading-identifier pairing, else the one row whose named file has its stem)
+    under the same polarity, a path stating none taken as stating the unit's. So 021518_387057_CSHp_BioRec1.raw,
+    paired by prefix to the row naming BioRec1.raw, 000/BioRec1.raw, which that row names, and BioRec1.mzML, of the
+    row's own stem, are one sample's files; POS/S1.raw and NEG/S1.raw stay two samples'."""
+    keys = _sample_keys(paths, unit_polarity)
+    parent: dict = {key: key for key in keys.values()}
+
+    def find(key):
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    first_of: dict[tuple, tuple] = {}
+    for path, key in keys.items():
+        polarity = key[1] or (frozenset({unit_polarity}) if unit_polarity else frozenset())
+        for index in _tied_rows(path, rows, paired):
+            other = first_of.setdefault((index, polarity), key)
+            parent[find(key)] = find(other)
+    return {path: find(key) for path, key in keys.items()}
+
+
+def _owner_encoding_choices(provenance: dict) -> list:
+    """A split part's raw owner's choices of the one encoding rule (every sample's, the part's and its siblings'),
+    or [] for a unit that is its own raw owner. A part carries only the choices its own rows carry, so a file its
+    owner's choice left unused is no choice of the part's own record, and is read against the owner's."""
+    if not isinstance(provenance.get("split_from"), dict):
+        return []
+    owner, _ = _raw_owner_manifest(provenance)
+    if not isinstance(owner, dict) or owner is provenance:
+        return []
+    return _encoding_record(owner).choices
+
+
+def _encoding_exclusions(provenance: dict) -> dict[str, tuple[str, str]]:
+    """What the lease and the binding campaign dispositions excluded, of the unit and its raw owner, by key."""
+    manifests = _lineage_manifests(provenance)
+    exclusions: dict[str, tuple[str, str]] = {}
+    for manifest in manifests:
+        for key, value in _lease_excluded(manifest).items():
+            exclusions.setdefault(key, value)
+    for key, value in _exclusion_reasons(*manifests).items():
+        exclusions.setdefault(key, value)
+    return exclusions
+
+
+def _encoding_used_exclusion(entry: _EncodingChoice, provenance: dict, root: str,
+                             exclusions: dict[str, tuple[str, str]]) -> "tuple[str, str] | None":
+    """The exclusion of the file a choice used, (path, reason), or None where nothing excludes it."""
+    known = {_row_member(row, root).casefold(): row
+             for part in ("rows", "excluded") for row in _own_lineage_rows(provenance, part)}
+    listed = known.get(entry.used.casefold())
+    key = _path_key(listed["path"]) if listed is not None else (
+        _path_key(os.path.join(root, entry.used.replace("/", os.sep))) if root else "")
+    return exclusions.get(key) if key else None
+
+
+def _paired_raw_files(provenance: dict, root: str) -> dict[str, set[str]]:
+    """The raw-file names a pairing rule paired each file with, by the file under the data root and by its name
+    (casefolded): each lineage row's name_pairing (declared_raw_file, by the row's own file and by the member_name it
+    names; an unattributed member's is none), and each manifest.inferred_name_pairings entry (by its member_name and
+    by the encoding_used, the file the one encoding rule ran for that member's sample). The unit's own and its raw
+    owner's."""
+    paired: dict[str, set[str]] = {}
+
+    def add(form: object, name: str) -> None:
+        text = _slashed(form).casefold()
+        if text and name:
+            paired.setdefault(text, set()).add(name)
+
+    for manifest in _lineage_manifests(provenance):
+        for part in ("rows", "excluded"):
+            for row in _lineage_rows(manifest, part):
+                pairing = row.get("name_pairing")
+                if not isinstance(pairing, dict) or _is_unattributed(row):
+                    continue
+                name = str(pairing.get("declared_raw_file") or "").strip()
+                add(_row_member(row, root), name)
+                add(pairing.get("member_name"), name)
+        for item in manifest.get("inferred_name_pairings") or []:
+            if isinstance(item, dict):
+                name = str(item.get("declared_raw_file") or "").strip()
+                add(item.get("member_name"), name)
+                add(item.get("encoding_used"), name)
+    return paired
+
+
+def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "tuple[list[str], dict]":
+    """Why what reaches the run departs from the one encoding rule of 2026-10-09, or lacks its record, and the
+    evidence; ([], {}) where the unit records no choice and nothing departs.
+
+    What reaches the run is the unit's own input lineage rows the analysis CSV opens (_reaching_rows), each the file
+    it is under the data root (_row_member: a converted input as its mzXML). Refused:
+
+    - a record that does not follow the rule or does not say what ran (_encoding_record_problems);
+    - a file a choice leaves unused that reaches the run (clause 1: exactly one file of a sample), the choices of a
+      split part's raw owner included (_owner_encoding_choices);
+    - a choice whose file used reaches no run, unless it was excluded on record; and one excluded for a raw header
+      the preflight could not read while the sample's next encoding was left for the order only (clause 3:
+      ENCODING_FALLBACK_NOT_TAKEN, which a disposition's warning of that name says as well);
+    - a file used that runs unattributed or as another sample than the sample rows give that name its sample's
+      files, or that a pairing rule paired one of them with (_paired_raw_files: name_pairing, inferred_name_pairings),
+      or with a stands_for and no sample (clause 4);
+    - two files of one sample that both reach the run (_sample_groups: one stem and the same sample's polarities,
+      or one sample row by any pairing under one polarity, and no two sample rows of their own: _two_samples); an
+      input beside a lease-excluded encoding of its own sample that no choice records; and a file of a sample the
+      unit records (a running input's, a choice's, an excluded one's)
+      that the raw owner's record shows delivered, by an archive listing or a download that is no archive, and that
+      no choice, input, exclusion, left_out record or declaration accounts for (_unaccounted_listed_members): the
+      run departs from the rule, or the rule's record of it is missing (clauses 2, 3 and 5);
+    - a file unattributed_members.left_out leaves out that the rule would use before a file of its sample that runs
+      (before it in the rule's order: a higher encoding, or the first of a tie), for a reason that does not remove
+      it under the rule (_left_out_rule_problems; clauses 1 to 3)."""
+    record = _encoding_record(provenance)
+    root = record.root
+    rows, _reaching = _reaching_rows(provenance, csv_rows)
+    problems = _encoding_record_problems(provenance, record)
+    reaching = {_row_member(row, root).casefold(): row for row in rows}
+    exclusions = _encoding_exclusions(provenance)
+    samples = _input_samples(provenance, ("rows", "excluded"))
+    names = _sample_row_names(provenance)
+    paired = _paired_raw_files(provenance, root)
+    choices = record.choices
+    owner_choices = _owner_encoding_choices(provenance)
+    identities = {entry.identity for entry in choices}
+    every_choice = [*choices, *(entry for entry in owner_choices if entry.identity not in identities)]
+
+    reached = [f"{path} ({reason or 'no reason'}; {entry.used or 'no file'} used)"
+               for entry in every_choice for path, reason in entry.unused if path.casefold() in reaching]
+    if reached:
+        problems.append(f"{len(reached)} file(s) the one encoding rule left unused reach the run all the same: "
+                        + "; ".join(dict.fromkeys(reached[:5])) + " (clause 1: exactly one file of a sample is used)")
+    fallback = False
+    for entry in choices:
+        if not entry.used:
+            continue
+        row = reaching.get(entry.used.casefold())
+        if row is None:
+            excluded = _encoding_used_exclusion(entry, provenance, root, exclusions)
+            later = [path for path, reason in entry.unused if reason in ENCODING_ORDER_REASONS]
+            if excluded is not None and excluded[1] in RAW_HEADER_REASONS and later:
+                fallback = True
+                problems.append(f"{entry.used}, the file the rule used for its sample, is excluded for a raw header the "
+                                f"preflight could not read ({excluded[1]}), and the sample's next encoding, "
+                                f"{later[0]}, was not taken ({ENCODING_FALLBACK_NOT_TAKEN}): where the chosen one "
+                                "cannot be read, the next in order is taken (clause 3)")
+            elif excluded is None:
+                problems.append(f"the choice of {entry.label} ({entry.where}) uses {entry.used}, and no input that "
+                                "reaches the run is it, and nothing excludes it: its sample runs on nothing")
+            continue
+        choice = row.get(ENCODING_CHOICE) if isinstance(row.get(ENCODING_CHOICE), dict) else {}
+        stand = str(choice.get("stands_for") or "").strip()
+        named = set()
+        for path in [*entry.candidates, *([_aif_input_key(stand, root)] if stand else [])]:
+            named |= _rows_naming(path, names, by_stem=True)
+            for raw_file in paired.get(_slashed(path).casefold(), set()) | paired.get(_basename(path).casefold(), set()):
+                named |= _rows_naming(raw_file, names, by_stem=True)
+        named_samples = {sample for index, _raw, sample in names if index in named and sample}
+        sample = str(row.get("sample_id") or "").strip() or samples.get(_path_key(row["path"]), "")
+        if (named_samples or stand) and _is_unattributed(row):
+            problems.append(f"{entry.used} runs as an unattributed member, and it is the file the rule used for a "
+                            "sample a sample row names: the file used is that sample's own input, paired to its row "
+                            "and in its Class (clause 4)")
+        elif named_samples and sample not in named_samples:
+            problems.append(f"{entry.used} runs as {f'sample {sample}' if sample else 'no sample'}, the file the rule "
+                            f"used for the sample of {', '.join(sorted(named_samples))}, whose rows name its "
+                            "sample's files or were paired with one of them (clause 4)")
+        elif stand and not sample:
+            problems.append(f"{entry.used} stands for {_aif_input_key(stand, root)}, the file its sample row pairs "
+                            "with, and runs as no sample (clause 4)")
+    warned = [disposition for disposition in _binding_dispositions(provenance)
+              if ENCODING_FALLBACK_NOT_TAKEN in (disposition.get("warnings") or [])]
+    if warned and not fallback:
+        problems.append(f"the campaign disposition warns {ENCODING_FALLBACK_NOT_TAKEN}: a file the rule used was "
+                        "excluded for its raw header, and its sample's next encoding was not taken (clause 3)")
+    unit_polarity = _unit_polarity(provenance)
+    problems.extend(_unrecorded_encoding_problems(provenance, rows, record, names, every_choice, unit_polarity,
+                                                  paired))
+    problems.extend(_unaccounted_listed_members(provenance, rows, record, every_choice, unit_polarity, names, paired))
+    problems.extend(_left_out_rule_problems(provenance, rows, record, unit_polarity, names, paired, exclusions))
+    return list(dict.fromkeys(problems)), _encoding_evidence(record)
+
+
+def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _EncodingRecord,
+                                  names: list[tuple[int, str, str]], choices: "list | None" = None,
+                                  unit_polarity: str = "", paired: "dict[str, set[str]] | None" = None) -> list[str]:
+    """A run that departs from the one encoding rule where its record says nothing: two files of one sample that
+    both reach the run, and an input beside a lease-excluded encoding of its own sample that no choice holds with it
+    (``choices``: the unit's, and a split part's raw owner's). One sample's files are those of one stem
+    (_encoding_stem, whatever folders they lie in) whose polarities make one sample (_sample_keys: a path stating
+    none is one sample's with one stating the unit's own), and those paired to one sample row (_sample_groups: an
+    exact name, a prefixed or a leading-identifier pairing, ``paired``), that are not two sample rows'
+    (_two_samples)."""
+    root = record.root
+    together = [{path.casefold() for path in entry.candidates}
+                for entry in (record.choices if choices is None else choices)]
+    lease: dict[str, tuple[str, str]] = {}
+    for manifest in _lineage_manifests(provenance):
+        for key, value in _lease_excluded(manifest).items():
+            lease.setdefault(key, value)
+    running: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        member = _row_member(row, root)
+        if _encoding_rank(member) is None or member.casefold() in seen:
+            continue
+        seen.add(member.casefold())
+        running.append(member)
+    excluded = [(_aif_input_key(path, root), reason) for path, reason in lease.values()]
+    excluded = [(member, reason) for member, reason in excluded if _encoding_rank(member) is not None]
+    keys = _sample_groups([*running, *(member for member, _reason in excluded)], unit_polarity, names, paired)
+    groups: dict[tuple, list[str]] = {}
+    for member in running:
+        groups.setdefault(keys[member], []).append(member)
+    problems: list[str] = []
+    twice: list[str] = []
+    for members in groups.values():
+        both = sorted({item for index, first in enumerate(members) for second in members[index + 1:]
+                       if not _two_samples(first, second, names, paired) for item in (first, second)},
+                      key=_encoding_order_key)
+        if both:
+            twice.append(" and ".join(both))
+    if twice:
+        problems.append(f"{len(twice)} sample(s) reach the run in more than one file, where the one encoding rule uses "
+                        "exactly one file of a sample (clauses 1 and 2): " + "; ".join(twice[:5]))
+    beside: list[str] = []
+    for member, reason in excluded:
+        for other in groups.get(keys[member], []):
+            if other.casefold() == member.casefold() \
+                    or any(member.casefold() in group and other.casefold() in group for group in together) \
+                    or _two_samples(member, other, names, paired):
+                continue
+            beside.append(f"{member} ({reason or 'no reason recorded'}) beside {other}")
+    if beside:
+        problems.append(f"the lease excluded {len(beside)} file(s) of a sample another of whose files runs, and no "
+                        f"choice of the one encoding rule records them ({ENCODING_CHOICE}: every file not used is "
+                        "recorded with its reason, naming the file used; clause 5): " + "; ".join(beside[:5]))
+    return problems
+
+
+def _conversions_by_source(records: "list | None", root: str) -> dict[str, dict]:
+    """The conversion records by their source under the data root (source.path, or source.relative_path), without
+    case."""
+    by_source: dict[str, dict] = {}
+    for item in records or []:
+        source = item.get("source") if isinstance(item, dict) and isinstance(item.get("source"), dict) else {}
+        for form in (_aif_input_key(source.get("path"), root) if str(source.get("path") or "").strip() else "",
+                     _slashed(source.get("relative_path"))):
+            if form:
+                by_source.setdefault(form.casefold(), item)
+    return by_source
+
+
+def _left_out_removal_problem(path: str, reason: str, provenance: dict, root: str, unit_polarity: str,
+                              names: list[tuple[int, str, str]], paired: "dict[str, set[str]] | None",
+                              exclusions: dict[str, tuple[str, str]]) -> str:
+    """Why a left_out reason does not remove a file under the one encoding rule, or "" where it does:
+
+    - a reason it could not be read (ENCODING_UNREADABLE_REASONS) applies to its encoding (ENCODING_REASON_RANKS),
+      requires_conversion only outside a campaign, and has its evidence on record: requires_conversion the encoding
+      itself; any other an exclusion of the file on record for that reason (undecodable as unsupported_mzml_encoding
+      too), or, for conversion_failed and polarity_contradicts_declaration, a conversion record of it that did not
+      complete (clause 3);
+    - polarity_token_contradicts_ion_mode, a path that states a polarity by a token of its own other than the unit's;
+    - not_named_by_the_catalog_declaration, a unit that declares its inputs and does not name the file (R2-3);
+    - stem_of_several_sample_rows, a file of a stem the named files of two or more sample rows have, which no row
+      names or a pairing rule paired (two rows' files are two samples': no one sample's encoding);
+    - any other reason (a shared archive's, a download scope's, none) removes no file of a sample from the rule."""
+    if reason in ENCODING_UNREADABLE_REASONS:
+        rank = _encoding_rank(path)
+        if rank not in ENCODING_REASON_RANKS.get(reason, frozenset()):
+            return f"{reason} is no reason {ENCODING_RANK_NAMES.get(rank, 'such a file')} cannot be read"
+        if reason == REQUIRES_CONVERSION:
+            return ("in a campaign an mzXML is converted to mzML (clause 1)" if _binding_dispositions(provenance)
+                    else "")
+        excluded = exclusions.get(_path_key(os.path.join(root, path.replace("/", os.sep)))) if root else None
+        accepted = {reason, UNSUPPORTED_MZML_ENCODING} if reason == "undecodable" else {reason}
+        if excluded is not None and excluded[1] in accepted:
+            return ""
+        if reason in (CONVERSION_FAILED, "polarity_contradicts_declaration"):
+            owner, _ = _raw_owner_manifest(provenance)
+            records, _problem = _conversion_records(owner if isinstance(owner, dict) else provenance)
+            conversion = _conversions_by_source(records, root).get(path.casefold())
+            if conversion is not None and conversion.get("status") != "converted":
+                return ""
+            return ("no exclusion of it for that reason, and no conversion record of it that did not complete, is on "
+                    "record")
+        return "no exclusion of it for that reason is on record"
+    if reason == POLARITY_TOKEN_CONTRADICTS_ION_MODE:
+        stated = _path_polarities(path)
+        if unit_polarity and stated - {unit_polarity}:
+            return ""
+        return (f"its path states {', '.join(sorted(stated)) or 'no polarity'}, and the unit's polarity is "
+                f"{unit_polarity or 'not recorded'}")
+    if reason == NOT_NAMED_BY_DECLARATION:
+        owner, _ = _raw_owner_manifest(provenance)
+        undeclared = _undeclared(owner if isinstance(owner, dict) else provenance, provenance)
+        if undeclared is None:
+            return "the unit declares no analysis inputs"
+        return "" if undeclared(path) else "the declaration names it"
+    if reason == STEM_OF_SEVERAL_SAMPLE_ROWS:
+        stem = _encoding_stem(path)
+        rows_of_stem = {index for index, raw, _sample in names if _encoding_stem(raw) == stem}
+        if len(rows_of_stem) >= 2 and not _tied_rows(path, names, paired):
+            return ""
+        return "no two sample rows share its stem, or a sample row names it or was paired with it"
+    return "it is no reason the rule passes a file of a sample over for"
+
+
+def _left_out_rule_problems(provenance: dict, rows: list[dict], record: _EncodingRecord, unit_polarity: str,
+                            names: list[tuple[int, str, str]], paired: "dict[str, set[str]] | None",
+                            exclusions: dict[str, tuple[str, str]]) -> list[str]:
+    """The files unattributed_members.left_out leaves out (the unit's and its raw owner's) that the one encoding rule
+    would use before a file of their sample that reaches the run (_sample_groups, and no two sample rows of their
+    own: _two_samples; before it in the rule's order: a higher encoding, or the first of a tie), and whose reason
+    does not remove them under the rule (_left_out_removal_problem). A left_out entry accounts for a file, but only
+    a reason that applies to it takes the rule's choice from it: otherwise a lower-ranked file, or a later tie, runs
+    where the rule names the file left out (clauses 1 to 3)."""
+    root = record.root
+    left_out = [(item["path"], str(item.get("reason") or "").strip()) for item in _record_left_out(provenance)]
+    left_out = [(path, reason) for path, reason in left_out if _encoding_rank(path) is not None]
+    if not left_out:
+        return []
+    running = list(dict.fromkeys(member for member in (_row_member(row, root) for row in rows)
+                                 if _encoding_rank(member) is not None))
+    running_keys = {member.casefold() for member in running}
+    keys = _sample_groups([*running, *(path for path, _reason in left_out)], unit_polarity, names, paired)
+    found: list[str] = []
+    for path, reason in left_out:
+        if path.casefold() in running_keys:
+            continue
+        after = [other for other in running if keys[other] == keys[path]
+                 and _encoding_order_key(path) < _encoding_order_key(other)
+                 and not _two_samples(path, other, names, paired)]
+        if not after:
+            continue
+        why = _left_out_removal_problem(path, reason, provenance, root, unit_polarity, names, paired, exclusions)
+        if why:
+            found.append(f"{path} ({reason or 'no reason'}: {why}) while {after[0]} runs")
+    if not found:
+        return []
+    return [f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} leaves out {len(found)} file(s) the one encoding rule "
+            "uses before the file of their sample that runs, for a reason that does not remove them under the rule "
+            "(a reason it could not be read, on record and of its encoding; a polarity its path states; a declaration "
+            "that does not name it; a stem two sample rows share; clauses 1 to 3): " + "; ".join(found[:5])]
+
+
+def _listed_inputs(owner: dict, root: str) -> dict[str, bool]:
+    """Every input container the raw owner's record shows delivered under the data root, as the rule names it
+    (relative, '/'-separated), with whether an archive listing shows it ({path: archived}), as _delivery_of reads the
+    delivery: each container an archive member listing
+    (archive_extractions[].members_tsv, its sha256 checked) shows extracted, at the listing's path under the
+    extraction's destination (or as listed where none is recorded), and each container a download that is no archive
+    is or is inside (_download_container: a Waters .raw folder fetched file by file is one input, and a .wiff.scan
+    companion is none). A container the rule ranks no encoding of, one outside the data root, and a listing that
+    cannot be read give nothing."""
+    found: dict[str, tuple[str, bool]] = {}
+
+    def add(relative: str, archived: bool = False) -> None:
+        if relative and not relative.startswith("../") and relative != ".." and not os.path.isabs(relative) \
+                and _encoding_rank(relative) is not None:
+            known, before = found.get(relative.casefold(), (relative, False))
+            found[relative.casefold()] = (known, before or archived)
+
+    for item in owner.get("archive_extractions") or []:
+        if not isinstance(item, dict):
+            continue
+        listing = _member_listing(owner, item)
+        if listing.problem:
+            continue
+        destination = str(item.get("destination") or "").strip()
+        for member in sorted(listing.files):
+            container = _member_container(listing.names.get(member, member))
+            if not container:
+                continue
+            add(_aif_input_key(os.path.join(destination, container.replace("/", os.sep)), root)
+                if destination and root else container, archived=True)
+    for item in owner.get("downloads") or []:
+        if not isinstance(item, dict) or not str(item.get("path") or "").strip() or _is_archive_download(item):
+            continue
+        path = str(item["path"])
+        if root and os.path.isabs(path) and os.path.isabs(root):
+            relative = _aif_input_key(path, root)
+            add(_member_container(relative) if not relative.startswith("../") and not os.path.isabs(relative)
+                else "")
+        else:
+            add(_download_container(path, str(owner.get("raw_directory") or "")))
+    return dict(found.values())
+
+
+def _undeclared(owner: dict, provenance: dict) -> "Callable[[str], bool] | None":
+    """Where the unit declares its analysis inputs (the raw owner's declaration, else its own), whether a path under
+    the data root is one the declaration does not name, under any of the forms Interactive's allow-list compares
+    (_allowlist_forms): the declaration is the record that keeps such a file out of the run (R2-3). None where the
+    unit declares none."""
+    for manifest in (owner, provenance):
+        project = manifest.get("project") if isinstance(manifest, dict) else None
+        declared, _contradiction = _declared_inputs(project if isinstance(project, dict) else {})
+        if declared:
+            names = {_declared_input_key(item.get("path") if isinstance(item, dict) else item) for item in declared}
+            names.discard("")
+            return lambda relative: not any(form in names for form in _allowlist_forms(_declared_input_key(relative)))
+    return None
+
+
+def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _EncodingRecord,
+                                choices: list, unit_polarity: str, names: "list[tuple[int, str, str]] | None" = None,
+                                paired: "dict[str, set[str]] | None" = None) -> list[str]:
+    """The files the raw owner's record shows delivered (_listed_inputs: an archive listing, or a download that is no
+    archive) that are of a sample the unit records (_sample_groups: one stem's, or paired to one sample row by an
+    exact name or a prefixed or leading-identifier pairing) and that nothing accounts for: no choice of the one
+    encoding rule names them, and they are no input candidate, no lineage row (an input or an excluded one, the raw
+    owner's included), no excluded candidate, no unattributed or left_out member, and, in a declared unit, no
+    download that is no archive and that the declaration does not name (the declaration keeps it out, and Interactive
+    writes no other record of it). An archive member no declaration names stays out on record: Interactive lists it
+    in unattributed_members.left_out (not_named_by_the_catalog_declaration, R2-3), and without that record it is
+    unaccounted for here. A sample the unit records is that
+    of an input that reaches the run, of a candidate of any choice (one whose file used was excluded, or that used
+    none, included), and of any lineage row or excluded candidate. Every file of a sample not used is recorded with
+    its reason (clause 5), and a copy no record names may be the one the rule names (clauses 2 and 3)."""
+    root = record.root
+    owner, _ = _raw_owner_manifest(provenance)
+    owner = owner if isinstance(owner, dict) else provenance
+    if not root:
+        return []
+    listed = _listed_inputs(owner, root)
+    if not listed:
+        return []
+    accounted: set[str] = set()
+    known: list[str] = []
+
+    def key(path: object) -> str:
+        text = str(path or "").strip()
+        return _slashed(_aif_input_key(text, root)) if text else ""
+
+    def account(path: object, *, of_a_sample: bool = True) -> None:
+        relative = key(path)
+        if relative:
+            accounted.add(relative.casefold())
+            if of_a_sample and _encoding_rank(relative) is not None:
+                known.append(relative)
+
+    running = list(dict.fromkeys(_row_member(row, root) for row in rows if _encoding_rank(_row_member(row, root))
+                                 is not None))
+    known.extend(running)
+    for entry in [*record.choices, *choices]:
+        for path in entry.candidates:
+            account(path)
+    for manifest in [*_lineage_manifests(provenance), owner]:
+        for path in manifest.get("input_candidates") or []:
+            account(path)
+        for item in manifest.get("excluded_input_candidates") or []:
+            if isinstance(item, dict):
+                account(item.get("path"))
+        for part in ("rows", "excluded"):
+            for row in _lineage_rows(manifest, part):
+                account(row["path"])
+                account(_row_member(row, root))
+        free = manifest.get(UNATTRIBUTED_RECORD)
+        for path in (free.get("paths") or []) if isinstance(free, dict) else []:
+            account(path, of_a_sample=False)
+    for item in _record_left_out(provenance):
+        account(item["path"], of_a_sample=False)
+    undeclared = _undeclared(owner, provenance)
+    keys = _sample_groups([*known, *listed], unit_polarity, names or [], paired)
+    by_sample: dict[tuple, str] = {}
+    for member in known:
+        by_sample.setdefault(keys[member], member)
+    unaccounted = [f"{path} beside {by_sample[keys[path]]}" for path in sorted(listed, key=_encoding_order_key)
+                   if path.casefold() not in accounted and keys[path] in by_sample
+                   and not (undeclared is not None and not listed[path] and undeclared(path))]
+    if not unaccounted:
+        return []
+    return [f"the raw owner's record shows {len(unaccounted)} file(s) delivered (an archive listing, or a download "
+            "that is no archive) of a sample the unit records, and no choice of the one encoding rule, input, "
+            "exclusion, left_out record or declaration names them (every file not used is recorded with its reason, "
+            "and a copy no record names may be the one the rule uses; clauses 2, 3 and 5): "
+            + "; ".join(unaccounted[:5])]
+
+
+def _encoding_run_sentence(provenance: dict, csv_rows: "list[dict] | None") -> str:
+    """The sentence that names each sample whose data arrived in several encodings, the file the rule used, and
+    whether that file runs: a file used that was excluded on record (or a sample none of whose files could be read)
+    is named as a sample that runs on no file, never as one whose file runs. "" where no sample arrived so."""
+    record = _encoding_record(provenance)
+    sentence = _encoding_sentence(record)
+    if not sentence:
+        return ""
+    root = record.root
+    rows, _reaching = _reaching_rows(provenance, csv_rows)
+    exclusions = _encoding_exclusions(provenance)
+    reaching = {_row_member(row, root).casefold() for row in rows if _path_key(row["path"]) not in exclusions}
+    dropped: list[str] = []
+    for entry in record.contested:
+        if not entry.used:
+            dropped.append(f"{entry.label} (none of its files could be read)")
+        elif entry.used.casefold() not in reaching:
+            excluded = _encoding_used_exclusion(entry, provenance, root, exclusions)
+            dropped.append(f"{entry.used} (excluded, {excluded[1] or 'no reason recorded'})" if excluded is not None
+                           else f"{entry.used} (no input that reaches the run)")
+    if not dropped:
+        return f"{sentence}; the file used runs for each, as its sample, and none other does"
+    ran = len(record.contested) - len(dropped)
+    return (f"{sentence}. {len(dropped)} of these sample(s) run on no file: the file used is excluded or none could "
+            "be read, and no other file of the sample runs in its place: " + "; ".join(dropped[:5])
+            + (f". The file used runs for each of the other {ran}, as its sample, and none other does" if ran else ""))
+
+
+def _encoding_evidence(record: _EncodingRecord) -> dict:
+    """The evidence's account of the one encoding rule's choices among more than one candidate: how many, the files
+    left unused by reason, and the first ten."""
+    contested = record.contested
+    if not contested:
+        return {}
+    reasons = Counter(reason or "" for entry in contested for _path, reason in entry.unused)
+    return {"rule": ENCODING_RULE, ENCODING_CHOICES: len(contested),
+            "unused_encodings": sum(len(entry.unused) for entry in contested),
+            "reasons": dict(sorted(reasons.items())),
+            "choices": [{"used": entry.used or None,
+                         "unused": [{"path": path, "reason": reason} for path, reason in entry.unused]}
+                        for entry in contested[:10]]}
+
+
+def _encoding_sentence(record: _EncodingRecord) -> str:
+    """The sentence that names each sample whose data arrived in several encodings and the file the rule used."""
+    contested = record.contested
+    if not contested:
+        return ""
+    more = f"; and {len(contested) - 5} more" if len(contested) > 5 else ""
+    return (f"{len(contested)} sample(s) arrived in more than one encoding, and the one encoding rule of 2026-10-09 "
+            f"({ENCODING_RULE}) used one file of each, recording every other with its reason: "
+            + "; ".join(entry.described() for entry in contested[:5]) + more)
+
+
+def _encoding_unused_paths(provenance: dict) -> list[str]:
+    """Every file a choice of the one encoding rule left unused beside the one it used, as an absolute path under the
+    data root: no input and no excluded candidate, each is accounted for by its sample's choice alone."""
+    record = _encoding_record(provenance)
+    if not record.root:
+        return []
+    return list(dict.fromkeys(os.path.join(record.root, path.replace("/", os.sep))
+                              for entry in record.choices if entry.used for path, _reason in entry.unused))
+
+
+def _encoding_conversion_problems(provenance: dict, records: "list | None") -> "tuple[list[str], list[str]]":
+    """Where the one encoding rule's record disagrees with the conversions, and the mzXML whose failed conversion the
+    rule passed over for the next file of their sample. A choice that uses an mzXML uses a completed conversion of
+    it (status converted), and one that leaves an mzXML unused as conversion_failed names one whose conversion
+    record did not complete (clause 3). A conversion record is read by its source (source.path under the data root,
+    or source.relative_path)."""
+    record = _encoding_record(provenance)
+    root = record.root
+    by_source = _conversions_by_source(records, root)
+    problems: list[str] = []
+    passed_over: list[str] = []
+    for entry in record.choices:
+        if entry.used and _encoding_rank(entry.used) == ENCODING_MZXML_RANK:
+            conversion = by_source.get(entry.used.casefold())
+            if conversion is None:
+                problems.append(f"the one encoding rule used {entry.used}, an mzXML, for its sample, and no conversion "
+                                "record read it")
+            elif conversion.get("status") != "converted":
+                problems.append(f"the one encoding rule used {entry.used}, an mzXML, for its sample, and its "
+                                f"conversion's status is {conversion.get('status')!r}, not 'converted': where a "
+                                "conversion fails the next in order is taken (clause 3)")
+        for path, reason in entry.unused:
+            if reason != CONVERSION_FAILED:
+                continue
+            conversion = by_source.get(path.casefold())
+            if conversion is None:
+                problems.append(f"{path} is left unused as {CONVERSION_FAILED}, and no conversion record read it")
+            elif conversion.get("status") == "converted":
+                problems.append(f"{path} is left unused as {CONVERSION_FAILED}, and its conversion record says it "
+                                "was converted")
+            elif entry.used:
+                passed_over.append(f"{path} for {entry.used}")
+    return list(dict.fromkeys(problems)), passed_over
 
 
 def check_analysis_inputs_are_the_inputs(
@@ -2710,6 +3993,26 @@ def check_analysis_inputs_are_the_inputs(
     nothing declared to compare: Interactive includes unattributed members only where the Catalog declared no
     analysis inputs, so a check that returned NOT_EVALUABLE first never blocked a real run on it.
 
+    WHAT THE LEASE LEFT OUT, OR CONVERTED (user decision, 2026-10-08, second round, answer 3; Interactive 0.5.36).
+    An unpaired mzXML converted to mzML is an unattributed input like any other, where its lineage row is the
+    conversion of the mzXML its name_pairing names; what the lease leaves out of the unit is in
+    unattributed_members.left_out. INP-1 FAILs, with or without a declaration, where the run holds a member that
+    record leaves out, or a converted unattributed input that is not the conversion of the member it names
+    (_unattributed_choice_problems). Read, like the shared-archive guard, before the declaration is found missing.
+
+    ONE ENCODING PER SAMPLE (the user's one rule of 2026-10-09; Interactive 0.5.36). Where a sample's data arrive in
+    several encodings, the rule uses exactly one: the highest readable in the order vendor format -> mzML -> mzXML,
+    a tie to the first path without case, the next where the chosen one cannot be read or converted, that sample's
+    own input whatever encoding its row names, and every other on record with its reason. INP-1 recomputes the rule
+    from the record (manifest.encoding_choices and each lineage row's encoding_choice) and FAILs, with or without a
+    declaration, a run that departs from it or lacks its record (_encoding_run_problems): a choice the rule does not
+    make, a file left unused that runs (a split part's raw owner's choices included), a file used that runs as no
+    sample or another one than its rows or a pairing rule's inference give, a vendor file excluded for its header
+    with the next encoding not taken, two files of one sample that both run, an input beside a lease-excluded
+    encoding of its sample that no choice records, or a file of a sample the unit records that an archive listing or
+    a download that is no archive shows delivered and that no record or declaration names. A sample whose file used was excluded is named as running on no file. A declared input the rule left unused is no
+    candidate and no excluded input: it is counted beside the candidates, accounted for by its sample's choice.
+
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
     an input the run never opens, gives results for files that are not the unit's.
     """
@@ -2741,9 +4044,33 @@ def check_analysis_inputs_are_the_inputs(
                            "unit-scoped archive only. " + unattributed.sentence() + ".",
                            **unattributed.evidence())
                 return
+        # What the lease left out or converted among the unpaired members is held here too (2026-10-08, second
+        # round, answer 3), and so is the one encoding rule (2026-10-09): the declaration is missing, the record is not.
+        choices, choice_evidence = _unattributed_choice_problems(provenance, csv_rows, unattributed)
+        encoding_problems, encoding_evidence = _encoding_run_problems(provenance, csv_rows)
+        if choices or encoding_problems:
+            report.add("INP-1", stage, INP1_TITLE, FAIL,
+                       "What MS-DIAL will open is not what the lease's record lets it open: "
+                       + "; ".join([*choices, *encoding_problems]) + ". A member the record leaves out, a file the one "
+                       "encoding rule did not use, or a sample's file run outside its sample, gives results for a file "
+                       "that is not the unit's input, a sample measured twice, or a sample's data outside its Class.",
+                       **({"unpaired_members": choice_evidence} if choice_evidence else {}),
+                       **({"one_encoding_rule": encoding_evidence} if encoding_evidence else {}),
+                       **(unattributed.evidence() if unattributed else {}))
+            return
+        held = ""
+        if choice_evidence:
+            held = (f" The {choice_evidence['inputs_read']} input(s) that reach the run are what the lease's record of "
+                    "the archive's unpaired members lets reach it: none is a member it leaves out, and each converted "
+                    "unattributed input is the conversion of the mzXML it names.")
+        sentence = _encoding_run_sentence(provenance, csv_rows)
+        if sentence:
+            held += f" {sentence}."
         report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
                    "The manifest declares no analysis inputs: the unit finds its inputs after the download, or "
-                   "was prepared before the Catalog declared them.", required=False)
+                   "was prepared before the Catalog declared them." + held, required=False,
+                   **({"unpaired_members": choice_evidence} if choice_evidence else {}),
+                   **({"one_encoding_rule": encoding_evidence} if encoding_evidence else {}))
         return
     if owner is None:
         report.add("INP-1", stage, INP1_TITLE, NOT_EVALUABLE,
@@ -2770,11 +4097,16 @@ def check_analysis_inputs_are_the_inputs(
     # What the lease excluded itself is no candidate either, and is counted once beside them.
     owner_lease = _lease_excluded(owner)
     lease_out = beside([path for path, _reason in owner_lease.values()], owner_candidates + outside)
+    # What the one encoding rule left unused (2026-10-09) is no candidate and no excluded input: its sample's choice
+    # accounts for it, and it is counted once beside them.
+    owner_unused = beside(_encoding_unused_paths(owner), owner_candidates + outside + lease_out)
     # A part that carries a declaration of its own samples' inputs: a list other than its parent's.
     own_list = split and own_declared is not None and own_declared != declared
     own_outside = beside(own_excluded, own_candidates) if own_list else []
     own_lease_out = beside([path for path, _reason in _lease_excluded(provenance).values()],
                            own_candidates + own_outside) if own_list else []
+    own_unused = beside(_encoding_unused_paths(provenance), own_candidates + own_outside + own_lease_out) \
+        if own_list else []
     # The candidates the CSV leaves out: the disposition found them there and excluded them.
     held = _excluded_candidates(provenance, own_candidates)
     counts = {"analysis_inputs": len(declared or []), "input_candidates": len(own_candidates),
@@ -2789,6 +4121,8 @@ def check_analysis_inputs_are_the_inputs(
         counts["excluded input_candidates"] = len(held)
     if lease_out:
         counts["lease excluded_input_candidates"] = len(lease_out)
+    if owner_unused:
+        counts["unused encodings"] = len(owner_unused)
     # The archive members the lease included unattributed (2026-10-07): candidates no declared input is known to be.
     unattributed = _unattributed_members(provenance)
     owner_unattributed = {_path_key(row["path"]) for row in _lineage_rows(owner) if _is_unattributed(row)}
@@ -2804,26 +4138,34 @@ def check_analysis_inputs_are_the_inputs(
 
     # A part's own list is its parent's cut to its samples, so a count it carries is the parent's.
     problems = [contradiction] if contradiction else []
-    held_by_owner = len(owner_candidates) + len(outside) + len(lease_out)
+    held_by_owner = len(owner_candidates) + len(outside) + len(lease_out) + len(owner_unused)
     if declared is not None and disagrees(len(declared), held_by_owner, owner_free):
         problems.append(
             f"the Catalog declared {len(declared)} analysis input(s) and the lease found {len(owner_candidates)} "
             "input candidate(s)" + (" in the parent" if split else "")
             + (f", {owner_free} of them unattributed members" if owner_free else "")
             + (f", with {len(outside)} more excluded" if outside else "")
-            + (f", and excluded {len(lease_out)} itself" if lease_out else ""))
-    if own_list and disagrees(len(own_declared), len(own_candidates) + len(own_outside) + len(own_lease_out), own_free):
+            + (f", and excluded {len(lease_out)} itself" if lease_out else "")
+            + (f", and left {len(owner_unused)} unused under the one encoding rule" if owner_unused else ""))
+    if own_list and disagrees(len(own_declared), len(own_candidates) + len(own_outside) + len(own_lease_out)
+                              + len(own_unused), own_free):
         problems.append(
             f"the part declares {len(own_declared)} analysis input(s) of its own samples and holds "
             f"{len(own_candidates)} input candidate(s)"
             + (f", {own_free} of them unattributed members" if own_free else "")
             + (f", with {len(own_outside)} more excluded" if own_outside else "")
-            + (f", and its lease excluded {len(own_lease_out)} itself" if own_lease_out else ""))
+            + (f", and its lease excluded {len(own_lease_out)} itself" if own_lease_out else "")
+            + (f", and left {len(own_unused)} unused under the one encoding rule" if own_unused else ""))
     if unattributed:
         scoped, why = _unit_scoped(owner)
         if scoped is False:
             problems.append(f"{len(unattributed.members)} input candidate(s) are archive members no sample row pairs "
                             f"with, included unattributed, and {why}")
+    choices, _choice_evidence = _unattributed_choice_problems(provenance, csv_rows, unattributed)
+    problems.extend(choices)
+    # The one encoding rule of 2026-10-09, recomputed from its record, beside a declaration as without one.
+    encoding_problems, encoding_evidence = _encoding_run_problems(provenance, csv_rows)
+    problems.extend(encoding_problems)
     if len(own_candidates) - len(held) != len(csv_rows):
         problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
                         + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))
@@ -2859,6 +4201,8 @@ def check_analysis_inputs_are_the_inputs(
     lease = {"lease_excluded": [{"input": Path(item.rstrip("\\/")).name, "reason": owner_lease[_path_key(item)][1]}
                                 for item in lease_out[:10]]} if lease_out else {}
     unattributed_evidence = unattributed.evidence() if unattributed else {}
+    if encoding_evidence:
+        lease["one_encoding_rule"] = encoding_evidence
     if problems:
         report.add("INP-1", stage, INP1_TITLE, FAIL,
                    "What MS-DIAL will open is not what the Catalog declared it opens: " + "; ".join(problems)
@@ -2869,13 +4213,16 @@ def check_analysis_inputs_are_the_inputs(
     reasons = sorted({owner_lease[_path_key(item)][1] or "no reason recorded" for item in lease_out})
     by_lease = (f" and {len(lease_out)} input(s) the lease excluded itself ({', '.join(reasons)})"
                 if lease_out else "")
+    if owner_unused:
+        by_lease += (f" and {len(owner_unused)} input(s) the one encoding rule left unused for another file of their "
+                     "sample")
     if split:
         detail = ((f"The parent declared {len(declared)} analysis input(s), which are its {len(owner_candidates)} "
                    "input candidates" + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
                    + by_lease + "; " if declared is not None else "")
                   + (f"this part declares {len(own_declared)} of its own samples'; " if own_list else "")
                   + f"this part's {len(own_candidates)} input candidates{less} are its {len(csv_rows)} CSV rows.")
-    elif held or outside or lease_out:
+    elif held or outside or lease_out or owner_unused:
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates"
                   + (f" and {len(outside)} excluded input(s) that are none" if outside else "")
                   + by_lease + f"; the candidates{less} are the {len(csv_rows)} CSV rows.")
@@ -2886,6 +4233,9 @@ def check_analysis_inputs_are_the_inputs(
     else:
         detail = (f"The {len(declared)} declared analysis input(s) are the {len(own_candidates)} input candidates "
                   f"and the {len(csv_rows)} CSV rows.")
+    sentence = _encoding_run_sentence(provenance, csv_rows)
+    if sentence:
+        detail += f" {sentence}."
     if unattributed:
         detail += (" " + unattributed.sentence() + ". Which declared input each one is, if any, is not recorded; "
                    "read them before the result is used.")
@@ -2943,6 +4293,16 @@ def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | N
     warnings carry the code, no such row carries a sample row, and the download is unit-scoped. A record that
     falls short of that is a FAIL here.
 
+    ONE ENCODING PER SAMPLE (the user's one rule of 2026-10-09; Interactive 0.5.36). Each sample whose data
+    arrived in several encodings is listed with the file the rule used and every other with its reason
+    (one_encoding_rule), and the check WARNs. Its record is held here (_encoding_record_problems): every choice
+    follows the rule as recomputed from its candidates and reasons, a lineage row's encoding_choice uses that row's
+    own file and is listed in manifest.encoding_choices, its stands_for is one of its sample's candidates, and every
+    listed choice whose file is an input is carried by that input's row. A record short of that is a FAIL. Whether
+    the run holds what the record lets it hold is INP-1's (_encoding_run_problems). A pairing a rule made for one
+    file of a sample, where the rule used another (name_pairing.member_name is not the input's own name), is listed
+    with the input that runs.
+
     RUN POLICY: record_only, as the task of 2026-10-06 placed it. A pairing is a fact to be read, and
     listing it changes nothing in what MS-DIAL computes.
     """
@@ -2981,20 +4341,42 @@ def check_inferred_name_pairings_are_listed(report: Report, provenance: dict | N
             entry["key"] = pairing.get("key")
         if part == "excluded":
             entry["excluded_by_the_lease"] = True
+        if entry["member_name"].casefold() != _row_name(row).casefold() and not _conversion_source(row):
+            # The file the one encoding rule used for a sample whose row a rule paired with another of its files
+            # (2026-10-09, clause 4): the pairing as it was made, and the input that runs.
+            entry["input"] = _row_name(row)
         (inferred if entry["paired_by"] in INFERRED_PAIRING_RULES else unknown).append(entry)
     record_problems = _unattributed_record_problems(provenance, unattributed) if unattributed else []
+    encoding_record = _encoding_record(provenance)
+    encoding_problems = _encoding_record_problems(provenance, encoding_record)
+    # A record that takes no unattributed member (a shared archive, a declared unit, a stem two sample rows share)
+    # still says why it leaves out each member it lists.
+    left_out_problems = [] if unattributed else _left_out_record_problems(unattributed.record)
     free_evidence = unattributed.evidence() if unattributed else {}
     free_sentence = (" " + unattributed.sentence() + "; which declared file each one is, if any, is not recorded."
                      if unattributed else "")
-    if record_problems:
-        report.add("PAIR-1", stage, PAIR1_TITLE, FAIL,
-                   f"{len(unattributed.members)} input(s) in the lineage are archive members included unattributed, "
-                   "and the record the rule of 2026-10-07 requires of them falls short: " + "; ".join(record_problems)
-                   + "." + free_sentence,
-                   inputs=len(rows), paired_by_inference=len(inferred) + len(unknown), record_problems=record_problems,
+    encoding_sentence = _encoding_sentence(encoding_record)
+    if encoding_sentence:
+        free_sentence += f" {encoding_sentence}."
+        free_evidence = {**free_evidence, "one_encoding_rule": _encoding_evidence(encoding_record)}
+    if record_problems or encoding_problems or left_out_problems:
+        said = []
+        if record_problems:
+            said.append(f"{len(unattributed.members)} input(s) in the lineage are archive members included "
+                        "unattributed, and the record the rule of 2026-10-07 requires of them falls short: "
+                        + "; ".join(record_problems))
+        if left_out_problems:
+            said.append("the record of the archive members the lease left out falls short: "
+                        + "; ".join(left_out_problems))
+        if encoding_problems:
+            said.append("the record of the one encoding rule of 2026-10-09 does not say, by the rule, which file each "
+                        "sample used: " + "; ".join(encoding_problems))
+        report.add("PAIR-1", stage, PAIR1_TITLE, FAIL, ". ".join(said) + "." + free_sentence,
+                   inputs=len(rows), paired_by_inference=len(inferred) + len(unknown),
+                   record_problems=[*record_problems, *left_out_problems, *encoding_problems],
                    pairings=inferred, **({"pairings_by_unknown_rule": unknown} if unknown else {}), **free_evidence)
         return
-    if not inferred and not unknown and not unattributed:
+    if not inferred and not unknown and not unattributed and not encoding_sentence:
         report.add("PAIR-1", stage, PAIR1_TITLE, PASS,
                    f"None of the {len(rows)} input(s) in the lineage was paired with a declared raw file by "
                    "inference.", inputs=len(rows))
@@ -3300,11 +4682,38 @@ AIF_AS_SWATH_BASIS = "aif_single_ce_as_swath"
 # type AIF, row AIF, so no mapping is involved): the disposition records aif_multi_ce_run = {"collision_energies",
 # "rule": AIF_MULTI_CE_RULE} beside its probe of that Console (multi_energy_aif_console: capability, available,
 # probe, assembly_sha256), and each input's record carries console_acquisition_basis AIF_MULTI_CE_BASIS and its own
-# ms2_collision_energies. Without #825 the unit is held as before; with it, inputs whose energies differ from one
-# another are held too (#825 chooses among one file's energies, never across files). ACQ-1 reads those records:
-# a multi-energy AIF row passes only where they say so and the Console the run manifest names is the one the probe
-# found #825 in (or, where it is another, the gate finds #825's markers in that Console's assembly itself).
+# ms2_collision_energies. Without #825 the unit is held as before. ACQ-1 reads those records: a multi-energy AIF
+# row passes only where they say so and the Console the run manifest names is the one the probe found #825 in (or,
+# where it is another, the gate finds #825's markers in that Console's assembly itself).
+#
+# ENERGY SETS THAT DIFFER BETWEEN INPUTS (user decision, 2026-10-08, answer 6 "run as is"; Interactive 0.5.36,
+# msdial-interactive-app#69). #825 chooses a representative energy among one file's energies, never across files,
+# so inputs whose energy sets differ (one energy each but not the same one, different sets, or a multi-energy file
+# beside a single-energy one) are each processed with their own per-file representative energy. Interactive
+# 0.5.34-0.5.35 held such a unit (aif_collision_energies_differ_between_inputs); 0.5.36 runs it as AIF under the
+# same rule and records it: aif_multi_ce_run.energy_sets_differ true, aif_multi_ce_run.collision_energy_sets (each
+# distinct set with its file count), the disposition's aif_collision_energies_by_input (each input's own set, keyed
+# by its path relative to the data root: AIF_CE_BY_INPUT_KEY) and the warning aif_energy_sets_differ_between_inputs.
+# ACQ-1 then holds each row to its own recorded set instead of the unit's union, and reports that the sets differ as
+# a WARN: recorded, never a reason to stop the run (AIF_CE_SETS_DIFFER_POLICY).
+#
+# HOW THE SETS NAME AN INPUT (user decision, 2026-10-08, second round, answer 2; Interactive 0.5.36,
+# raw_metadata_preflight.aif_input_key). By the input's path relative to the manifest's input_directory (for a split
+# part, the parent's, which the part's manifest repeats), '/'-separated, case as given, computed by os.path.relpath
+# on the recorded paths without resolving links; with no input_directory, the path as the per-file record gives it.
+# Keys are compared without case. Two inputs of one basename in two folders (POS/QC_01.mzML, NEG/QC_01.mzML) are two
+# keys, each with its own set, and ACQ-1 holds each row to its own: a basename lookup would hold both to one set,
+# or FAIL every input in a subfolder. An input directly in the data root has its basename as its key. The
+# disposition says so in aif_collision_energies_by_input_key; one that names another scheme is not read.
 AIF_MULTI_CE_FIELD = "aif_multi_ce_run"
+AIF_CE_SETS_DIFFER_FIELD = "energy_sets_differ"
+AIF_CE_SETS_FIELD = "collision_energy_sets"
+AIF_CE_BY_INPUT_FIELD = "aif_collision_energies_by_input"
+AIF_CE_BY_INPUT_KEY_FIELD = "aif_collision_energies_by_input_key"
+AIF_CE_BY_INPUT_KEY = "path_relative_to_input_directory"
+AIF_CE_SETS_DIFFER_WARNING = "aif_energy_sets_differ_between_inputs"
+AIF_CE_SETS_DIFFER_DECISION = "run_as_is_2026_10_08"
+AIF_CE_SETS_DIFFER_POLICY = RECORD_ONLY
 AIF_MULTI_CE_RULE = "multi_ce_aif_with_console_825"
 AIF_MULTI_CE_BASIS = "aif_multi_ce_console_825"
 MULTI_ENERGY_AIF_PROBE_FIELD = "multi_energy_aif_console"
@@ -3483,16 +4892,40 @@ def _multi_energy_aif_console(probe: object, run_manifest: "dict | None") -> "tu
     return False, f"{probed_text}, and the Console the run manifest names has no MsdialWorkbench#825 ({why})", evidence
 
 
+def _aif_input_key(path: object, input_directory: object) -> str:
+    """An input's key in aif_collision_energies_by_input, as Interactive's raw_metadata_preflight.aif_input_key gives
+    it (AIF_CE_BY_INPUT_KEY): its path relative to the data root, '/'-separated and case as given, where both are
+    absolute; otherwise the path as given, '/'-separated. Never resolved: a store lease links its members in."""
+    text = str(path or "")
+    root = str(input_directory or "").strip()
+    if root and os.path.isabs(text) and os.path.isabs(root):
+        try:
+            return os.path.relpath(os.path.normpath(text), os.path.normpath(root)).replace("\\", "/")
+        except ValueError:
+            # Another drive: no relative path exists.
+            pass
+    return text.replace("\\", "/")
+
+
 def _multi_energy_aif_failures(
-    rows: "list[tuple[str, tuple[float, ...] | None, str]]", dispositions: list[dict], run_manifest: "dict | None",
+    rows: "list[tuple[str, tuple[float, ...] | None, str, str]]", dispositions: list[dict],
+    run_manifest: "dict | None",
 ) -> "tuple[list[str], dict]":
     """Why the rows that run as multi-energy AIF may not, and the evidence. Each row is (name, its record's
-    ms2_collision_energies, its record's console_acquisition_basis).
+    ms2_collision_energies, its record's console_acquisition_basis, its key in aif_collision_energies_by_input:
+    _aif_input_key of its record's file).
 
     Under a binding disposition its aif_multi_ce_run decides: without one naming AIF_MULTI_CE_RULE and two or more
-    energies nothing runs as multi-energy AIF, and each row's basis must be AIF_MULTI_CE_BASIS and its energies the
-    recorded ones. Without a binding disposition (no campaign) the rows' energies must agree. Either way the Console
-    the run manifest names must be shown to have #825 (_multi_energy_aif_console)."""
+    energies nothing runs as multi-energy AIF, and each row's basis must be AIF_MULTI_CE_BASIS. Each row must record
+    its energies, and they must be the recorded ones: the unit's, or, where aif_multi_ce_run records
+    energy_sets_differ true (the run-as-is decision of 2026-10-08), the set the disposition's
+    aif_collision_energies_by_input records under its key (compared without case), which must be among the unit's
+    energies; a disposition whose aif_collision_energies_by_input_key names a scheme other than AIF_CE_BY_INPUT_KEY
+    is not read, and each such row FAILs. Without a
+    binding disposition (no campaign) no such decision is recorded, and the rows' energies must agree. Either way
+    the Console the run manifest names must be shown to have #825 (_multi_energy_aif_console). Where the decision
+    is recorded, evidence["energy_sets_differ"] is true and evidence["collision_energy_sets"] gives each set the
+    rows record and how many rows record it."""
     failures: list[str] = []
     record, energies, why = _aif_multi_ce_record(dispositions)
     evidence: dict = {"rows": len(rows), "rule": AIF_MULTI_CE_RULE}
@@ -3504,18 +4937,62 @@ def _multi_energy_aif_failures(
             "and is held otherwise (aif_multi_ce_awaiting_console)")
         return failures, evidence
     if record is not None:
-        evidence[AIF_MULTI_CE_FIELD] = record.get(AIF_MULTI_CE_FIELD)
-        for name, own, basis in rows:
+        run = record.get(AIF_MULTI_CE_FIELD)
+        evidence[AIF_MULTI_CE_FIELD] = run
+        differ = isinstance(run, dict) and run.get(AIF_CE_SETS_DIFFER_FIELD) is True
+        by_input = record.get(AIF_CE_BY_INPUT_FIELD) if differ else None
+        # Keyed by each input's path under the data root (AIF_CE_BY_INPUT_KEY), compared without case.
+        by_input = ({str(key).replace("\\", "/").casefold(): value for key, value in by_input.items()}
+                    if isinstance(by_input, dict) else {})
+        scheme = str(record.get(AIF_CE_BY_INPUT_KEY_FIELD) or "") if differ else ""
+        if differ:
+            evidence[AIF_CE_BY_INPUT_KEY_FIELD] = scheme or None
+        for name, own, basis, file_name in rows:
             if basis != AIF_MULTI_CE_BASIS:
                 failures.append(f"{name}: runs as multi-energy AIF, and its record's console_acquisition_basis is "
                                 f"{basis or 'none'!r}, not {AIF_MULTI_CE_BASIS}")
+            elif not own:
+                # Interactive holds a unit with an input that records no energy (aif_collision_energy_unrecorded),
+                # whether the inputs' sets differ or not.
+                failures.append(f"{name}: records no ms2_collision_energies, and {AIF_MULTI_CE_RULE} runs a unit only "
+                                "where every input records its MS2 collision energies (Interactive holds one that does "
+                                "not: aif_collision_energy_unrecorded)")
+            elif differ and scheme and scheme != AIF_CE_BY_INPUT_KEY:
+                failures.append(f"{name}: the campaign disposition's {AIF_CE_BY_INPUT_FIELD} is keyed by {scheme!r} "
+                                f"({AIF_CE_BY_INPUT_KEY_FIELD}), and this gate reads it keyed by "
+                                f"{AIF_CE_BY_INPUT_KEY} only, so no set it records can be told to be this input's")
+            elif differ:
+                recorded = _energy_set(by_input.get(file_name.casefold()))
+                if not recorded:
+                    failures.append(f"{name}: records {_energies_text(own)}, and the campaign disposition's "
+                                    f"{AIF_CE_BY_INPUT_FIELD} records no set for {file_name} (its path relative to "
+                                    f"the data root, {AIF_CE_BY_INPUT_KEY}), though its {AIF_MULTI_CE_FIELD} says the "
+                                    "inputs' sets differ")
+                elif own != recorded:
+                    failures.append(f"{name}: records {_energies_text(own)}, not the {_energies_text(recorded)} the "
+                                    f"campaign disposition's {AIF_CE_BY_INPUT_FIELD} records for {file_name}")
+                elif not set(own) <= set(energies):
+                    failures.append(f"{name}: records {_energies_text(own)}, which are not all among the unit's "
+                                    f"{_energies_text(energies)} that its {AIF_MULTI_CE_FIELD} records")
             elif own != energies:
-                failures.append(f"{name}: records {_energies_text(own) if own is not None else 'no ms2_collision_energies'}"
-                                f", not the unit's {_energies_text(energies)}, and {AIF_MULTI_CE_RULE} holds only where "
-                                "every input records the same energies (#825 chooses among one file's energies, never "
-                                "across files)")
+                failures.append(f"{name}: records {_energies_text(own)}, not the unit's {_energies_text(energies)}, "
+                                f"and its {AIF_MULTI_CE_FIELD} does not record that the inputs' sets differ "
+                                f"({AIF_CE_SETS_DIFFER_FIELD}, the run-as-is decision of 2026-10-08): #825 chooses among "
+                                "one file's energies, never across files, so only that decision runs inputs whose "
+                                "sets differ")
+        if differ:
+            counted = Counter(own for _name, own, _basis, _file in rows if own)
+            warned = record.get("warnings")
+            evidence.update({
+                AIF_CE_SETS_DIFFER_FIELD: True, "decision": AIF_CE_SETS_DIFFER_DECISION,
+                "energy_sets_differ_run_policy": AIF_CE_SETS_DIFFER_POLICY,
+                AIF_CE_SETS_FIELD: [{"collision_energies": list(values), "rows": count}
+                                    for values, count in sorted(counted.items())],
+                "recorded_" + AIF_CE_SETS_FIELD: run.get(AIF_CE_SETS_FIELD),
+                "disposition_warning": AIF_CE_SETS_DIFFER_WARNING in (warned if isinstance(warned, list) else []),
+            })
     else:
-        sets = {own for _name, own, _basis in rows}
+        sets = {own for _name, own, _basis, _file in rows}
         energies = next(iter(sets)) if len(sets) == 1 and None not in sets else ()
         if len(sets) > 1:
             failures.append(f"{len(rows)} row(s) run as multi-energy AIF, and their inputs record different MS2 "
@@ -3600,12 +5077,18 @@ def check_acquisition_type_is_the_headers(
     aif_multi_ce_console_825, or where a binding disposition records aif_multi_ce_run. It runs as its header gives,
     so it PASSes only where (_multi_energy_aif_failures): a binding disposition records aif_multi_ce_run under the
     rule multi_ce_aif_with_console_825 with two or more energies, and each such row's record carries that basis and
-    those energies (inputs whose energies differ are held by Interactive, so a row with others FAILs); and the
+    records its energies, which are those energies, or, where aif_multi_ce_run records energy_sets_differ true (the
+    user's run-as-is decision of 2026-10-08, Interactive 0.5.36), the set the disposition's
+    aif_collision_energies_by_input records for its input, keyed by the input's path relative to the manifest's
+    input_directory and compared without case (AIF_CE_BY_INPUT_KEY: the second-round answer 2 of 2026-10-08, so two
+    inputs of one basename in two folders are each held to their own set), among the unit's energies; and the
     Console the run manifest (output/run-manifest.json) records is shown to have MsdialWorkbench#825: the
     disposition's multi_energy_aif_console probe found it in the assembly whose sha256 the run manifest records,
     or the gate finds both of #825's markers in that assembly itself. A multi-energy AIF row on a Console without
     #825 FAILs, and so does one whose disposition holds the unit or records no such run. Without a binding
-    disposition (no campaign) the rows' energies must agree and the Console must be shown the same way. A
+    disposition (no campaign) the rows' energies must agree and the Console must be shown the same way. Where the
+    inputs' sets differ and nothing is refused, ACQ-1 is a WARN that names each set and the decision: that the sets
+    differ is recorded (record_only) and never stops the run, while every refusal above still does. A
     single-energy AIF unit is still expected as SWATH under single_ce_aif_as_swath_2026_10_07, whatever the
     Console. A record written before header_console_acquisition_type existed gives DDA,
     SWATH or AIF as its acquisition_mode says, and the extractor's own verdict is read beside it, as before;
@@ -3642,7 +5125,7 @@ def check_acquisition_type_is_the_headers(
     type_text = ", ".join(f"{key} {count}" for key, count in sorted(types.items()))
 
     # The rows that run as multi-energy AIF (name, recorded energies, basis), and why they may not.
-    multi_rows: "list[tuple[str, tuple[float, ...] | None, str]]" = []
+    multi_rows: "list[tuple[str, tuple[float, ...] | None, str, str]]" = []
     multi_failures: list[str] = []
 
     def refuse(**evidence) -> None:
@@ -3685,6 +5168,8 @@ def check_acquisition_type_is_the_headers(
     decisions = _declared_vs_header(dispositions)
     declared_dia = _declared_dia_family(dispositions)
     multi_ce_recorded = any(isinstance(item.get(AIF_MULTI_CE_FIELD), dict) for item in dispositions)
+    # The data root aif_collision_energies_by_input's keys are relative to (_data_root).
+    input_directory = _data_root(provenance)
     warnings: list[str] = []
     basis: Counter = Counter()
     sources: Counter = Counter()
@@ -3734,7 +5219,10 @@ def check_acquisition_type_is_the_headers(
                 energies = _energy_set(record.get("ms2_collision_energies"))
                 basis_text = str(record.get("console_acquisition_basis") or "")
                 if (energies and len(energies) > 1) or basis_text == AIF_MULTI_CE_BASIS or multi_ce_recorded:
-                    multi_rows.append((name, energies, basis_text))
+                    # The key aif_collision_energies_by_input names this input by, as Interactive keys it: the
+                    # record's file relative to the data root (AIF_CE_BY_INPUT_KEY), never its basename.
+                    input_key = _aif_input_key(str(record.get("file") or "") or path, input_directory)
+                    multi_rows.append((name, energies, basis_text, input_key or name))
             if mapped:
                 sanctioned += 1
                 sources["sanctioned"] += 1
@@ -3800,6 +5288,7 @@ def check_acquisition_type_is_the_headers(
         evidence["declaration_sources"] = dict(Counter(str(entry.get("declaration_source") or "unrecorded")
                                                        for entry in overrides))
     multi_text = ""
+    differing = ""
     if multi_rows:
         refused, evidence["multi_energy_aif"] = _multi_energy_aif_failures(multi_rows, dispositions, run_manifest)
         multi_failures.extend(refused)
@@ -3810,6 +5299,18 @@ def check_acquisition_type_is_the_headers(
                       f"under {AIF_MULTI_CE_RULE}: {multi.get('console_detail')}"
                       + (f" ({sha[:12]})" if sha else "") + ", and that Console represents each peak by the energy of "
                       "its MS/MS reference-spectrum match, else the energy with the most product ions.")
+        sets = multi.get(AIF_CE_SETS_FIELD) or []
+        if multi.get(AIF_CE_SETS_DIFFER_FIELD) is True and not refused:
+            differing = (
+                f"The {len(multi_rows)} multi-energy AIF row(s) record {len(sets)} different set(s) of MS2 collision "
+                "energies (" + "; ".join(f"{_energies_text(item['collision_energies'])} in {item['rows']} row(s)"
+                                          for item in sets)
+                + "): #825 chooses among one file's energies only, so each file is processed with its own "
+                "representative collision energy, and representative energies can differ between files. Each row "
+                f"records the set the campaign disposition's {AIF_CE_BY_INPUT_FIELD} records for its input, by its "
+                "path relative to the data root. The unit "
+                f"runs as it is, on record (user decision, 2026-10-08; {AIF_CE_SETS_DIFFER_WARNING}); that the sets "
+                "differ is recorded here and stops no run.")
     if sanctioned:
         evidence["sanctioned_mappings"] = sanctioned
         evidence["sanctioned_rule"] = AIF_AS_SWATH_RULE
@@ -3818,8 +5319,8 @@ def check_acquisition_type_is_the_headers(
     if failures:
         refuse(warnings=warnings[:10], **({"sanctioned": sanctioned_rows[:10]} if sanctioned_rows else {}), **evidence)
         return
-    if warnings or sanctioned_rows:
-        sentences = []
+    if warnings or sanctioned_rows or differing:
+        sentences = [differing] if differing else []
         if sanctioned_rows:
             energies, _why = _aif_as_swath_energies(evidence.get(AIF_AS_SWATH_FIELD))
             energy = f"{energies[0]:g} eV" if energies else "one collision energy"
