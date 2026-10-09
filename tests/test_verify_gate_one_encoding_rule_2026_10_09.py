@@ -786,5 +786,145 @@ class DeclaredUnitTests(unittest.TestCase):
         self.assertIn("the Catalog declared 3 analysis input(s) and the lease found 2 input candidate(s)", inp1.detail)
 
 
+class ReviewRound4Tests(unittest.TestCase):
+    """The review of e9e5ca9: a file of a row's own stem in another encoding is that row's sample's, grouped with a
+    prefixed or leading-identifier member of the row (Interactive's _encoding_groups, sample_row_of); and a left_out
+    entry takes the rule's choice from the file it names only where its reason removes that file under the rule."""
+
+    PREFIXED = "021518_387057_CSHp_BioRec1.raw"
+    LEFT_OUT = ("unattributed_members.left_out leaves out 1 file(s) the one encoding rule uses before the file of "
+                "their sample that runs, for a reason that does not remove them under the rule")
+
+    def _refused(self, report, said: str) -> None:
+        inp1 = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, inp1.status, inp1.detail)
+        self.assertIn(said, inp1.detail)
+        self.assertIn("INP-1", report.run_blocked_by)
+
+    # ---- (1) a row's files are one sample's whatever their stems ---------------------------------------------
+
+    def test_a_file_of_the_rows_own_stem_is_grouped_with_its_prefixed_member(self) -> None:
+        names = [(0, "biorec1.raw", "Biorec1"), (1, "biorec2.raw", "Biorec2")]
+        paired = {self.PREFIXED.casefold(): {"BioRec1.raw"}}
+        keys = verifier._sample_groups([self.PREFIXED, "BioRec1.mzML", "000/BioRec1.wiff", "BioRec2.mzML"], "",
+                                       names, paired)
+        self.assertEqual(keys[self.PREFIXED], keys["BioRec1.mzML"])
+        self.assertEqual(keys[self.PREFIXED], keys["000/BioRec1.wiff"])
+        self.assertNotEqual(keys[self.PREFIXED], keys["BioRec2.mzML"])
+        self.assertFalse(verifier._two_samples(self.PREFIXED, "BioRec1.mzML", names, paired))
+        # Two rows of one stem keep their own files, and a file of that stem no row names is neither's.
+        two = [(0, "s1.raw", "A"), (1, "s1.mzml", "B")]
+        self.assertTrue(verifier._two_samples("S1.raw", "S1.mzML", two))
+        self.assertEqual(set(), verifier._tied_rows("S1.mzXML", two))
+
+    def test_an_unrecorded_file_of_the_rows_own_stem_blocks_the_run(self) -> None:
+        """The prefixed member runs for the row naming BioRec1.raw; the archive also holds BioRec1.mzML (a file the
+        rule leaves unused, unrecorded) or 000/BioRec1.wiff (the file the rule uses: a vendor tie, '000/' first, so
+        the wrong encoding runs), and no record names it."""
+        for copy in ("BioRec1.mzML", "000/BioRec1.wiff"):
+            with self.subTest(copy=copy), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=(), converted=(), on_disk=(copy,))
+                self._refused(d08._gate(unit), UNACCOUNTED + f"{copy} beside {self.PREFIXED}")
+
+    def test_a_file_of_the_rows_own_stem_that_runs_beside_its_prefixed_member_blocks_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = d08._unit(temporary, plain=("BioRec1.mzML",), converted=())
+            self._refused(d08._gate(unit), "1 sample(s) reach the run in more than one file, where the one encoding "
+                                           f"rule uses exactly one file of a sample (clauses 1 and 2): {self.PREFIXED} "
+                                           "and BioRec1.mzML")
+
+    def test_the_rule_followed_for_a_file_of_the_rows_own_stem_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = d08._unit(temporary, plain=(), converted=(), on_disk=("BioRec1.mzML",))
+            _record(unit, _choice(self.PREFIXED, ("BioRec1.mzML", LOWER)))
+            unit.prepare()
+            self.assertEqual([], verifier._encoding_run_problems(unit.manifest, None)[0])
+
+    # ---- (2) a left_out reason removes the file the rule names only where it applies -------------------------
+
+    @staticmethod
+    def _left_out(unit, path: str, reason: str) -> None:
+        record = unit.manifest["unattributed_members"]
+        record["left_out"] = [d08._left(path, reason)]
+        record["left_out_count"] = 1
+
+    def test_the_file_the_rule_names_left_out_for_a_reason_that_does_not_apply_blocks_the_run(self) -> None:
+        """A/U_8.raw is the first of a tie with B/U_8.raw, which runs; U_8.raw outranks U_8.mzML, which runs."""
+        cases = {
+            "a shared archive's reason": ("B/U_8.raw", "A/U_8.raw", "shared_archive"),
+            "a stem no two rows share": ("B/U_8.raw", "A/U_8.raw", "stem_of_several_sample_rows"),
+            "a polarity the path does not state": ("B/U_8.raw", "A/U_8.raw", "polarity_token_contradicts_ion_mode"),
+            "a declaration the unit does not make": ("B/U_8.raw", "A/U_8.raw", "not_named_by_the_catalog_declaration"),
+            "a reason of another encoding": ("B/U_8.raw", "A/U_8.raw", "undecodable"),
+            "a header reason with no exclusion": ("B/U_8.raw", "A/U_8.raw", "raw_header_unreadable"),
+            "a lower encoding runs": ("U_8.mzML", "U_8.raw", "shared_archive"),
+            "no reason": ("B/U_8.raw", "A/U_8.raw", ""),
+        }
+        for name, (running, left, reason) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=(running,), on_disk=(left,))
+                unit.manifest["project"]["ion_mode"] = "Positive"
+                self._left_out(unit, left, reason)
+                report = d08._gate(unit)
+                self._refused(report, self.LEFT_OUT)
+                self.assertIn(f"{left} ({reason or 'no reason'}: ", _check(report, "INP-1").detail)
+                self.assertIn(f") while {running} runs", _check(report, "INP-1").detail)
+
+    def test_a_left_out_file_after_the_one_that_runs_or_removed_by_its_reason_is_accounted_for(self) -> None:
+        cases = {
+            "after the one that runs": ("A/U_8.raw", "B/U_8.raw", "shared_archive", None),
+            "an unreadable header on record": ("B/U_8.raw", "A/U_8.raw", "raw_header_unreadable",
+                                               "raw_header_unreadable"),
+        }
+        for name, (running, left, reason, excluded) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=(running,), on_disk=(left,))
+                self._left_out(unit, left, reason)
+                if excluded:
+                    unit.exclude(str(unit.data / left), excluded)
+                inp1 = _check(d08._gate(unit), "INP-1")
+                self.assertNotIn(self.LEFT_OUT, inp1.detail)
+                self.assertNotIn(UNACCOUNTED, inp1.detail)
+
+    def test_in_a_declared_unit_only_the_declaration_keeps_the_file_the_rule_names_out(self) -> None:
+        """RAW/S1.raw, which no declaration names, outranks the declared S1.mzML: left out as undeclared it stays out
+        (ReviewRound3Tests), left out for a shared archive it does not."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = ReviewRound3Tests()._declared_archive(temporary, left_out=True)
+            unit.manifest["unattributed_members"]["left_out"] = [d08._left("RAW/S1.raw", "shared_archive")]
+            unit.prepare()
+            self._refused(unit.gate(), self.LEFT_OUT)
+
+    def test_each_reason_removes_a_file_only_on_its_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            mzxml = {"source": {"relative_path": "A/U_9.mzXML"}, "status": "failed"}
+            provenance = {"input_directory": str(root), "input_conversions": {"records": [mzxml]},
+                          "project": {"ion_mode": "Positive"}}
+            names = [(0, "s1.raw", "A"), (1, "s1.mzml", "B")]
+
+            def why(path: str, reason: str, exclusions: "dict | None" = None, polarity: str = "Positive") -> str:
+                return verifier._left_out_removal_problem(path, reason, provenance, str(root), polarity, names, {},
+                                                          exclusions or {})
+
+            self.assertEqual("", why("A/U_9.mzXML", "conversion_failed"))
+            mzxml["status"] = "converted"
+            self.assertNotEqual("", why("A/U_9.mzXML", "conversion_failed"))
+            self.assertNotEqual("", why("B/U_9.mzXML", "conversion_failed"))
+            self.assertEqual("", why("A/U_9.mzXML", "requires_conversion"))
+            mzml = str(root / "A" / "U_9.mzML")
+            key = verifier._path_key(mzml)
+            self.assertEqual("", why("A/U_9.mzML", "undecodable", {key: (mzml, "unsupported_mzml_encoding")}))
+            self.assertNotEqual("", why("A/U_9.mzML", "undecodable"))
+            self.assertNotEqual("", why("A/U_9.raw", "undecodable", {key: (mzml, "undecodable")}))
+            self.assertEqual("", why("NEG/U_9.raw", "polarity_token_contradicts_ion_mode"))
+            self.assertNotEqual("", why("POS/U_9.raw", "polarity_token_contradicts_ion_mode"))
+            self.assertNotEqual("", why("NEG/U_9.raw", "polarity_token_contradicts_ion_mode", polarity=""))
+            self.assertEqual("", why("S1.mzXML", "stem_of_several_sample_rows"))
+            self.assertNotEqual("", why("S1.raw", "stem_of_several_sample_rows"))
+            self.assertNotEqual("", why("U_9.raw", "not_named_by_the_catalog_declaration"))
+            self.assertNotEqual("", why("U_9.raw", "shared_archive"))
+
+
 if __name__ == "__main__":
     unittest.main()

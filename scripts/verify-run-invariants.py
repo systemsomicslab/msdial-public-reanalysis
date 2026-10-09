@@ -2511,6 +2511,12 @@ UNIT_SCOPED_DOWNLOAD_KIND = "unit_files"
 UNATTRIBUTED_LEFT_OUT = "left_out"
 UNATTRIBUTED_CONVERTED = "converted"
 UNSUPPORTED_MZML_ENCODING = "unsupported_mzml_encoding"
+# The left_out reasons that are no reason a file could not be read (Interactive's _unattributed_members,
+# _members_no_declaration_names and _encoding_groups): each removes a file from the unit only where what it says holds
+# of that file (_left_out_removal_problem).
+POLARITY_TOKEN_CONTRADICTS_ION_MODE = "polarity_token_contradicts_ion_mode"
+NOT_NAMED_BY_DECLARATION = "not_named_by_the_catalog_declaration"
+STEM_OF_SEVERAL_SAMPLE_ROWS = "stem_of_several_sample_rows"
 #
 # ONE ENCODING PER SAMPLE (the user's one rule of 2026-10-09, "A: この一つのルールで統一"; Interactive 0.5.36,
 # msdial-interactive-app#69, msdial_app.encoding_rule). It supersedes every earlier case-by-case answer about a
@@ -3330,12 +3336,15 @@ def _tied_rows(member: str, rows: list[tuple[int, str, str]],
                paired: "dict[str, set[str]] | None" = None) -> set[int]:
     """The sample rows a file under the data root is paired to: those that name it (_rows_naming, exact), and those
     that name a raw file a pairing rule paired it with (``paired``, _paired_raw_files: a prefixed or
-    leading-identifier member paired to the row naming S7.raw)."""
+    leading-identifier member paired to the row naming S7.raw); where none is, the one row whose named file has its
+    stem (S7.mzML for the row naming S7.raw, in any encoding: clause 4), as Interactive's _encoding_groups reads a
+    candidate's sample row (sample_row_of). One row's files are one sample's whatever their stems, so S7.mzML and
+    021518_387057_CSHp_S7.raw, paired by a prefix to that row, are one sample's."""
     tied = set(_rows_naming(member, rows))
     paired = paired or {}
     for raw_file in paired.get(_slashed(member).casefold(), set()) | paired.get(_basename(member).casefold(), set()):
         tied |= _rows_naming(raw_file, rows)
-    return tied
+    return tied or _rows_naming(member, rows, by_stem=True)
 
 
 def _two_samples(first: str, second: str, rows: list[tuple[int, str, str]],
@@ -3353,9 +3362,10 @@ def _sample_groups(paths: "Iterable[str]", unit_polarity: str, rows: list[tuple[
                    paired: "dict[str, set[str]] | None" = None) -> dict:
     """Each path's sample as the rule reads 'the same sample', {path: a key one sample's files share}: the files of
     one stem whose polarities make one sample (_sample_keys), joined with every file paired to the same sample row
-    (_tied_rows: exact, prefixed or leading-identifier pairing) under the same polarity, a path stating none taken
-    as stating the unit's. So 021518_387057_CSHp_BioRec1.raw, paired by prefix to the row naming BioRec1.raw, and
-    000/BioRec1.raw, which that row names, are one sample's files; POS/S1.raw and NEG/S1.raw stay two samples'."""
+    (_tied_rows: exact, prefixed or leading-identifier pairing, else the one row whose named file has its stem)
+    under the same polarity, a path stating none taken as stating the unit's. So 021518_387057_CSHp_BioRec1.raw,
+    paired by prefix to the row naming BioRec1.raw, 000/BioRec1.raw, which that row names, and BioRec1.mzML, of the
+    row's own stem, are one sample's files; POS/S1.raw and NEG/S1.raw stay two samples'."""
     keys = _sample_keys(paths, unit_polarity)
     parent: dict = {key: key for key in keys.values()}
 
@@ -3461,7 +3471,10 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
       unit records (a running input's, a choice's, an excluded one's)
       that the raw owner's record shows delivered, by an archive listing or a download that is no archive, and that
       no choice, input, exclusion, left_out record or declaration accounts for (_unaccounted_listed_members): the
-      run departs from the rule, or the rule's record of it is missing (clauses 2, 3 and 5)."""
+      run departs from the rule, or the rule's record of it is missing (clauses 2, 3 and 5);
+    - a file unattributed_members.left_out leaves out that the rule would use before a file of its sample that runs
+      (before it in the rule's order: a higher encoding, or the first of a tie), for a reason that does not remove
+      it under the rule (_left_out_rule_problems; clauses 1 to 3)."""
     record = _encoding_record(provenance)
     root = record.root
     rows, _reaching = _reaching_rows(provenance, csv_rows)
@@ -3528,6 +3541,7 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
     problems.extend(_unrecorded_encoding_problems(provenance, rows, record, names, every_choice, unit_polarity,
                                                   paired))
     problems.extend(_unaccounted_listed_members(provenance, rows, record, every_choice, unit_polarity, names, paired))
+    problems.extend(_left_out_rule_problems(provenance, rows, record, unit_polarity, names, paired, exclusions))
     return list(dict.fromkeys(problems)), _encoding_evidence(record)
 
 
@@ -3586,6 +3600,113 @@ def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _E
                         f"choice of the one encoding rule records them ({ENCODING_CHOICE}: every file not used is "
                         "recorded with its reason, naming the file used; clause 5): " + "; ".join(beside[:5]))
     return problems
+
+
+def _conversions_by_source(records: "list | None", root: str) -> dict[str, dict]:
+    """The conversion records by their source under the data root (source.path, or source.relative_path), without
+    case."""
+    by_source: dict[str, dict] = {}
+    for item in records or []:
+        source = item.get("source") if isinstance(item, dict) and isinstance(item.get("source"), dict) else {}
+        for form in (_aif_input_key(source.get("path"), root) if str(source.get("path") or "").strip() else "",
+                     _slashed(source.get("relative_path"))):
+            if form:
+                by_source.setdefault(form.casefold(), item)
+    return by_source
+
+
+def _left_out_removal_problem(path: str, reason: str, provenance: dict, root: str, unit_polarity: str,
+                              names: list[tuple[int, str, str]], paired: "dict[str, set[str]] | None",
+                              exclusions: dict[str, tuple[str, str]]) -> str:
+    """Why a left_out reason does not remove a file under the one encoding rule, or "" where it does:
+
+    - a reason it could not be read (ENCODING_UNREADABLE_REASONS) applies to its encoding (ENCODING_REASON_RANKS),
+      requires_conversion only outside a campaign, and has its evidence on record: requires_conversion the encoding
+      itself; any other an exclusion of the file on record for that reason (undecodable as unsupported_mzml_encoding
+      too), or, for conversion_failed and polarity_contradicts_declaration, a conversion record of it that did not
+      complete (clause 3);
+    - polarity_token_contradicts_ion_mode, a path that states a polarity by a token of its own other than the unit's;
+    - not_named_by_the_catalog_declaration, a unit that declares its inputs and does not name the file (R2-3);
+    - stem_of_several_sample_rows, a file of a stem the named files of two or more sample rows have, which no row
+      names or a pairing rule paired (two rows' files are two samples': no one sample's encoding);
+    - any other reason (a shared archive's, a download scope's, none) removes no file of a sample from the rule."""
+    if reason in ENCODING_UNREADABLE_REASONS:
+        rank = _encoding_rank(path)
+        if rank not in ENCODING_REASON_RANKS.get(reason, frozenset()):
+            return f"{reason} is no reason {ENCODING_RANK_NAMES.get(rank, 'such a file')} cannot be read"
+        if reason == REQUIRES_CONVERSION:
+            return ("in a campaign an mzXML is converted to mzML (clause 1)" if _binding_dispositions(provenance)
+                    else "")
+        excluded = exclusions.get(_path_key(os.path.join(root, path.replace("/", os.sep)))) if root else None
+        accepted = {reason, UNSUPPORTED_MZML_ENCODING} if reason == "undecodable" else {reason}
+        if excluded is not None and excluded[1] in accepted:
+            return ""
+        if reason in (CONVERSION_FAILED, "polarity_contradicts_declaration"):
+            owner, _ = _raw_owner_manifest(provenance)
+            records, _problem = _conversion_records(owner if isinstance(owner, dict) else provenance)
+            conversion = _conversions_by_source(records, root).get(path.casefold())
+            if conversion is not None and conversion.get("status") != "converted":
+                return ""
+            return ("no exclusion of it for that reason, and no conversion record of it that did not complete, is on "
+                    "record")
+        return "no exclusion of it for that reason is on record"
+    if reason == POLARITY_TOKEN_CONTRADICTS_ION_MODE:
+        stated = _path_polarities(path)
+        if unit_polarity and stated - {unit_polarity}:
+            return ""
+        return (f"its path states {', '.join(sorted(stated)) or 'no polarity'}, and the unit's polarity is "
+                f"{unit_polarity or 'not recorded'}")
+    if reason == NOT_NAMED_BY_DECLARATION:
+        owner, _ = _raw_owner_manifest(provenance)
+        undeclared = _undeclared(owner if isinstance(owner, dict) else provenance, provenance)
+        if undeclared is None:
+            return "the unit declares no analysis inputs"
+        return "" if undeclared(path) else "the declaration names it"
+    if reason == STEM_OF_SEVERAL_SAMPLE_ROWS:
+        stem = _encoding_stem(path)
+        rows_of_stem = {index for index, raw, _sample in names if _encoding_stem(raw) == stem}
+        if len(rows_of_stem) >= 2 and not _tied_rows(path, names, paired):
+            return ""
+        return "no two sample rows share its stem, or a sample row names it or was paired with it"
+    return "it is no reason the rule passes a file of a sample over for"
+
+
+def _left_out_rule_problems(provenance: dict, rows: list[dict], record: _EncodingRecord, unit_polarity: str,
+                            names: list[tuple[int, str, str]], paired: "dict[str, set[str]] | None",
+                            exclusions: dict[str, tuple[str, str]]) -> list[str]:
+    """The files unattributed_members.left_out leaves out (the unit's and its raw owner's) that the one encoding rule
+    would use before a file of their sample that reaches the run (_sample_groups, and no two sample rows of their
+    own: _two_samples; before it in the rule's order: a higher encoding, or the first of a tie), and whose reason
+    does not remove them under the rule (_left_out_removal_problem). A left_out entry accounts for a file, but only
+    a reason that applies to it takes the rule's choice from it: otherwise a lower-ranked file, or a later tie, runs
+    where the rule names the file left out (clauses 1 to 3)."""
+    root = record.root
+    left_out = [(item["path"], str(item.get("reason") or "").strip()) for item in _record_left_out(provenance)]
+    left_out = [(path, reason) for path, reason in left_out if _encoding_rank(path) is not None]
+    if not left_out:
+        return []
+    running = list(dict.fromkeys(member for member in (_row_member(row, root) for row in rows)
+                                 if _encoding_rank(member) is not None))
+    running_keys = {member.casefold() for member in running}
+    keys = _sample_groups([*running, *(path for path, _reason in left_out)], unit_polarity, names, paired)
+    found: list[str] = []
+    for path, reason in left_out:
+        if path.casefold() in running_keys:
+            continue
+        after = [other for other in running if keys[other] == keys[path]
+                 and _encoding_order_key(path) < _encoding_order_key(other)
+                 and not _two_samples(path, other, names, paired)]
+        if not after:
+            continue
+        why = _left_out_removal_problem(path, reason, provenance, root, unit_polarity, names, paired, exclusions)
+        if why:
+            found.append(f"{path} ({reason or 'no reason'}: {why}) while {after[0]} runs")
+    if not found:
+        return []
+    return [f"{UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} leaves out {len(found)} file(s) the one encoding rule "
+            "uses before the file of their sample that runs, for a reason that does not remove them under the rule "
+            "(a reason it could not be read, on record and of its encoding; a polarity its path states; a declaration "
+            "that does not name it; a stem two sample rows share; clauses 1 to 3): " + "; ".join(found[:5])]
 
 
 def _listed_inputs(owner: dict, root: str) -> dict[str, bool]:
@@ -3793,13 +3914,7 @@ def _encoding_conversion_problems(provenance: dict, records: "list | None") -> "
     or source.relative_path)."""
     record = _encoding_record(provenance)
     root = record.root
-    by_source: dict[str, dict] = {}
-    for item in records or []:
-        source = item.get("source") if isinstance(item, dict) and isinstance(item.get("source"), dict) else {}
-        for form in (_aif_input_key(source.get("path"), root) if str(source.get("path") or "").strip() else "",
-                     _slashed(source.get("relative_path"))):
-            if form:
-                by_source.setdefault(form.casefold(), item)
+    by_source = _conversions_by_source(records, root)
     problems: list[str] = []
     passed_over: list[str] = []
     for entry in record.choices:
