@@ -190,35 +190,33 @@ with no attributed input beside them is listed under
 them only from a download shared with other units, and PAIR-1 FAILs where their
 record falls short of the rule. Interactive 0.5.36 converts an unpaired mzXML
 in a campaign into an unattributed input (its lineage row the conversion, named
-after the mzXML, listed in `unattributed_members.converted`), and of one
-sample's unpaired encodings takes one by the encoding order, recording each
-other in `unattributed_members.left_out` as `chosen_other_encoding` (with
-`chosen` and `chosen_by`). INP-1 accepts both as recorded and FAILs, blocking
-the run, where a member `left_out` names reaches the run, a converted
-unattributed input is not the conversion of the mzXML it names, or one sample
-runs in two encodings beside an unattributed member; PAIR-1 FAILs, on record
-only, where `converted` or `left_out` falls short. Where a sample's own mzML
-cannot be decoded, its readable twin runs as that sample's own input, in its
-Class (the user's answer of 2026-10-08): INP-1 accepts it where the twin's
-lineage row (`replaces_undecodable`), the mzML's excluded row (`replaced_by`),
-`left_out` (`analysed_for_an_admitted_sample`, `stands_for_reason`
-`undecodable_mzml`) and `unattributed_members.replaced_undecodable` all say so,
-and FAILs, blocking the run, a twin that runs without them, unattributed or as
-another sample, a twin that is no encoding of that mzML's sample (another name,
-whatever its records say), or an mzML that runs beside its twin. An input that
-runs as an undecodable mzML's sample, as an encoding of it, with none of those
-records and nothing of its own (name, pairing, archive or declaration) that
-makes it that sample's FAILs INP-1 too; an `encoding_choice` counts only where
-the mzXML it stands for is an mzXML of that sample, and its own pairing only by
-a rule Interactive pairs by, to a `raw_file` of that sample. So does a
-readable twin that runs as an unattributed member, or as no sample, with no
-record, beside its sample's admitted mzML that the lease excluded as
-undecodable: that sample's data would run outside its row and Class. The
-mzML's sample is its excluded row's or, where that names none, the one sample
-row that names it. PAIR-1 lists each twin
-(WARN) and FAILs, on record only, where `replaced_undecodable` or a `left_out`
-entry does not say what ran; CONV-1 holds a converted twin to the mzXML the
-record names. CLS-2 reads what the download
+after the mzXML, listed in `unattributed_members.converted`), and records what
+it leaves out of the unit in `unattributed_members.left_out` (an
+opposite-polarity name, a shared archive's member, a member no declaration
+names). INP-1 FAILs, blocking the run, where a member `left_out` names reaches
+the run or a converted unattributed input is not the conversion of the mzXML it
+names; PAIR-1 FAILs, on record only, where `converted` or `left_out` falls
+short. Which one of a sample's encodings runs is the user's one rule of
+2026-10-09 (`one_encoding_per_sample_2026_10_09`), which supersedes the
+case-by-case answers of 2026-10-08 (the readable twin of an undecodable mzML,
+`chosen_other_encoding`, a copy nearest the data root), whose checks are gone:
+of a sample's readable files exactly one is used, the highest in the order
+vendor format, mzML, mzXML; a tie goes to the first path without case; the next
+is taken where the chosen one cannot be read or converted; the file used is that
+sample's own input; and every other is recorded with its reason. The gate
+recomputes the rule from Interactive's record (`manifest.encoding_choices` and
+each used input's lineage `encoding_choice`): INP-1 FAILs, blocking the run, a
+choice the rule does not make, a choice missing from the lineage row or the
+manifest, a file left unused that runs, a file used that runs unattributed or as
+another sample, a vendor file excluded for its raw header with the sample's next
+encoding not taken (`encoding_fallback_not_taken`), two files of one sample
+(one stem, the same polarities, not two sample rows' own) that both run, and an
+input beside a lease-excluded encoding of its sample that no choice records. A
+declared input the rule left unused is counted beside the candidates, not as
+missing. CONV-1 FAILs a choice that uses an mzXML whose conversion did not
+complete, or leaves one unused as `conversion_failed` whose conversion did.
+PAIR-1 lists each choice (WARN) and FAILs, on record only, where the record does
+not follow the rule. CLS-2 reads what the download
 delivered from the archive member listings and the downloads, counting a
 vendor folder fetched file by file (a Waters `.raw`) as one input and a
 companion file (`.wiff.scan`) as none: an approved sample whose file was
