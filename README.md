@@ -94,8 +94,18 @@ following actions require a separate explicit human confirmation:
   (`scripts/record-reading.py --digest`), only after that person has read them
   and said what they found.
 
-The default retention policy is `keep`. Never combine different analysis units
-in one MS-DIAL run. Never redistribute the laboratory's private MSP libraries.
+A recorded campaign approval of one manifest digest stands in for the first,
+third, fourth and fifth of these, and for the automatic split, for the units
+the approval record lists, which must be that manifest's units; it never stands
+in for the second or the last. Nor is it the user's go: the production
+campaign starts only when the user gives it, asked for in the conversation
+once everything is ready (2026-10-01). `CLAUDE.md` states its rules, among them
+the raw-data deletion rule and which `before-production` gate FAILs stop a
+campaign unit's run.
+
+The default retention policy is `keep`; a campaign approval states its own.
+Never combine different analysis units in one MS-DIAL run. Never redistribute
+the laboratory's private MSP libraries.
 
 ## Run gates
 
