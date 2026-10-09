@@ -3419,9 +3419,10 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
       or with a stands_for and no sample (clause 4);
     - two files of one sample that both reach the run (_sample_keys: one stem, the same sample's polarities, and no
       two sample rows of their own: _two_samples); an input beside a lease-excluded encoding of its own sample that
-      no choice records; and a file of a running input's sample that the archive listing shows extracted and that no
-      choice, input, exclusion or left_out record accounts for (_unaccounted_listed_members): the run departs from
-      the rule, or the rule's record of it is missing (clause 5)."""
+      no choice records; and a file of a sample the unit records (a running input's, a choice's, an excluded one's)
+      that the raw owner's record shows delivered, by an archive listing or a download that is no archive, and that
+      no choice, input, exclusion, left_out record or declaration accounts for (_unaccounted_listed_members): the
+      run departs from the rule, or the rule's record of it is missing (clauses 2, 3 and 5)."""
     record = _encoding_record(provenance)
     root = record.root
     rows, _reaching = _reaching_rows(provenance, csv_rows)
@@ -3546,11 +3547,20 @@ def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _E
 
 
 def _listed_inputs(owner: dict, root: str) -> list[str]:
-    """Every input container the raw owner's archive member listings (archive_extractions[].members_tsv, its sha256
-    checked) show extracted under the data root, as the rule names it (relative, '/'-separated): the listing's path
-    under the extraction's destination, or as listed where none is recorded. A container the rule ranks no encoding
-    of, one outside the data root, and a listing that cannot be read give nothing."""
+    """Every input container the raw owner's record shows delivered under the data root, as the rule names it
+    (relative, '/'-separated), as _delivery_of reads the delivery: each container an archive member listing
+    (archive_extractions[].members_tsv, its sha256 checked) shows extracted, at the listing's path under the
+    extraction's destination (or as listed where none is recorded), and each container a download that is no archive
+    is or is inside (_download_container: a Waters .raw folder fetched file by file is one input, and a .wiff.scan
+    companion is none). A container the rule ranks no encoding of, one outside the data root, and a listing that
+    cannot be read give nothing."""
     found: dict[str, str] = {}
+
+    def add(relative: str) -> None:
+        if relative and not relative.startswith("../") and relative != ".." and not os.path.isabs(relative) \
+                and _encoding_rank(relative) is not None:
+            found.setdefault(relative.casefold(), relative)
+
     for item in owner.get("archive_extractions") or []:
         if not isinstance(item, dict):
             continue
@@ -3562,21 +3572,46 @@ def _listed_inputs(owner: dict, root: str) -> list[str]:
             container = _member_container(listing.names.get(member, member))
             if not container:
                 continue
-            relative = (_aif_input_key(os.path.join(destination, container.replace("/", os.sep)), root)
-                        if destination and root else container)
-            if relative.startswith("../") or relative == ".." or _encoding_rank(relative) is None:
-                continue
-            found.setdefault(relative.casefold(), relative)
+            add(_aif_input_key(os.path.join(destination, container.replace("/", os.sep)), root)
+                if destination and root else container)
+    for item in owner.get("downloads") or []:
+        if not isinstance(item, dict) or not str(item.get("path") or "").strip() or _is_archive_download(item):
+            continue
+        path = str(item["path"])
+        if root and os.path.isabs(path) and os.path.isabs(root):
+            relative = _aif_input_key(path, root)
+            add(_member_container(relative) if not relative.startswith("../") and not os.path.isabs(relative)
+                else "")
+        else:
+            add(_download_container(path, str(owner.get("raw_directory") or "")))
     return list(found.values())
+
+
+def _undeclared(owner: dict, provenance: dict) -> "Callable[[str], bool] | None":
+    """Where the unit declares its analysis inputs (the raw owner's declaration, else its own), whether a path under
+    the data root is one the declaration does not name, under any of the forms Interactive's allow-list compares
+    (_allowlist_forms): the declaration is the record that keeps such a file out of the run (R2-3). None where the
+    unit declares none."""
+    for manifest in (owner, provenance):
+        project = manifest.get("project") if isinstance(manifest, dict) else None
+        declared, _contradiction = _declared_inputs(project if isinstance(project, dict) else {})
+        if declared:
+            names = {_declared_input_key(item.get("path") if isinstance(item, dict) else item) for item in declared}
+            names.discard("")
+            return lambda relative: not any(form in names for form in _allowlist_forms(_declared_input_key(relative)))
+    return None
 
 
 def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _EncodingRecord,
                                 choices: list, unit_polarity: str) -> list[str]:
-    """The files the archive listing shows extracted that are of the sample of an input that reaches the run
-    (_sample_keys) and that nothing accounts for: no choice of the one encoding rule names them, and they are no
-    input candidate, no lineage row (an input or an excluded one, the raw owner's included), no excluded candidate
-    and no unattributed or left_out member. Every file of a sample not used is recorded with its reason (clause 5),
-    and a copy no record names may be the one the rule names (clause 2)."""
+    """The files the raw owner's record shows delivered (_listed_inputs: an archive listing, or a download that is no
+    archive) that are of a sample the unit records (_sample_keys) and that nothing accounts for: no choice of the one
+    encoding rule names them, and they are no input candidate, no lineage row (an input or an excluded one, the raw
+    owner's included), no excluded candidate, no unattributed or left_out member, and, in a declared unit, a file the
+    declaration names (one it does not name is kept out by the declaration, R2-3). A sample the unit records is that
+    of an input that reaches the run, of a candidate of any choice (one whose file used was excluded, or that used
+    none, included), and of any lineage row or excluded candidate. Every file of a sample not used is recorded with
+    its reason (clause 5), and a copy no record names may be the one the rule names (clauses 2 and 3)."""
     root = record.root
     owner, _ = _raw_owner_manifest(provenance)
     owner = owner if isinstance(owner, dict) else provenance
@@ -3586,12 +3621,25 @@ def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _Enc
     if not listed:
         return []
     accounted: set[str] = set()
+    known: list[str] = []
 
-    def account(path: object) -> None:
+    def key(path: object) -> str:
         text = str(path or "").strip()
-        if text:
-            accounted.add(_slashed(_aif_input_key(text, root)).casefold())
+        return _slashed(_aif_input_key(text, root)) if text else ""
 
+    def account(path: object, *, of_a_sample: bool = True) -> None:
+        relative = key(path)
+        if relative:
+            accounted.add(relative.casefold())
+            if of_a_sample and _encoding_rank(relative) is not None:
+                known.append(relative)
+
+    running = list(dict.fromkeys(_row_member(row, root) for row in rows if _encoding_rank(_row_member(row, root))
+                                 is not None))
+    known.extend(running)
+    for entry in [*record.choices, *choices]:
+        for path in entry.candidates:
+            account(path)
     for manifest in [*_lineage_manifests(provenance), owner]:
         for path in manifest.get("input_candidates") or []:
             account(path)
@@ -3604,25 +3652,23 @@ def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _Enc
                 account(_row_member(row, root))
         free = manifest.get(UNATTRIBUTED_RECORD)
         for path in (free.get("paths") or []) if isinstance(free, dict) else []:
-            account(path)
+            account(path, of_a_sample=False)
     for item in _record_left_out(provenance):
-        account(item["path"])
-    for entry in [*record.choices, *choices]:
-        for path in entry.candidates:
-            account(path)
-    running = list(dict.fromkeys(_row_member(row, root) for row in rows if _encoding_rank(_row_member(row, root))
-                                 is not None))
-    keys = _sample_keys([*running, *listed], unit_polarity)
+        account(item["path"], of_a_sample=False)
+    undeclared = _undeclared(owner, provenance)
+    keys = _sample_keys([*known, *listed], unit_polarity)
     by_sample: dict[tuple, str] = {}
-    for member in running:
+    for member in known:
         by_sample.setdefault(keys[member], member)
     unaccounted = [f"{path} beside {by_sample[keys[path]]}" for path in sorted(listed, key=_encoding_order_key)
-                   if path.casefold() not in accounted and keys[path] in by_sample]
+                   if path.casefold() not in accounted and keys[path] in by_sample
+                   and not (undeclared is not None and undeclared(path))]
     if not unaccounted:
         return []
-    return [f"the archive listing shows {len(unaccounted)} file(s) extracted of a sample whose input runs, and no "
-            "choice of the one encoding rule, input, exclusion or left_out record names them (every file not used is "
-            "recorded with its reason, and a copy no record names may be the one the rule uses; clauses 2 and 5): "
+    return [f"the raw owner's record shows {len(unaccounted)} file(s) delivered (an archive listing, or a download "
+            "that is no archive) of a sample the unit records, and no choice of the one encoding rule, input, "
+            "exclusion, left_out record or declaration names them (every file not used is recorded with its reason, "
+            "and a copy no record names may be the one the rule uses; clauses 2, 3 and 5): "
             + "; ".join(unaccounted[:5])]
 
 
@@ -3799,8 +3845,8 @@ def check_analysis_inputs_are_the_inputs(
     make, a file left unused that runs (a split part's raw owner's choices included), a file used that runs as no
     sample or another one than its rows or a pairing rule's inference give, a vendor file excluded for its header
     with the next encoding not taken, two files of one sample that both run, an input beside a lease-excluded
-    encoding of its sample that no choice records, or a file of a running input's sample that the archive listing
-    shows extracted and no record names. A sample whose file used was excluded is named as running on no file. A declared input the rule left unused is no
+    encoding of its sample that no choice records, or a file of a sample the unit records that an archive listing or
+    a download that is no archive shows delivered and that no record or declaration names. A sample whose file used was excluded is named as running on no file. A declared input the rule left unused is no
     candidate and no excluded input: it is counted beside the candidates, accounted for by its sample's choice.
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or

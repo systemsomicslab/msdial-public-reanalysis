@@ -219,8 +219,11 @@ its raw header with the sample's next encoding not taken
 that make one sample as Interactive merges them, so a path stating none is one
 sample's with one stating the unit's own; not two sample rows' own) that both
 run, an input beside a lease-excluded encoding of its sample that no choice
-records, and a file of a running input's sample that the archive member listing
-shows extracted and that no choice, input, exclusion or `left_out` record names.
+records, and a file of a sample the unit records (a running input's, a
+candidate's of any choice, the used file excluded or none used included, or an
+excluded file's) that an archive member listing shows extracted, or a download
+that is no archive delivered, and that no choice, input, exclusion or
+`left_out` record names, nor, in a declared unit, leaves out by not declaring it.
 A sample whose file used was excluded is named as running on no file. A
 declared input the rule left unused is counted beside the candidates, not as
 missing. CONV-1 FAILs a choice that uses an mzXML whose conversion did not

@@ -20,6 +20,7 @@ test_verify_lineage_built_csv's FolderBranchUnit for a declared unit.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -35,6 +36,9 @@ from test_verify_lineage_built_csv import FolderBranchUnit  # noqa: E402
 verifier = d08.verifier
 _check = d08._check
 LOWER, TIE = "lower_in_encoding_order", "tie_lexicographic"
+UNACCOUNTED = ("of a sample the unit records, and no choice of the one encoding rule, input, exclusion, left_out "
+               "record or declaration names them (every file not used is recorded with its reason, and a copy no "
+               "record names may be the one the rule uses; clauses 2, 3 and 5): ")
 
 
 def _choice(used: "str | None", *unused: "tuple[str, str]") -> dict:
@@ -436,10 +440,7 @@ class ReviewRound1Tests(unittest.TestCase):
                     self.assertEqual([], problems)
 
     def test_a_listed_copy_no_record_names_blocks_the_run(self) -> None:
-        said = ("the archive listing shows 1 file(s) extracted of a sample whose input runs, and no choice of the one "
-                "encoding rule, input, exclusion or left_out record names them (every file not used is recorded with "
-                "its reason, and a copy no record names may be the one the rule uses; clauses 2 and 5): A/U_8.raw "
-                "beside B/U_8.raw")
+        said = UNACCOUNTED + "A/U_8.raw beside B/U_8.raw"
         for name, recorded in (("left out of the choice", True), ("no record at all", False)):
             with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
                 unit = d08._unit(temporary, plain=("B/U_8.raw",),
@@ -471,7 +472,7 @@ class ReviewRound1Tests(unittest.TestCase):
                 record(unit)
                 report = d08._gate(unit)
                 inp1 = _check(report, "INP-1")
-                self.assertNotIn("the archive listing shows", inp1.detail)
+                self.assertNotIn(UNACCOUNTED, inp1.detail)
 
     def test_a_path_stating_no_polarity_is_one_sample_with_one_stating_the_units(self) -> None:
         said = ("1 sample(s) reach the run in more than one file, where the one encoding rule uses exactly one file of "
@@ -505,6 +506,99 @@ class ReviewRound1Tests(unittest.TestCase):
                               "used is excluded or none could be read, and no other file of the sample runs in its "
                               f"place: U_8.raw (excluded, {reason})", inp1.detail)
                 self.assertNotIn("the file used runs for each", inp1.detail)
+
+
+class ReviewRound2Tests(unittest.TestCase):
+    """The review of b1f472e: a copy delivered by a download that is no archive is read as an archive-listed one is,
+    and a copy no record names is sought for every sample the unit records, not only for one whose input runs: a
+    sample whose file used was excluded, or that used none, may have the copy the rule names (clauses 2 and 3)."""
+
+    @staticmethod
+    def _download(unit, relative: str) -> None:
+        """A file delivered by a plain download (no archive) under the data root, on the raw owner's record."""
+        path = unit.data / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = relative.encode()
+        path.write_bytes(data)
+        unit.manifest["downloads"].append({"path": str(path), "size_bytes": len(data),
+                                           "sha256": hashlib.sha256(data).hexdigest()})
+
+    def _refused(self, report, said: str) -> None:
+        inp1 = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, inp1.status, inp1.detail)
+        self.assertIn(said, inp1.detail)
+        self.assertIn("INP-1", report.run_blocked_by)
+
+    def test_a_downloaded_copy_no_record_names_blocks_the_run(self) -> None:
+        for name, recorded in (("left out of the choice", True), ("no record at all", False)):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=("B/U_8.raw",), on_disk=(("B/U_8.mzML",) if recorded else ()))
+                self._download(unit, "A/U_8.raw")
+                if recorded:
+                    _record(unit, _choice("B/U_8.raw", ("B/U_8.mzML", LOWER)))
+                self._refused(d08._gate(unit), UNACCOUNTED + "A/U_8.raw beside B/U_8.raw")
+
+    def test_a_downloaded_file_of_another_sample_or_of_no_container_is_accounted_for(self) -> None:
+        for name, download in (("another stem", "A/U_80.raw"), ("a companion file of no container", "A/U_8.wiff.scan"),
+                               ("outside the data root", "../elsewhere/U_8.raw")):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=("B/U_8.raw",))
+                self._download(unit, download)
+                inp1 = _check(d08._gate(unit), "INP-1")
+                self.assertNotIn(UNACCOUNTED, inp1.detail)
+
+    def _folder_unit(self, temporary: str, *, declared: bool) -> FolderBranchUnit:
+        """A MetaboLights-like unit of plain downloads: DERIVED/S1.mzML runs for S1, and RAW/S1.raw, the file the
+        rule names (clause 1), was delivered beside it and no record names it."""
+        unit = FolderBranchUnit(temporary)
+        unit.file("DERIVED/S1.mzML", "S1", "A")
+        unit.file("DERIVED/S2.mzML", "S2", "B")
+        unit._download(unit.data / "RAW" / "S1.raw", b"RAW/S1.raw", verified=True)
+        if not declared:
+            project = unit.manifest["project"]
+            project["analysis_inputs"] = []
+            project["analysis_inputs_declared"] = False
+            project.pop("analysis_input_count", None)
+            for sample in project["sample_metadata"]:
+                sample["raw_file"] = Path(sample["raw_file"]).name
+        return unit
+
+    def test_an_undeclared_unit_of_plain_downloads_with_the_vendor_file_unrecorded_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = self._folder_unit(temporary, declared=False)
+            unit.prepare()
+            self._refused(unit.gate(), UNACCOUNTED + "RAW/S1.raw beside DERIVED/S1.mzML")
+
+    def test_in_a_declared_unit_the_declaration_keeps_an_undeclared_copy_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = self._folder_unit(temporary, declared=True)
+            unit.prepare()
+            inp1 = _check(unit.gate(), "INP-1")
+        self.assertNotIn(UNACCOUNTED, inp1.detail)
+
+    def test_a_copy_of_a_sample_whose_file_used_was_excluded_blocks_the_run(self) -> None:
+        for reason in ("polarity_mismatch", "raw_header_unreadable"):
+            with self.subTest(reason), tempfile.TemporaryDirectory() as temporary:
+                unit = d08._unit(temporary, plain=("B/U_8.raw",), on_disk=("A/U_8.raw", "B/U_8.mzML"))
+                _record(unit, _choice("B/U_8.raw", ("B/U_8.mzML", LOWER)))
+                unit.exclude(str(unit.data / "B/U_8.raw"), reason)
+                self._refused(d08._gate(unit), UNACCOUNTED + "A/U_8.raw beside B/U_8.raw")
+
+    def test_a_copy_of_a_sample_that_used_no_file_blocks_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = d08._unit(temporary, on_disk=("B/U_7.mzML", "A/U_7.mzML"))
+            _lease_exclude(unit, "B/U_7.mzML")
+            unit.manifest["encoding_choices"] = [_choice(None, ("B/U_7.mzML", "undecodable"))]
+            self._refused(d08._gate(unit), UNACCOUNTED + "A/U_7.mzML beside B/U_7.mzML")
+        # With the copy in the choice, the sample's every file is on record.
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = d08._unit(temporary, on_disk=("B/U_7.mzML", "A/U_7.mzML"))
+            _lease_exclude(unit, "B/U_7.mzML")
+            _lease_exclude(unit, "A/U_7.mzML")
+            unit.manifest["encoding_choices"] = [_choice(None, ("A/U_7.mzML", "undecodable"),
+                                                         ("B/U_7.mzML", "undecodable"))]
+            inp1 = _check(d08._gate(unit), "INP-1")
+            self.assertNotIn(UNACCOUNTED, inp1.detail)
 
 
 class ConversionTests(unittest.TestCase):
