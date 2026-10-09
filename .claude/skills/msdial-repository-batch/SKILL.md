@@ -91,11 +91,14 @@ For a repository range:
    downloaded. Outside a campaign, mzXML and mzData are `requires_conversion`:
    MS-DIAL has no reader for them, so the unit is excluded before download
    until a reviewed ProteoWizard conversion has produced an mzML manifest with
-   its own provenance. The exclusion is unit-wide: one listed file or one
-   sample naming an `.mzXML` excludes the unit, even when its other inputs are
-   readable. In a campaign, an mzXML that is the encoding a sample is analysed
-   by (a vendor container and mzML outrank it; it outranks a twin nothing
-   reads, such as a `.dat`) is converted to mzML by Interactive's converter
+   its own provenance. Interactive #69's plan excludes the unit when one
+   listed file or one sample row names an `.mzXML` (outside a campaign) or an
+   `.mzData`, even when that sample has a readable encoding. That is a
+   departure from the one encoding rule (below; `CLAUDE.md`, where #69 departs
+   from the rule), not the user's policy: report such an exclusion as the
+   departure and raise no question of it. In a campaign, an mzXML that is the
+   encoding a sample is analysed by (a vendor container and mzML outrank it; it
+   outranks a twin nothing reads, such as a `.dat`) is converted to mzML by Interactive's converter
    with every inference off but a polarity imputed from the unit's one
    declared ion mode (`CLAUDE.md`, Supported production scope), and the
    conversion is recorded as that input's
@@ -104,8 +107,8 @@ For a repository range:
    its reason while the rest of the unit runs. So is an mzXML whose scans mix
    the opposite polarity with scans of no polarity, in a unit that declares one
    polarity: nothing is imputed to it (the runner's default, which the user did
-   not object to on 2026-10-03). mzData stays
-   `requires_conversion` and excludes the unit: there is no reader and no
+   not object to on 2026-10-03). An mzData that is a sample's only encoding
+   stays `requires_conversion` and excludes the unit: there is no reader and no
    converter for it. Interactive has taken folder inputs since 0.5.20 and
    converts a campaign unit's mzXML since 0.5.21.
    Of one sample's several encodings, copies in other folders included,

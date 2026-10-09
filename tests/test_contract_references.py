@@ -316,6 +316,13 @@ _OPEN_PASSAGE = "**Open for the user.**"
 # question showed it. It supersedes every earlier case-by-case answer about one sample's encodings.
 _RULE_HEADING = "**The one encoding rule.**"
 _RULE_LABEL = "A: この一つのルールで統一"
+# The reasons Interactive #69 (1681e9a) records for a file the encoding rule did not use: encoding_rule's eight and the
+# convert stage's polarity_contradicts_declaration, as gate #37 (e9e5ca9) accepts them.
+_ENCODING_CHOICE_REASONS = frozenset({
+    "lower_in_encoding_order", "tie_lexicographic", "undecodable", "conversion_failed",
+    "polarity_contradicts_declaration", "requires_conversion", "incomplete_container", "raw_header_unreadable",
+    "raw_header_unsupported_format"})
+_DEPARTURE_HEADING = "**Where #69 departs from the rule.**"
 # The heads of the pull requests that implement the second round and the one encoding rule, as the documents cite
 # them.
 _SECOND_ROUND_HEADS = {"Interactive #69": "1681e9a", "gate #37": "e9e5ca9", "gate #36": "fe3f346"}
@@ -1099,6 +1106,72 @@ class ContractGateChecksTests(unittest.TestCase):
             with self.subTest(entry="rule result", phrase=phrase):
                 self.assertIn(phrase, str(entry["result"]))
 
+    def test_the_encoding_choice_reasons_are_the_nine_the_implementation_records(self) -> None:
+        """Interactive #69's encoding_rule records eight reasons a file was not used, and its convert stage a ninth
+        (polarity_contradicts_declaration, a campaign's mzXML whose scans mix the opposite polarity with scans that
+        record none), which gate #37's ENCODING_UNREADABLE_REASONS accepts. The contract lists all nine."""
+        blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
+        record = [block for block in blocks if "`manifest.encoding_choices`" in block and "`unused`" in block]
+        self.assertEqual(1, len(record))
+        listed = set(re.findall(r"`([a-z_]+)`", record[0].split("reason`:", 1)[1].split("), and on the lineage", 1)[0]))
+        self.assertEqual(_ENCODING_CHOICE_REASONS, listed)
+
+    def test_where_interactive_69_departs_from_the_rule_is_recorded_and_not_stated_as_policy(self) -> None:
+        """Interactive #69's plan still excludes a unit whose sample row names, or whose listing holds, an mzXML outside a
+        campaign or an mzData in one, even where the sample has a readable encoding, before the lease applies the rule.
+        Clauses 1 and 4 would run the readable encoding. The contract records this as a departure of the implementation,
+        not a question for the user, and no document states the unit-wide exclusion as standing policy."""
+        blocks = _blocks(_section(self.contract, "## Evidence and decisions"))
+        departure = [block for block in blocks if block.startswith(_DEPARTURE_HEADING)]
+        self.assertEqual(1, len(departure))
+        for phrase in ("before any download", "outside a campaign an mzXML or mzData", "in a campaign an mzData",
+                       "even where that sample has a readable encoding", "By clauses 1 and 4",
+                       "gate #37 never sees it", "it runs nothing against the rule",
+                       "drops from the pool a unit the rule would run",
+                       "a gap in the implementation, not a question for the user"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, " ".join(departure[0].split()))
+        rule = blocks.index(next(block for block in blocks if block.startswith(_RULE_HEADING)))
+        opened = blocks.index(next(block for block in blocks if block.startswith(_OPEN_PASSAGE)))
+        self.assertLess(rule, blocks.index(departure[0]))
+        self.assertLess(blocks.index(departure[0]), opened)
+        scope = " ".join(_section(self.contract, _SCOPE_SECTION).split())
+        self.assertIn("Interactive #69's plan still excludes more than the rule does", scope)
+        merges = " ".join(_section(self.contract, "## Merges").split())
+        self.assertIn("#69's plan-time departure from the rule", merges)
+        skill = " ".join((_ROOT / _BATCH_SKILL).read_text(encoding="utf-8").split())
+        for phrase in ("That is a departure from the one encoding rule", "not the user's policy",
+                       "report such an exclusion as the departure and raise no question of it",
+                       "An mzData that is a sample's only encoding stays `requires_conversion`"):
+            with self.subTest(document="skill", phrase=phrase):
+                self.assertIn(phrase, skill)
+        for document in DOCUMENTS:
+            text = " ".join((_ROOT / document).read_text(encoding="utf-8").split())
+            for standing in ("The exclusion is unit-wide", "even when its other inputs are readable",
+                             "mzData stays `requires_conversion` and excludes the unit"):
+                with self.subTest(document=document, standing=standing):
+                    self.assertNotIn(standing, text)
+        entry = [entry for entry in _trial_decisions() if _RULE_LABEL in str(entry.get("decision"))][0]
+        for phrase in ("Interactive #69 departs from the rule at plan time", "it asks nothing of the user",
+                       "polarity_contradicts_declaration",
+                       "two declared inputs of one row with different stems each run"):
+            with self.subTest(entry="rule result", phrase=phrase):
+                self.assertIn(phrase, str(entry["result"]))
+
+    def test_a_declared_units_choice_is_stated_per_sample_row_and_stem(self) -> None:
+        """In a declared unit Interactive #69 groups the declared inputs by sample row and stem (_encoding_groups), and
+        gate #37 ties a file to a row only by the name the row gives or a name pairing. A declared input's row comes
+        from the Catalog's sample_id, none of the rule's name pairings, so the contract states the split as the existing
+        behaviour kept, outside the rule's words, and never as one sample row's single choice."""
+        section = " ".join(_section(self.contract, "## Evidence and decisions").split())
+        for phrase in ("chooses among the declared inputs of one sample row and one stem (above)",
+                       "paired to its row by the declaration's `sample_id`, which is none of the name pairings the "
+                       "rule names", "two declared inputs of one row with different stems",
+                       "each run, as the declaration lists them, and gate #37 does not FAIL it"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, section)
+        self.assertNotIn("chooses among the declared inputs of one sample row. ", section)
+
     def test_the_answers_the_one_encoding_rule_superseded_are_no_longer_stated_as_standing(self) -> None:
         """Before 2026-10-09 the documents enumerated how Interactive #69 handled each twin case (the readable twin's
         records, chosen_other_encoding, copies nearest the data root, admitted_by_the_unit), called some of it the
@@ -1209,7 +1282,7 @@ class ContractGateChecksTests(unittest.TestCase):
                        "Interactive #69 records the members no declaration names",
                        "`not_named_by_the_catalog_declaration`", "the reason `catalog_declared_inputs`",
                        "Before #69 such a unit's manifest carried no `unattributed_members`",
-                       "the one encoding rule chooses among the declared inputs of one sample row",
+                       "the one encoding rule chooses among the declared inputs of one sample row and one stem",
                        "even where it is a readable encoding of a declared mzML that cannot be decoded",
                        "is not one of its unpaired members but that sample's encoding",
                        "INP-1, a `blocks_run` check, FAILs a left-out member that reaches a run",

@@ -204,7 +204,9 @@ location.
   the unit's manifest records that conversion it stays `requires_conversion`,
   and a file whose conversion fails is excluded with its reason recorded while
   the rest of the unit runs. mzData has no converter: where it is the encoding
-  a sample has, it is `requires_conversion` and excludes the unit.
+  a sample has, it is `requires_conversion` and excludes the unit. Interactive
+  #69's plan still excludes more than the rule does (Evidence and decisions,
+  where #69 departs from the rule).
 - **mzXML without a polarity.** The user decided it on 2026-10-02. A scan
   whose mzXML records no polarity (the attribute is optional, and may be
   `any`) is given one by a campaign's conversion only when the unit's Catalog
@@ -362,9 +364,10 @@ Interactive #69 (0.5.36, at `1681e9a`) applies the rule in one function
 for among more than one file in `manifest.encoding_choices` (`rule`
 `one_encoding_per_sample_2026_10_09`, `used`, and `unused` with each file's
 `path` and `reason`: `lower_in_encoding_order`, `tie_lexicographic`,
-`undecodable`, `conversion_failed`, `requires_conversion`,
-`incomplete_container`, `raw_header_unreadable` or
-`raw_header_unsupported_format`), and on the lineage row of each input used
+`undecodable`, `conversion_failed`, `polarity_contradicts_declaration` (a
+campaign's mzXML whose scans mix the opposite polarity with scans that record
+none), `requires_conversion`, `incomplete_container`, `raw_header_unreadable`
+or `raw_header_unsupported_format`), and on the lineage row of each input used
 (`encoding_choice`, with `stands_for` where the row names another file of the
 sample). A file not used is no input: its sample's choice is its record. Gate
 #37 (at `e9e5ca9`) recomputes the rule from that record: INP-1, a `blocks_run`
@@ -380,7 +383,24 @@ unpaired member of that stem is left out (`stem_of_several_sample_rows`); a
 re-encoding no instrument writes (`.cdf`, `.abf`, `.ibf`) ranks after every
 vendor format and before mzML, as before; and a file that shares only a
 leading identifier with a row whose named file is there is not that row's
-sample (the token rule of 2026-10-06).
+sample (the token rule of 2026-10-06). In a unit whose Catalog declared its
+inputs, a declared input is paired to its row by the declaration's
+`sample_id`, which is none of the name pairings the rule names; #69 makes one
+sample of a row's declared inputs of one stem only, so two declared inputs of
+one row with different stems (a prefixed `021518_..._S7.mzML` and `S7.raw`)
+each run, as the declaration lists them, and gate #37 does not FAIL it.
+
+**Where #69 departs from the rule.** Interactive #69's plan, before any
+download, still excludes a unit that lists, or has a sample row naming, a file
+nothing reads: outside a campaign an mzXML or mzData ("MS-DIAL has no
+mzXML/mzData reader"), in a campaign an mzData ("nothing converts them to
+mzML"), even where that sample has a readable encoding (`S1.raw` or `S1.mzML`
+beside a row naming `S1.mzXML`). By clauses 1 and 4 the readable encoding is
+the sample's input and the other file is recorded unused. The lease never
+reaches the rule for such a unit and gate #37 never sees it: it runs nothing
+against the rule, but it drops from the pool a unit the rule would run. This is
+a gap in the implementation, not a question for the user; until Interactive
+applies the rule at plan time, report such an exclusion as this departure.
 
 **Open for the user.** What is open for the user is the approval of this
 amendment's wording as a whole. The one encoding rule leaves no question of a
@@ -506,7 +526,8 @@ them:
   record (`polarity_token_contradicts_ion_mode`).
 - **A unit whose Catalog declared its inputs** takes the declared ones,
   matched by path, and no member as unattributed; the one encoding rule
-  chooses among the declared inputs of one sample row. Interactive #69 records
+  chooses among the declared inputs of one sample row and one stem (above).
+  Interactive #69 records
   the members no declaration names: each analysable member that no declaration
   names and that reaches nothing of the lease is in
   `unattributed_members.left_out` with the reason
@@ -854,6 +875,8 @@ rule of 2026-10-09 (`manifest.encoding_choices`, each input's
 `encoding_choice`) and FAILs INP-1 for a run that departs from the rule or
 lacks that record. No question of the user's holds either of them: the one
 encoding rule settles every case of a sample's encodings that had held #69.
+#69's plan-time departure from the rule (Evidence and decisions) excludes units
+and runs nothing against the rule; its fix is an Interactive change of its own.
 
 ## Feedback to Codex
 
