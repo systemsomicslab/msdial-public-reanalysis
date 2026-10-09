@@ -187,8 +187,9 @@ location.
   or Bruker `.d` directory, or an archive holding one. A folder is one data
   file, one input and one row of the analysis CSV, which is generated from the
   unit's inputs; the files inside it are only downloaded.
-- mzXML is not an MS-DIAL input. Of several encodings of one sample one is
-  analysed: a vendor container or folder first, then mzML, then mzXML, so a
+- mzXML is not an MS-DIAL input. Of several encodings of one sample exactly
+  one is analysed, by the user's one encoding rule of 2026-10-09 (Evidence and
+  decisions): a vendor container or folder first, then mzML, then mzXML, so a
   convertible mzXML outranks a twin that nothing reads or converts, such as a
   `.dat`. Outside a campaign, an mzXML or mzData that is the encoding analysed
   is `requires_conversion`: stop before download/execution, and require a
@@ -287,15 +288,13 @@ second round numbered 1 to 4, and the user answered all four on 2026-10-08.
 This contract cites each as a second-round answer by its number and quotes the
 chosen option's label exactly as the question showed it, its letter included;
 English beside such a quote is the agent's rendering, not a quote. Interactive
-#69 (at `35d75ad`) and gate #37 (at `e7b2901`), both open, and gate #36 (merged
-as `fe3f346`) implement the answers:
+#69 (at `1681e9a`) and gate #37 (at `e9e5ca9`), both open, and gate #36 (merged
+as `fe3f346`) implement the answers, answer 3's encoding part as the one
+encoding rule of 2026-10-09 has replaced it (below):
 
 - second-round answer 1, the members of an archive shared by several units that
   no sample row pairs with: "A: 除外して記録する", leave them out of every unit, on record,
-  as merged code does (the pairing of sample rows, below), which in a
-  campaign's lease ran all the same a shared archive's readable twin of a
-  sample's admitted mzXML for that sample (question 1 under Open for the
-  user);
+  as merged code does (the pairing of sample rows, below);
 - second-round answer 2, a multi-energy AIF unit whose inputs share a file name
   in different folders and record different energy sets: "A: 相対パスで区別するよう直してから使う", key
   each input's energy set by its relative path in Interactive #69 and gate #37
@@ -318,124 +317,74 @@ as `fe3f346`) implement the answers:
 
 **The extra question.** Review after the second round found a case that
 neither answer 3 nor the rule of 2026-09-30 covered: a sample row admits an
-mzML that RawDataHandler cannot decode, and a twin of the same sample, a
-vendor file, folder or container or an mzXML, can be read. Interactive #69 as
-it then stood (`4722776`) took the twin in the mzML's place, a vendor twin as
-an unattributed input outside the sample's Class and an mzXML twin, converted,
-as the sample's own input by its converted name. The agent put the case to the
-user on 2026-10-08 in the same question form, and the user answered
-"A: 読める方をそのサンプルとして使う". This contract quotes the label exactly as the question
-showed it, its letter included, and reads it as it was put: the readable twin
-runs as that sample's own input, paired to its sample row and in its Class,
-never as an unattributed input, and the undecodable mzML is recorded with that
-reason. Interactive #69 implements it from `06d2891` on, and gate #37 holds the
-run to its record (the pairing of sample rows, below).
+mzML that RawDataHandler cannot decode, and a twin of the same sample can be
+read. The user answered on 2026-10-08 "A: 読める方をそのサンプルとして使う": the readable twin runs as
+that sample's own input, in its Class. The one encoding rule of 2026-10-09
+(next) supersedes this answer and contains it (its clauses 3 and 4).
+
+**The one encoding rule.** Review of these answers kept finding cases of one
+sample's encodings that no answer settled or in which two answers met. On
+2026-10-09 the user settled all of them with one rule, choosing
+"A: この一つのルールで統一". It supersedes every earlier case-by-case answer about a sample
+whose data arrive more than once: the encoding part of second-round answer 3,
+the extra answer, and the readings the agent had made where neither reached.
+The label is quoted exactly as the question showed it; the clauses are the
+agent's English. When one sample's data arrive in several encodings (`S1.raw`,
+`S1.mzML`, `S1.mzXML`; copies in other folders included):
+
+1. Among the readable ones, exactly one is used: the highest in the order
+   vendor format (a folder or a container), then mzML, then mzXML. An mzXML is
+   converted to mzML in a campaign; outside a campaign it is not an input.
+2. A tie (the same rank, such as one format in two folders) goes to the first
+   by path name in lexicographic order: the path relative to the data root,
+   `/`-separated, compared without case.
+3. Where the chosen one cannot be read or decoded, or its conversion fails,
+   the next in order is taken.
+4. The file used is that sample's own input, paired to its sample row and in
+   its Class, whatever encoding the sample row names.
+5. Every file not used is recorded with its reason, naming the file that was
+   used.
+
+"The same sample" is the files paired to one sample row (by its exact name, a
+prefixed name or a leading identifier token) and, for members no row pairs
+with, the files of one stem (the name less its container suffix), across
+folders and archives. The rule leaves these answers as they were: a
+unit-scoped archive's unpaired members are unattributed inputs (answer 2); a
+shared archive's are left out of every unit, on record (second-round answer
+1); a member whose path names the opposite polarity, and a member a Catalog
+declaration does not name, stay out, on record (second-round answer 3); a
+multi-energy AIF input's energy set is keyed by its relative path
+(second-round answer 2); AIF inputs whose sets differ run as is (answer 6);
+and an AIF input with no recorded energy holds its unit (answer 3).
+
+Interactive #69 (0.5.36, at `1681e9a`) applies the rule in one function
+(`msdial_app.encoding_rule.choose_encoding`) and records each sample it chose
+for among more than one file in `manifest.encoding_choices` (`rule`
+`one_encoding_per_sample_2026_10_09`, `used`, and `unused` with each file's
+`path` and `reason`: `lower_in_encoding_order`, `tie_lexicographic`,
+`undecodable`, `conversion_failed`, `requires_conversion`,
+`incomplete_container`, `raw_header_unreadable` or
+`raw_header_unsupported_format`), and on the lineage row of each input used
+(`encoding_choice`, with `stands_for` where the row names another file of the
+sample). A file not used is no input: its sample's choice is its record. Gate
+#37 (at `e9e5ca9`) recomputes the rule from that record: INP-1, a `blocks_run`
+check, FAILs a run that departs from it or lacks its record, CONV-1 holds each
+choice to the conversions, and PAIR-1, `record_only`, lists every choice and
+WARNs. Both dropped the records of the superseded answers before any release.
+
+Where a case lies outside the rule's words, the existing behaviour is kept, on
+record: paths of one stem whose own tokens name opposite polarities
+(`POS/S1.raw`, `NEG/S1.raw`) are two acquisitions, not two encodings; two
+sample rows naming `S1.raw` and `S1.mzML` each keep their own file, and an
+unpaired member of that stem is left out (`stem_of_several_sample_rows`); a
+re-encoding no instrument writes (`.cdf`, `.abf`, `.ibf`) ranks after every
+vendor format and before mzML, as before; and a file that shares only a
+leading identifier with a row whose named file is there is not that row's
+sample (the token rule of 2026-10-06).
 
 **Open for the user.** What is open for the user is the approval of this
-amendment's wording as a whole, and five questions about one sample's
-encodings that the wording does not settle and approving it does not answer:
-three about a readable twin, and two in which Interactive #69 does not take one
-encoding by the encoding order, as second-round answer 3, "A: mzXMLは変換、同名2形式は1つ選ぶ", says
-to. Where the wording states what Interactive #69 or gate #37 does in a case no
-answer covered, it says that this is the agent's reading in the code, kept from
-the behaviour before the answers where it was so (the pairing of sample rows,
-below): copies of one encoding in two folders, which the order cannot tell
-apart, taken nearest the raw data root, and of an admitted encoding and a twin
-the order ranks equal, the admitted one taken. Approving the wording leaves
-each as the code does it, on record, until the user says otherwise. The five
-questions are the user's to answer. In each, two answers of the user's meet, or an answer
-says to take one encoding or to use the readable twin and does not say which or
-whether it reaches the case, or the code takes another encoding than the order
-the answer names; the agent does not choose between them, and does not call
-them cases no answer covered. Until the user answers, the behaviour before #69
-is the one to keep, on record, wherever no answer of the user's rules it out;
-in questions 3 and 5 no behaviour before #69 meets answer 3 better than #69's,
-and #69's is kept, on record, until the user answers. The behaviour before
-#69 is not one rule: Interactive 0.5.35 told one name in two encodings apart only
-within one folder, so across folders (`RAW/x.raw` beside `mzXML/x.mzXML`) it
-ran, as an unattributed input, a twin that within one folder it left out, and
-in a campaign's lease it ran a shared archive's readable twin of an admitted
-mzXML for its sample. Each question says what ran before #69 and what #69
-does.
-
-1. A readable twin of an admitted mzML that cannot be decoded, in an archive
-   shared by several units. Second-round answer 1, "A: 除外して記録する", leaves out of
-   every unit the members of a shared archive that no sample row pairs with,
-   as merged code does; the extra answer, "A: 読める方をそのサンプルとして使う", runs the readable
-   twin of an admitted mzML that cannot be decoded and names no archive's
-   scope. The merged code answer 1 endorsed did not leave out every such
-   member: in a campaign's lease Interactive 0.5.35 already ran a shared
-   archive's readable twin of a sample's admitted mzXML for that sample (the
-   convert stage's `encoding_choice`, `stands_for` the mzXML), while its record
-   listed the same member as left out (`two_encodings_of_one_name`, or
-   `shared_archive` across folders). Interactive #69 at `35d75ad` keeps running
-   that twin, records it as `analysed_for_an_admitted_sample`, and gate #37's
-   INP-1 accepts it; it does not hold #69. The twin of an undecodable mzML no
-   version before #69 ran from a shared archive, in one folder or across
-   folders. Interactive #69 at `35d75ad` runs it for its sample, and gate #37
-   at `e7b2901` accepts it where its records agree, whatever the archive's
-   scope. Until the user answers, that twin is to stay out, as before, and #69
-   does not merge running it before the user answers (Merges).
-2. A readable twin of a declared mzML that cannot be decoded, in a unit whose
-   Catalog declared its inputs, where no declaration names the twin. The extra
-   answer makes no exception for a declared unit; second-round answer 3 keeps
-   out the members a declaration does not name. #69 keeps the twin out, on
-   record. In a campaign the convert stage already analyses a readable twin no
-   declaration names in a declared mzXML's place, a precedent #69 names for
-   running it.
-3. Two readable encodings of one sample that the encoding order ranks equal
-   (`S1.raw` and `S1.d`, or `S1.raw` and `S1.wiff`), whether no sample row
-   admits either or both are twins of an admitted mzML that cannot be decoded.
-   Second-round answer 3 says to take one of them ("1つ選ぶ"), and the extra
-   answer to use the readable one; neither says which of two the order ranks
-   equal. #69 at `35d75ad` takes neither: both are left out as
-   `two_encodings_of_one_name`, and the sample has no input. Taking none
-   departs from "1つ選ぶ" as plainly as running both would, so the answer does
-   not settle it, and it is not a case no answer covered. Within one folder
-   that is what Interactive 0.5.35 did (both `two_encodings_of_one_name`), the
-   code answer 3 was asked to change. Across folders (`RAW/S1.raw` beside
-   `WIFF/S1.wiff`) 0.5.35 ran both as unattributed inputs, with no sample row,
-   which answer 3 (take one) and, for the twins of an undecodable mzML, the
-   extra answer (never as an unattributed input) rule out; so no behaviour
-   before #69 is left to keep, #69's is the one kept until the user answers,
-   and across folders data 0.5.35 analysed is not analysed. Which of the two
-   to take, by what rule (the first by path, say), or none, is the user's to
-   say, and so is whether this holds #69's merge; as the contract stands it
-   does not, since no behaviour before #69 that the answers allow is left to
-   return to (Merges).
-4. A readable twin of an admitted mzXML outside a campaign, where nothing
-   converts the mzXML. The extra answer names an mzML that cannot be decoded,
-   and second-round answer 3 the members a unit-scoped archive left unpaired.
-   #69 keeps the twin out (`admitted_mzxml_not_converted`), and the sample has
-   no input. That is as before only where the twin lies in the mzXML's
-   folder (`two_encodings_of_one_name`). In another folder (`RAW/S2.raw`
-   beside `mzXML/S2.mzXML`) Interactive 0.5.35 saw no twin, and in a
-   unit-scoped archive ran it as an unattributed input, with no sample row;
-   #69 at `35d75ad` no longer runs it, so data 0.5.35 analysed is not
-   analysed. No answer of the user's rules the earlier behaviour out, and #69
-   does not merge with that change before the user answers (Merges).
-5. A sample row admits a readable encoding of a sample, and an unpaired twin
-   of it that the encoding order puts first lies beside it (a sample row admits
-   `mzML/S1.mzML`, and `RAW/S1.raw` is unpaired). Second-round answer 3 says
-   to take one of one name's two encodings by the existing order, a vendor
-   folder or container first, and the members its question asked about
-   included this twin: Interactive 0.5.35 left out as
-   `two_encodings_of_one_name` "a member whose name another member carries in
-   another encoding, an admitted one or another unpaired one". #69 at
-   `35d75ad` keeps the admitted encoding and leaves the twin out as
-   `chosen_other_encoding` with `chosen_by` `admitted_by_the_unit`, so the
-   vendor data the order puts first is not analysed. That departs from the
-   order the answer names, and it is not a case no answer covered. In a
-   campaign, where every encoding a row admits of the sample is an mzXML, #69
-   follows the order: the convert stage analyses the twin instead. Within one
-   folder 0.5.35 ran the admitted encoding and left the twin out; across
-   folders it ran both, the twin as an unattributed input, which answer 3
-   (take one) rules out. Either way the sample runs from one encoding; the
-   question is which. Until the user answers, #69 keeps the admitted one, on
-   record, as 0.5.35 did within one folder. Whether the order or the row's
-   admission chooses is the user's to say, and so is whether this holds #69's
-   merge; as the contract stands it does not, since the sample runs either way
-   and the encoding kept is the one 0.5.35 ran for it (Merges).
+amendment's wording as a whole. The one encoding rule leaves no question of a
+sample's encodings to answer.
 
 Before selecting units or proposing Class, ask what the user wants to learn from
 the reanalysis. Record the scientific question, intended biological comparison,
@@ -524,18 +473,9 @@ same day that they are left out of every unit, on record (second-round answer
 each member in `left_out`, and INP-1 FAILs any that reach a run. Interactive
 leaves out the same way, with the reason `download_scope_not_unit_scoped`, the
 members where the Catalog's download scope does not show the download to be
-the unit's own. Two kinds of member of such an archive run all the same. In a
-campaign's lease, where a sample row admits an mzXML and a readable twin of it
-came out of the archive, the convert stage analyses the twin for that sample
-(`encoding_choice`, `stands_for` the mzXML), whatever the archive's scope.
-Interactive 0.5.35 already did so, while its record listed the same member as
-left out (`two_encodings_of_one_name`, or `shared_archive` across folders);
-Interactive #69 records it as `analysed_for_an_admitted_sample`, and INP-1
-does not FAIL it. And in Interactive #69 at `35d75ad`, the readable twin of a
-sample's admitted mzML that cannot be decoded runs for that sample, whatever
-the archive's scope, which no version before it did, and INP-1 does not FAIL
-it. Whether answer 1 or the extra answer governs that twin is question 1
-under Open for the user, above.
+the unit's own. A shared archive's file of a sample a row names (`S1.raw`
+beside the `S1.mzML` the row names) is not one of its unpaired members but
+that sample's encoding, and the one encoding rule reaches it (above).
 
 Within a unit-scoped archive, too, Interactive #64 did not take every member no
 row pairs with. It left out, on record (`unattributed_members.left_out`, each
@@ -545,172 +485,43 @@ a member whose path names the polarity opposite to the unit's ion mode by a
 token of its own (`polarity_token_contradicts_ion_mode`); and a member whose
 name another member carries in another encoding (`two_encodings_of_one_name`),
 so that one name in two encodings MS-DIAL opens, neither paired, left both out.
-It compared each member's whole path below the data root less its suffix, so
-it saw one name in two encodings only within one folder: across folders
-(`RAW/x.raw` beside `mzML/x.mzML` or `mzXML/x.mzXML`) it saw no twin, and a
-member no row paired ran as an unattributed input, with no sample row, beside
-or instead of the encoding a row admitted. Interactive #69 pairs encodings
-across folders as the convert stage does (below), so where an item says that
-#69 keeps the behaviour before it, that holds within one folder, and the item
-says what changes across folders.
 It took none where the Catalog declared the unit's analysis inputs. No decision
 of the user's stood behind these exclusions either, until the user decided on
-2026-10-08 (second-round answer 3, "A: mzXMLは変換、同名2形式は1つ選ぶ"). Interactive #69 and gate #37
-implement it, and the user's answer to the extra question of the same day
-(above). Where they decide a case neither answer covered, the item says that
-it is the agent's reading in the code; where the case is one of the five
-questions the answers leave to the user, the item names the question and what
-the code does until the user answers it:
+2026-10-08 (second-round answer 3, "A: mzXMLは変換、同名2形式は1つ選ぶ"), whose encoding part the one
+encoding rule of 2026-10-09 now states. Interactive #69 and gate #37 implement
+them:
 
 - **An unpaired mzXML.** In a campaign's lease it is converted like any other
-  mzXML input, as the rule of 2026-09-30 converts mzXML-only data: the mzML
-  written from it is the unattributed input, its lineage row carries the
-  conversion and the mzXML's name (`name_pairing.member_name`), and
-  `unattributed_members.converted` lists it. Outside a campaign nothing is
-  converted, and it stays left out as `requires_conversion`.
-- **One name in two encodings.** Members are one sample's where their names
-  agree once the container suffix is set aside and their folders agree once
-  the words naming an encoding are, so `RAW/x.raw` and `mzML/x.mzML` are one
-  sample and `POS/x.raw` and `NEG/x.raw` are two. Of one sample's unpaired
-  encodings, the existing encoding order (a vendor folder or container, then
-  mzML, then mzXML) takes one, and each other is left out as
-  `chosen_other_encoding`, with the one taken (`chosen`, `chosen_by`
-  `encoding_order`). That much is the answer. Copies of one encoding in two
-  folders (`x.raw` and `RAW/x.raw`) count as one: the copy nearest the unit's
-  raw data root, then the first by path, is taken, the agent's reading where
-  the order cannot tell copies apart, and each other copy is left out as
-  `copy_of_the_chosen_member` (`chosen_by` `nearest_the_data_root`, or
-  `admitted_by_the_unit` where the copy taken is the unit's own). A `chosen`
-  names the member the lease takes to run for the sample, decided before
-  anything is converted or its raw header read, and never one the lease has
-  already set aside (an mzML that cannot be decoded, or an mzXML a lease
-  outside a campaign does not convert). Nothing re-points it afterwards: where
-  the member chosen does not run after all, because its conversion fails (an
-  mzXML whose scans mix the opposite polarity with scans of none) or the
-  per-file raw-header preflight excludes it (a header that leaves its
-  acquisition unknown, or ion-mobility data), the convert stage's or the preflight's record says so, each other
-  encoding of the sample still names it as `chosen`, and the sample can have
-  no input. A twin's own record shows it (`replacement_excluded`, below).
-  An mzML RawDataHandler cannot decode competes with no other encoding of its
-  sample, since a convertible mzXML outranks an unreadable twin (the rule of
-  2026-09-30), and its record says that it could not be decoded whatever stands
-  beside it. An unpaired one is left out as `chosen_other_encoding` with
-  `chosen_by` `undecodable_mzml_set_aside`, `chosen` naming what runs for the
-  sample, wherever another encoding of the sample runs, an unpaired twin or the
-  unit's own admitted encoding alike; and as `undecodable_mzml`, with nothing
-  chosen, where nothing of the sample runs: the order ties between its readable
-  encodings, none of them can be decoded, or the unit's own is an mzXML that a
-  lease outside a campaign does not convert. Alone, with no other encoding of
-  its sample, it is an unattributed input the lease excludes
-  (`unattributed_members.excluded`, `unsupported_mzml_encoding`).
-  Where a sample row admits a readable encoding of that sample, that one stays
-  the sample's input, and an unpaired twin is left out as
-  `chosen_other_encoding` naming it, with `chosen_by` `encoding_order` where
-  the order puts the admitted one first and `admitted_by_the_unit` where the
-  order puts the twin first or ranks the two equal, since there the admission
-  chose. Where the order ranks the two equal, keeping the admitted one is the
-  agent's reading: answer 3 takes one, and the order does not say which.
-  Keeping the admitted one over a twin the order puts first departs from the
-  order answer 3 names, whose question asked about the twin of an admitted
-  member too: it is question 5 under Open for the user, and until the user
-  answers #69 keeps the admitted one, on record, as Interactive 0.5.35 did
-  within one folder; across folders 0.5.35 ran the twin as well, as an
-  unattributed input, which answer 3 (take one) rules out. In a campaign, where
-  every encoding a sample row admits is an mzXML and the order puts one
-  readable unpaired twin before it, the convert stage analyses that twin
-  instead (`analysed_for_an_admitted_sample`, with `stands_for` the mzXML), and
-  each other encoding names the twin as chosen. Outside a campaign nothing
-  converts an admitted mzXML, and a readable twin of it is left out as
-  `admitted_mzxml_not_converted` (`twin_of` the mzXML, `twin_of_reason`
-  `requires_conversion`), so that sample has no input, unless the row pairs by
-  a leading identifier token, where the readable encoding is paired in the
-  mzXML's place. Whether such a twin runs for its sample outside a campaign
-  neither answer says: it is question 4 under Open for the user. Within one
-  folder #69 keeps the behaviour before it; across folders it no longer runs a
-  twin Interactive 0.5.35 ran as an unattributed input, and it does not merge
-  with that change before the user answers (Merges).
-  Where the order cannot choose and no sample row admits either, as between
-  two vendor containers of one name, no encoding is taken: both are still left
-  out as `two_encodings_of_one_name`, and that sample is not analysed. Taking
-  none departs from answer 3 (take one) as running both would: which to take,
-  if any, is question 3 under Open for the user. Until the user answers #69
-  takes none, on record, as 0.5.35 did within one folder; across folders
-  0.5.35 ran each as an unattributed input, which answer 3 rules out, so data
-  0.5.35 analysed is not analysed.
-- **A readable twin of an admitted mzML that cannot be decoded** (the extra
-  question, "A: 読める方をそのサンプルとして使う"). Where a sample row admits an mzML RawDataHandler
-  cannot decode and a twin of that sample can be read, a vendor file, folder or
-  container or, in a campaign's lease, an mzXML the convert stage converts, the
-  twin the encoding order takes runs as that sample's own input, paired to its
-  sample row and in its Class, never as an unattributed input. Its lineage row
-  carries `replaces_undecodable` (the mzML's `path`, `reason`
-  `undecodable_mzml`, `rule` `readable_twin_runs_as_the_sample_2026_10_08`)
-  and takes the mzML's sample and pairing; the mzML's excluded row
-  (`unsupported_mzml_encoding`) names the twin as `replaced_by`;
-  `unattributed_members.left_out` lists the twin as
-  `analysed_for_an_admitted_sample`, with `stands_for` the mzML and
-  `stands_for_reason` `undecodable_mzml`; and
-  `unattributed_members.replaced_undecodable` lists the mzML with
-  `replaced_by` and either `replaced_by_input`, the input that runs, or
-  `replacement_excluded` where the twin did not run (its conversion failed).
-  Where the order ties between readable twins, none is taken, and outside a
-  campaign an mzXML twin stays left out (`requires_conversion`); either way the
-  sample has no input. Which of two twins the order ranks equal should run, if
-  either, the answer does not say (question 3 under Open for the user, above).
-  A twin in two folders is one twin, as above. Before #69, within one folder,
-  such a sample had no input: Interactive 0.5.35 left a vendor twin out as
-  `two_encodings_of_one_name` and an mzXML twin as `requires_conversion`.
-  Across folders (`RAW/S1.raw` beside `mzML/S1.mzML`) 0.5.35 saw no twin and,
-  in a unit-scoped archive, ran a vendor twin as an unattributed input, with no
-  sample row; #69 runs it as the sample's own, as the answer has it. At
-  `4722776`, #69 ran a vendor twin as an unattributed input outside the
-  sample's Class and listed it in `taken_instead_of_undecodable`, a list its own
-  count contradicted; that list is gone. Beside a shared archive, too, #69 at
-  `35d75ad` runs the twin for its sample, which no version before it did,
-  although second-round answer 1 leaves a shared archive's unpaired members
-  out of every unit: whether the twin runs there is question 1 under Open for
-  the user, and until the user answers it the twin of an undecodable mzML that
-  is a member of a shared archive is to stay out, as before (Merges). A shared
-  archive's readable twin of an admitted mzXML, which the convert stage
-  analyses for its sample in a campaign, ran before #69 and still runs (the
-  archive shared by several units, above).
-  Gate #37's INP-1 accepts a twin only
-  where the four records above agree and the twin is an encoding of the mzML it
-  replaces, and FAILs a twin that runs unattributed, as no sample or as another
-  sample, and an input that runs for an undecodable mzML with no record; PAIR-1
-  lists each twin (`readable_twins`) and WARNs, and CONV-1 holds a converted
-  twin to the mzXML its record names.
+  mzXML input, as the rule of 2026-09-30 converts mzXML-only data, where the
+  one encoding rule uses it: the mzML written from it is the unattributed
+  input, its lineage row carries the conversion and the mzXML's name
+  (`name_pairing.member_name`), and `unattributed_members.converted` lists it.
+  Outside a campaign nothing is converted, and it stays left out as
+  `requires_conversion`.
+- **One sample's several encodings**, an admitted file and an unpaired member
+  alike and in any folder, give one input by the one encoding rule, each other
+  on record in the sample's `encoding_choices` entry; `two_encodings_of_one_name`
+  is no longer recorded.
 - **A member whose path names the opposite polarity** is still left out, on
   record (`polarity_token_contradicts_ion_mode`).
 - **A unit whose Catalog declared its inputs** takes the declared ones,
-  matched by path, and no member as unattributed. One kind of member no
-  declaration names runs all the same, as it did before #69: in a campaign,
-  where a declared mzXML has a readable twin that came out of an archive, the
-  convert stage analyses the twin in the mzXML's place by the encoding order
-  (`encoding_choice`, `stands_for` the mzXML), as for any mzXML input.
-  Interactive #69 records the members no declaration names: each analysable
-  member that no declaration names and that reaches nothing of the lease is in
+  matched by path, and no member as unattributed; the one encoding rule
+  chooses among the declared inputs of one sample row. Interactive #69 records
+  the members no declaration names: each analysable member that no declaration
+  names and that reaches nothing of the lease is in
   `unattributed_members.left_out` with the reason
   `not_named_by_the_catalog_declaration`, its basename and its path under the
   data root, and `unattributed_members` gives `applied` false, the reason
   `catalog_declared_inputs` and `count` 0. Before #69 such a unit's manifest
   carried no `unattributed_members`, and the archive's member listing (its
-  extraction record's `members_tsv`) was the only trace of those members.
-  Where such a member is a readable twin of a declared mzML the lease excluded
-  as undecodable, its entry says so (`twin_of`, `twin_of_reason`
-  `undecodable_mzml`), and it does not run. Second-round answer 3 keeps out the
-  members a declaration does not name; the extra answer runs the readable twin
-  of a sample's admitted mzML and makes no exception for a declared unit, and a
-  declared mzXML's twin already runs, as above. Which governs is question 2
-  under Open for the user. Until the user answers, #69 keeps the declaration,
-  as before, and gate #37 FAILs INP-1 for such a twin that runs.
+  extraction record's `members_tsv`) was the only trace of those members. Such
+  a member does not run, even where it is a readable encoding of a declared
+  mzML that cannot be decoded: the declaration names the sample's file.
 
-INP-1, a `blocks_run` check, FAILs a left-out member that reaches a run, but
-for a twin recorded as `analysed_for_an_admitted_sample`, which runs as its
-sample's own input; a converted unattributed input that is not the conversion
-of the mzXML it names; and one sample run in two encodings beside an
-unattributed member. PAIR-1, `record_only`, holds the record itself to what
-ran, and each left-out reason to what it must give (gate #37). Interactive's
+INP-1, a `blocks_run` check, FAILs a left-out member that reaches a run, a
+converted unattributed input that is not the conversion of the mzXML it names,
+and a run that departs from the one encoding rule or lacks its record. PAIR-1,
+`record_only`, holds the record itself to what ran (gate #37). Interactive's
 0.5.31 changelog and the gate's PAIR-1 docstring called the rule the user's
 decision a day before the user accepted it.
 
@@ -1036,37 +847,13 @@ next plan pins what Interactive main carries, and the gate of #34 FAILs ACQ-1, a
 `blocks_run` check, for a multi-energy AIF unit whose inputs record different
 sets and runs under 0.5.36 (Supported production scope, AIF). The two go in
 together, at heads that read each other's records, as Interactive #69 at
-`35d75ad` and gate #37 at `e7b2901` do: gate #37 at that head reads the record
-#69 keeps of a readable twin (`replaces_undecodable`,
-`unattributed_members.replaced_undecodable`), and FAILs INP-1 for an input that
-runs for an undecodable mzML without it.
-Both key each input's energy set by its relative path, as the user's
-second-round answer 2 of 2026-10-08 asked before #69 merges, and #69 runs a
-readable twin as that sample's own input, as the user's answer to the extra
-question of the same day has it (Evidence and decisions). Two things still
-hold #69 at `35d75ad`, each a change from the behaviour before it that no
-answer of the user's settles (Open for the user, in Evidence and decisions).
-It runs the readable twin of an undecodable mzML that is a member of a shared
-archive for its sample, which second-round answer 1 leaves out of every unit
-and which no version before it ran (question 1). And outside a campaign it
-leaves out the readable twin of an admitted mzXML that lies in another folder,
-which Interactive 0.5.35 ran as an unattributed input in a unit-scoped archive
-(question 4). It merges once the user has answered both questions, or once
-#69 keeps the behaviour before it in those two cases, on record, until the
-user does; the agent does not choose between the answers. A shared archive's
-readable twin of an admitted mzXML, which the convert stage analyses for its
-sample in a campaign, ran before #69 and does not hold it. As this contract
-stands, nor do the other three questions. The twin of an undecodable mzML a
-Catalog declaration names, one of the two #69 names as its own, #69 keeps out
-as before (question 2). Of two encodings the order ranks equal #69 takes
-neither, which departs from second-round answer 3's "1つ選ぶ", but 0.5.35's
-behaviour across folders, both run as unattributed inputs, is one the answers
-rule out, so none that they allow is left to return to (question 3). And #69
-keeps a sample row's admitted encoding over a twin the order puts first, which
-departs from the order answer 3 names, but the sample runs from one encoding
-either way, the one 0.5.35 ran for it (question 5). Whether question 3 or 5
-should hold the merge as well is the user's to say. All five stay the user's
-to answer; approving the amendment's wording does not answer them.
+`1681e9a` and gate #37 at `e9e5ca9` do. Both key each input's energy set by its
+relative path, as the user's second-round answer 2 of 2026-10-08 asked before
+#69 merges, and gate #37 reads the record #69 keeps of the user's one encoding
+rule of 2026-10-09 (`manifest.encoding_choices`, each input's
+`encoding_choice`) and FAILs INP-1 for a run that departs from the rule or
+lacks that record. No question of the user's holds either of them: the one
+encoding rule settles every case of a sample's encodings that had held #69.
 
 ## Feedback to Codex
 

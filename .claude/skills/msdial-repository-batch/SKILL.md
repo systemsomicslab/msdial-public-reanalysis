@@ -108,29 +108,15 @@ For a repository range:
    `requires_conversion` and excludes the unit: there is no reader and no
    converter for it. Interactive has taken folder inputs since 0.5.20 and
    converts a campaign unit's mzXML since 0.5.21.
-   Where a sample row admits an mzML that RawDataHandler cannot decode and a
-   twin of the same sample can be read (a vendor container or folder, or in a
-   campaign an mzXML, converted), the twin runs as that sample's own input, in
-   its Class, and the mzML is recorded as undecodable (the user's answer of
-   2026-10-08, "A: 読める方をそのサンプルとして使う"; Interactive #69, 0.5.36, and gate #37;
-   `CLAUDE.md`, Evidence and decisions). Four cases of such a twin are
-   questions for the user that no answer settles: a twin in an archive shared
-   by several units, a twin of a declared mzML no declaration names, two twins
-   the encoding order ranks equal, and a twin of an admitted mzXML outside a
-   campaign. Until the user answers, the behaviour before Interactive #69 is
-   kept in each of them wherever no answer rules it out, and that behaviour
-   differs across folders: Interactive 0.5.35 ran a twin in another folder as
-   an unattributed input, and in a campaign ran a shared archive's twin of an
-   admitted mzXML for its sample. #69 at `35d75ad` runs a shared archive's twin
-   of an undecodable mzML, and outside a campaign leaves out an admitted
-   mzXML's twin in another folder that 0.5.35 ran; it does not merge with
-   either change before the user answers (`CLAUDE.md`, Evidence and decisions
-   and Merges). Two more cases of one name in two encodings are questions for
-   the user, because #69 does not take one by the encoding order as
-   second-round answer 3 ("A: mzXMLは変換、同名2形式は1つ選ぶ") says: of two encodings the
-   order ranks equal it takes neither, and it keeps a sample row's admitted
-   encoding over an unpaired twin the order puts first. Neither is a case no
-   answer covered.
+   Of one sample's several encodings, copies in other folders included,
+   exactly one runs, by the user's one encoding rule of 2026-10-09
+   ("A: この一つのルールで統一"; `CLAUDE.md`, Evidence and decisions): the highest readable in the
+   order vendor container or folder, mzML, mzXML (converted, in a campaign); a
+   tie to the first relative path, compared without case; the next where the
+   chosen one cannot be read, decoded or converted; the file used runs as that
+   sample's own input, in its Class, whatever encoding its row names; and every
+   file not used is recorded with its reason (`manifest.encoding_choices`;
+   Interactive #69, 0.5.36, and gate #37).
 6. Obtain `msdial_catalog_reanalysis_handoff` for every selected unit. Keep the
    returned `handoff_path`; do not inline or truncate its external file/sample
    manifests or replace it with an accession-level Interactive inspection.
