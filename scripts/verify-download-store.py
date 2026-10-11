@@ -525,7 +525,13 @@ def stores_under(path: Path) -> list[Path]:
         return [path]
     if (path / gate.STORE_DIRECTORY).is_dir():
         return [path / gate.STORE_DIRECTORY]
-    return sorted(item for item in path.glob(f"*/*/{gate.STORE_DIRECTORY}") if item.is_dir())
+    # A workspace root also holds the library-copy store, the Console TEMP and the viewing restores beside the
+    # repositories; none is a repository, so nothing under them is an accession's store.
+    return sorted(
+        item for item in path.glob(f"*/*/{gate.STORE_DIRECTORY}")
+        if item.is_dir() and item.parent.parent.name.casefold() not in {
+            name.casefold() for name in gate.RESERVED_WORKSPACE_NAMES}
+    )
 
 
 def render(results: list[dict]) -> str:

@@ -217,6 +217,18 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(exclusions["uG"]["reason"], "preexisting_workspace")
         self.assertIn("uG, made by no campaign", exclusions["uG"]["detail"])
 
+    def test_what_interactive_keeps_beside_the_repositories_changes_no_unit(self) -> None:
+        """The library-copy store, the Console TEMP and the viewing restores sit beside the repositories
+        (Interactive 0.5.37): the plan reads none of them as a repository, an accession or a unit's workspace."""
+        before = self.manifest("declared")
+        for name in ("_library_copies/o/5f330f52fee4c4ee0dbbf99dcdff47f3/claims", "_tmp/job1/provenance",
+                     "_viewing/r-abc123/backup", "_library_copies/metabolights/MTBLS1/uA/provenance"):
+            (self.workspace_root / name).mkdir(parents=True)
+        after = self.manifest("declared")
+        self.assertEqual([unit["unit_id"] for unit in before["units"]], [unit["unit_id"] for unit in after["units"]])
+        self.assertEqual(before["exclusions"], after["exclusions"])
+        self.assertEqual(before["legacy_accession_workspaces"], after["legacy_accession_workspaces"])
+
     def test_an_earlier_runs_workspace_holds_back_only_its_own_unit(self) -> None:
         """A workspace no campaign made excludes the unit it is the workspace of, or of one of whose split
         parts it is (<unit>-<part>, as MTBLS2207's -dda and -dia are), and no other unit of its accession."""
