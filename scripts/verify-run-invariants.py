@@ -8936,7 +8936,18 @@ LEGACY_LIBRARY_COPY_RECORD = "loaded_library_copies_deleted"
 LOADED_LIBRARY_COPY = "*_Loaded.msp2.dbs"
 VIEWING_RESTORE = "viewing_restore"
 LIBRARY_COPY_KEPT_OUTCOMES = ("stored", "deduplicated", "deduplicated_by_content", "attached")
+# A copy that left the output for the store whose install stopped before its record (library_copy_store.PENDING):
+# in the store, not the output, until its repair names the object.
+LIBRARY_COPY_PENDING = "pending_repair"
+# Copies recorded under the run's job that are not its own: one MS-DIAL's GUI wrote while the project was restored
+# for viewing, and one a Console left in its temporary directory (library_copy_store.OTHER_COPY_ACTIONS). Neither
+# is the copy the run is reopened from.
+OTHER_LIBRARY_COPY_ACTIONS = frozenset({"undo_gui_copy", "console_temp"})
 FIN3_TITLE = "MS-DIAL's loaded-library copy left the output and is kept once"
+
+
+def _run_library_copy(item: dict) -> bool:
+    return not ({str(item.get("action") or ""), str(item.get("how") or "")} & OTHER_LIBRARY_COPY_ACTIONS)
 
 
 def _workspace_root(provenance: dict, workspace: Path) -> "Path | None":
@@ -8980,6 +8991,11 @@ def check_library_copy_is_kept_once(
     The store is read only for an object's record and its file's size - never hashed - and its absence is a
     WARN, not a FAIL: the gate may run on a machine that does not hold the store.
 
+    Only the run's own copy is judged: a copy MS-DIAL's GUI wrote during a restore, or one a Console left in its
+    temporary directory, is recorded under the run's job too (action undo_gui_copy, console_temp) and is never
+    the copy the project is reopened from. A copy recorded as pending_repair left the output and awaits the
+    store's repair, and a finalisation that records errors and no copy at all lost track of it: both WARN.
+
     A run with no campaign approval keeps its copy in its output by design, and a manifest without the
     finalisation record predates it: both are not evaluable, and not required.
     """
@@ -9017,7 +9033,15 @@ def check_library_copy_is_kept_once(
     copies = [item for item in (block or {}).get("copies") or [] if isinstance(item, dict)]
     copies += [item for item in provenance.get(LIBRARY_COPY_RECORDS) or []
                if isinstance(item, dict) and str(item.get("job_id") or "") == job_id]
+    others = [item for item in copies if not _run_library_copy(item)]
+    copies = [item for item in copies if _run_library_copy(item)]
     evidence["copies"] = [{key: item.get(key) for key in ("name", "object_id", "outcome", "action")} for item in copies]
+    if others:
+        evidence["other_copies"] = [{key: item.get(key) for key in ("name", "object_id", "outcome", "action")}
+                                    for item in others]
+    store_errors = [str(item) for item in (block or {}).get("errors") or []]
+    if store_errors:
+        evidence["store_errors"] = store_errors[:5]
     if loose:
         report.add("FIN-3", stage, FIN3_TITLE, WARN,
                    f"Viewing restore {evidence['viewing_restores'][0] or 'unrecorded'} has linked the loaded-library "
@@ -9030,6 +9054,12 @@ def check_library_copy_is_kept_once(
                        "The loaded-library copy was deleted before the library-copy store existed (Interactive "
                        "before 0.5.37), and no stored object is attached to it; the project cannot be reopened until "
                        "one is (python -m msdial_app.library_copy_store attach).", **evidence)
+            return
+        if block is not None and store_errors:
+            report.add("FIN-3", stage, FIN3_TITLE, WARN,
+                       f"The run's finalisation could not store a loaded-library copy ({store_errors[0]}), and no copy "
+                       "is in its output or recorded: where it went is not established, and the project cannot be "
+                       "reopened from the store.", **evidence)
             return
         if block is not None:
             report.add("FIN-3", stage, FIN3_TITLE, PASS,
@@ -9045,6 +9075,14 @@ def check_library_copy_is_kept_once(
                    f"This run's library copy {quarantined[0].get('name')} was quarantined: it has the content key of "
                    f"store object {quarantined[0].get('object_id')} and other content. The project cannot be "
                    "reopened from the store until a person looks.", **evidence)
+        return
+    pending = [item for item in copies if item.get("outcome") == LIBRARY_COPY_PENDING]
+    if pending:
+        report.add("FIN-3", stage, FIN3_TITLE, WARN,
+                   f"This run's library copy {pending[0].get('name')} left the output for the library-copy store, and "
+                   "its install stopped before its record was written (pending_repair): it is in the store, not the "
+                   "output, and the project cannot be reopened from it until python -m msdial_app.library_copy_store "
+                   "status --repair completes it.", **evidence)
         return
     kept = [item for item in copies if item.get("outcome") in LIBRARY_COPY_KEPT_OUTCOMES and item.get("object_id")]
     unknown = [item for item in copies if item not in kept]
@@ -9066,7 +9104,8 @@ def check_library_copy_is_kept_once(
         directory = root / LIBRARY_COPY_STORE / "o" / object_id
         entry, _why = _read_json(directory / "entry.json")
         details = _stat_quietly(directory / "library-copy.dbs")
-        if not re.fullmatch(r"[0-9a-f]{32}", object_id) or entry is None or details is None                 or details.st_size != entry.get("size_bytes"):
+        if not re.fullmatch(r"[0-9a-f]{32}", object_id) or entry is None or details is None \
+                or details.st_size != entry.get("size_bytes"):
             missing.append(object_id)
     evidence["store"] = LIBRARY_COPY_STORE
     if missing:
@@ -9885,6 +9924,35 @@ def _deletion_justification(provenance: dict, workspace: Path) -> "tuple[str, st
     return "", ""
 
 
+def _standing_viewing_restores(provenance: dict, owner: "dict | None") -> "list[dict]":
+    """Every viewing restore standing on the raw tree this unit reads, as {unit, restore_id}.
+
+    Interactive 0.5.37's restore for viewing (project_restore.py) copies a finalised run's containers back to the
+    raw-side paths its .mddata names, recreating the directories of a released tree, under a viewing_restore
+    hold until its undo. A split part restores into its owner's tree, so the holds are read on the unit, on its
+    raw owner, and on every part split from the owner.
+    """
+    records: list[dict] = [provenance]
+    if isinstance(owner, dict) and owner is not provenance:
+        records.append(owner)
+    for item in (owner if isinstance(owner, dict) else provenance).get("split_into") or []:
+        if isinstance(item, dict) and str(item.get("manifest_path") or "").strip():
+            part, _why = _read_json(Path(str(item["manifest_path"])))
+            if isinstance(part, dict):
+                records.append(part)
+    found: list[dict] = []
+    seen: set = set()
+    for record in records:
+        unit = str((record.get("project") or {}).get("analysis_unit_id") or "") or "this unit"
+        for hold in record.get(FINALISATION_HOLDS) or []:
+            if isinstance(hold, dict) and hold.get("step") == VIEWING_RESTORE:
+                key = (unit, str(hold.get("restore_id") or ""), str(hold.get("id") or ""))
+                if key not in seen:
+                    seen.add(key)
+                    found.append({"unit": unit, "restore_id": str(hold.get("restore_id") or "")})
+    return found
+
+
 def check_retention_policy_was_acted_on(
     report: Report, provenance: dict | None, reason: str, workspace: Path
 ) -> None:
@@ -9909,7 +9977,9 @@ def check_retention_policy_was_acted_on(
     the superseded run the raw data were held for (Interactive PR #62). A split part whose parent's release does not list it is a WARN: its tree went without its
     own state being part of the decision. So is a deletion with no recorded authority in a unit that
     carries campaign crossings: the gate cannot tell a person's confirmation from a campaign component
-    that deleted without recording its approval.
+    that deleted without recording its approval. A tree on disk again after its recorded deletion is a WARN while
+    a viewing restore stands on it (Interactive 0.5.37): the restore recreated the paths its project names, and
+    its hold keeps the unit from being shared or its tree deleted until its undo takes them back.
     """
     stage = "before-publish"
     if provenance is None:
@@ -9973,6 +10043,14 @@ def check_retention_policy_was_acted_on(
                    detail + ("" if not notes else " " + " ".join(notes)), **evidence)
 
     if present and deletion:
+        restores = _standing_viewing_restores(provenance, owner)
+        if restores:
+            evidence["viewing_restores"] = restores
+            verdict(WARN, f"The raw tree is on disk again, and {deleted_where} records it as deleted: viewing restore "
+                          f"{restores[0]['restore_id'] or 'unrecorded'} of {restores[0]['unit']} copied the run's "
+                          "containers back to the paths its project names. Its viewing_restore hold keeps the unit "
+                          "from being shared or its tree deleted until msdial_undo_project_restore takes them back.")
+            return
         verdict(FAIL, f"The raw tree is still on disk, and {deleted_where} records it as deleted. The record "
                       "says a deletion happened that the filesystem contradicts, so whatever relies on it - the "
                       "store's collection, a disk budget, the unit's own end state - is wrong.")
@@ -10899,10 +10977,12 @@ def completion_progress(workspace: Path, provenance: dict | None, output: Path) 
     diagnostic_directory = str((diagnostics[-1] if diagnostics else {}).get("diagnostic_run_directory") or "")
     raw_path, raw_owner, _unknown = _raw_directory(record, workspace)
     status = str(record.get("status") or "")
-    # Released only by the confirmed cleanup, the one deletion path, which records raw_cleaned.
-    raw_released = raw_path is not None and not raw_path.exists() and (
+    # Released only by the confirmed cleanup, the one deletion path, which records raw_cleaned. A viewing restore
+    # recreates the released tree's directories with copies of the run's containers and no input, and stays held
+    # until its undo: the tree is still released.
+    raw_released = raw_path is not None and (
         status == "raw_cleaned" or str((raw_owner or {}).get("status") or "") == "raw_cleaned"
-    )
+    ) and (not raw_path.exists() or bool(_standing_viewing_restores(record, raw_owner)))
     facts = {
         # Downloaded, and either still on disk or released by the confirmed cleanup: a confirmed
         # deletion is the campaign's intended end state, not a lost download.

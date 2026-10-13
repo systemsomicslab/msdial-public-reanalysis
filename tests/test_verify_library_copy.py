@@ -6,7 +6,9 @@ pair, a copy of the private library. Interactive 0.5.37 moves a campaign unit's 
 restore for viewing links the object back into the output, under a viewing_restore hold that FIN-2 reads.
 
 Also here: the names Interactive keeps beside the repositories (_library_copies, _tmp, _viewing) are never
-taken for a repository by the download-store verifier, nor for a unit's workspace by the campaign plan.
+taken for a repository by the download-store verifier, nor for a unit's workspace by the campaign plan; and a
+restore for viewing, which recreates a released raw tree's paths under its hold, is read by RET-1 and B1 as the
+release still standing.
 
 The fixtures are written as Interactive writes them: run_finalisation's loaded_library_copy record and holds,
 project_restore's viewing_restore hold, and library_copy_store's object layout (o/<id>/entry.json and
@@ -19,6 +21,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -27,6 +30,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 import test_verify_inputs_and_acquisition as inputs  # noqa: E402  (loads the gate)
+import test_verify_extractor_and_release as release  # noqa: E402
 
 verifier = inputs.verifier
 _check, _write = inputs._check, inputs._write
@@ -170,9 +174,114 @@ class TheCopyIsKeptOnce(_Unit, unittest.TestCase):
         self.finalised([])
         self.assertEqual(verifier.PASS, self.check().status)
 
+    def test_a_finalisation_that_could_not_store_a_copy_and_records_none_warns(self) -> None:
+        self.finalised([])
+        self.manifest["console_run_finalisation"]["loaded_library_copy"]["errors"] = [
+            f"{DBS}: PermissionError [WinError 5] Access is denied: _library_copies/o/{OBJECT}/entry.json"]
+        check = self.check()
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertIn("could not store", check.detail)
+
+    def test_a_copy_left_for_the_store_and_not_yet_recorded_there_warns_until_repaired(self) -> None:
+        self.finalised([_copy("pending_repair", store_error="PermissionError [WinError 5] Access is denied")])
+        self.stored()
+        check = self.check()
+        self.assertEqual(verifier.WARN, check.status)
+        self.assertIn("status --repair", check.detail)
+
+        self.finalised([_copy("stored", repaired_at="2026-10-13T00:00:00+00:00")])
+        self.assertEqual(verifier.PASS, self.check().status)
+
+    def test_copies_that_are_not_the_runs_own_are_not_judged(self) -> None:
+        self.finalised([_copy()])
+        self.stored()
+        record = {"schema": "msdial-library-copy-record.v1", "job_id": "run1"}
+        self.manifest["library_copy_records"] = [
+            # MS-DIAL's GUI saved other settings during a restore, and the store set its copy aside.
+            {**record, **_copy("quarantined", "9" * 32), "action": "undo_gui_copy", "restore_id": "abc123"},
+            # A Console of the run left a copy in its TEMP, stored on retry under its temporary name.
+            {**record, **_copy(), "name": "tmpA1B2.tmp", "action": "console_temp"},
+            # A GUI copy whose install stopped, completed by the store's repair.
+            {**record, **_copy("stored", "8" * 32), "action": "repair", "how": "undo_gui_copy"},
+        ]
+        check = self.check()
+
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual([OBJECT], [item["object_id"] for item in check.evidence["copies"]])
+        self.assertEqual(3, len(check.evidence["other_copies"]))
+
     def test_it_is_judged_with_the_production_run(self) -> None:
         [b6] = [stage for stage in verifier.COMPLETION_STAGES if stage[0] == "B6"]
         self.assertIn("FIN-3", b6[3])
+
+
+class TheRestoredTreeIsStillReleased(unittest.TestCase):
+    """A restore for viewing copies a run's containers back to a released tree's paths, under its hold."""
+
+    HOLD = _hold("viewing_restore", ["sharing", "raw_deletion"], restore_id="abc123",
+                 record="_viewing/r-abc123/restore.local.json")
+
+    def _released(self, temporary: str, restored: bool) -> Path:
+        workspace = release._unit(Path(temporary), status="raw_cleaned", raw_cleaned_at="2026-10-01T02:00:00+00:00",
+                                  campaign_authorizations=[release._crossing(5)], outputs=True, **release.VALIDATED)
+        shutil.rmtree(workspace / "raw")
+        if restored:
+            # What the restore writes: the directories the .mddata names, with copies of the containers, no input.
+            (workspace / "raw" / "data").mkdir(parents=True)
+            (workspace / "raw" / "data" / "s0_20261091730.dcl").write_bytes(b"a container copy")
+        return workspace
+
+    def test_a_released_unit_under_its_restore_warns_and_reads_as_released(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self._released(temporary, restored=True)
+            inputs._write(workspace / "provenance" / "run-manifest.json", {
+                **json.loads((workspace / "provenance" / "run-manifest.json").read_text(encoding="utf-8")),
+                "finalisation_holds": [self.HOLD]})
+            report = verifier.verify(workspace, "before-publish")
+        check = _check(report, "RET-1")
+
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("viewing restore abc123", check.detail)
+        self.assertEqual([{"unit": "unit", "restore_id": "abc123"}], check.evidence["viewing_restores"])
+        self.assertTrue(report.progress["stages"]["B1"], "a restored tree is still a released one")
+
+    def test_the_same_tree_with_no_restore_standing_fails_as_before(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = verifier.verify(self._released(temporary, restored=True), "before-publish")
+        check = _check(report, "RET-1")
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("still on disk", check.detail)
+        self.assertFalse(report.progress["stages"]["B1"])
+
+    def test_a_part_restored_into_its_released_parents_tree_explains_the_parent_and_its_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = release.split.SplitFixture(Path(temporary))
+            for part in range(2):
+                release._edit(fixture.part_manifest(part), status="raw_cleaned",
+                              raw_released_by=str(fixture.parent_manifest), raw_cleaned_at="2026-10-01T05:00:00+00:00",
+                              raw_retention_policy="delete_after_validated_output", **release.VALIDATED)
+                release._outputs(fixture.part_roots[part] / "output")
+            release._edit(fixture.parent_manifest, raw_retention_policy="delete_after_validated_output",
+                          campaign_authorizations=[release._crossing(5, entry_point="cleanup_split_parent")],
+                          raw_release={"schema": "msdial-split-parent-raw-release.v1", "state": "deleted",
+                                       "kind": "released", "authorized_by": {"approval_id": release.APPROVAL},
+                                       "deleted_at": "2026-10-01T05:00:00+00:00",
+                                       "parts": [{"analysis_unit_id": item, "status_at_release": "mztab_validated"}
+                                                 for item in ("unit-dda", "unit-dia")]})
+            # As Interactive's split writes it: each part with its manifest's path.
+            recorded = json.loads(fixture.parent_manifest.read_text(encoding="utf-8"))["split_into"]
+            release._edit(fixture.parent_manifest, split_into=[
+                {**item, "manifest_path": str(fixture.part_manifest(index))} for index, item in enumerate(recorded)])
+            shutil.rmtree(fixture.parent_root / "raw")
+            (fixture.parent_root / "raw" / "data").mkdir(parents=True)
+            (fixture.parent_root / "raw" / "data" / "s0_20261091730.dcl").write_bytes(b"a container copy")
+            release._edit(fixture.part_manifest(0), finalisation_holds=[self.HOLD])
+            parent = _check(verifier.verify(fixture.parent_root, "before-publish"), "RET-1")
+            sibling = _check(verifier.verify(fixture.part_roots[1], "before-publish"), "RET-1")
+
+        for check in (parent, sibling):
+            self.assertEqual(verifier.WARN, check.status, check.detail)
+            self.assertIn("viewing restore abc123 of unit-dda", check.detail)
 
 
 class TheNamesBesideTheRepositories(unittest.TestCase):
