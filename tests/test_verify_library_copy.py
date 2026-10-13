@@ -132,6 +132,24 @@ class TheCopyIsKeptOnce(_Unit, unittest.TestCase):
                                                   "verified_by": "library_and_settings_identity"}]
         self.assertEqual(verifier.PASS, self.check().status)
 
+    def test_a_copy_a_retry_deleted_before_the_store_warns_as_deleted_not_as_a_stopped_finalisation(self) -> None:
+        # Up to 0.5.36 a copy held at finalisation was recorded there as none, and the retry that deleted it named
+        # it only in its hold's resolution.
+        self.finalised(None, loaded_library_copies_deleted=[])
+        self.manifest["finalisation_hold_resolutions"] = [
+            {"hold": "h0", "step": "loaded_library_copy", "job_id": "run0", "deleted": [{"name": "Earlier.dbs"}]},
+            {"hold": "h1", "step": "loaded_library_copy", "job_id": "run1", "resolved_at": "2026-10-02T00:00:00+00:00",
+             "deleted": [{"name": DBS, "size_bytes": 1234, "sha256": "1" * 64}]},
+        ]
+        check = self.check()
+        self.assertEqual(verifier.WARN, check.status, check.detail)
+        self.assertIn("before 0.5.37", check.detail)
+        self.assertNotIn("stopped before that step", check.detail)
+        self.assertEqual([DBS], [item["name"] for item in check.evidence["deleted_before_the_store"]])
+
+        self.manifest["finalisation_hold_resolutions"].pop()
+        self.assertEqual(verifier.NOT_EVALUABLE, self.check().status, "another run's deletion is not this run's")
+
     def test_a_quarantined_copy_warns(self) -> None:
         self.finalised([_copy("quarantined")])
         check = self.check()

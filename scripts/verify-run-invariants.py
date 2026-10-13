@@ -8950,6 +8950,22 @@ def _run_library_copy(item: dict) -> bool:
     return not ({str(item.get("action") or ""), str(item.get("how") or "")} & OTHER_LIBRARY_COPY_ACTIONS)
 
 
+def _legacy_deleted_copies(provenance: dict, finalisation: dict, job_id: str) -> "list[dict]":
+    """The run's copies deleted before the library-copy store existed (Interactive before 0.5.37).
+
+    Those its finalisation deleted (loaded_library_copies_deleted), and those a retry of a held deletion deleted
+    later: up to 0.5.36 a copy held at finalisation was recorded there as none, and the retry that deleted it named
+    it only in its hold's resolution (finalisation_hold_resolutions, step loaded_library_copy, ``deleted``), as
+    Interactive's library_copy_store.legacy_deleted_copies reads them.
+    """
+    found = [item for item in finalisation.get(LEGACY_LIBRARY_COPY_RECORD) or [] if isinstance(item, dict)]
+    for note in provenance.get("finalisation_hold_resolutions") or []:
+        if isinstance(note, dict) and note.get("step") == LIBRARY_COPY_RECORD \
+                and str(note.get("job_id") or "") == job_id:
+            found.extend(item for item in note.get("deleted") or [] if isinstance(item, dict))
+    return found
+
+
 def _workspace_root(provenance: dict, workspace: Path) -> "Path | None":
     """The workspace root a unit lies under, as Interactive's library_copy_store.workspace_root_for finds it.
 
@@ -8983,7 +8999,8 @@ def check_library_copy_is_kept_once(
     VS21 pair, a 0.28 or 0.86 GB copy of the private library. Interactive 0.5.37 moves a campaign unit's
     copy into <workspace root>/_library_copies, once per content, and records the object
     (console_run_finalisation.loaded_library_copy, or library_copy_records for a run whose record is not
-    rewritten); before it, the copy was deleted (loaded_library_copies_deleted).
+    rewritten); before it, the copy was deleted (loaded_library_copies_deleted, or for a copy held at
+    finalisation the resolution of the hold whose retry deleted it).
 
     A copy left in the output FAILs unless a viewing restore stands (viewing_restore hold): a restore links
     the stored object back for MS-DIAL's GUI, and FIN-2 holds sharing until its undo. A copy a finalisation
@@ -9049,7 +9066,10 @@ def check_library_copy_is_kept_once(
                    **evidence)
         return
     if not copies:
-        if finalisation.get(LEGACY_LIBRARY_COPY_RECORD):
+        legacy = _legacy_deleted_copies(provenance, finalisation, job_id)
+        if legacy:
+            evidence["deleted_before_the_store"] = [{key: item.get(key) for key in ("name", "size_bytes", "sha256")}
+                                                    for item in legacy[:5]]
             report.add("FIN-3", stage, FIN3_TITLE, WARN,
                        "The loaded-library copy was deleted before the library-copy store existed (Interactive "
                        "before 0.5.37), and no stored object is attached to it; the project cannot be reopened until "
