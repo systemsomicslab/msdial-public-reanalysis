@@ -106,7 +106,8 @@ In the same message, say what is set without asking, so an objection costs one w
 - **Merge:** rows that are not reference matched are dropped. Before sheet 3 selects,
   a negative PG row that positive mode annotates as BMP becomes BMP, and a negative PE
   O- row that positive mode annotates as PE P- takes the PE P- name (step K); sheet 3
-  should therefore take BMP and EtherPE from negative `[M-H]-` only. Every adduct sheet
+  should therefore take BMP and EtherPE from negative `[M-H]-` only, and the check asks
+  about a sheet 3 that does not (step E). Every adduct sheet
   3 selects is kept, with likely double counts reported; a selected class whose
   standard is not in its polarity goes to `lipid_metabolome_not_quantified.csv`. The
   statistics tables take the Sample and QC files, never a Blank.
@@ -170,9 +171,14 @@ Report:
 - `merge_selection_warnings`: sheet 3 selects BMP or EtherPE in positive mode, or does
   not select BMP `[M-H]-` or EtherPE `[M-H]-`. The merge's reconciliation takes both
   classes from negative `[M-H]-`, so a positive selection counts the class twice, and
-  without `[M-H]-` the renamed rows are lost. Read each one; the person changes sheet 3
-  (BMP and EtherPE positive adducts FALSE, BMP `[M-H]-` and EtherPE `[M-H]-` TRUE),
-  saves it, and you check again. Never edit the workbook yourself.
+  without `[M-H]-` the renamed rows are lost. While there is any, the check asks
+  `merge_selection_accepted` and is not ready for a contract. Read each warning, and
+  say why it must be settled now: the contract binds the whole workbook, so changing
+  sheet 3 after it needs a new contract and new MS-DIAL runs of both polarities. Then
+  either the person changes sheet 3 (BMP and EtherPE positive adducts FALSE, BMP
+  `[M-H]-` and EtherPE `[M-H]-` TRUE), saves it, and you check again; or they keep it
+  as it is, and you pass `merge_selection_accepted=true`, which the contract records.
+  Never edit the workbook yourself, and never answer the question for them.
 
 Keep `check_digest`: the contract refuses any input that changed after the person saw
 this.
@@ -196,7 +202,8 @@ Corrections go in `sample_table` by stem, with every sample listed. `included=fa
 drops a sample from both polarities.
 
 On their yes, call `msdial_lipidomics_write_contract(..., check_digest,
-sample_table_confirmed=true, sample_table=<corrections>, confirmed_by=<who>)`. When
+sample_table_confirmed=true, sample_table=<corrections>, confirmed_by=<who>)`, with
+`merge_selection_accepted=true` when they kept a sheet 3 the check warned about. When
 the check was filled from a workset (`filled_from_workset`), pass the same
 `workset_id` too: the digest binds what the workset answered. It previews. Check that
 it holds the table they confirmed, then call again with `confirmed=true`. It writes
@@ -388,8 +395,14 @@ The merge runs in three stages:
      takes the PE P- name.
    - Names must match exactly; there is no fallback to the sum composition. Of several
      negative candidates, the smallest |ΔRT| is taken, then the higher mean intensity.
-     When two positive rows claim one negative row, the closer one wins and the other is
-     left unmatched.
+     When two positive rows claim one negative row, the closer one wins (then the more
+     intense), and the other takes its next candidate that no closer positive row holds.
+     It is left unmatched only when every candidate went to a closer row. The claims are
+     settled together, so the pairs do not depend on the order of the rows.
+   - When positive mode also annotates a renamed negative row's own name within the
+     tolerance (a positive PE O- or PG of exactly that name), the two positive
+     annotations disagree. The row is still renamed as the rule says, and the pair is
+     reported as ambiguous, kind `conflicting positive evidence`.
    - The renamed row's Comment says what it was renamed from, by which positive row, and
      at what ΔRT. Its value stays the negative `[M-H]-` measurement, normalized as it was
      annotated. A PG renamed BMP was therefore normalized against the PG standard; the
@@ -415,19 +428,33 @@ when the person asks, and is recorded as a deviation from the contract.
   - every `unmatched` positive row, with the negative rows of the same name outside the
     window and the other names inside it, so the person can see what exact matching left
     out;
-  - every `ambiguous` choice and every `lost_claims` entry;
+  - every `ambiguous` entry. Kind `several negative candidates` gives the candidates and
+    `chosen_alignment_id`, the row the positive row was finally given (none when it lost
+    them all). Kind `conflicting positive evidence` gives the positive rows that annotate
+    the renamed row's own name: read each one out, since the spectra need a look;
+  - every `lost_claims` entry: a positive row that lost every candidate, each with the
+    positive row that took it. A matched pair with `after_losing` took its next
+    candidate after losing one;
   - `not_converted`: positive rows of either class whose name names no negative row. A
-    PE O- that positive mode names itself is expected here; a BMP without a BMP token is
-    not, so read it out;
+    PE O- that positive mode names itself is expected here, and `names_negative` lists
+    the negative rows of exactly its name. When one of them was renamed PE P- by another
+    positive row, the reason says so and the pair is also in `ambiguous`; read it out. A
+    BMP without a BMP token is not expected, so read it out too;
   - `renamed_rows`: how many renamed rows were then kept, not quantified, or not
     selected;
 - `samples.taken`: the Sample and QC files the statistics use. A Blank never counts.
 - `warnings`. In particular, a sheet 3 that selects BMP or EtherPE in positive mode, or
-  does not select their `[M-H]-`. Also anything `metabolomics_service.R` would stumble
-  on: repeated sample names, constant lipids, `-?` intensities, or other folders beside
-  the tables. A Sample or QC file with no class label is taken under an empty class, as
-  metaboservice took it, and is warned about; the R script compares it as a group of its
-  own, so ask the person what it is.
+  does not select their `[M-H]-`. At this step that is said as what this lipidome
+  counts (EtherPE from both polarities, say), because sheet 3 is part of the contract
+  the person accepted it under. Read it out as a fact about the result. Do not suggest
+  editing sheet 3 now: that makes the contract, both runs and both normalizes unusable,
+  and the merge refuses. If the person wants another selection, it is a new contract
+  (`replace_existing`) and both polarities run again; say so and let them decide. Also
+  read out anything `metabolomics_service.R` would stumble on: repeated sample names,
+  constant lipids, `-?` intensities, or other folders beside the tables. A Sample or QC
+  file with no class label is taken under an empty class, as metaboservice took it, and
+  is warned about; the R script compares it as a group of its own, so ask the person
+  what it is.
 
 A count of kept lipids is only meaningful beside the count of everything that did not
 qualify. The merge pairs the polarities' sample columns by position and refuses when
@@ -451,6 +478,12 @@ metaboservice wrote one `?` per byte (and two labels of one length became one cl
 that warning appears, tell the person, because R must then read the tables as UTF-8.
 Beside them the merge writes `lipid_metabolome_not_quantified.csv` and
 `merge-report.json`.
+
+The category folders follow the class table metaboservice was built with, not current
+MS-DIAL's. A class newer than that table (WE, NATau and the other N-acyl amino acids,
+ASHexCer, DGTA, PT, ...) goes to `category_Unassigned lipid`, as metaboservice filed it.
+`merge-report.json` lists those ontologies (`outputs.category_unassigned_ontologies`);
+name them when there are any.
 
 Merging again replaces only the dotplot files the last merge wrote. Any other file in
 those folders refuses the write; ask the person to move it. Another `output_name` renames
@@ -489,7 +522,11 @@ are:
   why;
 - the NOT QUANTIFIED classes, the verification and the merge counts;
 - the reconciliation: its tolerance, the BMP and PE P- rows renamed, the positive rows left
-  unmatched, and whether it ran as the contract states;
+  unmatched or that lost their claims, any conflicting positive evidence, and whether it
+  ran as the contract states;
+- whether the person kept a sheet 3 that contradicts the reconciliation
+  (`merge.selection_warnings_accepted` in the contract), and what the lipidome therefore
+  counts;
 - where the R inputs are (`<root>\quant\lipidome`), and that the statistics took the
   Sample and QC files.
 
