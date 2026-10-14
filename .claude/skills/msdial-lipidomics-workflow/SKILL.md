@@ -370,7 +370,10 @@ search list, not a selection, and `lipids_class_list.txt` is not an input.
 The merge runs in three stages:
 1. **Row filters.** A row is set aside when it is unannotated, an internal standard, not
    reference matched, excluded by name (`w/o`, `RIKEN`, `low score: `, `no MS2: `), or
-   marked `x` in its Comment.
+   when its Comment starts with a lower-case `x`. The name and Comment tests are
+   metaboservice's, on the cells as written: a Comment starting `X` or ` x` keeps its row.
+   If the person marked rows to exclude, check they used a lower-case `x` as the first
+   character.
 2. **Positive/negative reconciliation** (the laboratory's rules). Two classes are named
    differently by the two polarities, and this stage only renames rows; it keeps and drops
    nothing.
@@ -413,13 +416,18 @@ when the person asks, and is recorded as a deviation from the contract.
     window and the other names inside it, so the person can see what exact matching left
     out;
   - every `ambiguous` choice and every `lost_claims` entry;
+  - `not_converted`: positive rows of either class whose name names no negative row. A
+    PE O- that positive mode names itself is expected here; a BMP without a BMP token is
+    not, so read it out;
   - `renamed_rows`: how many renamed rows were then kept, not quantified, or not
     selected;
 - `samples.taken`: the Sample and QC files the statistics use. A Blank never counts.
 - `warnings`. In particular, a sheet 3 that selects BMP or EtherPE in positive mode, or
   does not select their `[M-H]-`. Also anything `metabolomics_service.R` would stumble
   on: repeated sample names, constant lipids, `-?` intensities, or other folders beside
-  the tables.
+  the tables. A Sample or QC file with no class label is taken under an empty class, as
+  metaboservice took it, and is warned about; the R script compares it as a group of its
+  own, so ask the person what it is.
 
 A count of kept lipids is only meaningful beside the count of everything that did not
 qualify. The merge pairs the polarities' sample columns by position and refuses when
@@ -436,14 +444,20 @@ wrote:
   `lipid_metabolome4summaryplot.csv`;
 - the `Summary_Dotplots`, `category_<category>` and `subclass_<ontology>` folders.
 
-All of them are ASCII, CRLF, comma separated and never quoted, with rows in .NET's
-Windows order and numbers as .NET Framework printed them. Beside them the merge writes
-`lipid_metabolome_not_quantified.csv` and `merge-report.json`.
+They are CRLF, comma separated and never quoted, with rows in .NET's Windows order and
+numbers as .NET Framework printed them. They are ASCII unless a cell is not: a Japanese
+class label, file name or comment is written as UTF-8 and warned about, where
+metaboservice wrote one `?` per byte (and two labels of one length became one class). When
+that warning appears, tell the person, because R must then read the tables as UTF-8.
+Beside them the merge writes `lipid_metabolome_not_quantified.csv` and
+`merge-report.json`.
 
 Merging again replaces only the dotplot files the last merge wrote. Any other file in
-those folders refuses the write; ask the person to move it. Another `output_name` may be
-given (the three tables are named after it), but never one of the files the merge or
-normalize writes. The R script reads the default names.
+those folders refuses the write; ask the person to move it. Another `output_name` renames
+only `lipid_metabolome.csv`, and never to one of the files the merge or normalize writes.
+The three statistics tables always keep the names above, because the R script reads them
+by name. A lipidome an earlier merge left there under another name stays and is warned
+about; say which one is current.
 
 ## L. Save the method, and report
 
