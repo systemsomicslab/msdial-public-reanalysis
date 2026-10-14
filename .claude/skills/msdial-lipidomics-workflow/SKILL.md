@@ -82,15 +82,20 @@ bears on it:
   (pmol/µL plasma). It sets the unit.
 - **R7. The analysis root.** `pos`, `neg`, `inputs` and `quant` are made inside it. It
   must not be a raw-data folder, a code checkout or a temporary folder.
-- **Where MS-DIAL reads the raw data**, with this sentence: *MS-DIAL writes its per-file
-  `.dcl`, `.pai2` and tag files and the alignment container beside the raw files it
-  reads, the one-file diagnostic included, and no output setting prevents it.* The
-  choice is between the folders as they are and a copy elsewhere.
+- **Where MS-DIAL reads the raw data** (`raw_location`), with this sentence: *MS-DIAL
+  writes its per-file `.dcl`, `.pai2` and tag files and the alignment container beside
+  the raw files it reads, the one-file diagnostic included, and no output setting
+  prevents it.* The choice is between the folders as they are (`in_place`) and a copy
+  elsewhere (`copy`). The check asks it as a question, and the contract records the
+  answer.
 - The Console, if A did not settle it, and the thread count if they care.
 
 In the same message, say what is set without asking, so an objection costs one word:
-- **Standards:** searched within 0.5 min of the RT in their text, separately from R3. A
-  wider window admits other spots at the standard's m/z.
+- **Standards:** a standard the LBM2 annotated is accepted up to R3 from the RT in its
+  text, one within 0.5 min first. A farther one needs their confirmation when another
+  spot lies within 0.5 min. Its own text row, and any other spot at its m/z, count only
+  within 0.5 min, separately from R3: a wider window admits other spots at the
+  standard's m/z.
 - **Peak height:** tuned on a one-file zero-threshold diagnostic. Smoothing is
   `TimeBasedLinearWeightedMovingAverage`.
 - **RT correction:** automatic, with 12 anchors and the 1.5 min local window. Blanks are
@@ -138,7 +143,9 @@ your own initiative.
 - Then compare names and sizes with the source.
 - Nothing is moved; the originals are only read.
 
-From here on, `pos_path` and `neg_path` are the folders MS-DIAL will read.
+From here on, `pos_path` and `neg_path` are the folders MS-DIAL will read, with
+`raw_location="copy"`. The check binds the folders by where they are, so check the copy
+again before the contract.
 
 ## E. Check the answers
 
@@ -195,8 +202,11 @@ path, so they are local only.
 Plan each polarity with `msdial_guided_analysis_plan(input_path=<its raw folder>,
 answers={"lab_lipidomics_contract_path": ..., "ion_mode": "Positive"})`. The contract
 fixes the salt, the LBM2, both tolerances, the internal-standard library, the sample
-table, the output folder and the Console. `lab_lipidomics.deviations` must be empty
-unless the person changed a method default.
+table, the output folder and the Console; neither an answer nor `workflow_overrides`
+can change them. `lab_lipidomics.deviations` must be empty unless the person changed a
+method default. The diagnostic is refused while the plan has a blocker other than the
+missing threshold (`diagnostic_blockers`), a raw folder other than the contract's
+included.
 
 The diagnostic runs one file at zero threshold, without annotation. The file is a QC
 near the middle of the analytical order, or a non-blank sample there if there is no QC.
@@ -251,29 +261,37 @@ stop there.
 
 Each standard is then looked for at the m/z of the adduct its text names, so a spot of
 another adduct never competes. There are four tiers:
-- **A:** the LBM2 annotated it, within the annotation RT tolerance.
-- **B:** its own text row annotated it, within the internal-standard tolerance.
-- **C:** its text row matched, but another annotation won the spot.
+- **A:** the LBM2 annotated it, within the annotation RT tolerance. A sum-level name
+  (PC 33:1(d7)) counts; a chain-level name must agree chain for chain, so an isobaric
+  endogenous lipid is not the standard.
+- **B:** its own text row annotated it as a reference match, within the
+  internal-standard tolerance.
+- **C:** its text row matched, but another annotation won the spot, or the match is
+  below the score cutoff.
 - **D:** a spot in the m/z and RT window, annotated as anything or nothing.
 
-The first tier with a member decides. Within it, the most intense spot over the
-non-Blank files wins. C and D are the person's to accept.
+The first tier with a member decides. In A, a spot within the internal-standard
+tolerance comes first. Then the most intense spot over the sample and QC files wins. C
+and D are the person's to accept. So is an A spot outside the internal-standard
+tolerance when another spot lies inside it (`needs_confirmation`): a stale text RT, or
+another lipid named as the standard.
 
 Read each standard aloud: its tier and alignment ID, MS-DIAL's name for the spot, Δm/z
 and ΔRT, an adduct label that disagrees with the text, other spots of the same standard
-at another adduct or RT, and files where the spot has no height. A Blank without the
-standard is allowed and left empty; a sample or QC without it makes the standard
-invalid. Then read the lists:
+at another adduct or RT, and files where the spot has no height. A Blank or a
+Standard-type file without the standard is allowed and left empty; a sample or QC
+without it makes the standard invalid. Then read the lists:
 - `unresolved_expected`: standards that belong to the other polarity. Say which, so the
   rest stand out.
 - `unexpected_unresolved`: standards that were not found, are invalid, or are contested.
   These matter.
-- `needs_confirmation`: the C and D standards.
+- `needs_confirmation`: the C and D standards, and any A standard taken from outside
+  the internal-standard tolerance while a spot lies inside it.
 - `classes_not_quantified_if_unchanged`.
 
-The person accepts or declines each C and D standard, and accepts each unexpected
-unresolved one as unresolved. A declined or unresolved standard empties its classes.
-Never decide these yourself.
+The person accepts or declines each standard in `needs_confirmation`, and accepts each
+unexpected unresolved one as unresolved. A declined or unresolved standard empties its
+classes. Never decide these yourself.
 
 ## J. Normalize each polarity
 
@@ -297,8 +315,9 @@ and recomputes every quantified cell from the Height matrix the same call wrote.
 merge, never repaired by hand.
 
 State what MS-DIAL computed in the result:
-- The spot of a standard sheet 2 uses is its amount in every file. A prepared standard
-  that sheet 2 does not use is quantified like any other lipid.
+- The spot of a standard sheet 2 uses is its amount times the file's dilution factor
+  (its amount when no factor differs from 1). A prepared standard that sheet 2 does not
+  use is quantified like any other lipid.
 - Every other spot is amount × its height / the standard's height in that file, times
   the dilution factor. The standard is its class's own, or "Any others". A spot that is
   not reference matched goes to "Any others".
