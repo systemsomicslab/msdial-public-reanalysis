@@ -92,10 +92,11 @@ bears on it:
 
 In the same message, say what is set without asking, so an objection costs one word:
 - **Standards:** a standard the LBM2 annotated is accepted up to R3 from the RT in its
-  text, one within 0.5 min first. A farther one needs their confirmation when another
-  spot lies within 0.5 min. Its own text row, and any other spot at its m/z, count only
-  within 0.5 min, separately from R3: a wider window admits other spots at the
-  standard's m/z.
+  text (up to 0.5 min when R3 is smaller), one within 0.5 min first. A farther one
+  needs their confirmation when another spot lies within 0.5 min. Its own text row,
+  and any other spot at its m/z, count only within 0.5 min, separately from R3: a
+  wider window admits other spots at the standard's m/z. They may take any other
+  listed spot instead.
 - **Peak height:** tuned on a one-file zero-threshold diagnostic. Smoothing is
   `TimeBasedLinearWeightedMovingAverage`.
 - **RT correction:** automatic, with 12 anchors and the 1.5 min local window. Blanks are
@@ -185,9 +186,11 @@ Corrections go in `sample_table` by stem, with every sample listed. `included=fa
 drops a sample from both polarities.
 
 On their yes, call `msdial_lipidomics_write_contract(..., check_digest,
-sample_table_confirmed=true, sample_table=<corrections>, confirmed_by=<who>)`. It
-previews. Check that it holds the table they confirmed, then call again with
-`confirmed=true`. It writes `<root>\inputs\`:
+sample_table_confirmed=true, sample_table=<corrections>, confirmed_by=<who>)`. When
+the check was filled from a workset (`filled_from_workset`), pass the same
+`workset_id` too: the digest binds what the workset answered. It previews. Check that
+it holds the table they confirmed, then call again with `confirmed=true`. It writes
+`<root>\inputs\`:
 - the contract;
 - `is_pos.txt` and `is_neg.txt`, in the column order MS-DIAL reads;
 - `standards_template.tsv` and `quant_rules.tsv`;
@@ -197,16 +200,24 @@ If it refuses because an input changed, check again and show the person the new 
 never pass a digest they have not seen. The contract and the record hold the LBM2's
 path, so they are local only.
 
+If a contract is already at that root, even the preview is refused, and the refusal
+holds `existing_contract`: when it was written and the diagnostics, runs, normalizes
+and merges recorded under it. Read it to the person. Replacing it leaves every one of
+those unusable, to be made again. Only if they want it replaced, preview again with
+`replace_existing=true`, and confirm that preview as usual. Otherwise choose another
+analysis root.
+
 ## G. Diagnostics, positive then negative
 
 Plan each polarity with `msdial_guided_analysis_plan(input_path=<its raw folder>,
 answers={"lab_lipidomics_contract_path": ..., "ion_mode": "Positive"})`. The contract
 fixes the salt, the LBM2, both tolerances, the internal-standard library, the sample
-table, the output folder and the Console; neither an answer nor `workflow_overrides`
-can change them. `lab_lipidomics.deviations` must be empty unless the person changed a
-method default. The diagnostic is refused while the plan has a blocker other than the
-missing threshold (`diagnostic_blockers`), a raw folder other than the contract's
-included.
+table, the output and export folder, the Console, and the parameter template and LBM
+query list; neither an answer, a workset nor `workflow_overrides` can change them.
+Any other answer is applied and listed in `lab_lipidomics.deviations`, which must be
+empty unless the person asked for that change; read every deviation to them. The
+diagnostic is refused while the plan has a blocker other than the missing threshold
+(`diagnostic_blockers`), a raw folder other than the contract's included.
 
 The diagnostic runs one file at zero threshold, without annotation. The file is a QC
 near the middle of the analytical order, or a non-blank sample there if there is no QC.
@@ -261,9 +272,10 @@ stop there.
 
 Each standard is then looked for at the m/z of the adduct its text names, so a spot of
 another adduct never competes. There are four tiers:
-- **A:** the LBM2 annotated it, within the annotation RT tolerance. A sum-level name
-  (PC 33:1(d7)) counts; a chain-level name must agree chain for chain, so an isobaric
-  endogenous lipid is not the standard.
+- **A:** the LBM2 annotated it, within the annotation RT tolerance, or the
+  internal-standard tolerance when that is wider. A sum-level name (PC 33:1(d7))
+  counts; a chain-level name must agree chain for chain, so an isobaric endogenous
+  lipid is not the standard.
 - **B:** its own text row annotated it as a reference match, within the
   internal-standard tolerance.
 - **C:** its text row matched, but another annotation won the spot, or the match is
@@ -280,7 +292,9 @@ Read each standard aloud: its tier and alignment ID, MS-DIAL's name for the spot
 and ΔRT, an adduct label that disagrees with the text, other spots of the same standard
 at another adduct or RT, and files where the spot has no height. A Blank or a
 Standard-type file without the standard is allowed and left empty; a sample or QC
-without it makes the standard invalid. Then read the lists:
+without it makes the standard invalid. Read its `valid_alternatives` too: the other
+spots listed for it (`resolution_table`) that have a height in every sample and QC.
+Then read the lists:
 - `unresolved_expected`: standards that belong to the other polarity. Say which, so the
   rest stand out.
 - `unexpected_unresolved`: standards that were not found, are invalid, or are contested.
@@ -290,13 +304,16 @@ without it makes the standard invalid. Then read the lists:
 - `classes_not_quantified_if_unchanged`.
 
 The person accepts or declines each standard in `needs_confirmation`, and accepts each
-unexpected unresolved one as unresolved. A declined or unresolved standard empties its
-classes. Never decide these yourself.
+unexpected unresolved one as unresolved. For any standard, an invalid or contested one
+included, they may instead take one of its valid alternatives. A declined or unresolved
+standard empties its classes. Never decide these yourself.
 
 ## J. Normalize each polarity
 
 Call `msdial_lipidomics_normalize(contract_path, job_id, resolution_digest,
-accept_searched=[...], accept_unresolved=[...])`. It previews:
+accept_searched=[...], accept_unresolved=[...], accept_spot={standard: alignment ID})`.
+`accept_spot` holds the alternatives the person took; each standard takes one of the
+three decisions. It previews:
 - the standards table (StandardName, TargetClass, Concentration, PeakID, AssignName);
 - the unit;
 - the exact command, and why each flag is there:
@@ -307,6 +324,8 @@ accept_searched=[...], accept_unresolved=[...])`. It previews:
   - `--allow-mismatched-peak-ids` when MS-DIAL's stored name for a chosen spot differs
     from the standard's;
   - `-d` when a dilution factor differs from 1.
+- `warnings`: the Console is not the build the contract recorded (it was rebuilt or
+  replaced). Say so before the confirmation; both builds are recorded with the result.
 
 Confirm each polarity separately, then call with `confirmed=true` and poll
 `msdial_interactive_job(job_id)`. The job compares normalize's own report with the table,
@@ -324,8 +343,9 @@ State what MS-DIAL computed in the result:
 - A class whose standard did not resolve is emptied, with a `NOT QUANTIFIED` comment. A
   file where the standard has no height is empty for its classes.
 - Blanks are normalized like samples; nothing is subtracted.
-- An accepted C or D standard is named as the standard in MS-DIAL's own exports
-  (annotation method "internal standard assignment").
+- An accepted C or D standard, or a C or D spot taken instead, is named as the
+  standard in MS-DIAL's own exports (annotation method "internal standard
+  assignment").
 
 Both matrices are written to `<root>\quant` as `NormalizedHeight_{Pos,Neg}.txt` and
 `Height_{Pos,Neg}.txt`. A concentration is a height divided by a standard, and nobody can
@@ -347,7 +367,8 @@ around it.
 
 With the person's go, `confirmed=true` writes three files into `<root>\quant`:
 `lipid_metabolome.csv` (comma separated, CRLF, as the laboratory's program wrote it),
-`lipid_metabolome_not_quantified.csv` and `merge-report.json`.
+`lipid_metabolome_not_quantified.csv` and `merge-report.json`. Another `output_name`
+may be given, but never one of the files the merge or normalize writes there.
 
 ## L. Save the method, and report
 
@@ -360,9 +381,10 @@ out:
   amount, the dilution factors, any path, or the accepted thresholds.
 
 The next batch starts with `msdial_lipidomics_check_inputs(pos_path, neg_path,
-workset_id=...)`, which fills in what carried and warns when a file has changed. The
-person is still asked R0, R7 and where MS-DIAL reads, still confirms the sample table,
-and hears the sample amount again.
+workset_id=...)`, which fills in what carried (`filled_from_workset`) and warns when a
+file has changed. Its `msdial_lipidomics_write_contract` takes the same `workset_id`.
+The person is still asked R0, R7 and where MS-DIAL reads, still confirms the sample
+table, and hears the sample amount again.
 
 Say what ran, on which files, with which library and settings, and where the artifacts
 are:
@@ -370,7 +392,9 @@ are:
 - the salt, and how the answer was mapped;
 - both RT tolerances;
 - each polarity's threshold, step and representative file;
-- each standard's tier, and what the person accepted or left unresolved;
+- each standard's tier, and what the person accepted, took instead or left unresolved;
+- the Console's version and build for the runs and for normalize (`normalize_console` in
+  `merge-report.json`), and whether it changed after the contract;
 - the unit, and the sample amount as the workbook was saved. When an earlier analysis of
   the same samples used another amount, say by what factor the concentrations differ and
   why;
