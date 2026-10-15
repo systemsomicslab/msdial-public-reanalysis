@@ -455,6 +455,42 @@ until you do: disable it with `schtasks /Change /TN "MSDIAL-campaign-ID"
 runner changes no task itself. Neither command stops the backend the last runner
 started; stop it yourself once no job runs in it.
 
+Only `approve` makes a campaign's ledger (2026-10-15). On that day
+`verify-env` run before `approve` created an empty `ledger.sqlite` (the schema,
+no campaign, no approval, no unit), `approve` then refused the campaign as
+already approved, and the scheduled task's `run` made the file again at every
+restart. Every other command (`run`, `verify-env`, `status`, `export`,
+`pause`, `resume`, `skip`, `retry`, `release-held`, `recheck-held`,
+`revoke`) now reads the ledger's state without opening it: where there is no
+ledger, or only an empty one, it says the campaign has no approval yet and to
+approve it first, and exits with code 2, creating and writing nothing (`run`
+before it takes the campaign, locks the Catalog or starts a backend). `approve`
+takes an empty ledger as absent and records the approval into it (an
+`empty_ledger_approved` event, written in the approval's own transaction, says
+so), and `plan` does not refuse one; both still refuse a ledger that holds a
+campaign, an approval or a unit, or that cannot be read. Should `approve` meet
+an error, it reads the ledger again before it says nothing was recorded: an
+approval already committed keeps its `campaign-authorization.json`.
+
+A unit Interactive excludes at its download is excluded, not failed (the
+contract of 2026-10-15). Where every declared analysis input a download lacks is
+a declared archive the extract stage expanded that holds no file MS-DIAL opens,
+the failed lease's `download_failure` carries `retryable` false and a
+`disposition` whose `decision` is `exclude`, with the reason
+`declared_inputs_unsupported_format` and the inputs (each declared path, its
+archive, how many files it held and their commonest suffixes); Interactive
+0.5.40 gives the download job the same record as its own `download_failure`,
+which the runner reads where the unit manifest has none. The runner reads only
+a record of the job it polls: one an earlier job's lease left in the manifest
+says nothing of a unit retried since. It then
+counts no failure and does not retry the unit; it ends `excluded` with that
+terminal reason and the inputs in its terminal detail, and its raw data are
+deleted under boundary 5 as for every other exclusion. `status` counts excluded
+units by reason (`excluded_by_reason`: `preflight_exclude`, `download_blocked`,
+`declared_inputs_unsupported_format`). The same failure recorded without a
+disposition, as by an Interactive before the contract, is retried and fails as
+before.
+
 ## Codex pre-audit
 
 The local Python test suites passed on 2026-09-02 after the re-audit fixes:

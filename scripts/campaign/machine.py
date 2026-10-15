@@ -44,6 +44,19 @@ release-held, until Interactive's own deletion takes them. The runner never reco
 (boundary 6): READ-1 holding the gate at exit 4 is a state it stores, and such a unit is reported as
 "outputs produced", never "completed".
 
+AN EXCLUSION AT THE DOWNLOAD (the contract of 2026-10-15). A unit ends excluded for three reasons, each
+Interactive's decision and none the unit's failure: preflight_exclude (the raw-header campaign_disposition),
+download_blocked (Interactive refused the download before any byte) and declared_inputs_unsupported_format
+(policy.download_exclusion: the lease's attribute stage found that every declared analysis input it lacks is a
+declared archive whose files MS-DIAL opens none of, and its failed-lease record says decision "exclude"). The last
+is read wherever a download ends failed, from the job's poll (_download_ended: the record the job's lease wrote into
+the unit manifest, else the copy Interactive 0.5.40 gives the job as its download_failure) or, for a job the backend
+lost, from the unit manifest (_download_lost), and only from a record of this job's lease (a record an earlier job's
+lease left says nothing of a unit retried since): nothing is counted, nothing is retried, and the discard deletes the
+unit's raw data under boundary 5 as for every exclusion. A failed lease whose record carries no such disposition (an
+Interactive before the contract, or any other attribute failure) is a failure, retried as before. status counts
+the excluded units by reason (excluded_by_reason).
+
 A DISPOSITION THAT HOLDS (the AIF rule of 2026-10-07, Interactive 0.5.31). A multi-collision-energy AIF unit waits
 for a patched Console: Interactive's campaign_disposition says "skip" with hold true and the reason
 aif_multi_ce_awaiting_console. The runner holds the unit (disposition_held) instead of ending it as skipped: it
@@ -1186,6 +1199,10 @@ class Runner:
             if unit is None:
                 continue
             repository, group, outcome = unit["repository"], _group(unit), row["outcome"]
+            if outcome == "blocked" and row["step"] == "download" and _loads(row["detail_json"]).get("excluded"):
+                # Interactive excluded the unit after its fetch and extraction (_download_excluded): the server
+                # delivered every byte, as for a download that finished.
+                outcome = "ok"
             if outcome == "ok":
                 if row["step"] == "download":
                     ended.add(repository)
@@ -1272,7 +1289,13 @@ class Runner:
             return self._downloaded(unit, manifest_path)
         reason = self._cancel_reason(job_id)
         detail = {"job_id": job_id, "status": status, "error": job.get("error"), "stop_reason": job.get("stop_reason")}
-        failure = self._lease_failure(unit, job_id)
+        # The lease's own record first; else the one the job itself carries. Interactive 0.5.40 (the contract of
+        # 2026-10-15) passes the failed lease's download_failure, its disposition among it, on to the job verbatim
+        # under that name, in the full record and in the summary alike; "failure" is read after it only as an older
+        # spelling. The job's copy matters where the manifest has none: a write of it the lease could not make, a
+        # manifest that cannot be read (review of 2026-10-15: reading "failure" alone missed every real job's).
+        carried = job.get("download_failure") if isinstance(job.get("download_failure"), Mapping) else job.get("failure")
+        failure = self._lease_failure(unit, job_id) or (dict(carried) if isinstance(carried, Mapping) else {})
         if failure:
             detail["failure"] = failure
         return self._download_ended(unit, status, reason, detail)
@@ -1309,6 +1332,12 @@ class Runner:
         return True
 
     def _download_ended(self, unit: dict[str, Any], status: str, reason: str, detail: dict[str, Any]) -> bool:
+        exclusion = policy.download_exclusion(detail)
+        if exclusion is not None and reason != "skip":
+            # Before the disk and the failure readings: an exclusion is made at the attribute stage, after the fetch
+            # and the extraction, so a download made again would end the same way. An operator's skip still ends
+            # the unit as skipped, as the skip request said it would.
+            return self._download_excluded(unit, exclusion, detail)
         if reason == "disk":
             # Cancelled because the disk ran short: nothing the unit did. It resumes from its .part file. A size
             # known only as a lower bound is at least what arrived, kept even should the partial file go.
@@ -1354,6 +1383,25 @@ class Runner:
         return self._download_failed(unit, result={"ok": False, "reason": outcome, **detail}, outcome=outcome,
                                      job_id=unit["download_job_id"])
 
+    def _download_excluded(self, unit: dict[str, Any], exclusion: Mapping[str, Any], detail: Mapping[str, Any]) -> bool:
+        """Interactive excluded the unit at its download's attribute stage (policy.download_exclusion, the contract
+        of 2026-10-15): every declared analysis input it lacks is a declared archive whose files MS-DIAL opens none
+        of. Interactive's decision, as a blocked download is, never the unit's failure: nothing is counted, it is
+        not retried, and it ends excluded through the discard, which deletes its raw data under boundary 5 as for
+        every exclusion. The ledger keeps the reason and the inputs as Interactive gave them (redacted, as every
+        detail is). The attempt is "blocked", uncounted, as for a download Interactive blocks: an "excluded"
+        outcome would need a new ledger schema, which a runner of the schema before it then refuses to open."""
+        self._progress.pop(unit["download_job_id"] or "", None)
+        terminal = {"reason": exclusion["reason"], "inputs": list(exclusion.get("inputs") or [])}
+        self._move(
+            unit, "discarding", pending_terminal="excluded",
+            terminal_detail=json.dumps(terminal, ensure_ascii=False, sort_keys=True),
+            detail={"step": "download", "excluded": exclusion["reason"]},
+            new_attempt={"step": "download", "outcome": "blocked", "counted": False,
+                         "detail": {**dict(detail), "excluded": exclusion["reason"]}},
+        )
+        return True
+
     def _download_lost(self, unit: dict[str, Any], unreadable: Mapping[str, Any] | None = None) -> bool:
         """The backend no longer knows the job, or (`unreadable`) its reply to the poll cannot be read: the unit
         manifest says what became of the lease. A lease still alive is waited for. Where the manifest says how
@@ -1376,6 +1424,18 @@ class Runner:
                 return True
             return False
         if status == "download_failed":
+            owner = str((manifest.get("lease_owner") or {}).get("job_id") or "")
+            if owner and owner != str(unit["download_job_id"] or ""):
+                # Another job's lease wrote this record (review of 2026-10-15), as _lease_failure reads it: a unit
+                # retried after its download failed or was excluded, its new job lost (or its poll unreadable)
+                # before that job's lease wrote the manifest. The record says nothing of this job, so it is neither
+                # this job's failure nor its exclusion; the lost job is an interruption, and an unreadable reply,
+                # whose job may still run, holds the unit.
+                if unreadable is not None:
+                    return self._unreadable_hold(unit, unreadable)
+                self._interrupted(unit, step="download", retry_state="handoff_ready",
+                                  detail={**detail, "status": status, "lease": f"a record of job {owner}'s lease"})
+                return True
             failure = manifest.get("download_failure") or {}
             reason = self._cancel_reason(unit["download_job_id"] or "")
             return self._download_ended(unit, "failed", reason, {**detail, "failure": failure})
@@ -2804,12 +2864,20 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     multi_energy = [unit for unit in units if isinstance(_loads(unit.get("disposition_json")).get("aif_multi_ce_run"), dict)]
     # Of them, those whose inputs record different energy sets, run as is (user decision, 2026-10-08).
     differing = [unit for unit in multi_energy if policy.energy_sets_differ(_loads(unit.get("disposition_json")))]
+    # The excluded units by their reason: preflight_exclude (the raw-header disposition), download_blocked
+    # (Interactive refused the download) and declared_inputs_unsupported_format (Interactive's attribute stage, the
+    # contract of 2026-10-15).
+    excluded_for: dict[str, int] = {}
+    for unit in units:
+        if unit["state"] == "excluded":
+            excluded_for[str(unit["terminal_reason"])] = excluded_for.get(str(unit["terminal_reason"]), 0) + 1
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
         policy.OUTPUTS_PRODUCED: sum(1 for unit in units if unit["outputs_produced"]),
         policy.COMPLETED: sum(1 for unit in units if unit["outputs_produced"] and unit["gate_exit_final"] == 0),
         "raw_disposition": dict(sorted(raw.items())),
+        "excluded_by_reason": dict(sorted(excluded_for.items())),
         # Still on the volume, against the rules: the disk guard sees them as used space, and so should the
         # person reading this.
         "raw_held": {"units": len(held), "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in held),

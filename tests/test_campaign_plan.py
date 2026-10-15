@@ -773,6 +773,187 @@ class PlanTests(unittest.TestCase):
             self.assertEqual(book.campaign()["pool"], "pilot")
             self.assertEqual(sorted(unit["unit_key"] for unit in book.units()), ["uA", "uK"])
 
+    def plan_approvable(self, campaign: str) -> tuple[Path, str]:
+        """Plan an approvable declared-pool campaign from the command line: (its directory, its manifest digest)."""
+        tools = self.root / f"tools-{campaign}"
+        tools.mkdir()
+        (tools / "MSDIALCUI.exe").write_bytes(CONSOLE_826)
+        (tools / "P.msp").write_text("NAME: x\n", encoding="utf-8")
+        (tools / "N.msp").write_text("NAME: x\n", encoding="utf-8")
+        resources = tools / "campaign-resources.local.json"
+        resources.write_text(json.dumps({"schema": ports.RESOURCES_SCHEMA, "libraries": {
+            "P.msp": str(tools / "P.msp"), "N.msp": str(tools / "N.msp")}}), encoding="utf-8")
+        profile = tools / "profile.json"
+        profile.write_text(json.dumps({"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"},
+                                       "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}},
+                                                       "Negative": {"libraries": {"msp_paths": ["library:N.msp"]}}}}),
+                           encoding="utf-8")
+        extractor = {**APPROVABLE_PINS["extractor"], "path": str(tools / "RawMetadataConsoleApp.exe")}
+        with mock.patch.object(ports.PinReader, "extractor", lambda _self: dict(extractor)), \
+                mock.patch.object(ports.PinReader, "code", lambda _self: json.loads(json.dumps(CODE_PINS))):
+            code, _out, err = self.cli(
+                "plan", "--campaign", campaign, "--pool", "declared", "--purpose", "annotation",
+                "--retention", "delete_after_validated_output", "--catalog", str(self.database),
+                "--console", str(tools / "MSDIALCUI.exe"), "--resources", str(resources), "--profile", str(profile),
+            )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Not approvable", err)
+        directory = self.workspace_root / "_campaigns" / campaign
+        return directory, "sha256:" + hashlib.sha256((directory / "campaign-manifest.json").read_bytes()).hexdigest()
+
+    def approve(self, campaign: str, digest: str, approval_id: str = "A1") -> tuple[int, str, str]:
+        return self.cli("approve", "--campaign", campaign, "--digest", digest, "--approval-id", approval_id,
+                        "--by", "Test Person", "--statement", "Yes, run it.", "--covers", "1,3,4,5,split")
+
+    def test_approve_takes_the_empty_ledger_an_earlier_verify_env_left(self) -> None:
+        """The defect of 2026-10-15: verify-env before approve made an empty ledger (schema and first rows only), and
+        approve then refused the campaign as already approved. approve now takes such a ledger as absent and records
+        the approval into it."""
+        directory, digest = self.plan_approvable("c-empty")
+        path = directory / "ledger.sqlite"
+        ledger.Ledger(path).close()  # what a runner before 2026-10-15 left when verify-env opened the campaign
+        self.assertEqual(ledger.ledger_state(path)["state"], ledger.LEDGER_EMPTY)
+        code, _out, err = self.cli("verify-env", "--campaign", "c-empty")
+        self.assertEqual(code, runner_cli.EXIT_REFUSED, err)
+        self.assertIn("has no approval yet", err)
+        code, out, err = self.approve("c-empty", digest)
+        self.assertEqual(code, 0, err)
+        self.assertIn("The ledger was already there, empty", out)
+        with ledger.Ledger(path) as book:
+            self.assertEqual(book.campaign()["manifest_digest"], digest)
+            self.assertEqual(book.approval()["approval_id"], "A1")
+            self.assertEqual(sorted(unit["unit_key"] for unit in book.units()), ["uA", "uB", "uC"])
+            events = book.events("empty_ledger_approved")
+            self.assertEqual(len(events), 1)
+            self.assertEqual(json.loads(events[0]["detail_json"])["approval_id"], "A1")
+        self.assertTrue((directory / "campaign-authorization.json").is_file())
+        code, out, _err = self.cli("status", "--campaign", "c-empty")
+        self.assertEqual((code, json.loads(out)["states"]), (0, {"pending": 3}))
+
+    def test_plan_takes_an_empty_ledger_as_no_approval(self) -> None:
+        directory, first = self.plan_approvable("c-replan")
+        ledger.Ledger(directory / "ledger.sqlite").close()
+        code, _out, err = self.cli("plan", "--campaign", "c-replan", "--pool", "declared", "--purpose", "p",
+                                   "--retention", "keep", "--catalog", str(self.database))
+        self.assertEqual(code, 0, err)
+        replanned = "sha256:" + hashlib.sha256((directory / "campaign-manifest.json").read_bytes()).hexdigest()
+        self.assertNotEqual(replanned, first, "the manifest was planned again")
+        self.assertEqual(ledger.ledger_state(directory / "ledger.sqlite")["state"], ledger.LEDGER_EMPTY)
+
+    def test_approve_still_refuses_a_ledger_that_holds_a_campaign_or_units(self) -> None:
+        directory, digest = self.plan_approvable("c-held")
+        path = directory / "ledger.sqlite"
+        self.assertEqual(self.approve("c-held", digest)[0], 0)
+        authorization = (directory / "campaign-authorization.json").read_bytes()
+        code, _out, err = self.approve("c-held", digest, "A2")
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("Campaign c-held already has a ledger and an approval", err)
+        self.assertIn("holds 1 campaign, 1 approval and 3 units", err)
+        self.assertEqual((directory / "campaign-authorization.json").read_bytes(), authorization, "not rewritten")
+        with ledger.Ledger(path) as book:
+            self.assertEqual(book.approval()["approval_id"], "A1")
+        self.assertEqual(self.cli("plan", "--campaign", "c-held", "--pool", "declared", "--purpose", "p", "--retention",
+                                  "keep", "--catalog", str(self.database))[0], runner_cli.EXIT_REFUSED)
+        # A ledger with units of no campaign is no empty ledger either; neither is one SQLite cannot read.
+        directory, digest = self.plan_approvable("c-units")
+        with ledger.Ledger(directory / "ledger.sqlite") as book:
+            book.connection.execute(
+                "INSERT INTO unit(unit_key, catalog_unit_id, repository, accession, order_index, state, state_since, "
+                "updated_at) VALUES ('stray', 'stray', 'r', 'a', 0, 'pending', 'now', 'now')")
+        code, _out, err = self.approve("c-units", digest)
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("holds 0 campaigns, 0 approvals and 1 unit", err)
+        self.assertFalse((directory / "campaign-authorization.json").exists(), "nothing was recorded")
+        directory, digest = self.plan_approvable("c-broken")
+        (directory / "ledger.sqlite").write_bytes(b"not a database " * 100)
+        code, _out, err = self.approve("c-broken", digest)
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("cannot be read", err)
+        self.assertFalse((directory / "campaign-authorization.json").exists())
+
+    def assert_approval_stands(self, directory: Path, digest: str, events: int) -> None:
+        """The ledger holds the approval, and campaign-authorization.json is the record its campaign row names."""
+        authorization = directory / "campaign-authorization.json"
+        self.assertTrue(authorization.is_file(), "the authorization record the ledger names stays")
+        with ledger.Ledger(directory / "ledger.sqlite") as book:
+            self.assertEqual(book.campaign()["manifest_digest"], digest)
+            self.assertEqual(book.campaign()["authorization_sha256"], ports.sha256_file(authorization))
+            self.assertEqual(book.campaign()["authorization_path"], str(authorization))
+            self.assertEqual(len(book.events("empty_ledger_approved")), events)
+
+    @staticmethod
+    def create_failing(phase: str):
+        """Ledger.create, with its transaction's commit raising a disk error "before" its COMMIT (rolled back) or
+        "after" it (committed)."""
+        original = ledger.Ledger.create
+
+        def create(book, *arguments, **options):
+            def hook(at: str) -> None:
+                if at == phase:
+                    raise sqlite3.OperationalError("disk I/O error")
+
+            book.commit_hook = hook
+            return original(book, *arguments, **options)
+
+        return create
+
+    def test_approve_records_the_empty_ledgers_event_with_its_approval_or_nothing(self) -> None:
+        """Review of 2026-10-15: approve wrote empty_ledger_approved in a transaction of its own after create had
+        committed, and took a failure of that write for an approval that recorded nothing. It deleted
+        campaign-authorization.json, which the committed ledger names, said "nothing was recorded", and a second
+        approve was refused. The event is now in create's transaction, and an error is weighed against what the
+        ledger holds."""
+        # The failure the review made: Ledger.event refusing. approve no longer writes through it.
+        directory, digest = self.plan_approvable("c-event")
+        ledger.Ledger(directory / "ledger.sqlite").close()
+        with mock.patch.object(ledger.Ledger, "event", side_effect=sqlite3.OperationalError("database is locked")):
+            code, out, err = self.approve("c-event", digest)
+        self.assertEqual(code, 0, err)
+        self.assertIn("The ledger was already there, empty", out)
+        self.assert_approval_stands(directory, digest, events=1)
+
+        # A failure inside create's transaction: the approval and its event are rolled back together.
+        directory, digest = self.plan_approvable("c-rollback")
+        path = directory / "ledger.sqlite"
+        ledger.Ledger(path).close()
+        with mock.patch.object(ledger.Ledger, "create", self.create_failing("before")):
+            code, out, err = self.approve("c-rollback", digest)
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("disk I/O error; nothing was recorded", err)
+        self.assertEqual(out, "")
+        self.assertEqual(ledger.ledger_state(path)["state"], ledger.LEDGER_EMPTY)
+        with ledger.Ledger(path) as book:
+            self.assertEqual(book.events(), [], "the event went with the approval")
+        self.assertFalse((directory / "campaign-authorization.json").exists())
+        code, _out, err = self.approve("c-rollback", digest)
+        self.assertEqual(code, 0, err)
+        self.assert_approval_stands(directory, digest, events=1)
+
+        # An error after create's COMMIT: the approval stands, its record with it, and approve says so.
+        directory, digest = self.plan_approvable("c-after")
+        ledger.Ledger(directory / "ledger.sqlite").close()
+        with mock.patch.object(ledger.Ledger, "create", self.create_failing("after")):
+            code, out, err = self.approve("c-after", digest)
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Approval A1 of {digest} recorded for 3 units", out)
+        self.assertIn("an error came after it was committed: disk I/O error", err)
+        self.assertNotIn("nothing was recorded", err)
+        self.assert_approval_stands(directory, digest, events=1)
+        code, _out, err = self.approve("c-after", digest, "A2")
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("already has a ledger and an approval", err)
+        self.assert_approval_stands(directory, digest, events=1)
+
+        # Where the ledger cannot be read again to tell, the authorization record is left as it is.
+        directory, digest = self.plan_approvable("c-unknown")
+        unreadable = sqlite3.OperationalError("database is locked")
+        with mock.patch.object(ledger.Ledger, "create", self.create_failing("before")), \
+                mock.patch.object(ledger, "recorded_authorization", side_effect=unreadable):
+            code, _out, err = self.approve("c-unknown", digest)
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("could not be read again to tell whether it was (database is locked)", err)
+        self.assertTrue((directory / "campaign-authorization.json").is_file(), "left in place")
+
     def test_a_correction_split_by_ion_mode_is_said_first_in_the_plan(self) -> None:
         profile = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"},
                    "by_ion_mode": {"Positive": {"execute_automatic_rt_correction": True}}}

@@ -70,7 +70,10 @@ class UnitScript:
 
     # ok; fail (HTTP 503); corrupt (a checksum that does not match, not the network); stall; hold (bytes keep
     # arriving and the job never ends until it is cancelled); blocked; interrupt; shared (waiting for another
-    # unit's lease to fetch a shared object, no bytes of its own, then ok)
+    # unit's lease to fetch a shared object, no bytes of its own, then ok); unsupported_inputs (the attribute stage
+    # finds that every declared input is an archive holding no file MS-DIAL opens, and the failed-lease record
+    # carries the exclusion disposition of the contract of 2026-10-15); unsupported_inputs_legacy (the same
+    # failure as an Interactive before the contract records it: no disposition)
     downloads: list[str] = field(default_factory=lambda: ["ok"])
     # run, split, skip, exclude, none, malformed; aif_hold (Interactive 0.5.31: a skip with hold true for a
     # multi-collision-energy AIF unit, aif_multi_ce_awaiting_console); aif_multi_ce (Interactive 0.5.34: such a unit
@@ -104,6 +107,33 @@ class UnitScript:
     no_order_record: bool = False
     # The warnings Interactive's guided plan validation raises (level warning; they stop nothing).
     plan_warnings: list[str] = field(default_factory=list)
+
+
+def unsupported_inputs_failure(unit: str, *, disposition: bool = True) -> dict[str, Any]:
+    """The download_failure Interactive's lease writes when its attribute stage finds that every declared analysis
+    input it lacks is a declared archive the extract stage expanded that holds no file MS-DIAL opens
+    (match_declared_inputs). With `disposition`, as the contract of 2026-10-15 has it (DeclaredInputsUnsupportedError:
+    retryable false and the exclude disposition); without, the plain ValueError of an Interactive before it."""
+    reason = (f"Analysis unit {unit} declares its analysis inputs, and 2 of its 2 declared analysis inputs are not in "
+              "the download: FILES/batch1.zip, FILES/batch2.zip; 2 of them were archives inside FILES that the extract "
+              "stage expanded, and none of the files they held is one MS-DIAL opens (.wiff: 24, .wiff.scan: 24). "
+              "Refusing to run it without them.")
+    record: dict[str, Any] = {
+        "reason": reason, "error_type": "DeclaredInputsUnsupportedError" if disposition else "ValueError",
+        "objects_completed": 1, "objects_declared": 1, "stage": "attribute",
+    }
+    if disposition:
+        record["retryable"] = False
+        record["disposition"] = {
+            "decision": "exclude", "reason": "declared_inputs_unsupported_format",
+            "inputs": [
+                {"declared": "FILES/batch1.zip", "archive": "FILES/batch1.zip", "files": 24,
+                 "suffixes": {".wiff": 12, ".wiff.scan": 12}},
+                {"declared": "FILES/batch2.zip", "archive": "FILES/batch2.zip", "files": 24,
+                 "suffixes": {".wiff": 12, ".wiff.scan": 12}},
+            ],
+        }
+    return record
 
 
 def _write(path: Path, value: Any) -> None:
@@ -330,6 +360,15 @@ class FakeInteractive:
                 self._update(manifest_path, lambda manifest: manifest.update(
                     status="download_failed", download_failure={"reason": error, "error_type": "ValueError"}))
                 job.update(status="failed", error=error)
+            elif outcome in ("unsupported_inputs", "unsupported_inputs_legacy"):
+                failure = unsupported_inputs_failure(job["unit"], disposition=outcome == "unsupported_inputs")
+                self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
+                # server.py: the job's error is str(error). Interactive 0.5.40, the contract's, also gives the job the
+                # lease's record verbatim as its download_failure (the disposition among it); an Interactive before
+                # the contract (the legacy outcome) gives the job none.
+                job.update(status="failed", error=failure["reason"])
+                if outcome == "unsupported_inputs":
+                    job["download_failure"] = json.loads(json.dumps(failure))
             else:
                 failure = dict(self.world.network_error["failure"])
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
