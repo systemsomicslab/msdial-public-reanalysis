@@ -363,8 +363,12 @@ class FakeInteractive:
             elif outcome in ("unsupported_inputs", "unsupported_inputs_legacy"):
                 failure = unsupported_inputs_failure(job["unit"], disposition=outcome == "unsupported_inputs")
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
-                # server.py: the job's error is str(error); the record and its disposition are the manifest's.
+                # server.py: the job's error is str(error). Interactive 0.5.40, the contract's, also gives the job the
+                # lease's record verbatim as its download_failure (the disposition among it); an Interactive before
+                # the contract (the legacy outcome) gives the job none.
                 job.update(status="failed", error=failure["reason"])
+                if outcome == "unsupported_inputs":
+                    job["download_failure"] = json.loads(json.dumps(failure))
             else:
                 failure = dict(self.world.network_error["failure"])
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))

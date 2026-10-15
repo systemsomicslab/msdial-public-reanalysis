@@ -14,6 +14,8 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -206,6 +208,45 @@ class LedgerStateTests(unittest.TestCase):
         with ledger.Ledger(empty) as book:
             book.create(world.campaign, world.approval, world.units, world.groups, "2026-10-15T00:00:00+00:00")
             self.assertEqual(book.campaign()["campaign_id"], "test-campaign")
+
+    def test_recorded_authorization_reads_the_campaigns_record_and_makes_no_ledger(self) -> None:
+        """What approve reads after an error to tell whether its approval was committed (review of 2026-10-15)."""
+        path = self.root / "none" / "ledger.sqlite"
+        self.assertEqual(ledger.recorded_authorization(path), "")
+        self.assertFalse(path.parent.exists(), "reading makes no file, nor its folder")
+        path.parent.mkdir()
+        ledger.Ledger(path).close()
+        self.assertEqual(ledger.recorded_authorization(path), "", "an empty ledger records no approval")
+        world = fakes.World(self.root / "w", ["u1"])
+        self.assertEqual(ledger.recorded_authorization(world.ledger_path), world.campaign["authorization_sha256"])
+        broken = self.root / "broken.sqlite"
+        broken.write_bytes(b"not a database " * 100)
+        with self.assertRaises(sqlite3.DatabaseError):
+            ledger.recorded_authorization(broken)
+
+    def test_create_records_its_events_in_its_own_transaction(self) -> None:
+        """approve's empty_ledger_approved goes into the ledger with the approval or not at all (review of
+        2026-10-15): a commit that fails loses both."""
+        world = fakes.World(self.root / "w", ["u1"])
+        path = self.root / "empty.sqlite"
+        ledger.Ledger(path).close()
+        events = [("empty_ledger_approved", {"approval_id": "approval-1"})]
+
+        def hook(at: str) -> None:
+            if at == "before":
+                raise sqlite3.OperationalError("disk I/O error")
+
+        with ledger.Ledger(path, commit_hook=hook) as book, self.assertRaises(sqlite3.OperationalError):
+            book.create(world.campaign, world.approval, world.units, world.groups, "2026-10-15T00:00:00+00:00",
+                        events=events)
+        self.assertEqual(ledger.ledger_state(path)["state"], ledger.LEDGER_EMPTY)
+        with ledger.Ledger(path) as book:
+            self.assertEqual(book.events(), [])
+            book.create(world.campaign, world.approval, world.units, world.groups, "2026-10-15T00:00:00+00:00",
+                        events=events)
+            self.assertEqual([(row["at"], row["unit_key"], json.loads(row["detail_json"]))
+                              for row in book.events("empty_ledger_approved")],
+                             [("2026-10-15T00:00:00+00:00", None, {"approval_id": "approval-1"})])
 
 
 if __name__ == "__main__":

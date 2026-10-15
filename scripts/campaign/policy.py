@@ -614,8 +614,8 @@ def network_failure(detail: Mapping[str, Any], outcome: str = "failed") -> bool:
 # failed, as any failure, though no download made again could change it. Where EVERY declared input missing from
 # the download is a declared archive that the extract stage expanded and that holds no file MS-DIAL opens, and no
 # declared input is found more than once, Interactive raises DeclaredInputsUnsupportedError and its failed-lease
-# record (the manifest's download_failure, which the machine passes as detail["failure"]) carries
-# "retryable": false and
+# record (the manifest's download_failure, which Interactive 0.5.40 also gives the download job verbatim as its own
+# download_failure; the machine passes either as detail["failure"]) carries "retryable": false and
 #     "disposition": {"decision": "exclude", "reason": "declared_inputs_unsupported_format",
 #                     "inputs": [{"declared", "archive", "files", "suffixes": {".ext": count}}, ...]}
 # Any other attribute failure (an input missing for another reason, an input found twice) carries no disposition

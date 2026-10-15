@@ -466,9 +466,11 @@ ledger, or only an empty one, it says the campaign has no approval yet and to
 approve it first, and exits with code 2, creating and writing nothing (`run`
 before it takes the campaign, locks the Catalog or starts a backend). `approve`
 takes an empty ledger as absent and records the approval into it (an
-`empty_ledger_approved` event says so), and `plan` does not refuse one; both
-still refuse a ledger that holds a campaign, an approval or a unit, or that
-cannot be read.
+`empty_ledger_approved` event, written in the approval's own transaction, says
+so), and `plan` does not refuse one; both still refuse a ledger that holds a
+campaign, an approval or a unit, or that cannot be read. Should `approve` meet
+an error, it reads the ledger again before it says nothing was recorded: an
+approval already committed keeps its `campaign-authorization.json`.
 
 A unit Interactive excludes at its download is excluded, not failed (the
 contract of 2026-10-15). Where every declared analysis input a download lacks is
@@ -476,7 +478,11 @@ a declared archive the extract stage expanded that holds no file MS-DIAL opens,
 the failed lease's `download_failure` carries `retryable` false and a
 `disposition` whose `decision` is `exclude`, with the reason
 `declared_inputs_unsupported_format` and the inputs (each declared path, its
-archive, how many files it held and their commonest suffixes). The runner then
+archive, how many files it held and their commonest suffixes); Interactive
+0.5.40 gives the download job the same record as its own `download_failure`,
+which the runner reads where the unit manifest has none. The runner reads only
+a record of the job it polls: one an earlier job's lease left in the manifest
+says nothing of a unit retried since. It then
 counts no failure and does not retry the unit; it ends `excluded` with that
 terminal reason and the inputs in its terminal detail, and its raw data are
 deleted under boundary 5 as for every other exclusion. `status` counts excluded

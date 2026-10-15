@@ -49,9 +49,11 @@ Interactive's decision and none the unit's failure: preflight_exclude (the raw-h
 download_blocked (Interactive refused the download before any byte) and declared_inputs_unsupported_format
 (policy.download_exclusion: the lease's attribute stage found that every declared analysis input it lacks is a
 declared archive whose files MS-DIAL opens none of, and its failed-lease record says decision "exclude"). The last
-is read wherever a download ends failed, from the job's poll (_download_ended) or, for a job the backend lost, from
-the unit manifest (_download_lost): nothing is counted, nothing is retried, and the discard deletes the unit's raw
-data under boundary 5 as for every exclusion. A failed lease whose record carries no such disposition (an
+is read wherever a download ends failed, from the job's poll (_download_ended: the record the job's lease wrote into
+the unit manifest, else the copy Interactive 0.5.40 gives the job as its download_failure) or, for a job the backend
+lost, from the unit manifest (_download_lost), and only from a record of this job's lease (a record an earlier job's
+lease left says nothing of a unit retried since): nothing is counted, nothing is retried, and the discard deletes the
+unit's raw data under boundary 5 as for every exclusion. A failed lease whose record carries no such disposition (an
 Interactive before the contract, or any other attribute failure) is a failure, retried as before. status counts
 the excluded units by reason (excluded_by_reason).
 
@@ -1287,10 +1289,13 @@ class Runner:
             return self._downloaded(unit, manifest_path)
         reason = self._cancel_reason(job_id)
         detail = {"job_id": job_id, "status": status, "error": job.get("error"), "stop_reason": job.get("stop_reason")}
-        # The lease's own record first; else a failure record the job itself carries, should Interactive pass the
-        # failed lease's download_failure (its disposition among it, the contract of 2026-10-15) on to the job.
-        failure = self._lease_failure(unit, job_id) or (
-            dict(job["failure"]) if isinstance(job.get("failure"), Mapping) else {})
+        # The lease's own record first; else the one the job itself carries. Interactive 0.5.40 (the contract of
+        # 2026-10-15) passes the failed lease's download_failure, its disposition among it, on to the job verbatim
+        # under that name, in the full record and in the summary alike; "failure" is read after it only as an older
+        # spelling. The job's copy matters where the manifest has none: a write of it the lease could not make, a
+        # manifest that cannot be read (review of 2026-10-15: reading "failure" alone missed every real job's).
+        carried = job.get("download_failure") if isinstance(job.get("download_failure"), Mapping) else job.get("failure")
+        failure = self._lease_failure(unit, job_id) or (dict(carried) if isinstance(carried, Mapping) else {})
         if failure:
             detail["failure"] = failure
         return self._download_ended(unit, status, reason, detail)
@@ -1419,6 +1424,18 @@ class Runner:
                 return True
             return False
         if status == "download_failed":
+            owner = str((manifest.get("lease_owner") or {}).get("job_id") or "")
+            if owner and owner != str(unit["download_job_id"] or ""):
+                # Another job's lease wrote this record (review of 2026-10-15), as _lease_failure reads it: a unit
+                # retried after its download failed or was excluded, its new job lost (or its poll unreadable)
+                # before that job's lease wrote the manifest. The record says nothing of this job, so it is neither
+                # this job's failure nor its exclusion; the lost job is an interruption, and an unreadable reply,
+                # whose job may still run, holds the unit.
+                if unreadable is not None:
+                    return self._unreadable_hold(unit, unreadable)
+                self._interrupted(unit, step="download", retry_state="handoff_ready",
+                                  detail={**detail, "status": status, "lease": f"a record of job {owner}'s lease"})
+                return True
             failure = manifest.get("download_failure") or {}
             reason = self._cancel_reason(unit["download_job_id"] or "")
             return self._download_ended(unit, "failed", reason, {**detail, "failure": failure})

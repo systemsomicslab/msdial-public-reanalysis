@@ -366,22 +366,42 @@ def command_approve(args: argparse.Namespace) -> int:
     }
     adopted = found["state"] == ledger.LEDGER_EMPTY
     note = ""
+    recorded = f"Approval {args.approval_id} of {digest} recorded for {len(units)} units; ledger {ledger_path}."
     try:
         with ledger.Ledger(ledger_path) as book:
-            book.create(campaign, approval, units, groups, approved_at)
+            events = []
             if adopted:
                 runner = book.runner()
-                book.event("empty_ledger_approved", approved_at, {
+                events.append(("empty_ledger_approved", {
                     "approval_id": args.approval_id,
                     "why": "the ledger held no campaign, no approval and no unit, as a runner before 2026-10-15 left one "
                            "when verify-env or run was given the campaign before its approval",
-                    "runner_paused": bool(runner["paused"]), "pause_kind": runner["pause_kind"]})
+                    "runner_paused": bool(runner["paused"]), "pause_kind": runner["pause_kind"]}))
                 note = (f" The ledger was already there, empty (an earlier runner's verify-env or run made it); the "
                         f"approval is recorded into it.")
                 if runner["paused"]:
                     note += (f" It records a {runner['pause_kind']} pause made before the approval ({runner['pause_reason']}); "
                              f"resume lifts it.")
+            # The event in create's own transaction (review of 2026-10-15): the approval and the note of the empty
+            # ledger it went into are committed together or not at all.
+            book.create(campaign, approval, units, groups, approved_at, events=events)
     except (ledger.LedgerError, sqlite3.Error) as error:
+        # Whether the approval was committed is read from the ledger, not assumed from where the error came: an
+        # error after create's COMMIT (closing the ledger) leaves the approval recorded, and the authorization record
+        # its campaign row names must then stay (review of 2026-10-15: deleting it left an approved ledger whose
+        # record was gone, reported as "nothing was recorded", which a second approve refuses and only a hand repairs).
+        try:
+            committed = ledger.recorded_authorization(ledger_path)
+        except (OSError, sqlite3.Error) as reading:
+            print(f"The approval could not be recorded in {ledger_path} ({error}), and the ledger could not be read "
+                  f"again to tell whether it was ({reading}). The authorization record {authorization_path} is left in "
+                  f"place; status --campaign {args.campaign} says whether the campaign is approved.", file=sys.stderr)
+            return EXIT_REFUSED
+        if committed == authorization.sha256:
+            print(recorded + note)
+            print(f"The approval is recorded, and its authorization record {authorization_path} stays; an error came "
+                  f"after it was committed: {error}.", file=sys.stderr)
+            return EXIT_OK
         # Nothing was recorded (create is one transaction): the authorization record written above goes too, unless
         # another approval has replaced it meanwhile.
         try:
@@ -391,7 +411,7 @@ def command_approve(args: argparse.Namespace) -> int:
             pass
         print(f"The approval could not be recorded in {ledger_path}: {error}; nothing was recorded.", file=sys.stderr)
         return EXIT_REFUSED
-    print(f"Approval {args.approval_id} of {digest} recorded for {len(units)} units; ledger {ledger_path}.{note}")
+    print(recorded + note)
     return EXIT_OK
 
 

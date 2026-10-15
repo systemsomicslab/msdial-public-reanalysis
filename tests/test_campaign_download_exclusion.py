@@ -121,23 +121,128 @@ class DownloadExclusionTests(Base):
         self.assertEqual(json.loads(lost["detail_json"])["job"], "not in the backend's registry")
         self.assertEqual(book.unit("u2")["state"], "done")
 
-    def test_a_disposition_the_job_itself_carries_is_read_where_the_manifest_has_none(self) -> None:
-        """Should Interactive pass the failed lease's record on to the job, the runner reads it there too."""
-        world = self.world()
-        world.scripts["u1"] = fakes.UnitScript(downloads=["unsupported_inputs"], ticks=10)
-        book = world.open()
-        self.addCleanup(book.close)
-        runner = world.runner(book)
+    def without_the_manifests_record(self, world: fakes.World, book: ledger.Ledger, runner: machine.Runner) -> dict:
+        """u1's download ends excluded and its manifest keeps no download_failure, as where the lease could not write
+        it (_record_download_failure swallows the error): the job's poll is then the only record. The job, as the
+        fakes give it, as Interactive 0.5.40 does."""
         self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "downloading")
         world.clock.sleep(30 * 20)
         world.interactive.settle()
         path = book.unit("u1")["manifest_path"]
         manifest = world.interactive.store.read(path)
-        failure = manifest.pop("download_failure")
+        manifest.pop("download_failure")
         world.interactive.store.write(path, manifest)
-        world.interactive.jobs[book.unit("u1")["download_job_id"]]["failure"] = failure
+        return world.interactive.jobs[book.unit("u1")["download_job_id"]]
+
+    def test_the_download_failure_the_job_itself_carries_is_read_where_the_manifest_has_none(self) -> None:
+        """Interactive 0.5.40 gives the download job the failed lease's record verbatim under the name
+        download_failure (server.py, and agent_bridge.summarize_job for a summary). Reading the job's "failure", a
+        key no Interactive writes, the runner counted such a unit as failed and fetched every byte again before it
+        excluded it (review of 2026-10-15)."""
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(downloads=["unsupported_inputs", "ok"], ticks=10)
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        job = self.without_the_manifests_record(world, book, runner)
+        self.assertEqual(job["download_failure"], fakes.unsupported_inputs_failure("u1"))
+        self.assertNotIn("failure", job, "the name Interactive 0.5.40 gives it, and no other")
         runner.run(until_idle=True, max_iterations=2000)
         self.assert_excluded(world, book, "u1")
+
+    def test_the_jobs_failure_is_read_as_an_older_spelling_of_its_download_failure(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(downloads=["unsupported_inputs", "ok"], ticks=10)
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        job = self.without_the_manifests_record(world, book, runner)
+        job["failure"] = job.pop("download_failure")
+        runner.run(until_idle=True, max_iterations=2000)
+        self.assert_excluded(world, book, "u1")
+
+    def test_with_no_record_in_the_manifest_or_the_job_the_download_is_the_units_failure(self) -> None:
+        """What the two tests above come to without the job's record: a failure, counted and retried."""
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(downloads=["unsupported_inputs", "ok"], ticks=10)
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        job = self.without_the_manifests_record(world, book, runner)
+        job.pop("download_failure")
+        runner.run(until_idle=True, max_iterations=2000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"]), ("done", 1))
+        self.assertEqual(world.interactive.download_starts.count("u1"), 2)
+
+    def retried_after_its_exclusion(self) -> tuple[fakes.World, ledger.Ledger, machine.Runner, str, str]:
+        """u1 excluded in a campaign that keeps raw data, so its manifest keeps the first job's lease's excluding
+        record; an operator's retry starts a second job, and the manifest is put back as it was, as where that job is
+        still queued and its lease has written nothing. (world, ledger, runner, first job, second job)."""
+        world = self.world(retention="keep", covers=("1", "3", "4", "split"))
+        world.scripts["u1"] = fakes.UnitScript(downloads=["unsupported_inputs", "ok", "ok"], ticks=10)
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        runner.run(until_idle=True, max_iterations=2000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["raw_disposition"]), ("excluded", "kept"))
+        first = unit["download_job_id"]
+        path = unit["manifest_path"]
+        stale = world.interactive.store.read(path)
+        self.assertEqual((stale["status"], stale["lease_owner"]["job_id"]), ("download_failed", first))
+        book.add_request("retry", "u1", "the repository replaced the archives", "Test Person",
+                         policy.iso(world.clock.now()))
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "downloading")
+        second = book.unit("u1")["download_job_id"]
+        self.assertNotEqual(second, first)
+        world.interactive.store.write(path, stale)
+        return world, book, runner, first, second
+
+    def test_an_earlier_jobs_exclusion_does_not_end_a_retried_unit_whose_job_is_lost(self) -> None:
+        """Review of 2026-10-15: _download_lost read the manifest's download_failed record without asking whose lease
+        wrote it, so a retried unit whose new job the backend lost was excluded again on the first job's record,
+        with nothing downloaded. The record of another job's lease says nothing of this one: the lost job is an
+        interruption, retried without counting."""
+        world, book, runner, first, second = self.retried_after_its_exclusion()
+        del world.interactive.jobs[second]
+        runner.run(until_idle=True, max_iterations=4000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"], unit["interruptions"]), ("done", 0, 1))
+        self.assertEqual(world.interactive.download_starts.count("u1"), 3, "fetched again, not excluded again")
+        lost = [row for row in book.attempts("u1")
+                if row["step"] == "download" and json.loads(row["detail_json"]).get("job_id") == second]
+        self.assertEqual([(row["step"], row["outcome"], row["counted"]) for row in lost],
+                         [("download", "interrupted", 0)])
+        self.assertIn(first, json.loads(lost[0]["detail_json"])["lease"])
+        self.assertEqual(len([row for row in book.attempts("u1") if row["outcome"] == "blocked"]), 1,
+                         "only the first job's exclusion")
+
+    def test_an_earlier_jobs_exclusion_does_not_end_a_retried_unit_whose_poll_cannot_be_read(self) -> None:
+        """The same record read for a poll whose reply does not parse, while the new job may still run: the unit is
+        held at downloading (contract_held), neither excluded nor discarded, and the recheck reads the job's end."""
+        world, book, runner, _first, second = self.retried_after_its_exclusion()
+        original = world.interactive.job
+        broken = {"now": True}
+
+        def job(job_id: str) -> dict:
+            if broken["now"] and job_id == second:
+                return {"ok": False, "reason": "validation_error", "error_type": "JSONDecodeError",
+                        "detail": "Expecting value: line 1 column 1 (char 0)"}
+            return original(job_id)
+
+        world.interactive.job = job
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] != "downloading")
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["resume_state"]), ("contract_held", "downloading"))
+        self.assertEqual((unit["failures"], unit["interruptions"], unit["terminal_reason"]), (0, 0, None))
+        self.assertEqual([name for name, _arguments in world.interactive.calls if name == "discard"], [],
+                         "nothing is discarded")
+        broken["now"] = False
+        runner.run(until_idle=True, max_iterations=4000)
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"]), ("done", 0))
+        self.assertEqual(world.interactive.download_starts.count("u1"), 2, "the second job's own end is read")
 
     def test_the_campaign_that_keeps_raw_data_keeps_an_excluded_units(self) -> None:
         world = self.world(retention="keep", covers=("1", "3", "4", "split"))

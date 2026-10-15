@@ -871,6 +871,89 @@ class PlanTests(unittest.TestCase):
         self.assertIn("cannot be read", err)
         self.assertFalse((directory / "campaign-authorization.json").exists())
 
+    def assert_approval_stands(self, directory: Path, digest: str, events: int) -> None:
+        """The ledger holds the approval, and campaign-authorization.json is the record its campaign row names."""
+        authorization = directory / "campaign-authorization.json"
+        self.assertTrue(authorization.is_file(), "the authorization record the ledger names stays")
+        with ledger.Ledger(directory / "ledger.sqlite") as book:
+            self.assertEqual(book.campaign()["manifest_digest"], digest)
+            self.assertEqual(book.campaign()["authorization_sha256"], ports.sha256_file(authorization))
+            self.assertEqual(book.campaign()["authorization_path"], str(authorization))
+            self.assertEqual(len(book.events("empty_ledger_approved")), events)
+
+    @staticmethod
+    def create_failing(phase: str):
+        """Ledger.create, with its transaction's commit raising a disk error "before" its COMMIT (rolled back) or
+        "after" it (committed)."""
+        original = ledger.Ledger.create
+
+        def create(book, *arguments, **options):
+            def hook(at: str) -> None:
+                if at == phase:
+                    raise sqlite3.OperationalError("disk I/O error")
+
+            book.commit_hook = hook
+            return original(book, *arguments, **options)
+
+        return create
+
+    def test_approve_records_the_empty_ledgers_event_with_its_approval_or_nothing(self) -> None:
+        """Review of 2026-10-15: approve wrote empty_ledger_approved in a transaction of its own after create had
+        committed, and took a failure of that write for an approval that recorded nothing. It deleted
+        campaign-authorization.json, which the committed ledger names, said "nothing was recorded", and a second
+        approve was refused. The event is now in create's transaction, and an error is weighed against what the
+        ledger holds."""
+        # The failure the review made: Ledger.event refusing. approve no longer writes through it.
+        directory, digest = self.plan_approvable("c-event")
+        ledger.Ledger(directory / "ledger.sqlite").close()
+        with mock.patch.object(ledger.Ledger, "event", side_effect=sqlite3.OperationalError("database is locked")):
+            code, out, err = self.approve("c-event", digest)
+        self.assertEqual(code, 0, err)
+        self.assertIn("The ledger was already there, empty", out)
+        self.assert_approval_stands(directory, digest, events=1)
+
+        # A failure inside create's transaction: the approval and its event are rolled back together.
+        directory, digest = self.plan_approvable("c-rollback")
+        path = directory / "ledger.sqlite"
+        ledger.Ledger(path).close()
+        with mock.patch.object(ledger.Ledger, "create", self.create_failing("before")):
+            code, out, err = self.approve("c-rollback", digest)
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("disk I/O error; nothing was recorded", err)
+        self.assertEqual(out, "")
+        self.assertEqual(ledger.ledger_state(path)["state"], ledger.LEDGER_EMPTY)
+        with ledger.Ledger(path) as book:
+            self.assertEqual(book.events(), [], "the event went with the approval")
+        self.assertFalse((directory / "campaign-authorization.json").exists())
+        code, _out, err = self.approve("c-rollback", digest)
+        self.assertEqual(code, 0, err)
+        self.assert_approval_stands(directory, digest, events=1)
+
+        # An error after create's COMMIT: the approval stands, its record with it, and approve says so.
+        directory, digest = self.plan_approvable("c-after")
+        ledger.Ledger(directory / "ledger.sqlite").close()
+        with mock.patch.object(ledger.Ledger, "create", self.create_failing("after")):
+            code, out, err = self.approve("c-after", digest)
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Approval A1 of {digest} recorded for 3 units", out)
+        self.assertIn("an error came after it was committed: disk I/O error", err)
+        self.assertNotIn("nothing was recorded", err)
+        self.assert_approval_stands(directory, digest, events=1)
+        code, _out, err = self.approve("c-after", digest, "A2")
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("already has a ledger and an approval", err)
+        self.assert_approval_stands(directory, digest, events=1)
+
+        # Where the ledger cannot be read again to tell, the authorization record is left as it is.
+        directory, digest = self.plan_approvable("c-unknown")
+        unreadable = sqlite3.OperationalError("database is locked")
+        with mock.patch.object(ledger.Ledger, "create", self.create_failing("before")), \
+                mock.patch.object(ledger, "recorded_authorization", side_effect=unreadable):
+            code, _out, err = self.approve("c-unknown", digest)
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn("could not be read again to tell whether it was (database is locked)", err)
+        self.assertTrue((directory / "campaign-authorization.json").is_file(), "left in place")
+
     def test_a_correction_split_by_ion_mode_is_said_first_in_the_plan(self) -> None:
         profile = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "existing"},
                    "by_ion_mode": {"Positive": {"execute_automatic_rt_correction": True}}}
