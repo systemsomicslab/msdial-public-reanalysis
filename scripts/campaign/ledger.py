@@ -19,6 +19,13 @@ whatever code writes here:
 - one Console at a time: the console_slot row is a singleton and cannot be taken over while held;
 - a terminal state carries its reason, and a waiting state what it resumes and when;
 - one campaign per ledger, whose approval is of that campaign's manifest digest.
+
+ONLY APPROVE MAKES A LEDGER (2026-10-15). Opening a Ledger creates its file when there is none. On 2026-10-15
+`verify-env` run before `approve` did exactly that: it left a ledger.sqlite holding the schema and its first rows
+and no campaign, `approve` then refused the campaign as already approved, and the scheduled task's `run` made
+the same empty file again at every restart. So every command but approve reads ledger_state first and opens no
+ledger that is absent or empty, and approve takes an empty one (no campaign, no approval, no unit) as absent
+and approves into it; create refuses, in its own transaction, a ledger that holds any of the three.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
+from urllib.parse import quote
 
 # 2 (2026-10-02): the gate_held and contract_held states, the recheck_held request and the gate verdict's
 # blocking unevaluated checks; and (2026-10-03) the backend and outage pauses and a pilot's pool. 3 (2026-10-07):
@@ -393,6 +401,54 @@ class LedgerError(RuntimeError):
     """A write the ledger refused: a stale transition, an unknown column, a missing approval."""
 
 
+# What a campaign's ledger.sqlite holds, as ledger_state reads it. absent: no file. empty: a file with no campaign,
+# no approval and no unit, the empty ledger a runner before 2026-10-15 made when verify-env or run opened a
+# campaign not yet approved (or one approve began and did not finish). held: a campaign, an approval or a unit.
+# unreadable: a file SQLite cannot read as a ledger, which nothing takes as empty.
+LEDGER_ABSENT, LEDGER_EMPTY, LEDGER_HELD, LEDGER_UNREADABLE = "absent", "empty", "held", "unreadable"
+# The rows that make a ledger a campaign's: with none of them it is empty, whatever the schema and the first rows
+# opening it wrote (meta, runner, console_slot). Every other table's rows name a unit, or are written only by a
+# runner that has read the campaign.
+LEDGER_CAMPAIGN_TABLES = ("campaign", "approval", "unit")
+
+
+def ledger_state(path: str | Path) -> dict[str, Any]:
+    """{"state", "rows", "detail"} for the ledger file at `path`, read without creating or changing it.
+
+    `state` is LEDGER_ABSENT, LEDGER_EMPTY, LEDGER_HELD or LEDGER_UNREADABLE; `rows` counts the campaign, approval
+    and unit rows; `detail` says why a file is unreadable. A Ledger is never opened here: opening one creates its
+    file, writes its schema and brings an older schema up to date. The file is opened by a URI that never creates
+    one (mode=rw, which also lets SQLite remove the -wal and -shm files it opens beside a WAL ledger when it
+    closes; mode=ro where the file cannot be opened for writing), and only read."""
+    location = Path(path)
+    if not location.is_file():
+        return {"state": LEDGER_ABSENT, "rows": {}, "detail": ""}
+    uri = f"file:{quote(location.resolve().as_posix(), safe='/:')}"
+    try:
+        try:
+            connection = sqlite3.connect(f"{uri}?mode=rw", uri=True, timeout=30.0)
+        except sqlite3.OperationalError:
+            connection = sqlite3.connect(f"{uri}?mode=ro", uri=True, timeout=30.0)
+    except sqlite3.Error as error:
+        return {"state": LEDGER_UNREADABLE, "rows": {}, "detail": f"{type(error).__name__}: {error}"}
+    try:
+        tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        rows = {table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) if table in tables else 0
+                for table in LEDGER_CAMPAIGN_TABLES}
+    except sqlite3.Error as error:
+        return {"state": LEDGER_UNREADABLE, "rows": {}, "detail": f"{type(error).__name__}: {error}"}
+    finally:
+        connection.close()
+    return {"state": LEDGER_HELD if any(rows.values()) else LEDGER_EMPTY, "rows": rows, "detail": ""}
+
+
+def describe_rows(rows: Mapping[str, int]) -> str:
+    """'1 campaign, 1 approval and 3 units', as ledger_state counted them."""
+    words = [f"{int(rows.get(table) or 0)} {table}{'' if int(rows.get(table) or 0) == 1 else 's'}"
+             for table in LEDGER_CAMPAIGN_TABLES]
+    return ", ".join(words[:-1]) + " and " + words[-1]
+
+
 class ApprovalMissing(LedgerError):
     """A boundary was to be crossed with no live approval covering it."""
 
@@ -537,7 +593,16 @@ class Ledger:
         groups: list[dict[str, Any]],
         now: str,
     ) -> None:
+        """Record the approved campaign, its approval, its download groups and its units, each unit pending.
+
+        Only into a ledger that holds no campaign, no approval and no unit, checked in the same transaction (an
+        empty ledger an earlier runner made is approved into; 2026-10-15). The triggers refuse a second campaign
+        too, but not units of no campaign."""
         with self.transaction() as db:
+            held = {table: int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in LEDGER_CAMPAIGN_TABLES}
+            if any(held.values()):
+                raise LedgerError(f"This ledger already holds {describe_rows(held)}; a campaign is recorded only into "
+                                  "an empty one.")
             db.execute(
                 "INSERT INTO campaign(campaign_id, created_at, pool, manifest_path, manifest_digest, "
                 "analysis_purpose, workspace_root, raw_retention_policy, catalog_database, authorization_path, "

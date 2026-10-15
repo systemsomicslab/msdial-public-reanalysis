@@ -35,6 +35,24 @@ THE ORDER OF USE
         AIF (multi_ce_aif_with_console_825).
         Every request is acted on by the runner that holds the campaign; with none running, by the next run.
 
+ONLY APPROVE MAKES A LEDGER (2026-10-15). Every other command (run, verify-env, status, export, pause, resume, skip,
+retry, release-held, recheck-held, revoke) reads the campaign's ledger.sqlite without opening it first: where there
+is none, or only an empty one (no campaign, no approval and no unit), it says the campaign has no approval yet,
+approve first, and exits 2 (refused), creating and writing nothing, run before it takes the campaign, locks the
+Catalog or starts a backend. On 2026-10-15 verify-env run before approve made such an empty ledger, approve then
+refused the campaign as already approved, and the scheduled task's run made the file again at every restart.
+approve takes an empty ledger as absent and records the approval into it (an empty_ledger_approved event says so);
+it still refuses a ledger that holds a campaign, an approval or a unit, or one it cannot read, and so does plan.
+
+A UNIT INTERACTIVE EXCLUDES AT ITS DOWNLOAD (the contract of 2026-10-15). Where every declared analysis input a
+download lacks is a declared archive the extract stage expanded that holds no file MS-DIAL opens, Interactive's
+failed-lease record carries retryable false and disposition {"decision": "exclude", "reason":
+"declared_inputs_unsupported_format", "inputs": [...]}. The runner then ends the unit excluded, not failed: no
+failure is counted, it is not retried, its raw data are deleted under boundary 5 as for every exclusion, and its
+terminal reason is declared_inputs_unsupported_format with the inputs as Interactive gave them (status counts the
+excluded units by reason, excluded_by_reason). A failure without a disposition, as an Interactive before the
+contract records every one, is retried and fails as before.
+
 A UNIT STOPS, NEVER THE RUNNER (the user's rule of 2026-10-02). A gate verdict, a failure or a hold stops
 one unit's analysis, and the runner goes on with the others. A unit is held, unrun and uncounted with its
 raw data kept, when the before-production gate gives no usable report (gate_held), or when Interactive
@@ -118,9 +136,9 @@ WHAT IT NEVER DOES
   and the user's to set up; `schedule-command` prints the commands (or, with --xml-out, writes the task
   definition to a file) and registers nothing.
 
-Exit codes: 0 ok, 2 refused (digest mismatch, missing or revoked approval, a manifest that cannot be
-approved), 3 unusable environment (a checkout, the Console, the extractor, a library or the backend), 5 the
-campaign lock is held by another runner.
+Exit codes: 0 ok, 2 refused (digest mismatch, missing or revoked approval, a campaign with no ledger or only an
+empty one among them, a manifest that cannot be approved), 3 unusable environment (a checkout, the Console, the
+extractor, a library or the backend), 5 the campaign lock is held by another runner.
 """
 
 from __future__ import annotations
@@ -168,10 +186,37 @@ def _print(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True, default=str))
 
 
+class Unapproved(Exception):
+    """The campaign has no approval yet: no ledger, or an empty one. main says so and exits EXIT_REFUSED."""
+
+
+def _approved_ledger(args: argparse.Namespace) -> Path:
+    """The campaign's ledger, for every command but plan and approve, which opens no ledger that does not hold the
+    campaign (2026-10-15): opening one creates its file, and the empty ledger verify-env made before approve then
+    stopped approve. Unapproved where there is none, or only an empty one (no campaign, no approval and no unit, as
+    a runner before this one made it); nothing is created or written then. A ledger that holds the campaign is
+    returned, and so is a file SQLite cannot read, which the command then opens and fails on as before."""
+    from campaign import ledger
+
+    path = _campaign_directory(args.workspace_root, args.campaign) / "ledger.sqlite"
+    found = ledger.ledger_state(path)
+    first = (f"approve it first (campaign-runner.py approve --campaign {args.campaign} --digest ..., once the person "
+             f"has approved that digest)")
+    if found["state"] == ledger.LEDGER_ABSENT:
+        raise Unapproved(f"Campaign {args.campaign} has no approval yet: there is no ledger at {path}; {first}. "
+                         f"Nothing was created.")
+    if found["state"] == ledger.LEDGER_EMPTY:
+        raise Unapproved(f"Campaign {args.campaign} has no approval yet: its ledger at {path} holds no campaign, no "
+                         f"approval and no unit (a runner before 2026-10-15 made it when verify-env or run was given the "
+                         f"campaign before its approval); {first}, which records the approval into it. Nothing was "
+                         f"written to it.")
+    return path
+
+
 # ---- plan -----------------------------------------------------------------------------------------------
 
 def command_plan(args: argparse.Namespace) -> int:
-    from campaign import plan, policy, ports
+    from campaign import ledger, plan, policy, ports
 
     catalog_path = Path(args.catalog) if args.catalog else _default_catalog()
     out = Path(args.out) if args.out else None
@@ -181,8 +226,12 @@ def command_plan(args: argparse.Namespace) -> int:
     else:
         directory = out or _campaign_directory(args.workspace_root, args.campaign)
         manifest_path = directory / "campaign-manifest.json"
-    if (directory / "ledger.sqlite").exists():
-        print(f"Campaign {args.campaign} is already approved; its manifest is not replaced.", file=sys.stderr)
+    # An empty ledger (no campaign, no approval, no unit: one a runner before 2026-10-15 made) approves nothing, so
+    # it does not stop a new plan; one that cannot be read is not taken for empty.
+    found = ledger.ledger_state(directory / "ledger.sqlite")
+    if found["state"] in (ledger.LEDGER_HELD, ledger.LEDGER_UNREADABLE):
+        print(f"Campaign {args.campaign} is already approved; its manifest is not replaced"
+              + (f" (its ledger cannot be read: {found['detail']})." if found["detail"] else "."), file=sys.stderr)
         return EXIT_REFUSED
     libraries: dict[str, str] = {}
     if args.resources:
@@ -260,13 +309,25 @@ def _default_catalog() -> Path:
 # ---- approve --------------------------------------------------------------------------------------------
 
 def command_approve(args: argparse.Namespace) -> int:
+    import sqlite3
+
     from campaign import ledger, plan, ports
     from msdial_app.campaign_authorization import CampaignAuthorization, CampaignAuthorizationError
 
     directory = _campaign_directory(args.workspace_root, args.campaign)
     manifest_path = directory / "campaign-manifest.json"
-    if (directory / "ledger.sqlite").exists():
-        print(f"Campaign {args.campaign} already has a ledger and an approval.", file=sys.stderr)
+    ledger_path = directory / "ledger.sqlite"
+    # An empty ledger (no campaign, no approval and no unit) is taken as absent and approved into (2026-10-15): a
+    # runner before this one made one whenever verify-env or run was given the campaign before its approval, and
+    # it then refused the approval for good. One that holds any of the three, or cannot be read, is refused.
+    found = ledger.ledger_state(ledger_path)
+    if found["state"] == ledger.LEDGER_HELD:
+        print(f"Campaign {args.campaign} already has a ledger and an approval: {ledger_path} holds "
+              f"{ledger.describe_rows(found['rows'])}.", file=sys.stderr)
+        return EXIT_REFUSED
+    if found["state"] == ledger.LEDGER_UNREADABLE:
+        print(f"Campaign {args.campaign} has a ledger at {ledger_path} that cannot be read ({found['detail']}); it is "
+              f"not taken for an empty one, and nothing was recorded.", file=sys.stderr)
         return EXIT_REFUSED
     manifest, digest = plan.read_manifest(manifest_path)
     if digest != args.digest:
@@ -303,9 +364,34 @@ def command_approve(args: argparse.Namespace) -> int:
         "approval_id": args.approval_id, "manifest_digest": digest, "approved_by": args.by,
         "approved_at": approved_at, "statement": args.statement, "covers": covers,
     }
-    with ledger.Ledger(directory / "ledger.sqlite") as book:
-        book.create(campaign, approval, units, groups, approved_at)
-    print(f"Approval {args.approval_id} of {digest} recorded for {len(units)} units; ledger {directory / 'ledger.sqlite'}.")
+    adopted = found["state"] == ledger.LEDGER_EMPTY
+    note = ""
+    try:
+        with ledger.Ledger(ledger_path) as book:
+            book.create(campaign, approval, units, groups, approved_at)
+            if adopted:
+                runner = book.runner()
+                book.event("empty_ledger_approved", approved_at, {
+                    "approval_id": args.approval_id,
+                    "why": "the ledger held no campaign, no approval and no unit, as a runner before 2026-10-15 left one "
+                           "when verify-env or run was given the campaign before its approval",
+                    "runner_paused": bool(runner["paused"]), "pause_kind": runner["pause_kind"]})
+                note = (f" The ledger was already there, empty (an earlier runner's verify-env or run made it); the "
+                        f"approval is recorded into it.")
+                if runner["paused"]:
+                    note += (f" It records a {runner['pause_kind']} pause made before the approval ({runner['pause_reason']}); "
+                             f"resume lifts it.")
+    except (ledger.LedgerError, sqlite3.Error) as error:
+        # Nothing was recorded (create is one transaction): the authorization record written above goes too, unless
+        # another approval has replaced it meanwhile.
+        try:
+            if ports.sha256_file(authorization_path) == authorization.sha256:
+                authorization_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        print(f"The approval could not be recorded in {ledger_path}: {error}; nothing was recorded.", file=sys.stderr)
+        return EXIT_REFUSED
+    print(f"Approval {args.approval_id} of {digest} recorded for {len(units)} units; ledger {ledger_path}.{note}")
     return EXIT_OK
 
 
@@ -318,7 +404,8 @@ class Environment:
         from campaign import ledger, policy, ports
 
         self.directory = _campaign_directory(args.workspace_root, args.campaign)
-        self.ledger = ledger.Ledger(self.directory / "ledger.sqlite")
+        # Never a ledger made here (2026-10-15): Unapproved, before anything is opened, for a campaign not approved.
+        self.ledger = ledger.Ledger(_approved_ledger(args))
         self.campaign = self.ledger.campaign()
         self.policy = policy.CampaignPolicy.from_dict(self.campaign["policy"])
         pins = self.campaign["pins"]
@@ -453,12 +540,11 @@ def _no_work_left(args: argparse.Namespace) -> int | None:
 
     The Catalog lock is the exception (2026-10-07 round 3): the only code that releases a lock this campaign's
     runner left when it died is `run`'s, before it takes the lock, so a finished campaign releases it here too.
-    A lock that cannot be checked is EXIT_ENVIRONMENT."""
+    A lock that cannot be checked is EXIT_ENVIRONMENT. A campaign not approved yet (no ledger, or an empty one) is
+    Unapproved, raised before any ledger is opened or made (2026-10-15)."""
     from campaign import ledger, machine
 
-    path = _campaign_directory(args.workspace_root, args.campaign) / "ledger.sqlite"
-    if not path.is_file():
-        return None
+    path = _approved_ledger(args)
     with ledger.Ledger(path) as book:
         if machine.remaining_work(book):
             return None
@@ -484,7 +570,8 @@ def command_run(args: argparse.Namespace) -> int:
 
     # Before the runner lock, the Catalog lock and the backend (2026-10-07 review of PR #30): the scheduled task
     # starts a runner every hour, and each one on a finished campaign used to lock the Catalog and start a
-    # backend that nothing then stopped. It still releases a Catalog lock this campaign's dead runner left.
+    # backend that nothing then stopped. It still releases a Catalog lock this campaign's dead runner left. A campaign
+    # not approved yet is refused there, before any ledger is opened or made (2026-10-15).
     finished = _no_work_left(args)
     if finished is not None:
         return finished
@@ -566,12 +653,11 @@ def command_run(args: argparse.Namespace) -> int:
 # ---- the ledger's other commands ------------------------------------------------------------------------
 
 def _open(args: argparse.Namespace):
+    """The approved campaign's ledger for status, export, pause, resume, revoke and the requests; Unapproved, with
+    nothing opened or made, for a campaign that has none or only an empty one (2026-10-15)."""
     from campaign import ledger
 
-    path = _campaign_directory(args.workspace_root, args.campaign) / "ledger.sqlite"
-    if not path.is_file():
-        raise FileNotFoundError(f"Campaign {args.campaign} has no ledger at {path}; approve it first.")
-    return ledger.Ledger(path)
+    return ledger.Ledger(_approved_ledger(args))
 
 
 def command_status(args: argparse.Namespace) -> int:
@@ -974,6 +1060,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--- {_now()} campaign-runner.py {' '.join(sys.argv[1:] if argv is None else argv)}")
     try:
         return int(args.handler(args))
+    except Unapproved as error:
+        # A missing approval is a refusal (exit 2), whichever command met it; nothing was created or written.
+        print(str(error), file=sys.stderr)
+        return EXIT_REFUSED
     except FileNotFoundError as error:
         print(str(error), file=sys.stderr)
         return EXIT_ENVIRONMENT

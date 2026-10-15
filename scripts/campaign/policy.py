@@ -59,6 +59,12 @@ such a unit instead (HOLD_CE_DIFFERS); an operator's recheck-held decides it aga
 runner says why it ran (energy_sets_differ): the unit's status warning and status's
 multi_energy_aif_runs.energy_sets_differ.
 
+AN EXCLUSION AT THE DOWNLOAD (the contract of 2026-10-15). Where every declared analysis input a download lacks is
+a declared archive the extract stage expanded that holds no file MS-DIAL opens, Interactive's failed-lease record
+says so itself: retryable false and a disposition whose decision is "exclude", reason
+declared_inputs_unsupported_format (download_exclusion). The unit is then excluded, not failed: nothing counted,
+no retry, its raw data deleted as an excluded unit's are. A failure without that disposition is the unit's.
+
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
 msdial-campaign-disposition.v1); read_disposition only reads and checks it. A second mapping of
@@ -601,6 +607,40 @@ def network_failure(detail: Mapping[str, Any], outcome: str = "failed") -> bool:
         return True
     text, types = _failure_texts(detail)
     return bool(types & _NETWORK_TYPES) or bool(_NETWORK_TEXT.search(text))
+
+
+# Interactive's exclusion of a unit at its download's attribute stage (the contract agreed on 2026-10-15). Before
+# it, such a unit's lease ended download_failed with a plain ValueError, which the runner retried twice and then
+# failed, as any failure, though no download made again could change it. Where EVERY declared input missing from
+# the download is a declared archive that the extract stage expanded and that holds no file MS-DIAL opens, and no
+# declared input is found more than once, Interactive raises DeclaredInputsUnsupportedError and its failed-lease
+# record (the manifest's download_failure, which the machine passes as detail["failure"]) carries
+# "retryable": false and
+#     "disposition": {"decision": "exclude", "reason": "declared_inputs_unsupported_format",
+#                     "inputs": [{"declared", "archive", "files", "suffixes": {".ext": count}}, ...]}
+# Any other attribute failure (an input missing for another reason, an input found twice) carries no disposition
+# and stays a failure, retried as any other; so does every failure an Interactive before the contract records.
+DOWNLOAD_EXCLUDE = "exclude"
+DECLARED_INPUTS_UNSUPPORTED = "declared_inputs_unsupported_format"
+# The terminal reason of an exclusion whose disposition names none (never written by the agreed contract).
+DOWNLOAD_EXCLUDE_UNSTATED = "download_exclude"
+
+
+def download_exclusion(detail: Mapping[str, Any]) -> dict[str, Any] | None:
+    """{"reason", "inputs"} when Interactive's failed-lease record excludes the unit, else None.
+
+    `detail` is what the machine passes for an ended download: the job's record with the lease's
+    download_failure under "failure". Only a disposition whose decision is "exclude" is read; the reason and the
+    inputs are kept as Interactive gave them (the machine redacts them as every detail it records). A disposition
+    of another decision is not this contract's, and the failure is then the unit's, as before it."""
+    failure = detail.get("failure")
+    disposition = failure.get("disposition") if isinstance(failure, Mapping) else None
+    if not isinstance(disposition, Mapping) or disposition.get("decision") != DOWNLOAD_EXCLUDE:
+        return None
+    reason = str(disposition.get("reason") or "").strip() or DOWNLOAD_EXCLUDE_UNSTATED
+    inputs = disposition.get("inputs")
+    return {"reason": reason, "inputs": [dict(item) if isinstance(item, Mapping) else item for item in inputs]
+            if isinstance(inputs, list) else []}
 
 
 # ---- stalls -----------------------------------------------------------------------------------------
