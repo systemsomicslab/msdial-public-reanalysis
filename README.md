@@ -79,6 +79,24 @@ explicit trust decision in Claude Code. Audit outputs under `feedback/` and
 generated status pages under `reports/` are also local by default; only the
 review template is version controlled.
 
+### Skills
+
+This repository keeps one skill, `msdial-repository-batch`, for repository
+batches.
+
+The laboratory lipidomics skill, `msdial-lipidomics-workflow` (internal
+standards, normalization to concentration, and the positive/negative merge),
+has moved to MS-DIAL Interactive, which is now its canonical home:
+`skills/msdial-lipidomics-workflow/` in
+[systemsomicslab/msdial-interactive-app](https://github.com/systemsomicslab/msdial-interactive-app),
+since [msdial-interactive-app#74](https://github.com/systemsomicslab/msdial-interactive-app/pull/74).
+Interactive's setup script (`Setup MS-DIAL for Claude.cmd`, or
+`scripts/setup_claude.py`) installs it into `~/.claude/skills/` for Claude Code
+and packages it for Claude Desktop, and its tutorial is
+`docs/tutorials/lab-lipidomics.md` there. A copy installed earlier as a link to
+this repository's `.claude/skills/msdial-lipidomics-workflow` no longer resolves
+once this checkout is updated; run Interactive's setup script to replace it.
+
 ## Safety boundary
 
 Metadata inspection and dry-run planning may proceed without a download. The
