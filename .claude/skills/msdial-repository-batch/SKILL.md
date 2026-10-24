@@ -25,10 +25,16 @@ For a repository range:
 2. Verify both MCP servers and report their tool surfaces.
 3. Query the local Catalog for every requested accession and enumerate analysis
    units. Report missing accessions.
-4. Use `D:\13_MSDIAL_Public_Reanalysis\analysis` explicitly as
-   `workspace_root` for every
-   repository plan and download preview. Never derive it from the Claude project
-   directory.
+4. Use the workspace root chosen for this campaign explicitly as
+   `workspace_root` for every repository plan and download preview. The root is
+   chosen per campaign and never assumed: ask the user which root it is when it
+   has not been named, and get their explicit confirmation of it before the
+   first download. `D:\13_MSDIAL_Public_Reanalysis\analysis` is the archive of
+   the pilots and preflights, not a default for new work. Never derive the root
+   from the Claude project directory, and never use one on C:, in the user
+   profile, in a temporary folder, or inside a code checkout. The Interactive
+   MCP server refuses a root outside its configured
+   `MSDIAL_REPOSITORY_WORKSPACE_ROOT`; report that rather than working around it.
 5. Classify units as eligible, excluded, or requiring review using the supported
    scope in `CLAUDE.md`: untargeted LC-MS/MS acquired by DDA or DIA/AIF/SWATH.
    If acquisition is unknown, require raw-header preflight; never guess DDA.

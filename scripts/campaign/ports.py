@@ -1174,6 +1174,8 @@ def backend_creation_flags() -> int:
 # back to "child", recording why.
 BACKEND_LAUNCH_METHODS = ("auto", "wmi", "child")
 BACKEND_BROKER = Path(__file__).resolve().with_name("backend_launch.py")
+# The campaign's workspace root, in the backend's environment as in an MCP server's (Interactive's boundary).
+WORKSPACE_ROOT_VARIABLE = "MSDIAL_REPOSITORY_WORKSPACE_ROOT"
 
 
 class BackendLaunchError(Exception):
@@ -1305,6 +1307,41 @@ def listening_pid(port: int) -> int | None:
     except Exception:  # noqa: BLE001 - ImportError, AccessDenied: not knowable here
         return None
     return None
+
+
+def process_environment(pid: Any) -> dict[str, str] | None:
+    """A running process's environment block, if psutil can read it (on Windows from the process's memory, which a
+    process of the same user allows). None: not knowable here (no psutil, no such process, access denied)."""
+    if not pid:
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        return {str(key): str(value) for key, value in psutil.Process(int(pid)).environ().items()}
+    except (psutil.Error, OSError):
+        return None
+
+
+def environment_value(environment: Mapping[str, str], name: str) -> str | None:
+    """One variable of an environment block, read as the process itself reads it: on Windows, whatever its case."""
+    if name in environment:
+        return environment[name]
+    if os.name == "nt":
+        return next((value for key, value in environment.items() if key.upper() == name.upper()), None)
+    return None
+
+
+def same_workspace_root(left: str | Path, right: str | Path) -> bool:
+    """Whether two spellings name one workspace root: resolved where the volume answers, compared as Windows does."""
+    def resolved(value: str | Path) -> str:
+        try:
+            return str(Path(value).resolve())
+        except OSError:
+            return os.path.abspath(str(value))
+
+    return _same_path(resolved(left), resolved(right))
 
 
 def process_descends_from(pid: Any, ancestor: Any, ancestor_created_at: float | None = None, *, depth: int = 4) -> bool | None:
@@ -1521,6 +1558,15 @@ class BackendSupervisor:
     memory they lasted one runner, so the pause never engaged and a slow start was started again. Without a
     `state` they are kept in memory (MemoryStartState).
 
+    IT SERVES THE CAMPAIGN'S WORKSPACE ROOT (2026-10-24). The runner gives every backend it starts the campaign's
+    root as MSDIAL_REPOSITORY_WORKSPACE_ROOT, beside the campaign's job registry, and the launch record keeps it.
+    A backend already answering on the port is used only where it was started for the same root (check): the root
+    is read from the listener's own environment, else from the launch record where that names the listener (or
+    psutil cannot say which process listens). One started for another root, or for none (by hand, or from a
+    session), is refused, and so is one whose root neither can say: production runs on a root of its own, and a
+    backend left running for a campaign on the archive root would otherwise take the new campaign's jobs into
+    the old campaign's registry.
+
     The backend's own output stream is discarded unless log_directory is given (run --backend-log). It
     is Interactive's, not the runner's: an uncaught traceback there can quote a file location, and no
     private library location may reach a log the runner writes. What each job did stays in the job
@@ -1574,7 +1620,7 @@ class BackendSupervisor:
     def environment(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
         environment = dict(os.environ if base is None else base)
         environment["MSDIAL_INTERACTIVE_JOBS_FILE"] = str(self.jobs_file)
-        environment["MSDIAL_REPOSITORY_WORKSPACE_ROOT"] = self.workspace_root
+        environment[WORKSPACE_ROOT_VARIABLE] = self.workspace_root
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         return environment
 
@@ -1650,7 +1696,34 @@ class BackendSupervisor:
         root = str(config.get("root") or "")
         if root and Path(root).resolve() != self.interactive_root.resolve():
             problems.append(f"it runs from another checkout ({root})")
+        # The workspace root it was started for (2026-10-24): the campaign's, or it is another campaign's backend.
+        served, source = self.served_workspace_root()
+        if served is None:
+            problems.append(f"the workspace root it was started for cannot be read (neither its environment nor a "
+                            f"launch record that names it says; this campaign's is {self.workspace_root})")
+        elif not served:
+            problems.append(f"it was started for no workspace root ({source} sets no {WORKSPACE_ROOT_VARIABLE}; this "
+                            f"campaign's is {self.workspace_root})")
+        elif not same_workspace_root(served, self.workspace_root):
+            problems.append(f"it was started for another workspace root ({served}, as {source} says; this campaign's "
+                            f"is {self.workspace_root})")
         return problems
+
+    def served_workspace_root(self) -> tuple[str | None, str]:
+        """The workspace root the backend on the campaign port was started for, and what says so: the listener's own
+        environment (its MSDIAL_REPOSITORY_WORKSPACE_ROOT, "" where it sets none), else the launch record beside the
+        campaign's job registry, where the record keeps a root and names the listener, or psutil cannot say which
+        process listens (origin() cannot either then). (None, "") where neither says it."""
+        listener = listening_pid(self.port)
+        environment = process_environment(listener)
+        if environment is not None:
+            served = (environment_value(environment, WORKSPACE_ROOT_VARIABLE) or "").strip()
+            return served, f"the environment of pid {listener}"
+        record = self._read_launch_record()
+        recorded = str(record.get("workspace_root") or "").strip()
+        if recorded and (listener is None or listener == record.get("pid") or self._owns(record, listener)):
+            return recorded, "the campaign's launch record"
+        return None, ""
 
     # ---- the start state, kept in the ledger ----
 
@@ -2066,7 +2139,7 @@ class BackendSupervisor:
                 if error.may_have_started:
                     # What is known of a start that may have happened, for origin() to recognise its backend.
                     error.record.update(started_at=_now().isoformat(timespec="seconds"), port=self.port,
-                                        interactive_root=str(self.interactive_root))
+                                        interactive_root=str(self.interactive_root), workspace_root=self.workspace_root)
                     self._write_launch_record(error.record)
                     raise
                 if method == "wmi":
@@ -2077,7 +2150,7 @@ class BackendSupervisor:
             if wmi_failure:
                 record["wmi_failure"] = wmi_failure
         record.update(started_at=_now().isoformat(timespec="seconds"), port=self.port,
-                      interactive_root=str(self.interactive_root))
+                      interactive_root=str(self.interactive_root), workspace_root=self.workspace_root)
         self._write_launch_record(record)
         return record
 

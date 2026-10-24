@@ -35,6 +35,17 @@ THE ORDER OF USE
         AIF (multi_ce_aif_with_console_825).
         Every request is acted on by the runner that holds the campaign; with none running, by the next run.
 
+THE WORKSPACE ROOT IS NAMED, NEVER ASSUMED (2026-10-24). Every command takes it from --workspace-root (an option
+before the command), else from the environment variable MSDIAL_REPOSITORY_WORKSPACE_ROOT, and where neither names
+one (a blank value names none) it refuses and exits 2, reading and writing no campaign file. The root is chosen per
+campaign: production runs on a root of its own, and D:\\13_MSDIAL_Public_Reanalysis\\analysis, the runner's default
+until then, keeps the pilots and preflights, whose ledgers are read by naming it. The task definition
+schedule-command prints names the root itself, so a scheduled runner never depends on the variable. While a command
+runs, the variable is set to that root in this process and put back afterwards: the Interactive tools the runner
+calls in-process then bound every workspace_root to the campaign's root, as the MCP server bounds a session's to
+its own, whatever root the user's environment names. The backend on the campaign port must have been started for
+the campaign's root (ports.BackendSupervisor.check): one started for another root, or for none, is refused.
+
 ONLY APPROVE MAKES A LEDGER (2026-10-15). Every other command (run, verify-env, status, export, pause, resume, skip,
 retry, release-held, recheck-held, revoke) reads the campaign's ledger.sqlite without opening it first: where there
 is none, or only an empty one (no campaign, no approval and no unit), it says the campaign has no approval yet,
@@ -139,8 +150,9 @@ WHAT IT NEVER DOES
   definition to a file) and registers nothing.
 
 Exit codes: 0 ok, 2 refused (digest mismatch, missing or revoked approval, a campaign with no ledger or only an
-empty one among them, a manifest that cannot be approved), 3 unusable environment (a checkout, the Console, the
-extractor, a library or the backend), 5 the campaign lock is held by another runner.
+empty one among them, a manifest that cannot be approved, no workspace root named), 3 unusable environment (a
+checkout, the Console, the extractor, a library or the backend, one started for another workspace root among them),
+5 the campaign lock is held by another runner.
 """
 
 from __future__ import annotations
@@ -151,6 +163,7 @@ import os
 import signal
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -159,7 +172,8 @@ SCRIPTS = Path(__file__).resolve().parent
 GATE_ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
-DEFAULT_WORKSPACE_ROOT = Path(r"D:\13_MSDIAL_Public_Reanalysis\analysis")
+# ports.WORKSPACE_ROOT_VARIABLE, repeated so that parsing the command line imports nothing. No root is assumed.
+WORKSPACE_ROOT_VARIABLE = "MSDIAL_REPOSITORY_WORKSPACE_ROOT"
 DEFAULT_INTERACTIVE_ROOT = Path(os.environ.get("MSDIAL_INTERACTIVE_ROOT") or r"D:\0_SourceCode\msdial_interactive_app")
 DEFAULT_CATALOG_ROOT = Path(os.environ.get("MSDIAL_CATALOG_ROOT") or r"D:\0_SourceCode\msdial_repository_catalog")
 DEFAULT_RESOURCES = GATE_ROOT / "campaign-resources.local.json"
@@ -182,6 +196,42 @@ def _now() -> str:
 
 def _campaign_directory(workspace_root: Path, campaign_id: str) -> Path:
     return Path(workspace_root) / "_campaigns" / campaign_id
+
+
+class NoWorkspaceRoot(Exception):
+    """Neither --workspace-root nor MSDIAL_REPOSITORY_WORKSPACE_ROOT names a root: main says so, exits EXIT_REFUSED."""
+
+
+def resolve_workspace_root(option: str | Path | None, environment: Any = None) -> Path:
+    """The campaign's workspace root: --workspace-root, else MSDIAL_REPOSITORY_WORKSPACE_ROOT, a blank value naming
+    none (2026-10-24). Until then a command without the option fell back to D:\\13_MSDIAL_Public_Reanalysis\\analysis
+    without a word, so one aimed at a production root elsewhere looked on D:, reported its campaign unapproved, or
+    planned against the pilots' workspaces."""
+    for value in (option, (os.environ if environment is None else environment).get(WORKSPACE_ROOT_VARIABLE)):
+        if value is not None and str(value).strip():
+            return Path(str(value).strip())
+    raise NoWorkspaceRoot(
+        f"No workspace root is named: give --workspace-root <folder> before the command, or set "
+        f"{WORKSPACE_ROOT_VARIABLE}. The root is chosen per campaign (production on a root of its own; "
+        f"D:\\13_MSDIAL_Public_Reanalysis\\analysis keeps the pilots and preflights) and is never assumed. "
+        f"No campaign file was read or written.")
+
+
+@contextmanager
+def bounded_to(root: Path):
+    """MSDIAL_REPOSITORY_WORKSPACE_ROOT set to the campaign's root while a command runs, and put back afterwards: the
+    Interactive tools the runner calls in-process (mcp_server._validated_workspace_root) then bound every
+    workspace_root to the campaign's root, as the MCP server bounds a session's, whatever root the user's environment
+    names. The backend is given the campaign's root apart from this (BackendSupervisor.environment)."""
+    previous = os.environ.get(WORKSPACE_ROOT_VARIABLE)
+    os.environ[WORKSPACE_ROOT_VARIABLE] = str(root)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(WORKSPACE_ROOT_VARIABLE, None)
+        else:
+            os.environ[WORKSPACE_ROOT_VARIABLE] = previous
 
 
 def _print(value: Any) -> None:
@@ -957,7 +1007,8 @@ def command_schedule(args: argparse.Namespace) -> int:
 
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    top.add_argument("--workspace-root", type=Path, default=DEFAULT_WORKSPACE_ROOT)
+    top.add_argument("--workspace-root", help=f"the campaign's workspace root (default: {WORKSPACE_ROOT_VARIABLE}; "
+                                              f"with neither, every command refuses: no root is assumed)")
     top.add_argument("--interactive-root", type=Path, default=DEFAULT_INTERACTIVE_ROOT)
     top.add_argument("--catalog-root", type=Path, default=DEFAULT_CATALOG_ROOT)
     commands = top.add_subparsers(dest="command", required=True)
@@ -1084,7 +1135,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout = sys.stderr = stream
         print(f"--- {_now()} campaign-runner.py {' '.join(sys.argv[1:] if argv is None else argv)}")
     try:
-        return int(args.handler(args))
+        args.workspace_root = resolve_workspace_root(args.workspace_root)
+    except NoWorkspaceRoot as error:
+        # Refused before any command reads a ledger or writes anything (2026-10-24): no root is assumed.
+        print(str(error), file=sys.stderr)
+        return EXIT_REFUSED
+    try:
+        with bounded_to(args.workspace_root):
+            return int(args.handler(args))
     except Unapproved as error:
         # A missing approval is a refusal (exit 2), whichever command met it; nothing was created or written.
         print(str(error), file=sys.stderr)

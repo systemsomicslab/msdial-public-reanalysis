@@ -26,7 +26,7 @@ chat history. Clone it beside this repository:
 D:\13_MSDIAL_Public_Reanalysis\
   code\      this repository (public)
   context\   systemsomicslab/msdial-family-dev-context (private)
-  analysis\  reanalysis workspace, never committed
+  analysis\  archive of the pilots and preflights, never committed
 ```
 
 It is a separate private repository because it documents licensed vendor SDK
@@ -35,17 +35,31 @@ install locations and private MSP library paths on the development machine.
 ## Current local paths
 
 - Claude workspace: `D:\13_MSDIAL_Public_Reanalysis\code`
-- Repository reanalysis data: `D:\13_MSDIAL_Public_Reanalysis\analysis`
+- Repository reanalysis data: the workspace root chosen for each campaign and
+  passed explicitly (below); `D:\13_MSDIAL_Public_Reanalysis\analysis` is the
+  archive of the pilots and preflights
 - Interactive: `D:\0_SourceCode\msdial_interactive_app`
 - Catalog: `D:\0_SourceCode\msdial_repository_catalog`
 - Full catalog: `D:\0_SourceCode\msdial_repository_catalog\catalog-data\native-smoke.sqlite`
 - Python: detected by `setup-windows.ps1`, or supplied with `-Python`
 
-The Claude instructions and launcher are stored under `code`. All repository
-downloads, MS-DIAL processing files, and generated results use `analysis`:
+The Claude instructions and launcher are stored under `code`. Repository
+downloads, MS-DIAL processing files and generated results go under the
+workspace root of the campaign they belong to. The root is chosen per campaign
+and never assumed: production runs on a root of its own, and
+`D:\13_MSDIAL_Public_Reanalysis\analysis` keeps the pilots and preflights run
+before it, with their ledgers, as an archive. Pass the root explicitly every
+time: as `workspace_root` to every `msdial_repository_reanalysis_plan` and
+`msdial_download_repository_raw` call, and to `scripts/campaign-runner.py` as
+`--workspace-root` (or through `MSDIAL_REPOSITORY_WORKSPACE_ROOT`). Reading an
+archived campaign means naming the archive root. Wherever it is, the root is not
+on C:, in the user profile, in a temporary folder, or inside a code checkout.
+The `MSDIAL_REPOSITORY_WORKSPACE_ROOT` of the Interactive MCP server in
+`.mcp.json` bounds a Claude session to one root: a session that works on another
+root needs that value changed and the server reconnected. Each unit gets:
 
 ```text
-D:\13_MSDIAL_Public_Reanalysis\analysis\<repository>\<accession>\<analysis-unit-id>\
+<workspace_root>\<repository>\<accession>\<analysis-unit-id>\
   raw\downloads\
   raw\data\
   provenance\
@@ -61,9 +75,11 @@ units, 1,051,091 sample records, and 365,276 raw-file records.
 2. Copy `.mcp.example.json` to `.mcp.json` and replace the example paths with
    paths on the analysis PC. The local `.mcp.json` is intentionally ignored by
    Git because it contains machine-specific paths.
-3. Run `powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1` with
-   `-InteractiveRoot`, `-CatalogRoot`, and `-ReanalysisRoot` when the defaults
-   do not match the analysis PC.
+3. Run `powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1
+   -ReanalysisRoot <workspace root>`, adding `-InteractiveRoot` and
+   `-CatalogRoot` when the defaults do not match the analysis PC. The root has
+   no default; the script refuses one on C:, in the user profile, in a
+   temporary folder, or inside a code checkout.
 4. Install and authenticate Claude Code if `claude --version` is unavailable.
 5. Run `claude` from this directory, or double-click `Start Claude Code.cmd`.
 6. Approve the two project-scoped MCP servers when Claude Code asks.
@@ -521,6 +537,27 @@ fetched again shows. The plan's summary says "each shared object fetched once"
 only for an Interactive whose lease uses the store and that has
 `pre_claim_downloads` (`pins.interactive.pre_claim_downloads`); otherwise it gives
 the distinct bytes as the least and the per-unit sum as the most.
+
+The runner takes the workspace root per campaign (2026-10-24). Until then a
+command without `--workspace-root` used `D:\13_MSDIAL_Public_Reanalysis\analysis`
+without a word, so one aimed at another root looked on D:, said the campaign had
+no approval, or planned against the pilots' workspaces. Every command now takes
+the root from `--workspace-root` (given before the command), else from
+`MSDIAL_REPOSITORY_WORKSPACE_ROOT`, and with neither it refuses (exit code 2),
+reading and writing no campaign file. The task definition `schedule-command` prints
+names the root itself, so a scheduled runner does not depend on the variable;
+the pilots and preflights are read by naming the archive root. While a command
+runs, the runner sets `MSDIAL_REPOSITORY_WORKSPACE_ROOT` to the campaign's root
+in its own process and puts the user's value back afterwards, so the Interactive
+tools it calls in-process are bounded to that root, as an MCP session is to its
+own. A backend already answering on the campaign port is used only if it was
+started for the campaign's root: the root is read from that process's
+environment, or, where that cannot be read, from the campaign's
+`backend-launch.json`, which now keeps it, when that record names the process.
+One started for another root, for none, or whose root cannot be read is refused,
+naming both roots (`run` exits with code 3; a campaign paused for its backend
+stays paused): a backend left running for a campaign on the archive root would
+otherwise take the new campaign's jobs into the old campaign's job registry.
 
 ## Codex pre-audit
 
