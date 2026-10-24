@@ -1524,7 +1524,10 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     """What a person approves. The transfer is printed as the pinned Interactive's lease makes it, which is
     the approval quantity: until the lease fetches through the download store (pins.interactive
     .lease_uses_store, plan item 15) each unit fetches its own objects, so the bytes moved and held are the
-    per-unit sum, and the distinct bytes are what sharing would move."""
+    per-unit sum, and the distinct bytes are what sharing would move. Each shared object is said to be fetched
+    once only where the runner also claims it for every sibling before the first of them downloads
+    (pins.interactive.pre_claim_downloads, 2026-10-24); without that claim the distinct bytes are the least the
+    transfer can be, and the per-unit sum the most."""
     totals = manifest["totals"]
     version = str((manifest.get("pins", {}).get("interactive") or {}).get("version") or "?")
 
@@ -1555,11 +1558,23 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
                      f"so not excluded for it ({', '.join(unread[:5])}{', ...' if len(unread) > 5 else ''})")
     lower = " at least" if totals["units_of_unknown_size"] else ""
     lines.append(f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}")
-    if (manifest.get("pins", {}).get("interactive") or {}).get("lease_uses_store") is True:
+    interactive = manifest.get("pins", {}).get("interactive") or {}
+    if interactive.get("lease_uses_store") is True and interactive.get("pre_claim_downloads") is True:
         lines += [
             f"  transfer and disk:{lower} {tb(totals['distinct_bytes_known'])} of known size, each shared object fetched "
             f"once through Interactive {version}'s download store; lower bound {tb(totals['distinct_bytes_lower_bound'])}",
+            "  before a unit of a download group downloads, the runner claims the group's objects in the store for every "
+            "unit of it still to download, so no unit's cleanup deletes what a sibling has yet to read",
             f"  without the store the units would fetch {tb(totals['per_unit_known_bytes'])}",
+        ]
+    elif interactive.get("lease_uses_store") is True:
+        # The store, and nothing that claims an object for a unit that has not started (a manifest planned before the
+        # runner pre-claimed, 2026-10-24): an earlier sibling's cleanup may delete what the next one then fetches again.
+        lines += [
+            f"  transfer and disk:{lower} {tb(totals['distinct_bytes_known'])} of known size where no shared object is "
+            f"fetched twice, up to {tb(totals['per_unit_known_bytes'])}: Interactive {version}'s lease fetches through "
+            "the download store, but nothing claims an object for a unit that has not started, so once an earlier "
+            "unit's raw data are deleted the next unit of its group may fetch it again",
         ]
     else:
         lines += [

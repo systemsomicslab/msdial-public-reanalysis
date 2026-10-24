@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -94,6 +95,7 @@ REPOSITORY_FUNCTIONS = {
     "lease_owner_state": {"manifest"},
     "classify_preflight": {"manifest_path", "campaign_authorization_path"},
     "disposition_hold": {"manifest"},
+    "pre_claim_downloads": {"workspace_root", "units"},
 }
 
 
@@ -246,6 +248,7 @@ class InteractiveContractTests(unittest.TestCase):
         self.assertEqual(set(capabilities), {
             "version", "classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup",
             "authorized_discard", "release_disposition_hold", "split_parent_release", "cancel_job", "lease_uses_store",
+            "pre_claim_downloads",
         })
         # What the runner cannot run without, since Interactive 0.5.17 (verify-env refuses otherwise).
         for name in ("cancel_job", "classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup"):
@@ -605,6 +608,122 @@ class InteractiveContractTests(unittest.TestCase):
             with self.assertRaises(CampaignAuthorizationError):
                 CampaignAuthorization.load(path)
 
+    def test_the_runners_claims_keep_a_shared_object_until_its_last_sibling_releases_it(self) -> None:
+        """The ports against Interactive's own download store: a sibling's pre-claim keeps the object the first
+        unit fetched through that unit's cleanup and gc, a second sibling reads it from the store, release_claims
+        leaves a claim the lease materialized, and the release of the last sibling, excluded, lets the store
+        collect the object under the approval."""
+        from msdial_app.download_store import DownloadStore
+
+        port = ports.InteractivePort(port=8766)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            authorization = str(shared_download_authorization(root, ("u1", "u2", "u3")))
+            workspace_root = root / "analysis"
+            store = DownloadStore(workspace_root, "mb_post", "MPST9000")
+            data = b"one study archive " * 64
+
+            def unit(name: str) -> dict:
+                return {"analysis_unit_id": name, "repository": "mb_post", "accession": "MPST9000",
+                        "objects": [{"url": SHARED_URL}]}
+
+            claimed = port.pre_claim(workspace_root=str(workspace_root), units=[unit("u2"), unit("u3")])
+            self.assertEqual(claimed, {"ok": True, "claimed": [{"analysis_unit_id": "u2", "claims": 1, "live": 1},
+                                                              {"analysis_unit_id": "u3", "claims": 1, "live": 1}]})
+            self.assertEqual(port.pre_claim(workspace_root=str(workspace_root), units=[unit("u2")])["claimed"][0]["live"], 1,
+                             "made again, a live claim is kept as it is")
+            fetcher = BytesFetcher(data)
+            first = store.fetch_or_reuse(SHARED_URL, "MPST9000.tar", unit_id="u1", fetcher=fetcher)
+            store.mark_materialized(SHARED_URL, "u1", object_id=first["object_id"])
+            stored = Path(first["object_path"])
+            cleaned = store.release_unit("u1", "raw_cleaned", authorization=authorization)
+            self.assertEqual(cleaned["gc"]["collected"], [])
+            self.assertEqual(cleaned["gc"]["kept"], [{"object_id": first["object_id"], "live_claims": ["u2", "u3"]}])
+            self.assertTrue(stored.is_file())
+            second = store.fetch_or_reuse(SHARED_URL, "MPST9000.tar", unit_id="u2", fetcher=fetcher)
+            store.mark_materialized(SHARED_URL, "u2", object_id=second["object_id"])
+            self.assertEqual((second["action"], fetcher.calls), ("reused", 1), "one fetch for the three units")
+            arguments = {"workspace_root": str(workspace_root), "repository": "mb_post", "accession": "MPST9000",
+                         "reason": "excluded", "authorization_path": authorization}
+            self.assertEqual(port.release_claims(unit_id="u2", **arguments),
+                             {"ok": True, "released": 0, "collected": [], "kept": [], "refused": []})
+            self.assertEqual(store.read_claim(SHARED_URL, "u2")["state"], "materialized", "the lease's claim is its own")
+            store.release_unit("u2", "raw_cleaned", authorization=authorization)
+            self.assertTrue(stored.is_file(), "u3's pending claim still keeps it")
+            released = port.release_claims(unit_id="u3", **arguments)
+            self.assertEqual(released, {"ok": True, "released": 1, "collected": [first["object_id"]], "kept": [], "refused": []})
+            self.assertFalse(stored.exists())
+            claim = store.read_claim(SHARED_URL, "u3")
+            self.assertEqual((claim["state"], claim["release_reason"], claim["claimed_by"]["source"]),
+                             ("released", "excluded", "batch_plan"))
+            self.assertEqual(port.release_claims(unit_id="u3", **arguments)["released"], 0, "asked again, nothing changes")
+
+    def test_a_release_without_the_approval_deletes_nothing(self) -> None:
+        from msdial_app.download_store import DownloadStore
+
+        port = ports.InteractivePort(port=8766)
+        with tempfile.TemporaryDirectory() as directory:
+            workspace_root = Path(directory) / "analysis"
+            store = DownloadStore(workspace_root, "mb_post", "MPST9000")
+            port.pre_claim(workspace_root=str(workspace_root), units=[
+                {"analysis_unit_id": "u2", "repository": "mb_post", "accession": "MPST9000", "objects": [{"url": SHARED_URL}]}])
+            first = store.fetch_or_reuse(SHARED_URL, "MPST9000.tar", unit_id="u1", fetcher=BytesFetcher(b"x" * 100))
+            store.release_unit("u1", "raw_cleaned")
+            released = port.release_claims(workspace_root=str(workspace_root), repository="mb_post", accession="MPST9000",
+                                           unit_id="u2", reason="failed_terminal")
+            self.assertEqual(released, {"ok": True, "released": 1, "collected": [], "kept": [], "refused": []})
+            self.assertTrue(Path(first["object_path"]).is_file(), "the store deletes nothing without an approval")
+            self.assertEqual(store.read_claim(SHARED_URL, "u2")["release_reason"], "failed_terminal")
+            # A reason the store does not know is refused as a result, never raised into the loop.
+            refused = port.release_claims(workspace_root=str(workspace_root), repository="mb_post", accession="MPST9000",
+                                          unit_id="u1", reason="skipped")
+            self.assertEqual((refused["ok"], refused.get("released")), (True, 0), "u1 has no pending claim to release")
+            port.pre_claim(workspace_root=str(workspace_root), units=[
+                {"analysis_unit_id": "u3", "repository": "mb_post", "accession": "MPST9000", "objects": [{"url": SHARED_URL}]}])
+            refused = port.release_claims(workspace_root=str(workspace_root), repository="mb_post", accession="MPST9000",
+                                          unit_id="u3", reason="skipped")
+            self.assertEqual((refused["ok"], refused["reason"]), (False, "exception"))
+            self.assertEqual(store.read_claim(SHARED_URL, "u3")["state"], "pending")
+
+    def test_an_interactive_without_the_pre_claim_is_unsupported(self) -> None:
+        port = ports.InteractivePort(port=8766)
+        self.assertTrue(port.capabilities()["pre_claim_downloads"])
+        port.rr = types.SimpleNamespace()
+        self.assertEqual(port.pre_claim(workspace_root="analysis", units=[])["reason"], "unsupported")
+        self.assertFalse(port.capabilities()["pre_claim_downloads"])
+        self.assertFalse(ports.pre_claims_downloads(port.rr))
+
+
+SHARED_URL = "https://repository.example/api/download/MPST9000.1"
+
+
+class BytesFetcher:
+    """Writes fixed bytes where the store asks, as the lease's fetcher does, and counts the fetches."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.calls = 0
+
+    def fetch(self, url: str, destination: Path, progress_callback=None) -> dict:
+        self.calls += 1
+        destination.write_bytes(self.data)
+        return {"size_bytes": len(self.data)}
+
+
+def shared_download_authorization(root: Path, units: tuple[str, ...]) -> Path:
+    """The authorization record the runner writes, for a campaign of `units` that deletes raw data."""
+    manifest = {"campaign_id": "c1", "raw_retention_policy": "delete_after_validated_output",
+                "units": [{"unit_id": unit} for unit in units], "pins": {"libraries": []}}
+    manifest_path = root / "campaign-manifest.json"
+    digest = plan.write_manifest(manifest_path, manifest)
+    record = plan.authorization_record(
+        manifest, manifest_path, digest, approval_id="A-2026-10-24", approved_by="Test Person",
+        approved_at="2026-10-24T00:00:00+00:00", statement="Approved.", covers=["1", "3", "4", "5", "split"],
+    )
+    path = root / "campaign-authorization.json"
+    ports.write_json_atomic(path, record)
+    return path
+
 
 @unittest.skipUnless(AVAILABLE, "the Interactive and Catalog checkouts are not where this test looks")
 class CatalogContractTests(unittest.TestCase):
@@ -622,6 +741,39 @@ class CatalogContractTests(unittest.TestCase):
         self.assertTrue(callable(class_selection.automatic_class_proposal) and callable(class_selection.abstention_record))
         self.assertTrue(callable(Catalog.download_plan))
         self.assertTrue(hasattr(tools, "DEFAULT_DATABASE"))
+
+    def test_the_urls_the_runner_claims_are_each_units_download_urls(self) -> None:
+        """CatalogPort.download_objects, read from the Catalog's download_plan: for each unit asked about, the
+        download_url of each of its raw files, the URL its lease fetches and the store keys a claim by; a unit that
+        was not asked about is not named, though it shares the object."""
+        import sqlite3
+
+        from msdial_repository_catalog.storage import Catalog
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "catalog.sqlite"
+            with Catalog(database) as catalog:
+                catalog.initialize()
+            connection = sqlite3.connect(database)
+            with connection:
+                connection.execute("INSERT INTO study(study_id, repository, accession, source_hash) VALUES ('s1', 'mb_post', 'MPST9000', 'h')")
+                for unit in ("u1", "u2", "u3"):
+                    connection.execute(
+                        "INSERT INTO analysis_unit(unit_id, study_id, source_subrecord_id, separation, acquisition_mode, "
+                        "ion_mode, ion_mobility, instrument, untargeted, signature, target_omics) "
+                        "VALUES (?, 's1', ?, 'LC-MS', 'DDA', 'Positive', 'Unknown', 'Q-TOF', NULL, ?, 'Metabolomics')",
+                        (unit, unit, unit))
+                rows = [("f1", "u1", "A.mzML", SHARED_URL), ("f2", "u2", "B.mzML", SHARED_URL),
+                        ("f3", "u2", "C.mzML", "https://repository.example/api/download/C.mzML"),
+                        ("f4", "u3", "D.mzML", SHARED_URL)]
+                connection.executemany(
+                    "INSERT INTO raw_file(file_id, unit_id, path, role, size_bytes, download_url) VALUES (?, ?, ?, 'raw', 10, ?)",
+                    rows)
+            connection.close()
+            listed = ports.CatalogPort(database).download_objects(["u1", "u2"])
+            self.assertEqual(listed, {"ok": True, "units": {
+                "u1": [SHARED_URL], "u2": ["https://repository.example/api/download/C.mzML", SHARED_URL]}})
+            self.assertEqual(ports.CatalogPort(Path(directory) / "none.sqlite").download_objects(["u1"])["ok"], False)
 
     def test_the_ratification_the_runner_passes_is_accepted(self) -> None:
         from msdial_repository_catalog.ratification import normalize_ratification, ratification_record

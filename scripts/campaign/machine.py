@@ -107,6 +107,19 @@ the run was prepared with (libraries_as_run_source says which). Where the two di
 libraries_differ_from_authorization event says how. Until then both records named the pins alone, and so named the
 approved LBM2 for the preflight units that had loaded the official one. msdial_version is the pinned Console's
 version, as its build recorded it.
+
+A DOWNLOAD SEVERAL UNITS SHARE (2026-10-24). Interactive's lease fetches through the accession's download store,
+whose gc deletes an object, under the approval, once no live claim keeps it; only a pending claim, which a batch
+approval's pre-claim makes, keeps one for a unit that has not started. The runner made none, so with raw data deleted
+after each unit the first unit's cleanup let the store collect the object its siblings were next to fetch, and each
+fetched it again (MPST000012's four units fetched one 14.78 GB tar four times), while the plan's summary said each
+shared object was fetched once. Now, before any unit of a download group of more than one unit downloads, the runner
+claims the group's objects for every other unit of it that will still download (_claim_shared_downloads, through
+Interactive's pre_claim_downloads, with the Catalog's URLs). A unit that ends without validated outputs (excluded,
+skipped, failed, stopped) releases what it claimed and never read (_release_shared_claims), so the store collects an
+object no sibling still needs; a claim its lease materialized is released by Interactive's cleanup or discard, as
+before. The finished download's attempt records what the lease moved (download_transfer), and status adds it up
+(summary: downloads), so a shared object fetched again shows. A group of one unit is downloaded as before.
 """
 
 from __future__ import annotations
@@ -201,6 +214,13 @@ AIF_ENERGY_SETS_DIFFER_WARNING = (
 FINALISATION_LIBRARIES = "console_run_finalisation"
 PREPARED_LIBRARIES = "prepared_run_manifest"
 LIBRARIES_DIFFER = "libraries_differ_from_authorization"
+# The events of a download several units share (Runner._claim_shared_downloads, _release_shared_claims): the claims
+# made for the siblings before a unit of the group downloads, the claims a unit that ended released, and either one
+# that could not be made.
+SHARED_DOWNLOAD_CLAIMED = "shared_download_claimed"
+SHARED_DOWNLOAD_NOT_CLAIMED = "shared_download_not_claimed"
+SHARED_DOWNLOAD_RELEASED = "shared_download_released"
+SHARED_DOWNLOAD_NOT_RELEASED = "shared_download_not_released"
 
 
 @dataclass
@@ -388,6 +408,26 @@ def _downloads_next(unit: Mapping[str, Any]) -> bool:
     """Whether the unit's next call to a repository is its download: it holds no raw data yet."""
     state = unit["resume_state"] if unit["state"] in ledger_module.WAITING_STATES else unit["state"]
     return state in ("pending", "class_settled", "handoff_ready")
+
+
+def download_transfer(manifest: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What a unit's lease moved through the accession's download store, as its unit manifest's download_cache records
+    it: transferred_bytes, the objects it fetched, of them the ones it fetched again (refetched: the store had held
+    an object for the URL and no longer did) and the ones it found there (cache_hits). {} for a lease that fetched
+    without the store. A unit's downloaded_bytes are what its raw tree holds, the same for a unit that fetched a
+    shared object and one that found it in the store, so only this shows a refetch."""
+    cache = (manifest or {}).get("download_cache")
+    if not isinstance(cache, Mapping):
+        return {}
+    objects = [item for item in cache.get("objects") or [] if isinstance(item, Mapping)]
+    transferred = cache.get("transferred_bytes")
+    return {"transfer": {
+        "transferred_bytes": int(transferred if transferred is not None
+                                 else sum(int(item.get("transferred_bytes") or 0) for item in objects)),
+        "objects_fetched": sum(1 for item in objects if not item.get("cache_hit")),
+        "objects_refetched": sum(1 for item in objects if item.get("action") == "refetched"),
+        "cache_hits": sum(1 for item in objects if item.get("cache_hit")),
+    }}
 
 
 def thermo_raw_inputs(manifest: Mapping[str, Any] | None) -> int:
@@ -681,6 +721,7 @@ class Runner:
                 self.ledger.close_attempt(attempt["attempt_id"], "refused", self.stamp(), detail={"approval": str(error)})
             if current["state"] in ledger_module.TERMINAL_STATES:
                 return False
+            self._release_shared_claims(current, "stopped_no_approval")
             self.ledger.transition(
                 unit["unit_key"], "stopped_no_approval", self.stamp(), expect_from=current["state"],
                 terminal_reason="approval_missing", terminal_detail=str(error),
@@ -768,6 +809,7 @@ class Runner:
             return {"new_attempt": {"step": step, "outcome": result_outcome, "counted": counted, "detail": detail}}
 
         if kind == policy.REFUSED:
+            self._release_shared_claims(unit, "stopped_no_approval")
             self._move(
                 unit, "stopped_no_approval", terminal_reason="campaign_authorization_refused",
                 terminal_detail=json.dumps(detail, ensure_ascii=False, sort_keys=True), detail={"step": step},
@@ -1077,7 +1119,9 @@ class Runner:
         attempt = self.ledger.open_attempt(unit["unit_key"], "class", self.stamp(), tool="msdial_catalog_save_class_proposal")
         decision = self.ports.catalog.class_decision(unit["catalog_unit_id"], purpose)
         if decision.get("proposal_id") != unit["approved_class_digest"]:
-            # A grouping nobody approved: nothing is saved under the approval.
+            # A grouping nobody approved: nothing is saved under the approval, and the download the unit's siblings
+            # claimed for it is released.
+            self._release_shared_claims(unit, "stopped_policy_drift")
             self._move(
                 unit, "stopped_policy_drift", terminal_reason="class_digest_changed",
                 terminal_detail=json.dumps({"approved": unit["approved_class_digest"], "now": decision.get("proposal_id")}),
@@ -1152,6 +1196,7 @@ class Runner:
             "analysis_purpose": self.campaign["analysis_purpose"], "authorization_path": self._authorization(unit),
         }
         self._require("1")
+        self._claim_shared_downloads(unit)
         attempt = self.ledger.open_attempt(
             unit["unit_key"], "download_start", self.stamp(), tool="msdial_download_repository_raw",
             arguments=self.redact(arguments),
@@ -1212,6 +1257,85 @@ class Runner:
                 self.ledger.disk_event("pause", self.stamp(), **values)
             self._pause("disk", reason)
         return True
+
+    # ---- downloads several units share (2026-10-24) -----------------------------------------------------
+
+    def _group_members(self, unit: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """The other units of the unit's download group that download for themselves: a split part's raw data are
+        its parent's, so it neither claims nor downloads."""
+        group = _group(unit)
+        return [item for item in self.ledger.units() if item["unit_key"] != unit["unit_key"]
+                and item["role"] != "split_part" and _group(item) == group]
+
+    def _claim_shared_downloads(self, unit: Mapping[str, Any]) -> None:
+        """Before a unit of a download group several units share downloads, claim the group's objects in the
+        accession's download store for every other unit of it that will still download (a run unit whose next call
+        to a repository is its download, _downloads_next), as a batch approval's pre-claim does
+        (InteractivePort.pre_claim). The URLs are the Catalog's (CatalogPort.download_objects), which are the ones
+        each unit's lease fetches. A unit that has downloaded holds its lease's own claim, and one that has ended
+        claims nothing. Made again before every download of the group, so a unit retried after it ended is claimed
+        again; a live claim is kept as it is.
+
+        A pending claim keeps an object through the release of the unit that fetched it: without one the first
+        unit's cleanup let the store collect the object before the next sibling claimed it, and each sibling fetched
+        it again (MPST000012's four units fetched its one 14.78 GB tar four times). A unit of a group of one claims
+        nothing here. A claim that cannot be made never stops the download: it is an event, and the siblings then
+        fetch for themselves, as they did before."""
+        siblings = [item for item in self._group_members(unit) if item["role"] == "run" and _downloads_next(item)]
+        if not siblings:
+            return
+        names = [str(item["catalog_unit_id"]) for item in siblings]
+        listed = self.ports.catalog.download_objects(names)
+        result: Mapping[str, Any] = listed
+        if listed.get("ok") is not False:
+            urls = listed.get("units") or {}
+            units = [
+                {"analysis_unit_id": name, "repository": item["repository"], "accession": item["accession"],
+                 "objects": [{"url": url} for url in urls.get(name) or []]}
+                for name, item in zip(names, siblings) if urls.get(name)
+            ]
+            if not units:
+                return
+            result = self.ports.interactive.pre_claim(workspace_root=self.campaign["workspace_root"], units=units)
+        if result.get("ok") is False:
+            self._event_once(SHARED_DOWNLOAD_NOT_CLAIMED, {
+                "siblings": names, "reason": result.get("reason"), "detail": result.get("detail")}, unit["unit_key"])
+            return
+        self._event_once(SHARED_DOWNLOAD_CLAIMED, {"claimed": list(result.get("claimed") or [])}, unit["unit_key"])
+
+    def _release_shared_claims(self, unit: Mapping[str, Any], ending: str) -> None:
+        """Release what a unit of a shared download group claimed in its accession's store and will never read, as
+        it ends without validated outputs (`ending`: excluded, skipped, failed, stopped_no_approval or
+        stopped_policy_drift): a sibling's pre-claim (_claim_shared_downloads), or its own lease's claim on an object
+        it never linked (InteractivePort.release_claims), with the store's reason, failed_terminal for a failure and
+        excluded for the rest. Under a campaign that deletes raw data with boundary 5 live, the approval goes with
+        it, and the store then collects an object no other unit still claims; otherwise the claims are released and
+        nothing is deleted. A claim its lease materialized stays for Interactive's cleanup or discard, which release
+        it with the unit's raw tree. A unit of a group of one releases nothing here. What cannot be released is an
+        event, and never changes how the unit ends."""
+        if unit["role"] != "run" or not self._group_members(unit):
+            return
+        deletes = self.campaign["raw_retention_policy"] == "delete_after_validated_output" and self._live("5")
+        reason = "failed_terminal" if ending == "failed" else "excluded"
+        result = self.ports.interactive.release_claims(
+            workspace_root=self.campaign["workspace_root"], repository=unit["repository"], accession=unit["accession"],
+            unit_id=str(unit["catalog_unit_id"]), reason=reason,
+            authorization_path=self._authorization(unit) if deletes else "",
+        )
+        if result.get("ok") is False:
+            self._event_once(SHARED_DOWNLOAD_NOT_RELEASED, {
+                "ending": ending, "reason": result.get("reason"), "detail": result.get("detail")}, unit["unit_key"])
+        elif result.get("released") or result.get("collected"):
+            self._event(SHARED_DOWNLOAD_RELEASED, {
+                "ending": ending, "release_reason": reason, "approval_passed": deletes,
+                **{key: result.get(key) for key in ("released", "collected", "kept", "refused")}}, unit["unit_key"])
+
+    def _event_once(self, kind: str, detail: Mapping[str, Any], unit_key: str) -> None:
+        """An event, unless the unit already has one of this kind that says the same: a step made again after a crash
+        or a retry writes it once."""
+        recorded = self.redact(dict(detail))
+        if not any(row["unit_key"] == unit_key and _loads(row["detail_json"]) == recorded for row in self.ledger.events(kind)):
+            self._event(kind, detail, unit_key)
 
     def _download_failed(
         self, unit: dict[str, Any], *, result: dict[str, Any], outcome: str = "failed",
@@ -1388,9 +1512,11 @@ class Runner:
         raw = str(manifest.get("raw_directory") or "")
         size = self.ports.disk.tree_bytes(raw) if raw else 0
         self._progress.pop(unit["download_job_id"] or "", None)
-        # A download that finished, which ends its repository's run of network failures (_outage_streaks).
+        # A download that finished, which ends its repository's run of network failures (_outage_streaks). bytes is
+        # what the unit's raw tree holds; what its lease moved over the network is the transfer (download_transfer),
+        # which shows a shared object fetched again where the tree's bytes cannot.
         finished = {"step": "download", "outcome": "ok", "counted": False,
-                    "detail": {"job_id": unit["download_job_id"], "bytes": size}}
+                    "detail": {"job_id": unit["download_job_id"], "bytes": size, **download_transfer(manifest)}}
         if self._cancel_reason(unit["download_job_id"] or "") == "skip":
             self._move(
                 unit, "discarding", pending_terminal="skipped", manifest_path=manifest_path, downloaded_bytes=size,
@@ -2512,6 +2638,9 @@ class Runner:
                            next_attempt_at=policy.iso(self.now() + timedelta(seconds=float(delay))))
                 return True
             raw = "held"
+        # What it claimed of a download its group shares and never read, so the store may collect what no sibling
+        # still needs; before the end is committed, and made again (to no effect) should the runner stop before it.
+        self._release_shared_claims(unit, pending)
         # The gate reads a unit manifest; a unit that never downloaded has none to read.
         verdict = self._after_run_gate(unit, "final") if unit["manifest_path"] and Path(unit["manifest_path"]).is_file() else None
         exit_code = verdict.get("exit_code") if verdict else None
@@ -2996,6 +3125,11 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     for unit in units:
         if unit["state"] == "excluded":
             excluded_for[str(unit["terminal_reason"])] = excluded_for.get(str(unit["terminal_reason"]), 0) + 1
+    # What the finished downloads moved (download_transfer), beside what the units' raw trees hold: a shared object
+    # fetched once for its group is in one unit's transfer and every sibling's downloaded bytes.
+    finished = [_loads(row["detail_json"]) for row in ledger.attempts()
+                if row["step"] == "download" and row["outcome"] == "ok"]
+    transfers = [item["transfer"] for item in finished if isinstance(item.get("transfer"), Mapping)]
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
@@ -3007,6 +3141,10 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         # person reading this.
         "raw_held": {"units": len(held), "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in held),
                      "unit_keys": [unit["unit_key"] for unit in held]},
+        "downloads": {"finished": len(finished), "bytes": sum(int(item.get("bytes") or 0) for item in finished),
+                      "through_store": len(transfers),
+                      **{key: sum(int(item.get(key) or 0) for item in transfers)
+                         for key in ("transferred_bytes", "objects_fetched", "objects_refetched", "cache_hits")}},
         # Not run, for want of a before-production report: a warning, never a failure (2026-10-02).
         "gate_held": {"units": len(gate_held), "unit_keys": [unit["unit_key"] for unit in gate_held],
                       "warning": GATE_HELD_WARNING if gate_held else None},

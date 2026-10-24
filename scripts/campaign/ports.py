@@ -26,6 +26,12 @@ calls discard_download_lease, and only once discard_download_lease's own refusal
 apply, as the cleanup records its crossing only for a preview that is ready. Nothing here deletes a
 unit's output or its mzTab-M, and nothing works around a refusal that protects them.
 
+THE DOWNLOAD STORE'S CLAIMS ARE INTERACTIVE'S OWN (2026-10-24). InteractivePort.pre_claim is the batch pre-claim
+Interactive makes at a batch approval (repository_reanalysis.pre_claim_downloads), and release_claims releases a
+claim through the store's own DownloadStore.release, with the approval passed only where the campaign deletes raw
+data under a live boundary 5, so whatever the store's gc then deletes it deletes by its own rules. Neither touches a
+claim a lease materialized.
+
 Fake ports with the same methods drive tests/test_campaign_machine.py and test_campaign_resume.py; no
 test downloads anything or starts a Console.
 """
@@ -317,7 +323,7 @@ class PinReader:
         catalog_root = self.catalog_root or Path(msdial_repository_catalog.__file__).resolve().parents[2]
         return {
             "interactive": {"version": msdial_app.__version__, **git_state(interactive_root),
-                            "lease_uses_store": lease_uses_store()},
+                            "lease_uses_store": lease_uses_store(), "pre_claim_downloads": pre_claims_downloads()},
             "catalog": {"version": getattr(msdial_repository_catalog, "__version__", ""), **git_state(catalog_root)},
             "gate": git_state(self.gate_root),
         }
@@ -358,6 +364,17 @@ def lease_uses_store(tools: Any = None) -> bool:
     if tools is None:
         from msdial_app import mcp_server as tools
     return hasattr(tools, "msdial_download_store_status")
+
+
+def pre_claims_downloads(module: Any = None) -> bool:
+    """Whether the runner claims a shared download for every sibling unit before the first of them downloads it
+    (machine.Runner._claim_shared_downloads, 2026-10-24): it does wherever Interactive has
+    repository_reanalysis.pre_claim_downloads, the claim a batch approval makes. Without that claim the first unit's
+    cleanup lets the store collect an object the next sibling has not claimed yet, and each sibling fetches it again
+    (MPST000012's four units fetched its one 14.78 GB tar four times)."""
+    if module is None:
+        from msdial_app import repository_reanalysis as module
+    return callable(getattr(module, "pre_claim_downloads", None))
 
 
 def default_extractor_path(interactive_root: str | Path) -> Path:
@@ -429,6 +446,7 @@ class InteractivePort:
             "split_parent_release": hasattr(self.rr, "cleanup_split_parent"),
             "cancel_job": hasattr(self.tools, "msdial_cancel_job"),
             "lease_uses_store": lease_uses_store(self.tools),
+            "pre_claim_downloads": pre_claims_downloads(self.rr),
         }
 
     def download(
@@ -768,6 +786,57 @@ class InteractivePort:
             return _exception_result(error, "cleanup_split_parent")
         return {"ok": True, "deleted": bool((result or {}).get("deleted")), "detail": result}
 
+    def pre_claim(self, *, workspace_root: str, units: list[dict[str, Any]]) -> dict[str, Any]:
+        """Interactive's batch pre-claim (repository_reanalysis.pre_claim_downloads): a pending claim of each unit, in
+        its accession's download store, on each object it will fetch. A pending claim keeps an object through the
+        release of another unit that shares it, so the store's gc does not collect it before this unit has had it.
+        Idempotent: a live claim is kept as it is (a released one is opened again, its earlier life kept). `units` are
+        {analysis_unit_id, repository, accession, objects: [{url}]}. {"ok": True, "claimed": [{analysis_unit_id,
+        claims, live}]}; nothing here downloads or deletes."""
+        function = getattr(self.rr, "pre_claim_downloads", None)
+        if function is None:
+            return {"ok": False, "reason": "unsupported", "detail": "Interactive has no pre_claim_downloads (plan item 15)."}
+        try:
+            claimed = function(workspace_root, [dict(unit) for unit in units])
+        except Exception as error:  # noqa: BLE001
+            return _exception_result(error, "pre_claim_downloads")
+        return {"ok": True, "claimed": [
+            {key: item.get(key) for key in ("analysis_unit_id", "claims", "live")} for item in claimed or []]}
+
+    def release_claims(
+        self, *, workspace_root: str, repository: str, accession: str, unit_id: str, reason: str,
+        authorization_path: str = "",
+    ) -> dict[str, Any]:
+        """Release the claims a unit that has ended holds in its accession's download store and never read: the
+        pending ones (a sibling's pre-claim, or a lease's claim on an object it never linked into the unit), each
+        through DownloadStore.release with `reason` (one of the store's RELEASE_REASONS). With authorization_path the
+        store then collects what no live claim keeps, under that campaign approval (its gc, boundary 5: it deletes
+        nothing for an approval that is revoked, does not cover boundary 5 for every unit whose claim named the
+        object, or keeps raw data); without one the claims are released and nothing is deleted. A claim a lease
+        materialized is never released here: it names the bytes the unit's raw tree links, and Interactive's own
+        cleanup or discard releases it with that tree. {"ok": True, "released": n, "collected": [object id],
+        "kept": [object id], "refused": [object id]}: what the gc collected, kept for a live claim, and kept because
+        the approval does not cover every unit that released it."""
+        try:
+            from msdial_app.download_store import DownloadStore
+        except ImportError as error:
+            return {"ok": False, "reason": "unsupported", "detail": f"Interactive has no download store: {error}"}
+        released: list[str] = []
+        found: dict[str, set[str]] = {"collected": set(), "kept": set(), "refused": set()}
+        try:
+            store = DownloadStore(workspace_root, repository, accession)
+            for claim in store.claims_for_unit(unit_id):
+                if claim.get("state") != "pending":
+                    continue
+                result = store.release(str(claim["url"]), unit_id, reason, authorization=authorization_path or None)
+                released.extend(str(item.get("url_key") or "") for item in result.get("released") or [])
+                gc = result.get("gc") or {}
+                for key, items in found.items():
+                    items.update(str(item.get("object_id")) for item in gc.get(key) or [])
+        except Exception as error:  # noqa: BLE001
+            return {**_exception_result(error, "DownloadStore.release"), "released": len(released)}
+        return {"ok": True, "released": len(released), **{key: sorted(items) for key, items in found.items()}}
+
     def live_attempt(self, manifest_path: str) -> dict[str, Any] | None:
         """The unit's run attempt whose Console may still be running, read from its manifest."""
         if not manifest_path or not Path(manifest_path).is_file():
@@ -936,6 +1005,25 @@ class CatalogPort:
         except Exception as error:  # noqa: BLE001
             return _exception_result(error, "msdial_catalog_reanalysis_handoff")
         return {"ok": True, **result}
+
+    def download_objects(self, unit_ids: list[str]) -> dict[str, Any]:
+        """The URLs each of these units downloads, as the Catalog's download_plan lists its objects: {"ok": True,
+        "units": {unit_id: [url]}}. They are the URLs the unit's lease fetches, the download_url of each of its raw
+        files, which the handoff copies; Interactive's store keys a claim by its URL."""
+        try:
+            catalog = read_only_catalog(self.database)
+            try:
+                planned = catalog.download_plan(list(unit_ids))
+            finally:
+                catalog.close()
+        except Exception as error:  # noqa: BLE001
+            return _exception_result(error, "download_plan")
+        urls: dict[str, list[str]] = {str(unit): [] for unit in unit_ids}
+        for item in planned.get("objects") or []:
+            for unit in item.get("selected_consumer_unit_ids") or []:
+                if str(unit) in urls and str(item.get("url") or "").strip():
+                    urls[str(unit)].append(str(item["url"]))
+        return {"ok": True, "units": urls}
 
     def record_run(self, **values: Any) -> dict[str, Any]:
         try:

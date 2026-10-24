@@ -287,11 +287,23 @@ class PlanTests(unittest.TestCase):
         self.assertIn("transfer and disk: at least 12.82 TB, each unit fetching its own copy", text)
         self.assertIn("Interactive 0.5.19's lease does not share objects", text)
         self.assertIn("distinct bytes, once the lease shares objects through the download store: 6.99 TB", text)
-        # Once the lease fetches through the store (plan item 15), the distinct bytes are the transfer.
+        # A lease that fetches through the store (plan item 15), and nothing that claims a shared object for a unit
+        # that has not started: an earlier sibling's cleanup may delete it, so the distinct bytes are only the least.
         manifest["pins"]["interactive"]["lease_uses_store"] = True
         text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        self.assertNotIn("fetched once", text)
+        self.assertIn("transfer and disk: at least 6.99 TB of known size where no shared object is fetched twice, up to "
+                      "12.82 TB", text)
+        self.assertIn("the next unit of its group may fetch it again", text)
+        # And once the runner claims a group's objects for every sibling before the first of them downloads
+        # (2026-10-24), the distinct bytes are the transfer.
+        manifest["pins"]["interactive"]["pre_claim_downloads"] = True
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64)
         self.assertIn("transfer and disk: at least 6.99 TB of known size, each shared object fetched once", text)
+        self.assertIn("the runner claims the group's objects in the store for every unit of it still to download", text)
         self.assertIn("without the store the units would fetch 12.82 TB", text)
+        manifest["pins"]["interactive"]["lease_uses_store"] = False
+        self.assertNotIn("fetched once", plan.summary_text(manifest, "sha256:" + "0" * 64))
 
     def rt_manifest(self, overrides: dict | None = None, profile: dict | None = None) -> dict:
         """A declared-pool manifest planned at a fixed moment, with the campaign policy a --policy file would give."""

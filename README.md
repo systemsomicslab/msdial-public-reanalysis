@@ -498,6 +498,30 @@ units by reason (`excluded_by_reason`: `preflight_exclude`, `download_blocked`,
 disposition, as by an Interactive before the contract, is retried and fails as
 before.
 
+A download several units share is fetched once (2026-10-24). Interactive's lease
+fetches through the accession's download store, whose gc deletes an object under
+the approval once no live claim keeps it, and only a pending claim keeps one for
+a unit that has not started. The runner made none, so with raw data deleted after
+each unit, the first unit's cleanup let the store collect the object its siblings
+were to fetch next, and each fetched it again (MPST000012's four units fetched one
+14.78 GB tar four times) while the plan's summary said "fetched once". Now, before
+a unit of a download group of more than one unit downloads, the runner claims the
+group's objects, by the Catalog's URLs, for every other unit of it that will still
+download (Interactive's `pre_claim_downloads`, the claim a batch approval makes).
+A unit that ends without validated outputs (excluded, skipped, failed, stopped)
+releases what it claimed and never read through the store's own release, with the
+approval only where raw data are deleted under a live boundary 5, so the store
+collects what no sibling still needs; a claim a lease materialized is left to
+Interactive's cleanup or discard. A claim that cannot be made never stops a
+download: a `shared_download_not_claimed` event says so. Each finished download's
+attempt records what its lease moved (`transfer`: transferred bytes, objects
+fetched, refetched and found in the store), and `status` adds it up under
+`downloads`, beside the bytes the units' raw trees hold, so a shared object
+fetched again shows. The plan's summary says "each shared object fetched once"
+only for an Interactive whose lease uses the store and that has
+`pre_claim_downloads` (`pins.interactive.pre_claim_downloads`); otherwise it gives
+the distinct bytes as the least and the per-unit sum as the most.
+
 ## Codex pre-audit
 
 The local Python test suites passed on 2026-09-02 after the re-audit fixes:
