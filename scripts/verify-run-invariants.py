@@ -88,9 +88,11 @@ STAGES = ("before-production", "after-run", "before-publish")
 # (Check.blocks_run); one not evaluable where the stage owed nothing never does. Any other FAIL is
 # recorded and the unit runs: CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1, which the rule named, and SPL-1,
 # which the user placed with them; PRE-1, which never FAILs, records too, and so does PAIR-1 (2026-10-06),
-# which lists every inferred name pairing and never FAILs. Each check's docstring gives
+# which lists every inferred name pairing and never FAILs. LIB-2 (2026-10-24, with the user's decision that the
+# campaign's LBM2 is the one its profile names) stops the run too: a run that loads a library the approval does not
+# name, or other bytes under an approved name, is not the approved analysis. Each check's docstring gives
 # its reason under "RUN POLICY". The campaign runner reads the class from each check's run_policy in
-# --json, and holds the eight blocking ones itself whatever the report states.
+# --json, and holds the nine blocking ones itself whatever the report states.
 BLOCKS_RUN = "blocks_run"
 RECORD_ONLY = "record_only"
 RUN_POLICY = {
@@ -110,6 +112,7 @@ RUN_POLICY = {
     "INP-1": BLOCKS_RUN,
     "CNT-1": BLOCKS_RUN,
     "PAIR-1": RECORD_ONLY,
+    "LIB-2": BLOCKS_RUN,
 }
 
 # A user-profile path inside an artifact built to be shared. Deliberately narrow: it
@@ -6076,6 +6079,334 @@ def check_mztab_run_count(report: Report, output: Path, expected: int | None, st
 
 
 # --------------------------------------------------------------------------------------------
+# libraries: the ones the run loads are the ones the campaign approved
+# --------------------------------------------------------------------------------------------
+
+LIB2_TITLE = "The libraries the run loads are the ones the campaign approved"
+# The copy of the campaign approval the runner writes into a unit's provenance before anything else is written there;
+# a unit without one is no campaign unit.
+CAMPAIGN_AUTHORIZATION_FILE = "campaign-authorization.json"
+# The role a library is loaded in, by its suffix, as Interactive names it (sharing._role_of), and its name in words.
+LIBRARY_ROLE_SUFFIXES = {".lbm": "lbm", ".lbm2": "lbm", ".msp": "msp", ".msp2": "msp"}
+LIBRARY_ROLE_WORDS = {"lbm": "LBM", "msp": "MSP library", "text": "text database"}
+# The method-file keys that name a library the Console loads, in the role each loads it; and those that name a
+# settings file of one library per row (Interactive's msp_annotator_settings.tsv and text_annotator_settings.tsv),
+# with the column that names it.
+METHOD_LIBRARY_KEYS = (("lbm file path", "lbm"), ("msp file path", "msp"), ("text db file path", "text"))
+METHOD_LIBRARY_TABLES = (("msp annotator settings file path", "msp", "msp_file_path"),
+                         ("text annotator settings file path", "text", "text_db_file_path"))
+# The LBM score cutoffs the method file states, recorded beside the verdict.
+METHOD_LBM_CUTOFFS = (("weighted", "weighted dot product cutoff for lbm-based annotation"),
+                      ("simple", "simple dot product cutoff for lbm-based annotation"),
+                      ("reverse", "reverse dot product cutoff for lbm-based annotation"))
+# Each library file's sha256, by its location, size and time, so one gate process reads a library once.
+_LIBRARY_SHA256: dict = {}
+
+
+def _library_role(name: str) -> str:
+    return LIBRARY_ROLE_SUFFIXES.get(PureWindowsPath(name).suffix.casefold(), "text")
+
+
+def _library_name(text: object) -> str:
+    """A library's file name, from a location in either spelling or from a bare name."""
+    return PureWindowsPath(str(text or "").strip().replace("/", "\\")).name
+
+
+def _library_location(text: str, base: Path) -> Path:
+    """Where a method or settings file's library is: as written when absolute, else beside that file."""
+    path = Path(text)
+    return path if path.is_absolute() else base / path
+
+
+def _library_sha256(path: Path) -> "str | None":
+    """The file's sha256, streamed, or None where it cannot be read. Kept for the process by location, size and time."""
+    try:
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return None
+    if key not in _LIBRARY_SHA256:
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(block)
+        except OSError:
+            return None
+        _LIBRARY_SHA256[key] = digest.hexdigest()
+    return _LIBRARY_SHA256[key]
+
+
+def _library_table(path: Path, column: str) -> "tuple[list[dict] | None, str]":
+    """A settings file's rows, keys case-folded, or None with why it cannot be read (by file name only)."""
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle, delimiter="\t"))
+    except (OSError, ValueError, csv.Error) as exc:
+        return None, f"{path.name}, which method.txt names, could not be read ({type(exc).__name__})"
+    folded = [{str(key or "").strip().casefold(): str(value or "").strip() for key, value in row.items()} for row in rows]
+    if folded and column not in folded[0]:
+        return None, f"{path.name} has no {column} column"
+    return folded, ""
+
+
+def _named_libraries(value: object) -> "set[str]":
+    """The file names of every library location under a mapping key that names a path (lbm_path, msp_paths, ...)."""
+    found: set = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if "path" in str(key).casefold():
+                for text in item if isinstance(item, list) else [item]:
+                    if isinstance(text, str) and text.strip():
+                        found.add(_library_name(text))
+            elif isinstance(item, (dict, list)):
+                found |= _named_libraries(item)
+    elif isinstance(value, list):
+        for item in value:
+            found |= _named_libraries(item)
+    return found
+
+
+def _by_role(names: "set[str]") -> "dict[str, set[str]]":
+    grouped: dict = {}
+    for name in names:
+        grouped.setdefault(_library_role(name), set()).add(name)
+    return grouped
+
+
+def _names(names: "set[str]") -> str:
+    return ", ".join(sorted(names, key=str.casefold)) or "none"
+
+
+def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path, output: Path) -> None:
+    """LIB-2. Every library the run will load is one the campaign approval names, with the bytes it names.
+
+    The approval names libraries by file name and sha256 (provenance/campaign-authorization.json, the runner's copy).
+    What MS-DIAL loads is what method.txt names (Lbm file path, Msp file path, Text DB file path) and the settings
+    files it points to (MSP and text annotator settings, one library per row). The 15 MB-POST preflight units of
+    2026-10-14 and -15 were approved with one LBM2 and loaded the official one, because Interactive's
+    tiered_lipid_msp strategy took its catalog's LBM over the answer's, while the runner's records named the approved
+    one. So this reads what the method loads, hashes each file (streamed, once per process), and FAILs where:
+    - a loaded library is not in the approval by name, or its bytes or its prepared record are not the sha256 the
+      approval names;
+    - what is loaded in a role (LBM, MSP, text) is not what the answers this unit was given name for it (output/
+      guided-answers.json, which the runner resolved from the approved profile), or, where those cannot be read,
+      not what the approval names for the unit's ion mode (its libraries' ion_modes, plan.library_pins); where
+      neither says and the approval names more than one LBM, which one is this unit's cannot be established;
+    - the names disagree between the sources: method.txt, workflow-settings.json and the run manifest's prepared
+      libraries, and the answers against the approval;
+    - an MSP annotator row states no target_omics, so the Console scores it as the project's Target omics;
+    - the method's Target omics is not the one the answers give.
+    It names files, never their locations. The method's LBM cutoffs and Target omics are recorded beside the verdict.
+    A unit without the approval copy is no campaign unit, and the check does not apply to it (not evaluable, not
+    required).
+
+    RUN POLICY: blocks_run (2026-10-24, with the user's decision that the campaign's LBM2 is the one its profile
+    names). A run that loads a library nobody approved annotates every feature with it: its results are not the
+    approved analysis, and its records would name another library. Left not evaluable on what the stage owes
+    (method.txt, a settings file it names, a library neither readable nor recorded), it stops the run as a FAIL does.
+    """
+    stage = "before-production"
+    copy = workspace / "provenance" / CAMPAIGN_AUTHORIZATION_FILE
+    if not copy.is_file():
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   "Not applicable: provenance holds no campaign-authorization.json, so this is no campaign unit and no "
+                   "approval names the libraries it may load.", required=False, applicable=False)
+        return
+    authorization, reason = _read_json(copy)
+    entries = (authorization or {}).get("libraries", [])
+    if authorization is None or not isinstance(entries, list):
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   f"The campaign approval cannot be read: {reason or 'its libraries are not a list'}.", applicable=True)
+        return
+    approved: dict = {}
+    for entry in entries:
+        if isinstance(entry, dict) and _library_name(entry.get("name")):
+            name = _library_name(entry.get("name"))
+            modes = entry.get("ion_modes")
+            approved[name.casefold()] = {
+                "name": name, "sha256": str(entry.get("sha256") or "").strip().casefold(),
+                "role": str(entry.get("role") or "").strip() or _library_role(name),
+                "ion_modes": [str(item) for item in modes] if isinstance(modes, list) else None,
+            }
+    method = output / "method.txt"
+    if not method.is_file():
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   "method.txt is absent, so what the run will load cannot be read.", applicable=True)
+        return
+    try:
+        text = method.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as exc:
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   f"method.txt could not be read ({type(exc).__name__}).", applicable=True)
+        return
+    fields: dict = {}
+    for line in text.splitlines():
+        field = _console_field(line)
+        if field:
+            fields[field[0]] = field[1]
+
+    problems: list = []
+    unread: list = []
+    # What the method loads: (role, name, location), and each MSP annotator row.
+    loaded: list = []
+    msp_rows: list = []
+    for key, role in METHOD_LIBRARY_KEYS:
+        if fields.get(key):
+            location = _library_location(fields[key], method.parent)
+            loaded.append((role, _library_name(fields[key]), location))
+    for key, role, column in METHOD_LIBRARY_TABLES:
+        if not fields.get(key):
+            continue
+        table = _library_location(fields[key], method.parent)
+        rows, why = _library_table(table, column)
+        if rows is None:
+            unread.append(why)
+            continue
+        for index, row in enumerate(rows, start=1):
+            if not row.get(column):
+                continue
+            name = _library_name(row[column])
+            loaded.append((role, name, _library_location(row[column], table.parent)))
+            if role == "msp":
+                msp_rows.append({"annotator_id": row.get("annotator_id") or f"row {index}", "library": name,
+                                 "target_omics": row.get("target_omics", ""), "library_kind": row.get("library_kind", "")})
+    loaded_by_role: dict = {}
+    for role, name, _location in loaded:
+        loaded_by_role.setdefault(role, set()).add(name)
+
+    settings, _settings_reason = _read_json(output / "workflow-settings.json")
+    prepared, _prepared_reason = _read_json(output / "run-manifest.json")
+    answers_record, _answers_reason = _read_json(output / "guided-answers.json")
+    recorded = {}
+    for entry in (prepared or {}).get("libraries") or [] if isinstance((prepared or {}).get("libraries"), list) else []:
+        if isinstance(entry, dict):
+            name = _library_name(entry.get("name") or entry.get("filename") or entry.get("path"))
+            if name:
+                recorded[name.casefold()] = {"name": name, "role": str(entry.get("role") or "") or _library_role(name),
+                                             "sha256": str(entry.get("sha256") or "").strip().casefold()}
+
+    # Each loaded library is approved, with the bytes the approval names.
+    measured: dict = {}
+    for role, name, location in loaded:
+        key = name.casefold()
+        if key in measured:
+            continue
+        digest = _library_sha256(location)
+        measured[key] = digest or ""
+        item = approved.get(key)
+        if item is None:
+            problems.append(f"{name} is loaded as the {LIBRARY_ROLE_WORDS[role]}, and the approval does not name it")
+            continue
+        if digest and digest != item["sha256"]:
+            problems.append(f"{name} hashes to {digest[:12]}..., and the approval names {item['sha256'][:12] or 'no sha256'}...")
+        prepared_sha = (recorded.get(key) or {}).get("sha256") or ""
+        if prepared_sha and prepared_sha != item["sha256"]:
+            problems.append(f"the run manifest records {name} as {prepared_sha[:12]}..., not the approved "
+                            f"{item['sha256'][:12] or 'no sha256'}...")
+        if not digest and not prepared_sha:
+            unread.append(f"{name} could not be read to hash it, and the run manifest records no sha256 for it")
+
+    # What is loaded in each role is what this unit was to load.
+    ion_mode = fields.get("ion mode", "")
+    answers = (answers_record or {}).get("answers") if isinstance((answers_record or {}).get("answers"), dict) else None
+    asked = None
+    if answers is not None and isinstance(answers.get("libraries"), dict):
+        overrides = answers.get("workflow_overrides") if isinstance(answers.get("workflow_overrides"), dict) else {}
+        asked = _by_role(_named_libraries(answers["libraries"])
+                         | _named_libraries({key: value for key, value in overrides.items()
+                                             if str(key).casefold() in ("lbm_path", "msp_path", "text_db_path")}))
+    moded = None
+    if any(item["ion_modes"] is not None for item in approved.values()):
+        moded = _by_role({item["name"] for item in approved.values() if ion_mode in (item["ion_modes"] or [])})
+    roles = sorted(set(loaded_by_role) | set(asked or {}) | set(moded or {}))
+    for role in roles:
+        words = LIBRARY_ROLE_WORDS[role]
+        have = loaded_by_role.get(role, set())
+        wanted = (asked if asked is not None else moded or {}).get(role, set())
+        source = "the answers this unit was given name" if asked is not None else f"the approval names for {ion_mode or 'its'} units"
+        if (asked is not None or moded is not None) and {name.casefold() for name in have} != {name.casefold() for name in wanted}:
+            problems.append(f"{source} {_names(wanted)} as the {words}, and method.txt loads {_names(have)}")
+        if asked is not None and moded is not None:
+            stated = moded.get(role, set())
+            if {name.casefold() for name in asked.get(role, set())} != {name.casefold() for name in stated}:
+                problems.append(f"the answers name {_names(asked.get(role, set()))} as the {words}, and the approval "
+                                f"names {_names(stated)} for {ion_mode or 'its'} units")
+    if asked is None and moded is None:
+        lbms = {item["name"] for item in approved.values() if item["role"] == "lbm"}
+        if loaded_by_role.get("lbm") and len(lbms) > 1:
+            unread.append(f"the approval names {len(lbms)} LBMs ({_names(lbms)}), and neither the answers this unit "
+                          "was given nor the approval says which one is this unit's")
+
+    # The other records name what the method loads.
+    if settings is not None:
+        named: set = set()
+        for key in ("lbm_path", "msp_path", "text_db_path"):
+            if str(settings.get(key) or "").strip():
+                named.add(_library_name(settings[key]))
+        for rows, column in (("msp_annotators", "msp_file_path"), ("text_annotators", "text_db_file_path")):
+            for row in settings.get(rows) if isinstance(settings.get(rows), list) else []:
+                if isinstance(row, dict) and str(row.get(column) or "").strip():
+                    named.add(_library_name(row[column]))
+        if isinstance(settings.get("lbm_annotator"), dict) and str(settings["lbm_annotator"].get("lbm_file_path") or "").strip():
+            named.add(_library_name(settings["lbm_annotator"]["lbm_file_path"]))
+        for role, names in sorted(_by_role(named).items()):
+            have = loaded_by_role.get(role, set())
+            if {name.casefold() for name in names} != {name.casefold() for name in have}:
+                problems.append(f"workflow-settings.json names {_names(names)} as the {LIBRARY_ROLE_WORDS[role]}, and "
+                                f"method.txt loads {_names(have)}")
+        for role in sorted(set(loaded_by_role) - set(_by_role(named))):
+            problems.append(f"method.txt loads {_names(loaded_by_role[role])} as the {LIBRARY_ROLE_WORDS[role]}, and "
+                            "workflow-settings.json names none")
+    if prepared is not None and isinstance(prepared.get("libraries"), list):
+        by_role: dict = {}
+        for item in recorded.values():
+            by_role.setdefault(item["role"], set()).add(item["name"])
+        for role in sorted(set(by_role) | set(loaded_by_role)):
+            names, have = by_role.get(role, set()), loaded_by_role.get(role, set())
+            if {name.casefold() for name in names} != {name.casefold() for name in have}:
+                problems.append(f"the run manifest records {_names(names)} as the {LIBRARY_ROLE_WORDS.get(role, role)}, "
+                                f"and method.txt loads {_names(have)}")
+
+    # Every MSP row states its own target omics, and the project's is the one asked for.
+    blank = [f"{row['annotator_id']} ({row['library']})" for row in msp_rows if not row["target_omics"]]
+    if blank:
+        problems.append(f"{len(blank)} MSP annotator row(s) state no target_omics, so the Console scores them as the "
+                        f"project's {fields.get('target omics') or 'Target omics'}: {', '.join(blank)}")
+    target = ""
+    if answers is not None:
+        overrides = answers.get("workflow_overrides") if isinstance(answers.get("workflow_overrides"), dict) else {}
+        target = str(overrides.get("target_omics") or answers.get("target_omics") or "").strip()
+    if target and fields.get("target omics") and target.casefold() != fields["target omics"].casefold():
+        problems.append(f"the answers give Target omics {target}, and method.txt states {fields['target omics']}")
+
+    cutoffs = {name: fields.get(key) for name, key in METHOD_LBM_CUTOFFS if key in fields}
+    evidence = {
+        "applicable": True, "ion_mode": ion_mode, "target_omics": fields.get("target omics", ""),
+        "lbm_cutoffs": cutoffs,
+        "loaded": [{"name": name, "role": role, "sha256": measured.get(name.casefold()) or
+                    (recorded.get(name.casefold()) or {}).get("sha256", "")}
+                   for role, name in sorted({(role, name) for role, name, _location in loaded})],
+        "msp_rows": msp_rows,
+        "approved": sorted(item["name"] for item in approved.values()),
+        "expected_from": "answers" if asked is not None else "approval_ion_modes" if moded is not None else "",
+    }
+    if problems:
+        report.add("LIB-2", stage, LIB2_TITLE, FAIL,
+                   f"{len(problems)} problem(s) with the libraries this run will load: " + "; ".join(problems[:8])
+                   + ("; ..." if len(problems) > 8 else "") + ".", problems=problems, **evidence)
+        return
+    if unread:
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   "Whether the run loads the approved libraries cannot be established: " + "; ".join(unread) + ".",
+                   unread=unread, **evidence)
+        return
+    report.add("LIB-2", stage, LIB2_TITLE, PASS,
+               f"method.txt loads {_names({name for _role, name, _location in loaded})}: each is a library the approval "
+               "names, with its sha256, and what this unit was to load; the other records name the same.", **evidence)
+
+
+# --------------------------------------------------------------------------------------------
 # publication contradictions
 # --------------------------------------------------------------------------------------------
 
@@ -10901,6 +11232,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_analytical_order_is_real(report, csv_rows, csv_reason, "before-production", provenance)
         check_analysis_inputs_are_the_inputs(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_inferred_name_pairings_are_listed(report, provenance, provenance_reason)
+        check_loaded_libraries_are_the_approved_ones(report, workspace, output)
         approved = check_sample_count_invariant(
             report, provenance, provenance_reason, csv_rows, csv_reason,
             run_manifest, output, "before-production",
@@ -10968,7 +11300,7 @@ COMPLETION_STAGES = (
      ("CLS-3",)),
     ("B4", "diagnostic_done", "a recorded peak-height diagnostic whose absolute directory exists", ("PKH-1",)),
     ("B5", "production_prepared", "output holds analysis_files.csv, method.txt and run-manifest.json",
-     ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production", "INP-1", "ACQ-1")),
+     ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production", "INP-1", "ACQ-1", "LIB-2")),
     ("B6", "production_run_done", "at least one .mdpeak in output",
      ("EXP-1", "CNT-1@after-run", "MTH-1", "AIF-1", "FIN-2", "FIN-3")),
     ("B7", "mztab_validated",

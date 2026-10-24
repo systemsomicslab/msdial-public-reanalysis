@@ -125,6 +125,8 @@ of the approved manifest, naming each library as "library:<file name>" and never
 THE RESOURCE MAP (--resources, default campaign-resources.local.json beside this repository's README; any
 *.local.json is git-ignored) is the only place a library's location is written:
     {"schema": "msdial-campaign-resources.v1", "libraries": {"<file name>": "<where it is on this machine>"}}
+The plan pins only the map's libraries the profile names (2026-10-24); the summary lists the others as left
+unpinned, and states each ion mode's annotation profile and LBM score cutoffs as the pinned Interactive applies them.
 
 WHAT IT NEVER DOES
 - Decide whether a unit may run: Interactive's campaign_disposition says so after the raw-header preflight.
@@ -239,17 +241,20 @@ def command_plan(args: argparse.Namespace) -> int:
     profile = json.loads(Path(args.profile).read_text(encoding="utf-8-sig")) if args.profile else None
     overrides = json.loads(Path(args.policy).read_text(encoding="utf-8-sig")) if args.policy else None
     campaign_policy = policy.CampaignPolicy.from_dict(overrides)
+    # Only the libraries the profile names are pinned, and so approved; the map's others are listed as unpinned.
+    pinned, not_pinned = plan.split_libraries(profile, libraries)
     # The extractor is the newest built pin of Interactive's PINNED_BUILDS unless another is named; either
     # way the plan records what it inspects as, and a build that is not verified and pinned is not approvable.
     extractor = args.extractor or str(ports.default_extractor_path(args.interactive_root))
     reader = ports.PinReader(
-        console_path=args.console or "", extractor_path=extractor, libraries=libraries,
+        console_path=args.console or "", extractor_path=extractor,
+        libraries={name: libraries[name] for name in pinned},
         interactive_root=args.interactive_root, catalog_root=args.catalog_root,
     )
     pins = {
         "console": reader.console() if args.console else {"exists": False},
         "extractor": reader.extractor(),
-        "libraries": reader.library_identities(),
+        "libraries": plan.library_pins(reader.library_identities(), profile),
         **reader.code(),
     }
     try:
@@ -266,7 +271,7 @@ def command_plan(args: argparse.Namespace) -> int:
             profile=profile, campaign_policy=campaign_policy,
             class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, args.purpose),
             catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
-            replan=replan, unit_ids=unit_ids, policy_overrides=sorted(overrides or {}),
+            replan=replan, unit_ids=unit_ids, policy_overrides=sorted(overrides or {}), libraries_not_pinned=not_pinned,
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)

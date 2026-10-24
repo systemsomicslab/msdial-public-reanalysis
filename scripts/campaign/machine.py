@@ -99,6 +99,14 @@ policy.AUTOMATIC_RT_BLANK_ANSWER: true (a Blank's model interpolated by analytic
 Interactive recorded with the analysis CSV is the raw headers' or the repository sample table's, false (a Blank
 keeps its measured RTs) for an order read from the file names or the listing, or none; the campaign record says
 which, and the prepare_run attempt keeps Interactive's plan warnings.
+
+WHAT RAN IS RECORDED, BESIDE WHAT WAS APPROVED (2026-10-24). A run's records - the Catalog's analysis_run and
+campaign-record.json - name the libraries the approval names (libraries_authorized, the pins) and the ones the run
+loaded (libraries_as_run): Interactive's finalisation of that run where it is the run's own, else the run manifest
+the run was prepared with (libraries_as_run_source says which). Where the two differ, a
+libraries_differ_from_authorization event says how. Until then both records named the pins alone, and so named the
+approved LBM2 for the preflight units that had loaded the official one. msdial_version is the pinned Console's
+version, as its build recorded it.
 """
 
 from __future__ import annotations
@@ -187,6 +195,12 @@ AIF_ENERGY_SETS_DIFFER_WARNING = (
     "MsdialWorkbench#825 processes each file with its own representative collision energy, so representative "
     "energies can differ between files. Its disposition's aif_multi_ce_run records the sets"
 )
+# Where a run record's libraries_as_run were read (Runner._libraries_as_run): Interactive's finalisation of the run,
+# or, before it, the run manifest the run was prepared with. And the event that says a run's libraries are not the
+# approved ones (library_differences).
+FINALISATION_LIBRARIES = "console_run_finalisation"
+PREPARED_LIBRARIES = "prepared_run_manifest"
+LIBRARIES_DIFFER = "libraries_differ_from_authorization"
 
 
 @dataclass
@@ -234,6 +248,62 @@ def _loads(text: str | None) -> dict[str, Any]:
 def _flag(value: Any) -> bool | None:
     """A ledger 0/1 column as a record's true or false, and NULL as null."""
     return None if value is None else bool(value)
+
+
+def _read_object(path: Path) -> dict[str, Any]:
+    """A JSON object on disk, or {} where there is none or it cannot be read."""
+    try:
+        return _loads(path.read_text(encoding="utf-8-sig"))
+    except OSError:
+        return {}
+
+
+def _console_version(console: Mapping[str, Any]) -> str:
+    """The pinned Console's version for the Catalog's msdial_version: the version its pin records (its build's own
+    version output, ports.console_version), else the commit its build provenance names; "" where neither is known."""
+    version = str(console.get("version") or "").strip()
+    head = str(console.get("recorded_git_head") or "").strip()
+    return version or (f"commit {head}" if head else "")
+
+
+def as_run_libraries(entries: Iterable[Any]) -> list[dict[str, Any]]:
+    """Library records as a run record names them: file name and sha256, with the role (lbm, msp, text) and the
+    library kind (acquired, predicted) where the record gives them, and never a location."""
+    found = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("name") or entry.get("filename") or "").strip() or str(entry.get("path") or "").strip()
+        name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if not name:
+            continue
+        item = {"name": name, "sha256": str(entry.get("sha256") or "").strip().casefold()}
+        for key in ("role", "library_kind"):
+            if str(entry.get(key) or "").strip():
+                item[key] = str(entry[key]).strip()
+        found.append(item)
+    return sorted(found, key=lambda item: (item["name"].casefold(), item["sha256"]))
+
+
+def library_differences(
+    authorized: Iterable[Mapping[str, Any]], ran: Iterable[Mapping[str, Any]], ion_mode: str
+) -> dict[str, list[str]]:
+    """How the libraries a run loaded differ from the ones its approval names, by file name (compared without case):
+    loaded and not approved; loaded with another sha256 than approved, or with none recorded; and, where the
+    approval says which ion modes load each library (plan.library_pins), approved for the run's ion mode and not
+    loaded. Each list is empty when the two agree."""
+    approved = {str(item["name"]).casefold(): item for item in authorized}
+    loaded = {str(item["name"]).casefold(): item for item in ran}
+    moded = any("ion_modes" in item for item in approved.values())
+    named = {key: item for key, item in loaded.items() if key in approved}
+    return {
+        "not_authorized": sorted(item["name"] for key, item in loaded.items() if key not in approved),
+        "sha256_differs": sorted(item["name"] for key, item in named.items() if item.get("sha256")
+                                 and item["sha256"] != str(approved[key].get("sha256") or "").casefold()),
+        "sha256_unrecorded": sorted(item["name"] for item in named.values() if not item.get("sha256")),
+        "authorized_not_run": sorted(item["name"] for key, item in approved.items()
+                                     if moded and ion_mode in (item.get("ion_modes") or []) and key not in loaded),
+    }
 
 
 def _merge(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -2638,14 +2708,14 @@ class Runner:
             "run_id": f"{unit['unit_key']}:{job}", "unit_id": unit["catalog_unit_id"], "status": status.replace(" ", "_"),
             "class_proposal_id": unit.get("class_proposal_id") or "",
             "interactive_version": str((self.pins.get("interactive") or {}).get("version") or ""),
-            "msdial_version": str((self.pins.get("console") or {}).get("version") or ""),
+            "msdial_version": _console_version(self.pins.get("console") or {}),
             "mztab_path": mztab_path, "mztab_sha256": mztab_sha256,
             "provenance": {
                 "campaign_id": self.campaign["campaign_id"], "approval_id": self.approval["approval_id"],
                 "manifest_digest": self.campaign["manifest_digest"],
                 "console_sha256": str((self.pins.get("console") or {}).get("binary_sha256") or ""),
                 "extractor_sha256": str((self.pins.get("extractor") or {}).get("binary_sha256") or ""),
-                "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
+                **self._libraries_record(unit, job, manifest),
                 "minimum_peak_height": unit.get("minimum_peak_height"), "threshold_step": unit.get("threshold_step"),
                 "coarse_threshold_step": unit.get("coarse_threshold_step"), "step_fallback": _flag(unit.get("step_fallback")),
                 "fallback_reason": unit.get("fallback_reason"),
@@ -2728,12 +2798,67 @@ class Runner:
             } if self.pins_automatic_rt else None,
             "pins": {
                 "console_sha256": (self.pins.get("console") or {}).get("binary_sha256"),
+                "console_version": _console_version(self.pins.get("console") or {}) or None,
                 "extractor_sha256": (self.pins.get("extractor") or {}).get("binary_sha256"),
-                "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
             },
+            # The libraries the approval names (the pins) and the ones the unit's last production run loaded, with
+            # where that was read; both null as-run fields for a unit that never ran (_libraries_record).
+            **self._libraries_record(unit, unit.get("run_job_id"), None),
             "written_at": self.stamp(),
         }
         _write_json(workspace / "campaign-record.json", self.redact(record))
+
+    def _libraries_record(
+        self, unit: Mapping[str, Any], job: str | None, manifest: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """What a unit's run record says of its libraries: libraries_authorized, the pins the approval names, and
+        libraries_as_run, what production run `job` loaded, with libraries_as_run_source saying where that was read
+        (_libraries_as_run). Until 2026-10-24 the records named the pins alone, and so named the approved LBM2 for
+        the 15 preflight units that ran the official one. Where the two differ, a libraries_differ_from_authorization
+        event says how, once for each difference."""
+        authorized = [
+            {"name": item["name"], "sha256": item["sha256"],
+             **{key: item[key] for key in ("role", "ion_modes") if item.get(key) is not None}}
+            for item in self.pins.get("libraries") or []
+        ]
+        ran, source = self._libraries_as_run(unit, job, manifest)
+        if ran is not None:
+            differences = library_differences(authorized, ran, self._ion_mode(unit))
+            if any(differences.values()):
+                detail = {"job_id": job, "source": source, **differences}
+                if not any(row["unit_key"] == unit["unit_key"] and _loads(row["detail_json"]) == self.redact(detail)
+                           for row in self.ledger.events(LIBRARIES_DIFFER)):
+                    self._event(LIBRARIES_DIFFER, detail, unit["unit_key"])
+        return {"libraries_authorized": authorized, "libraries_as_run": ran, "libraries_as_run_source": source}
+
+    def _libraries_as_run(
+        self, unit: Mapping[str, Any], job: str | None, manifest: Mapping[str, Any] | None
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """The libraries production run `job` of the unit loaded, by name and sha256 with their role and kind where
+        the record gives them, and the record they were read from: the unit manifest's console_run_finalisation,
+        which Interactive writes once the Console has returned, when it is this job's; else the libraries the run
+        manifest recorded as the run was prepared (output/run-manifest.json). (None, None) for a unit with no
+        production run, or whose run neither record describes."""
+        if not job:
+            return None, None
+        manifest = manifest if manifest is not None else (self._manifest(unit) or {})
+        finalisation = manifest.get("console_run_finalisation")
+        if isinstance(finalisation, Mapping) and str(finalisation.get("job_id") or "") == str(job) \
+                and isinstance(finalisation.get("libraries"), list):
+            return as_run_libraries(finalisation["libraries"]), FINALISATION_LIBRARIES
+        output = str(manifest.get("output_directory") or "").strip()
+        prepared = _read_object(Path(output) / "run-manifest.json" if output else self._workspace(unit) / "output" / "run-manifest.json")
+        if isinstance(prepared.get("libraries"), list):
+            return as_run_libraries(prepared["libraries"]), PREPARED_LIBRARIES
+        return None, None
+
+    def _ion_mode(self, unit: Mapping[str, Any]) -> str:
+        """The unit's ion mode as its runs are given it (answers): Interactive's answer seed first, then the ledger's."""
+        try:
+            seed = _loads((self._unit_directory(unit) / "answer-seed.json").read_text(encoding="utf-8"))
+        except OSError:
+            seed = {}
+        return str(seed.get("ion_mode") or unit.get("ion_mode") or "")
 
 
 def _write_json(path: Path, value: Any) -> None:

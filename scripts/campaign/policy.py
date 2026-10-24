@@ -18,8 +18,9 @@ full-repository reanalysis, and this module is their one written form:
 And the gate rule, decided on 2026-10-01 and completed on 2026-10-02:
 
 - Before production, a FAIL stops a unit's MS-DIAL run for ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1,
-  PRE-2 and CONV-1 (BLOCKS_RUN_CHECKS), and so does one of them left not evaluable where it is required
-  (strict_failures). The unit then counts as failed. Any other FAIL is recorded and the unit runs.
+  PRE-2 and CONV-1, and since 2026-10-24 LIB-2 (BLOCKS_RUN_CHECKS), and so does one of them left not
+  evaluable where it is required (strict_failures). The unit then counts as failed. Any other FAIL is
+  recorded and the unit runs.
 - A before-production gate that gives no report the runner can use (gate_report_problem) holds the unit:
   it does not run, its raw data are kept, nothing is counted against it, and the other units go on. A
   recheck runs the gate again. After the run a missing report is only recorded.
@@ -136,14 +137,15 @@ _FOURIER_INSTRUMENT = re.compile(
 )
 # The before-production checks whose FAIL stops a unit's MS-DIAL run: the ones that break results, which the
 # user's rule of 2026-10-01 named (the first five) and the user's placing of 2026-10-02 completed (ID-1,
-# PRE-2 and CONV-1). One of them left not evaluable where it is required stops the run too (2026-10-02,
+# PRE-2 and CONV-1), and LIB-2 (2026-10-24): the run loads only the libraries the approval names, with their
+# bytes. One of them left not evaluable where it is required stops the run too (2026-10-02,
 # run_blocking_unevaluated). A FAIL of any other check (CLS-1/2/3, ORD-1, PKH-1, SPL-1) is recorded and the
 # unit runs. A gate whose checks carry a run_policy can name more blocking checks; it cannot take one of
-# these off the list (run_blocking_failures). The gate's RUN_POLICY states the same eight
+# these off the list (run_blocking_failures). The gate's RUN_POLICY states the same nine
 # (tests/test_verify_run_policy.py holds the two lists equal).
 BLOCKS_RUN = "blocks_run"
 RECORD_ONLY = "record_only"
-BLOCKS_RUN_CHECKS = ("ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1")
+BLOCKS_RUN_CHECKS = ("ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1", "LIB-2")
 
 
 class DispositionError(ValueError):

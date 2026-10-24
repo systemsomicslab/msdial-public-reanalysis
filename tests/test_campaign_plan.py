@@ -1047,6 +1047,130 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(code, runner_cli.EXIT_REFUSED)
         self.assertIn("pins no library", err)
 
+    def test_the_plan_pins_only_the_libraries_the_profile_names(self) -> None:
+        """2026-10-24: the resource map may locate more libraries than the profile names (an LBM2 the profile
+        replaced); only the profile's are pinned and approved, each with its role and the ion modes that load it, and
+        the summary lists the others as left unpinned and states what the pinned Interactive annotates with."""
+        from msdial_app import annotation_pipeline
+
+        tools = self.root / "tools-libraries"
+        tools.mkdir()
+        (tools / "MSDIALCUI.exe").write_bytes(CONSOLE_826)
+        for name in ("P.msp", "N.msp", "Approved.lbm2", "Replaced.lbm2"):
+            (tools / name).write_text(f"synthetic {name}\n", encoding="utf-8")
+        resources = tools / "campaign-resources.local.json"
+        resources.write_text(json.dumps({"schema": ports.RESOURCES_SCHEMA, "libraries": {
+            name: str(tools / name) for name in ("P.msp", "N.msp", "Approved.lbm2", "Replaced.lbm2")}}), encoding="utf-8")
+        profile = tools / "profile.json"
+        profile.write_text(json.dumps({
+            "schema": plan.PROFILE_SCHEMA,
+            "answers": {"library_strategy": "tiered_lipid_msp", "libraries": {"lbm_path": "library:Approved.lbm2"}},
+            "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}},
+                            "Negative": {"libraries": {"msp_paths": ["library:N.msp"]}}}}), encoding="utf-8")
+        extractor = {**APPROVABLE_PINS["extractor"], "path": str(tools / "RawMetadataConsoleApp.exe")}
+        with mock.patch.object(ports.PinReader, "extractor", lambda _self: dict(extractor)), \
+                mock.patch.object(ports.PinReader, "code", lambda _self: json.loads(json.dumps(CODE_PINS))):
+            code, out, err = self.cli(
+                "plan", "--campaign", "c-libraries", "--pool", "declared", "--purpose", "annotation",
+                "--retention", "delete_after_validated_output", "--catalog", str(self.database),
+                "--console", str(tools / "MSDIALCUI.exe"), "--resources", str(resources), "--profile", str(profile),
+            )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Not approvable", err)
+        directory = self.workspace_root / "_campaigns" / "c-libraries"
+        manifest = json.loads((directory / "campaign-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual([(item["name"], item["role"], item["ion_modes"]) for item in manifest["pins"]["libraries"]], [
+            ("Approved.lbm2", "lbm", ["Positive", "Negative"]), ("N.msp", "msp", ["Negative"]), ("P.msp", "msp", ["Positive"])])
+        self.assertEqual(manifest["annotation"]["libraries_not_pinned"], ["Replaced.lbm2"])
+        self.assertIn("  libraries in the resource map left unpinned, since the profile names none of them: Replaced.lbm2", out)
+        profile_id = annotation_pipeline.tiered_lcms_annotation("Approved.lbm2", "P.msp")["profile_id"]
+        self.assertEqual(manifest["annotation"]["by_ion_mode"]["Positive"]["profile_id"], profile_id)
+        self.assertIn(f"  annotation of Negative units: library strategy tiered_lipid_msp; annotation profile {profile_id} "
+                      "(the pinned Interactive's annotation_pipeline); the profile's LBM Approved.lbm2; LBM cutoffs weighted/simple/reverse ",
+                      out)
+        stated = manifest["annotation"]["by_ion_mode"]["Negative"]
+        self.assertTrue(stated["lbm_cutoffs"] and stated["lbm_cutoffs_source"], "read from the pinned Interactive's code")
+        self.assertNotIn(str(tools), json.dumps(manifest), "the manifest names libraries, never their location")
+        digest = "sha256:" + hashlib.sha256((directory / "campaign-manifest.json").read_bytes()).hexdigest()
+        code, _out, err = self.approve("c-libraries", digest)
+        self.assertEqual(code, 0, err)
+        record = json.loads((directory / "campaign-authorization.json").read_text(encoding="utf-8"))
+        self.assertEqual([(item["name"], item["role"], item["ion_modes"]) for item in record["libraries"]],
+                         [(item["name"], item["role"], item["ion_modes"]) for item in manifest["pins"]["libraries"]],
+                         "Interactive's authorization takes the role and the ion modes; it refuses only a location")
+        self.assertNotIn("Replaced.lbm2", json.dumps(record))
+
+
+class LibraryPinTests(unittest.TestCase):
+    """Which libraries the plan pins, and what the manifest states of their annotation (2026-10-24)."""
+
+    PROFILE = {"schema": plan.PROFILE_SCHEMA,
+               "answers": {"library_strategy": "tiered_lipid_msp", "libraries": {"lbm_path": "library:A.lbm2"}},
+               "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}},
+                               "Negative": {"libraries": {"msp_paths": ["library:N.msp"], "lbm_path": "library:B.lbm2"},
+                                            "workflow_overrides": {"lbm_reverse_dot_product": 0.3}}}}
+    CODE = {"tiered": lambda lbm, msp: {"profile_id": f"tiered-{lbm}-{msp}"},
+            "lbm_cutoffs": {"weighted": 0.1, "simple": 0.1, "reverse": 0.1}, "lbm_cutoffs_source": "the template",
+            "problems": []}
+
+    def test_only_the_libraries_the_profile_names_are_pinned_with_their_ion_modes(self) -> None:
+        pinned, unpinned = plan.split_libraries(self.PROFILE, ["P.msp", "N.msp", "A.lbm2", "B.lbm2", "Z.lbm2"])
+        self.assertEqual((pinned, unpinned), (["A.lbm2", "B.lbm2", "N.msp", "P.msp"], ["Z.lbm2"]))
+        pins = plan.library_pins([{"name": name, "sha256": "0" * 64, "bytes": 1} for name in pinned], self.PROFILE)
+        self.assertEqual({item["name"]: (item["role"], item["ion_modes"]) for item in pins}, {
+            "A.lbm2": ("lbm", ["Positive"]), "B.lbm2": ("lbm", ["Negative"]),
+            "N.msp": ("msp", ["Negative"]), "P.msp": ("msp", ["Positive"])},
+            "by_ion_mode replaces the LBM the answers name for Negative units, as Runner.answers merges them")
+        self.assertEqual(plan.split_libraries(None, ["P.msp"]), ([], ["P.msp"]))
+
+    def test_the_annotation_statement_is_the_pinned_interactives_and_the_profiles(self) -> None:
+        record = plan.annotation_record(self.PROFILE, [{"name": "A.lbm2", "role": "lbm", "ion_modes": ["Positive"]}],
+                                        ["Z.lbm2"], self.CODE)
+        positive, negative = record["by_ion_mode"]["Positive"], record["by_ion_mode"]["Negative"]
+        self.assertEqual((positive["profile_id"], positive["lbm"], positive["lbm_cutoffs"], positive["lbm_cutoffs_source"]),
+                         ("tiered-A.lbm2-P.msp", "A.lbm2", {"weighted": 0.1, "simple": 0.1, "reverse": 0.1}, "the template"))
+        self.assertEqual((negative["profile_id"], negative["lbm_cutoffs"]),
+                         ("tiered-B.lbm2-N.msp", {"weighted": 0.1, "simple": 0.1, "reverse": 0.3}))
+        self.assertIn("the profile's workflow_overrides (reverse)", negative["lbm_cutoffs_source"])
+        text = "\n".join(record["statement"])
+        self.assertIn("  libraries pinned, the ones the profile names: A.lbm2 (lbm; Positive)", text)
+        self.assertIn("left unpinned, since the profile names none of them: Z.lbm2", text)
+        self.assertIn("annotation of Negative units: library strategy tiered_lipid_msp; annotation profile "
+                      "tiered-B.lbm2-N.msp (the pinned Interactive's annotation_pipeline); the profile's LBM B.lbm2; LBM cutoffs "
+                      "weighted/simple/reverse 0.1/0.1/0.3 from the profile's workflow_overrides (reverse)", text)
+        # Another strategy has no annotation profile, and what the pinned Interactive's code lacks is said.
+        existing = {**self.PROFILE, "answers": {**self.PROFILE["answers"], "library_strategy": "existing"}}
+        record = plan.annotation_record(existing, [], [], {"tiered": None, "lbm_cutoffs": None, "problems": ["no code"]})
+        text = "\n".join(record["statement"])
+        self.assertIn("annotation of Positive units: library strategy existing; annotation profile none (library "
+                      "strategy existing); the profile's LBM A.lbm2; LBM cutoffs weighted/simple/reverse not readable", text)
+        self.assertIn("  not read from the pinned Interactive: no code", text)
+        self.assertIn("  libraries pinned: none", text)
+
+    def test_a_manifest_planned_before_the_statement_says_so(self) -> None:
+        manifest = {"campaign_id": "c", "pool": "declared", "totals": {
+            "selected_units": 0, "excluded_units": 0, "planned_units": 0, "excluded_by_reason": {}, "units_of_unknown_size": 0,
+            "download_groups": 0, "distinct_objects": 0, "per_unit_known_bytes": 0, "distinct_bytes_known": 0,
+            "distinct_bytes_lower_bound": 0, "unknown_size_objects": 0, "empty_digest_objects": 0,
+            "units_with_archives": 0, "class_kinds": {}}, "pins": {}, "policy": {}, "profile": None}
+        self.assertIn("libraries and annotation: not stated (the manifest was planned before the plan stated them)",
+                      plan.summary_text(manifest, "sha256:" + "0" * 64))
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
+    def test_the_console_pin_records_the_version_its_build_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            console = Path(directory) / "MSDIALCUI.exe"
+            console.write_bytes(b"MZ console")
+            reader = ports.PinReader(console_path=str(console), extractor_path="", libraries={})
+            self.assertNotIn("version", reader.console(), "no build provenance, no version")
+            sidecar = Path(directory) / "msdial-console-build-provenance.json"
+            sidecar.write_text(json.dumps({"binary_version_output": "5.5.260101 / commit 0123abc45",
+                                           "git_head": "0123abc45" + "0" * 31}), encoding="utf-8")
+            pin = reader.console()
+            self.assertEqual(pin["version"], "5.5.260101 / commit 0123abc45")
+            self.assertEqual(policy.pin_differences({"console": pin}, {"console": {**pin, "version": "other"}}), [],
+                             "the version is recorded, not an identity: the bytes are")
+
 
 LOCAL_SUPPORT_KEY = "automatic rt correction local support rt window"  # MsdialWorkbench #826
 RUN_WIDE_KEY = "execute automatic rt correction for alignment"  # MsdialWorkbench #810

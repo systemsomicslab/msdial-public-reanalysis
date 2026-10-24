@@ -270,6 +270,106 @@ class HappyPathTests(Base):
         self.assertNotIn("5", self.boundaries(book, "u1"))
 
 
+class LibraryRecordTests(Base):
+    """A run's records name the libraries it loaded beside the ones its approval names (2026-10-24). Until then the
+    campaign record and the Catalog's run named the pins alone, and so named the approved LBM2 for the preflight units
+    that loaded the official one."""
+
+    @staticmethod
+    def record(book: ledger.Ledger, unit: str = "u1") -> dict:
+        return json.loads((Path(book.unit(unit)["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def differences(book: ledger.Ledger) -> list[dict]:
+        return [json.loads(row["detail_json"]) for row in book.events(machine.LIBRARIES_DIFFER)]
+
+    def test_the_records_name_what_the_run_loaded_and_what_was_approved(self) -> None:
+        world = self.world()
+        book = self.finish(world)
+        record = self.record(book)
+        loaded = [{"name": fakes.LBM, "sha256": fakes.SHA["lbm"], "role": "lbm"},
+                  {"name": fakes.POSITIVE_MSP, "sha256": fakes.SHA["positive"], "role": "msp"}]
+        self.assertEqual(record["libraries_as_run"], loaded)
+        self.assertEqual(record["libraries_as_run_source"], machine.FINALISATION_LIBRARIES)
+        self.assertEqual(record["libraries_authorized"],
+                         [{"name": item["name"], "sha256": item["sha256"]} for item in world.pins["libraries"]])
+        self.assertNotIn("libraries", record["pins"], "the pins are the approval's libraries, recorded as such")
+        provenance = next(iter(world.catalog.runs.values()))["provenance"]
+        self.assertEqual((provenance["libraries_as_run"], provenance["libraries_as_run_source"]),
+                         (loaded, machine.FINALISATION_LIBRARIES))
+        self.assertEqual(provenance["libraries_authorized"], record["libraries_authorized"])
+        self.assertNotIn("libraries", provenance)
+        self.assertEqual(self.differences(book), [], "the run loaded the approved libraries")
+
+    def test_a_run_that_loaded_another_lbm_is_recorded_as_it_ran_and_said_once(self) -> None:
+        """The preflight's substitution: the approval names one LBM2 and the run loads another."""
+        world = self.world(library_modes=True)
+        world.run_libraries = [
+            {"name": fakes.POSITIVE_MSP, "role": "msp", "sha256": fakes.SHA["positive"]},
+            {"name": "Synthetic-official.lbm2", "role": "lbm", "sha256": "e" * 64},
+        ]
+        book = self.finish(world)
+        record = self.record(book)
+        self.assertEqual([item["name"] for item in record["libraries_as_run"]], ["Synthetic-official.lbm2", fakes.POSITIVE_MSP])
+        self.assertEqual(record["libraries_authorized"][2], {"name": fakes.LBM, "sha256": fakes.SHA["lbm"], "role": "lbm",
+                                                             "ion_modes": ["Positive", "Negative"]})
+        runs = list(world.catalog.runs.values())
+        self.assertEqual(runs[-1]["provenance"]["libraries_as_run"], record["libraries_as_run"])
+        job = book.unit("u1")["run_job_id"]
+        self.assertEqual(self.differences(book), [{
+            "job_id": job, "source": machine.FINALISATION_LIBRARIES, "not_authorized": ["Synthetic-official.lbm2"],
+            "sha256_differs": [], "sha256_unrecorded": [], "authorized_not_run": [fakes.LBM],
+        }], "said once, though the run is recorded at its end, at the unit's end and in the campaign record")
+        self.assertEqual([row["unit_key"] for row in book.events(machine.LIBRARIES_DIFFER)], ["u1"])
+
+    def test_other_bytes_under_an_approved_name_are_said(self) -> None:
+        world = self.world()
+        world.run_libraries = [{"name": fakes.POSITIVE_MSP, "role": "msp", "sha256": "d" * 64},
+                               {"name": fakes.LBM, "role": "lbm", "sha256": fakes.SHA["lbm"]}]
+        book = self.finish(world)
+        (difference,) = self.differences(book)
+        self.assertEqual((difference["sha256_differs"], difference["not_authorized"], difference["authorized_not_run"]),
+                         ([fakes.POSITIVE_MSP], [], []), "without ion modes in the pins, nothing is said not run")
+
+    def test_before_finalisation_the_run_manifest_it_was_prepared_with_is_read(self) -> None:
+        world = self.world()
+        world.run_libraries = None
+        world.prepared_libraries = [{"name": fakes.POSITIVE_MSP, "filename": fakes.POSITIVE_MSP, "role": "msp",
+                                     "sha256": fakes.SHA["positive"], "private": True}]
+        book = self.finish(world)
+        record = self.record(book)
+        self.assertEqual(record["libraries_as_run_source"], machine.PREPARED_LIBRARIES)
+        self.assertEqual(record["libraries_as_run"], [{"name": fakes.POSITIVE_MSP, "sha256": fakes.SHA["positive"], "role": "msp"}])
+
+    def test_a_unit_that_never_ran_records_no_libraries_as_run(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(disposition="exclude")
+        book = self.finish(world)
+        record = self.record(book)
+        self.assertEqual((record["state"], record["libraries_as_run"], record["libraries_as_run_source"]),
+                         ("excluded", None, None))
+        self.assertEqual(len(record["libraries_authorized"]), 3)
+        self.assertEqual(self.differences(book), [])
+
+    def test_the_catalog_records_the_pinned_consoles_version(self) -> None:
+        world = self.world(console_version="5.5.260101 / commit 0123abc45")
+        book = self.finish(world)
+        self.assertEqual({run["msdial_version"] for run in world.catalog.runs.values()}, {"5.5.260101 / commit 0123abc45"})
+        self.assertEqual(self.record(book)["pins"]["console_version"], "5.5.260101 / commit 0123abc45")
+        # A campaign pinned before the pin recorded a version: the commit its build provenance names, else nothing.
+        self.assertEqual(machine._console_version({"recorded_git_head": "fedcba987"}), "commit fedcba987")
+        self.assertEqual(machine._console_version({}), "")
+
+    def test_the_console_version_is_read_from_its_build_provenance(self) -> None:
+        self.assertEqual(ports.console_version({"binary_version_output": "5.5.260101 / commit 0123abc45\nmore",
+                                                "git_head": "a" * 40}), "5.5.260101 / commit 0123abc45")
+        self.assertEqual(ports.console_version({"git_head": "A" * 40}), "commit " + "a" * 40)
+        # A version line that names a location is not taken: the version travels into the Catalog's run record.
+        self.assertEqual(ports.console_version({"binary_version_output": r"C:\builds\MSDIALCUI.exe 5.5",
+                                                "git_head": "b" * 40}), "commit " + "b" * 40)
+        self.assertEqual(ports.console_version({"binary_version_output": "", "git_head": "not a commit"}), "")
+
+
 class FailureTests(Base):
     def test_a_failed_unit_is_retried_twice_then_its_raw_data_go(self) -> None:
         world = self.world(("u1", "u2"))

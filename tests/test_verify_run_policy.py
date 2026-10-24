@@ -4,7 +4,8 @@ The user's rule of 2026-10-01: only a check whose failure breaks the MS-DIAL res
 unit's run, and the unit then counts as failed; any other FAIL is recorded and the unit runs. The user
 named ELIG-1, ACQ-1, SUM-1, CNT-1 and INP-1 as the first kind and CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1
 as the second, and on 2026-10-02 placed the rest: ID-1, PRE-2 and CONV-1 with the first, SPL-1 and
-PRE-1 (which never FAILs) with the second. A first-kind check left not evaluable on an artifact its
+PRE-1 (which never FAILs) with the second. LIB-2 (2026-10-24: a campaign unit loads only the libraries its
+approval names) is of the first kind. A first-kind check left not evaluable on an artifact its
 stage owed stops the run as its FAIL does (2026-10-02); one the stage owed nothing never does. The gate
 states the class of every before-production check in --json (run_policy), and none for a check after
 production, and the checks that stop the run (run_blocked_by); the campaign runner reads them. The
@@ -35,7 +36,8 @@ _MODULE_PATH = built._MODULE_PATH
 class RunPolicyTests(unittest.TestCase):
     """Each before-production check says whether its FAIL stops a campaign unit's run (2026-10-01, 2026-10-02)."""
 
-    USER_BLOCKS = {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1"}
+    # LIB-2 (2026-10-24) with them: a run that loads a library its approval does not name is not the approved analysis.
+    USER_BLOCKS = {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1", "LIB-2"}
     # PAIR-1 (2026-10-06) lists every name pairing the lease inferred, which the user decided must always be
     # on record; it never FAILs and is recorded like PRE-1.
     USER_RECORDS = {"CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1", "PRE-1", "PAIR-1"}
@@ -51,7 +53,8 @@ class RunPolicyTests(unittest.TestCase):
 
     def test_a_fail_stops_the_run_only_for_the_checks_the_user_named(self) -> None:
         """'Only for checks that break results: ELIG-1, ACQ-1, SUM-1, CNT-1 and INP-1', and on 2026-10-02 ID-1,
-        PRE-2 and CONV-1 with them. Every other before-production check is recorded, as the user placed it."""
+        PRE-2 and CONV-1 with them, and LIB-2 on 2026-10-24. Every other before-production check is recorded, as the
+        user placed it."""
         blocking = {check_id for check_id, policy in verifier.RUN_POLICY.items() if policy == verifier.BLOCKS_RUN}
         self.assertEqual(self.USER_BLOCKS, blocking)
         self.assertEqual(set(verifier.RUN_POLICY), self.USER_BLOCKS | self.USER_RECORDS, "the user placed every check")

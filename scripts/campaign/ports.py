@@ -37,6 +37,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -173,6 +174,22 @@ def automatic_rt_correction_generation(assembly: bytes) -> str:
     return policy.AUTOMATIC_RT_NONE
 
 
+# An absolute location, as the Catalog refuses one anywhere in a run record (storage._ABSOLUTE_LOCATION).
+_ABSOLUTE_LOCATION = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|\\\\[^\\\s]|file://", re.IGNORECASE)
+
+
+def console_version(recorded: Mapping[str, Any]) -> str:
+    """The Console's version as its build provenance (msdial-console-build-provenance.json) records it: the first
+    line of the binary's own version output ("5.5.<build> / commit <sha>"), else "commit <git_head>", else nothing.
+    A line that names a location is not taken, since the version travels into the Catalog's run record."""
+    lines = str(recorded.get("binary_version_output") or "").strip().splitlines()
+    first = lines[0].strip() if lines else ""
+    if first and not _ABSOLUTE_LOCATION.search(first):
+        return first[:200]
+    head = str(recorded.get("git_head") or "").strip().casefold()
+    return f"commit {head}" if re.fullmatch(r"[0-9a-f]{7,64}", head) else ""
+
+
 class PinReader:
     """Reads the identities a campaign pins, the same way at plan time and before every unit.
 
@@ -268,6 +285,11 @@ class PinReader:
                 recorded = {}
             record["recorded_git_head"] = str(recorded.get("git_head") or "")
             record["provenance_matches"] = recorded.get("binary_sha256") == record["assembly_sha256"]
+            # What the Catalog records as a run's msdial_version: the Console's own version output, as its build
+            # recorded it, else the commit it was built from. Not an identity (policy.PIN_IDENTITY): the bytes are.
+            version = console_version(recorded)
+            if version:
+                record["version"] = version
         return record
 
     def extractor(self) -> dict[str, Any]:

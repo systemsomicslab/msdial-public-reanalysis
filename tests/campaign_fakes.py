@@ -381,6 +381,11 @@ class FakeInteractive:
             for item in manifest.get("run_attempts") or []:
                 if item.get("job_id") == job["id"]:
                     item.update(ended_at=self._stamp(), exit_code=exit_code)
+            if kind == "run" and self.world.run_libraries is not None:
+                # Interactive's finalisation of every production run records the libraries it loaded (0.5.37).
+                manifest["console_run_finalisation"] = {
+                    "schema": "msdial-console-run-finalisation.v1", "job_id": job["id"],
+                    "libraries": json.loads(json.dumps(self.world.run_libraries))}
             if kind == "run" and outcome in ("ok", "late_fail"):
                 output = Path(manifest["output_directory"])
                 output.mkdir(parents=True, exist_ok=True)
@@ -607,6 +612,10 @@ class FakeInteractive:
     def prepare_guided(self, *, input_path: str, answers: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("prepare_guided", {"answers": answers}))
         manifest_path = (answers.get("workflow_overrides") or {}).get("repository_run_manifest") or ""
+        if self.world.prepared_libraries is not None:
+            # The run manifest Interactive writes as it prepares the run, with the libraries it will load.
+            output = Path((self.store.read(manifest_path) or {})["output_directory"])
+            _write(output / "run-manifest.json", {"libraries": json.loads(json.dumps(self.world.prepared_libraries))})
         script = self.world.scripts.get(self._unit_of_manifest(manifest_path)) or UnitScript()
         validation = [{"level": "warning", "message": message} for message in script.plan_warnings]
         return {"plan": {"validation": validation, "ready_to_prepare": True}, "preparation": {}, "messages": []}
@@ -862,7 +871,8 @@ class World:
 
     def __init__(self, root: Path, unit_ids: list[str], *, policy_values: dict[str, Any] | None = None,
                  retention: str = "delete_after_validated_output", covers: tuple[str, ...] = ("1", "3", "4", "5", "split"),
-                 known_bytes: int = 10 * 1000**3, size_known: bool = True, legacy_policy: bool = False) -> None:
+                 known_bytes: int = 10 * 1000**3, size_known: bool = True, legacy_policy: bool = False,
+                 library_modes: bool = False, console_version: str | None = None) -> None:
         self.root = root
         self.workspace_root = root / "analysis"
         self.directory = self.workspace_root / "_campaigns" / "test-campaign"
@@ -919,6 +929,21 @@ class World:
             "catalog": {"version": "0.6.1", "commit": "b" * 40, "dirty": False},
             "gate": {"commit": "c" * 40, "dirty": False},
         }
+        if library_modes:
+            # As the plan pins them since 2026-10-24 (plan.library_pins): each with its role and the ion modes it serves.
+            modes = {POSITIVE_MSP: ["Positive"], NEGATIVE_MSP: ["Negative"], LBM: ["Positive", "Negative"]}
+            for item in self.pins["libraries"]:
+                item.update(role="lbm" if item["name"] == LBM else "msp", ion_modes=modes[item["name"]])
+        if console_version is not None:
+            self.pins["console"]["version"] = console_version
+        # What Interactive's finalisation of a production run records it loaded (console_run_finalisation.libraries),
+        # by default a Positive unit's approved libraries; None records none. And the libraries the run manifest names
+        # as the run is prepared (output/run-manifest.json); None writes no run manifest, as before.
+        self.run_libraries: list[dict[str, Any]] | None = [
+            {"name": POSITIVE_MSP, "filename": POSITIVE_MSP, "role": "msp", "sha256": SHA["positive"], "private": True},
+            {"name": LBM, "filename": LBM, "role": "lbm", "sha256": SHA["lbm"], "private": True},
+        ]
+        self.prepared_libraries: list[dict[str, Any]] | None = None
         self.campaign = {
             "campaign_id": "test-campaign", "pool": "declared", "manifest_path": str(manifest_path),
             "manifest_digest": self.digest, "analysis_purpose": "annotation of every experimental spectrum",

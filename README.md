@@ -140,7 +140,14 @@ counts as failed, and `record_only` where the FAIL is recorded and the unit
 runs. The user decided it: a FAIL stops the run only for the checks that break
 the MS-DIAL results (2026-10-01), and every before-production check is placed
 (2026-10-02). ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1 are
-`blocks_run`. CLS-1, CLS-2, CLS-3, ORD-1, PKH-1 and SPL-1 are `record_only`,
+`blocks_run`, and so is LIB-2 (2026-10-24): in a campaign unit, every library
+`method.txt` and its MSP annotator settings load must be one the approval
+names, with the sha256 it names, and what the unit's answers name for its
+role; the names must agree across `method.txt`, `workflow-settings.json` and
+the run manifest; and every MSP annotator row must state its own
+`target_omics`. It names files, never their locations, and does not apply to a
+unit without `provenance/campaign-authorization.json`. CLS-1, CLS-2, CLS-3,
+ORD-1, PKH-1 and SPL-1 are `record_only`,
 and so are PRE-1, which never FAILs, and PAIR-1 (2026-10-06), which lists as a
 WARN every input the lease paired with a declared raw file by inference
 (`input_names_paired_by_inference`), so each such pairing is on record; a split
