@@ -608,6 +608,40 @@ class InteractiveContractTests(unittest.TestCase):
             with self.assertRaises(CampaignAuthorizationError):
                 CampaignAuthorization.load(path)
 
+    def test_the_annotation_contract_the_authorization_carries_is_accepted_and_names_no_location(self) -> None:
+        """Review of 2026-10-25: the authorization carries each ion mode's annotation contract to the gate's LIB-2, read
+        from the pinned Interactive's own tiered profile; Interactive takes the record with it."""
+        from msdial_app.campaign_authorization import CampaignAuthorization
+
+        profile = {"schema": plan.PROFILE_SCHEMA,
+                   "answers": {"library_strategy": "tiered_lipid_msp", "libraries": {"lbm_path": "library:Approved.lbm2"}},
+                   "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:Positive.msp"]}},
+                                   "Negative": {"libraries": {"msp_paths": ["library:Negative.msp"]}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = {
+                "campaign_id": "c1", "raw_retention_policy": "keep", "units": [{"unit_id": "u1"}],
+                "pins": {"libraries": [{"name": name, "sha256": "a" * 64, "bytes": 5}
+                                       for name in ("Approved.lbm2", "Negative.msp", "Positive.msp")]},
+                "annotation": plan.annotation_record(profile, [], []),
+            }
+            manifest_path = Path(directory) / "campaign-manifest.json"
+            digest = plan.write_manifest(manifest_path, manifest)
+            record = plan.authorization_record(
+                manifest, manifest_path, digest, approval_id="A-2026-10-25", approved_by="Test Person",
+                approved_at="2026-10-25T00:00:00+00:00", statement="Approved.", covers=["1", "3", "4"],
+            )
+            path = Path(directory) / "campaign-authorization.json"
+            ports.write_json_atomic(path, record)
+            authorization = CampaignAuthorization.load(path)
+        self.assertTrue(authorization.check("u1", 4)["valid"])
+        self.assertEqual(sorted(record["annotation"]), ["Negative", "Positive"])
+        negative = record["annotation"]["Negative"]
+        self.assertTrue(negative["profile_id"] and negative["lbm_cutoffs"] and negative["msp_rows"], negative)
+        self.assertEqual({row["library"] for row in negative["msp_rows"]}, {"Negative.msp"})
+        self.assertEqual(negative["lbm"], "Approved.lbm2")
+        self.assertNotIn(directory, json.dumps(record))
+        self.assertFalse(any(key in {"path", "msp_file_path", "lbm_file_path"} for row in negative["msp_rows"] for key in row))
+
     def test_the_runners_claims_keep_a_shared_object_until_its_last_sibling_releases_it(self) -> None:
         """The ports against Interactive's own download store: a sibling's pre-claim keeps the object the first
         unit fetched through that unit's cleanup and gc, a second sibling reads it from the store, release_claims

@@ -151,6 +151,57 @@ class SharedDownloadTests(Base):
         self.assertEqual(claim_states(world)["u2"], ("released", "batch_plan", "excluded"))
         self.assertEqual(world.interactive.collected, [URL])
 
+    def test_a_sibling_stopped_by_a_revoked_approval_releases_its_claim(self) -> None:
+        """Review of 2026-10-25: u1's download claimed the object for u2, and the approval is revoked before u2
+        downloads. u2 ends stopped_no_approval and releases its pending claim, without the revoked approval, so the
+        store deletes nothing then, but no claim keeps the archive through every later cleanup."""
+        world = self.world(("u1", "u2"))
+        with world.open() as book:
+            runner = world.runner(book)
+            for _ in range(400):
+                runner.iterate()
+                if claim_states(world).get("u2", ("",))[0] == "pending":
+                    break
+                world.clock.sleep(30)
+            else:
+                self.fail("u2 was never claimed")
+            self.assertNotIn("u2", world.interactive.download_starts)
+            book.revoke("approval-1", "Test Person", "stop the campaign", runner.stamp())
+            runner.run(until_idle=True, max_iterations=200)
+            unit = book.unit("u2")
+            self.assertEqual((unit["state"], unit["terminal_reason"]), ("stopped_no_approval", "approval_missing"))
+            released = self.events(book, machine.SHARED_DOWNLOAD_RELEASED)
+        self.assertNotIn("u2", world.interactive.download_starts)
+        self.assertIn({"unit_id": "u2", "reason": "excluded", "authorization_path": ""}, self.calls(world, "release_claims"),
+                      "released without the approval, which is revoked")
+        self.assertEqual(claim_states(world)["u2"], ("released", "batch_plan", "excluded"))
+        self.assertEqual([(unit, detail["ending"], detail["approval_passed"]) for unit, detail in released],
+                         [("u2", "stopped_no_approval", False)])
+
+    def test_a_sibling_whose_download_interactive_refuses_under_the_approval_releases_its_claim(self) -> None:
+        """Review of 2026-10-25: Interactive refuses the campaign authorization at u2's download
+        (campaign_authorization_refused). u2 ends stopped_no_approval and releases the claim u1's download made."""
+        world = self.world(("u1", "u2"))
+        download = world.interactive.download
+
+        def refuse_u2(**arguments):
+            if Path(arguments["handoff_path"]).parent.name == "u2":
+                world.interactive.calls.append(("download", arguments))
+                return {"ok": False, "reason": "campaign_authorization_refused", "codes": ["unit_not_covered"],
+                        "detail": "campaign_authorization_refused [unit_not_covered]: approval-1 does not name u2."}
+            return download(**arguments)
+
+        world.interactive.download = refuse_u2
+        book = self.finish(world)
+        unit = book.unit("u2")
+        self.assertEqual((unit["state"], unit["terminal_reason"]), ("stopped_no_approval", "campaign_authorization_refused"))
+        self.assertEqual(book.unit("u1")["state"], "done")
+        self.assertEqual(self.calls(world, "release_claims"), [
+            {"unit_id": "u2", "reason": "excluded", "authorization_path": unit["authorization_copy"]}])
+        self.assertEqual(claim_states(world)["u2"], ("released", "batch_plan", "excluded"))
+        self.assertEqual((sorted(world.interactive.objects), world.interactive.collected), ([], [URL]))
+        self.assertEqual(world.interactive.fetches, [("u1", URL)])
+
     def test_a_sibling_that_fails_before_its_download_releases_its_claim_as_failed(self) -> None:
         world = self.world(("u1", "u2"))
         handoff = world.catalog.handoff

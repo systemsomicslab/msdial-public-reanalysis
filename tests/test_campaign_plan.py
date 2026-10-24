@@ -13,9 +13,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
+import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -683,6 +685,13 @@ class PlanTests(unittest.TestCase):
         digest = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
         self.assertIn(digest, out)
         self.assertNotIn("Not approvable", err)
+        # Review of 2026-10-25: the words a person approves name the destination and the retention (boundary 1), and
+        # the plan says which of the option and the variable named the root.
+        self.assertIn(f"  workspace root {self.workspace_root}: every unit's raw data, MS-DIAL outputs and records, and "
+                      "this campaign's ledger, are written under it", out)
+        self.assertIn("  raw retention delete_after_validated_output: each unit's raw data are deleted once its outputs "
+                      "are validated (boundary 5)", out)
+        self.assertIn(f"Workspace root {self.workspace_root}, as --workspace-root names it.", err)
 
         code, _out, err = self.cli("approve", "--campaign", "c1", "--digest", "sha256:" + "0" * 64,
                                    "--approval-id", "A1", "--by", "Test Person", "--statement", "Yes.", "--covers", "1,3,4,5,split")
@@ -1059,13 +1068,11 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(code, runner_cli.EXIT_REFUSED)
         self.assertIn("pins no library", err)
 
-    def test_the_plan_pins_only_the_libraries_the_profile_names(self) -> None:
-        """2026-10-24: the resource map may locate more libraries than the profile names (an LBM2 the profile
-        replaced); only the profile's are pinned and approved, each with its role and the ion modes that load it, and
-        the summary lists the others as left unpinned and states what the pinned Interactive annotates with."""
-        from msdial_app import annotation_pipeline
-
-        tools = self.root / "tools-libraries"
+    def plan_tiered(self, campaign: str, loads_profile_lbm: bool) -> tuple[int, str, str, Path, Path]:
+        """Plan a tiered_lipid_msp campaign whose profile names an LBM2, from the command line, with the pinned
+        Interactive's tiered strategy said to load that LBM2 or not (plan.tiered_lbm_from_answers): (exit code, the
+        summary, stderr, the campaign directory, the folder of the synthetic libraries)."""
+        tools = self.root / f"tools-{campaign}"
         tools.mkdir()
         (tools / "MSDIALCUI.exe").write_bytes(CONSOLE_826)
         for name in ("P.msp", "N.msp", "Approved.lbm2", "Replaced.lbm2"):
@@ -1081,15 +1088,26 @@ class PlanTests(unittest.TestCase):
                             "Negative": {"libraries": {"msp_paths": ["library:N.msp"]}}}}), encoding="utf-8")
         extractor = {**APPROVABLE_PINS["extractor"], "path": str(tools / "RawMetadataConsoleApp.exe")}
         with mock.patch.object(ports.PinReader, "extractor", lambda _self: dict(extractor)), \
-                mock.patch.object(ports.PinReader, "code", lambda _self: json.loads(json.dumps(CODE_PINS))):
+                mock.patch.object(ports.PinReader, "code", lambda _self: json.loads(json.dumps(CODE_PINS))), \
+                mock.patch.object(plan, "tiered_lbm_from_answers", return_value=loads_profile_lbm):
             code, out, err = self.cli(
-                "plan", "--campaign", "c-libraries", "--pool", "declared", "--purpose", "annotation",
+                "plan", "--campaign", campaign, "--pool", "declared", "--purpose", "annotation",
                 "--retention", "delete_after_validated_output", "--catalog", str(self.database),
                 "--console", str(tools / "MSDIALCUI.exe"), "--resources", str(resources), "--profile", str(profile),
             )
+        return code, out, err, self.workspace_root / "_campaigns" / campaign, tools
+
+    def test_the_plan_pins_only_the_libraries_the_profile_names(self) -> None:
+        """2026-10-24: the resource map may locate more libraries than the profile names (an LBM2 the profile
+        replaced); only the profile's are pinned and approved, each with its role and the ion modes that load it, and
+        the summary lists the others as left unpinned and states what the pinned Interactive annotates with. The
+        pinned Interactive is said to load the profile's LBM2 here; whether the real one does is probed apart
+        (review of 2026-10-25)."""
+        from msdial_app import annotation_pipeline
+
+        code, out, err, directory, tools = self.plan_tiered("c-libraries", loads_profile_lbm=True)
         self.assertEqual(code, 0, err)
         self.assertNotIn("Not approvable", err)
-        directory = self.workspace_root / "_campaigns" / "c-libraries"
         manifest = json.loads((directory / "campaign-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual([(item["name"], item["role"], item["ion_modes"]) for item in manifest["pins"]["libraries"]], [
             ("Approved.lbm2", "lbm", ["Positive", "Negative"]), ("N.msp", "msp", ["Negative"]), ("P.msp", "msp", ["Positive"])])
@@ -1111,6 +1129,56 @@ class PlanTests(unittest.TestCase):
                          [(item["name"], item["role"], item["ion_modes"]) for item in manifest["pins"]["libraries"]],
                          "Interactive's authorization takes the role and the ion modes; it refuses only a location")
         self.assertNotIn("Replaced.lbm2", json.dumps(record))
+        # The annotation contract the gate's LIB-2 holds each unit's method to (review of 2026-10-25): the pinned
+        # Interactive's profile, the LBM's cutoffs and priority, and its MSP rows, by name and never by location.
+        tiered = annotation_pipeline.tiered_lcms_annotation("Approved.lbm2", "N.msp")
+        negative = record["annotation"]["Negative"]
+        self.assertEqual(record["annotation"], plan.annotation_contract(manifest))
+        self.assertEqual((negative["profile_id"], negative["lbm"], negative["lbm_cutoffs"], negative["lbm_priority"]),
+                         (profile_id, "Approved.lbm2", stated["lbm_cutoffs"], tiered["lbm_annotator"]["priority"]))
+        self.assertEqual([(row["annotator_id"], row["library"], row["priority"], row["weighted_dot_product_cutoff"],
+                           row["library_kind"]) for row in negative["msp_rows"]],
+                         [(row["annotator_id"], "N.msp", row["priority"], row["weighted_dot_product_cutoff"], "acquired")
+                          for row in tiered["msp_annotators"]])
+        self.assertEqual({row["library"] for row in record["annotation"]["Positive"]["msp_rows"]}, {"P.msp"})
+        self.assertNotIn(str(tools), json.dumps(record))
+        self.assertIn(f"    MSP annotators of Negative units, as that profile sets them: {tiered['msp_annotators'][0]['annotator_id']} "
+                      f"(N.msp; priority {tiered['msp_annotators'][0]['priority']}", out)
+
+    def test_a_plan_whose_interactive_loads_its_official_lbm_is_not_approvable(self) -> None:
+        """Review of 2026-10-25: every Interactive before 0.5.47 loaded its catalog's official LBM under
+        tiered_lipid_msp, whatever LBM2 the answers named, and the plan approved the profile's all the same; each unit
+        then downloaded and ran its diagnostic before LIB-2 stopped it. The plan now says so and refuses it."""
+        code, out, err, directory, _tools = self.plan_tiered("c-official", loads_profile_lbm=False)
+        self.assertEqual(code, 0, err)
+        refusal = ("the pinned Interactive's tiered_lipid_msp strategy loads its library catalog's official LBM, not the "
+                   "profile's Approved.lbm2, for Negative units: pin an Interactive that loads the LBM its answers name")
+        self.assertIn("Not approvable", err)
+        self.assertIn(refusal, err)
+        self.assertIn("the profile's LBM Approved.lbm2, WHICH THE PINNED INTERACTIVE DOES NOT LOAD: its tiered_lipid_msp "
+                      "strategy loads its library catalog's official LBM in its place", out)
+        manifest = json.loads((directory / "campaign-manifest.json").read_text(encoding="utf-8"))
+        self.assertIs(manifest["annotation"]["by_ion_mode"]["Positive"]["lbm_from_profile"], False)
+        digest = "sha256:" + hashlib.sha256((directory / "campaign-manifest.json").read_bytes()).hexdigest()
+        code, _out, err = self.approve("c-official", digest)
+        self.assertEqual(code, runner_cli.EXIT_REFUSED)
+        self.assertIn(refusal, err)
+        self.assertFalse((directory / "ledger.sqlite").exists())
+        self.assertFalse((directory / "campaign-authorization.json").exists())
+
+    def test_the_plan_says_the_variable_named_its_root(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {runner_cli.WORKSPACE_ROOT_VARIABLE: str(self.workspace_root)}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = runner_cli.main([
+                "--interactive-root", str(contract.INTERACTIVE_ROOT), "--catalog-root", str(contract.CATALOG_ROOT),
+                "plan", "--campaign", "c-variable", "--pool", "declared", "--purpose", "a", "--retention", "keep",
+                "--catalog", str(self.database)])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn(f"Workspace root {self.workspace_root}, as MSDIAL_REPOSITORY_WORKSPACE_ROOT names it.", err.getvalue())
+        self.assertIn(f"  workspace root {self.workspace_root}: ", out.getvalue())
+        self.assertIn("  raw retention keep: each unit's raw data are kept", out.getvalue())
+        self.assertTrue((self.workspace_root / "_campaigns" / "c-variable" / "campaign-manifest.json").is_file())
 
 
 class LibraryPinTests(unittest.TestCase):
@@ -1123,7 +1191,7 @@ class LibraryPinTests(unittest.TestCase):
                                             "workflow_overrides": {"lbm_reverse_dot_product": 0.3}}}}
     CODE = {"tiered": lambda lbm, msp: {"profile_id": f"tiered-{lbm}-{msp}"},
             "lbm_cutoffs": {"weighted": 0.1, "simple": 0.1, "reverse": 0.1}, "lbm_cutoffs_source": "the template",
-            "problems": []}
+            "tiered_lbm_from_answers": True, "problems": []}
 
     def test_only_the_libraries_the_profile_names_are_pinned_with_their_ion_modes(self) -> None:
         pinned, unpinned = plan.split_libraries(self.PROFILE, ["P.msp", "N.msp", "A.lbm2", "B.lbm2", "Z.lbm2"])
@@ -1165,8 +1233,141 @@ class LibraryPinTests(unittest.TestCase):
             "download_groups": 0, "distinct_objects": 0, "per_unit_known_bytes": 0, "distinct_bytes_known": 0,
             "distinct_bytes_lower_bound": 0, "unknown_size_objects": 0, "empty_digest_objects": 0,
             "units_with_archives": 0, "class_kinds": {}}, "pins": {}, "policy": {}, "profile": None}
-        self.assertIn("libraries and annotation: not stated (the manifest was planned before the plan stated them)",
-                      plan.summary_text(manifest, "sha256:" + "0" * 64))
+        text = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        self.assertIn("libraries and annotation: not stated (the manifest was planned before the plan stated them)", text)
+        self.assertIn("  workspace root: not stated\n  raw retention not stated\n", text)
+        self.assertIsNone(plan.annotation_contract(manifest))
+        self.assertEqual(plan.annotation_problems(manifest), [])
+
+    def test_the_tiered_profiles_lbm_priority_and_msp_rows_are_stated_by_name(self) -> None:
+        """Review of 2026-10-25: the contract the authorization carries to LIB-2 holds every MSP row's thresholds
+        and priority and its library kind, by file name, as the pinned Interactive's profile sets them."""
+        def tiered(lbm, msp):
+            row = {"msp_file_path": msp, "target_omics": "Metabolomics", "use_rt_scoring": False, "evidence_tier": "t"}
+            return {"profile_id": "p1", "lbm_annotator": {"lbm_file_path": lbm, "priority": 3, "rt_tolerance": 100},
+                    "msp_annotators": [{**row, "annotator_id": "strict", "priority": 2, "weighted_dot_product_cutoff": 0.6},
+                                       {**row, "annotator_id": "predicted", "priority": 1, "library_kind": "InSilico",
+                                        "msp_file_path": "E:\\private\\" + msp}]}
+
+        record = plan.annotation_record(self.PROFILE, [], [], {**self.CODE, "tiered": tiered})
+        positive = record["by_ion_mode"]["Positive"]
+        self.assertEqual(positive["lbm_priority"], 3)
+        self.assertEqual(positive["msp_rows"], [
+            {"annotator_id": "strict", "library": "P.msp", "priority": 2, "weighted_dot_product_cutoff": 0.6,
+             "use_rt_scoring": False, "target_omics": "Metabolomics", "library_kind": "acquired"},
+            {"annotator_id": "predicted", "library": "P.msp", "priority": 1, "use_rt_scoring": False,
+             "target_omics": "Metabolomics", "library_kind": "predicted"}])
+        text = "\n".join(record["statement"])
+        self.assertIn("LBM cutoffs weighted/simple/reverse 0.1/0.1/0.1 from the template; LBM priority 3", text)
+        self.assertIn("    MSP annotators of Positive units, as that profile sets them: strict (P.msp; priority 2; MS1/MS2 "
+                      "tolerance ?/?; weighted/simple/reverse 0.6/?/?;", text)
+        self.assertIn("predicted (P.msp; priority 1;", text)
+        manifest = {"annotation": record}
+        contract_ = plan.annotation_contract(manifest)
+        self.assertEqual(sorted(contract_), ["Negative", "Positive"])
+        self.assertEqual(contract_["Positive"], {key: positive[key] for key in plan.ANNOTATION_CONTRACT_KEYS})
+        self.assertNotIn("private", json.dumps(contract_), "names, never locations")
+        self.assertEqual(plan.annotation_problems(manifest), [])
+
+    def test_the_lbm_the_pinned_interactive_does_not_load_or_cannot_be_probed_is_said_and_refused(self) -> None:
+        for loads, said, refused in (
+                (False, ", WHICH THE PINNED INTERACTIVE DOES NOT LOAD", "loads its library catalog's official LBM, not the "
+                 "profile's A.lbm2, for Positive units"),
+                (None, ", which the pinned Interactive may not load: whether its tiered_lipid_msp strategy loads the LBM "
+                 "the answers name could not be read", "whether the pinned Interactive's tiered_lipid_msp strategy loads "
+                 "the profile's LBM A.lbm2 for Positive units could not be read")):
+            with self.subTest(loads=loads):
+                record = plan.annotation_record(self.PROFILE, [], [], {**self.CODE, "tiered_lbm_from_answers": loads})
+                self.assertIs(record["by_ion_mode"]["Positive"]["lbm_from_profile"], loads)
+                self.assertIn("the profile's LBM A.lbm2" + said, "\n".join(record["statement"]))
+                problems = plan.annotation_problems({"annotation": record})
+                self.assertEqual(len(problems), 2, problems)
+                self.assertIn(refused, problems[1])
+        # Another strategy, or the tiered one with no LBM named (its official LBM is the one meant), is not probed.
+        official = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "tiered_lipid_msp"},
+                    "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}}}}
+        for profile in (official, {**self.PROFILE, "answers": {**self.PROFILE["answers"], "library_strategy": "existing"}}):
+            record = plan.annotation_record(profile, [], [], {**self.CODE, "tiered_lbm_from_answers": False})
+            self.assertNotIn("lbm_from_profile", record["by_ion_mode"]["Positive"])
+            self.assertEqual(plan.annotation_problems({"annotation": record}), [])
+
+    def test_the_probe_reads_which_lbm_the_tiered_strategy_loads_and_consults_no_catalog(self) -> None:
+        consulted = []
+
+        def catalog_status():
+            consulted.append(1)
+            return [{"id": "lipidomics", "kind": "lbm", "local_path": "Official.lbm2"}]
+
+        def before_0_5_47(state, _loaded, answers):
+            # The catalog's official LBM, whatever the answers name.
+            state["lbm_path"] = next(item for item in old.catalog_status() if item["id"] == "lipidomics")["local_path"]
+
+        def from_0_5_47(state, _loaded, answers):
+            state["lbm_path"] = os.path.abspath(answers["libraries"]["lbm_path"])
+
+        old = types.SimpleNamespace(catalog_status=catalog_status, _apply_libraries=before_0_5_47)
+        self.assertIs(plan.tiered_lbm_from_answers(old), False)
+        self.assertIs(old.catalog_status, catalog_status, "the catalog is put back")
+        self.assertEqual(consulted, [], "the real catalog is never consulted")
+        self.assertIs(plan.tiered_lbm_from_answers(types.SimpleNamespace(_apply_libraries=from_0_5_47)), True)
+
+    def test_a_template_the_answers_name_comes_before_the_settings_one_and_overrides_before_both(self) -> None:
+        """Review of 2026-10-25: Interactive's _workflow takes the answers' template_path before its settings'; the
+        plan read the settings' alone."""
+        profile = json.loads(json.dumps(self.PROFILE))
+        profile["by_ion_mode"]["Positive"]["template_path"] = "answers-template.txt"
+        profile["by_ion_mode"]["Negative"]["template_path"] = "answers-template.txt"
+        read = []
+
+        def template_cutoffs(answer):
+            read.append(answer)
+            return {"weighted": 0.2, "simple": 0.2, "reverse": 0.4}, f"the parameter template {answer}, which the answers name"
+
+        record = plan.annotation_record(profile, [], [], {**self.CODE, "template_cutoffs": template_cutoffs})
+        positive, negative = record["by_ion_mode"]["Positive"], record["by_ion_mode"]["Negative"]
+        self.assertEqual((positive["lbm_cutoffs"], positive["lbm_cutoffs_source"]),
+                         ({"weighted": 0.2, "simple": 0.2, "reverse": 0.4},
+                          "the parameter template answers-template.txt, which the answers name"))
+        self.assertEqual(negative["lbm_cutoffs"], {"weighted": 0.1, "simple": 0.1, "reverse": 0.3},
+                         "the profile's workflow_overrides come before any template")
+        self.assertEqual(read, ["answers-template.txt"])
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
+    def test_the_pinned_interactive_is_read_as_its_workflow_reads_it(self) -> None:
+        """Against the real Interactive: the probe answers and puts its catalog back, an Interactive before 0.5.47 is
+        found to load its official LBM, and a template the answers name is read before the settings' one."""
+        import msdial_app
+        from msdial_app import agent_workflow
+
+        catalog = agent_workflow.catalog_status
+        loads = plan.tiered_lbm_from_answers(agent_workflow)
+        self.assertIsInstance(loads, bool)
+        self.assertIs(agent_workflow.catalog_status, catalog)
+        version = tuple(int(part) for part in str(msdial_app.__version__).split(".")[:3])
+        if version <= (0, 5, 46):
+            self.assertIs(loads, False, "tiered_lipid_msp loaded the catalog's LBM before 0.5.47")
+        if not isinstance(getattr(agent_workflow, "LBM_TEMPLATE_CUTOFFS", None), dict):
+            self.skipTest("this Interactive carries no template's LBM cutoffs into the method")
+        own = Path(agent_workflow.RESOURCES) / plan.DEFAULT_TEMPLATE
+        with tempfile.TemporaryDirectory() as directory:
+            templates = {}
+            for name, value in (("settings.txt", "0.15"), ("answers.txt", "0.25")):
+                templates[name] = Path(directory) / name
+                templates[name].write_text(own.read_text(encoding="utf-8-sig").replace(
+                    "Reverse dot product cutoff for LBM-based annotation: 0.1",
+                    f"Reverse dot product cutoff for LBM-based annotation: {value}"), encoding="utf-8")
+            with mock.patch.object(agent_workflow, "load_user_settings",
+                                   return_value={"template_path": str(templates["settings.txt"])}):
+                found = plan.interactive_annotation()
+            self.assertIs(found["tiered_lbm_from_answers"], loads)
+            self.assertEqual((found["lbm_cutoffs"]["reverse"], found["lbm_cutoffs_source"]),
+                             (0.15, "the parameter template settings.txt, which Interactive's settings name"))
+            self.assertEqual(found["template_cutoffs"](str(templates["answers.txt"])),
+                             ({"weighted": 0.1, "simple": 0.1, "reverse": 0.25},
+                              "the parameter template answers.txt, which the answers name"))
+            self.assertEqual(found["template_cutoffs"](str(Path(directory) / "missing.txt"))[1],
+                             f"the parameter template {plan.DEFAULT_TEMPLATE}, Interactive's own",
+                             "an answer naming no file falls back to Interactive's own, not to the settings'")
 
     @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
     def test_the_console_pin_records_the_version_its_build_recorded(self) -> None:

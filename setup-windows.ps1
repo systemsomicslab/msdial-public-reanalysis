@@ -18,7 +18,11 @@ function Test-WithinFolder {
 # Why a folder cannot be a repository reanalysis workspace root, or "" where it can. The root is chosen per
 # campaign and passed explicitly (D:\13_MSDIAL_Public_Reanalysis\analysis keeps the pilots and preflights);
 # wherever it is, raw downloads and MS-DIAL outputs stay off C:, out of the user profile and temporary
-# folders, and out of every code checkout.
+# folders, and out of every code checkout. The root is a folder on a drive of this PC, named by its letter: a
+# network or device path (\\server\share, \\?\..., \\.\...) and a mapped network drive are refused whole, since
+# the checks below compare drive letters and path prefixes, and \\localhost\C$\Users\<user>\analysis named a folder
+# on C: in the user profile in a spelling none of them saw (review of 2026-10-25). A drive that is not mounted is
+# said to be so, not left to the .git walk, whose Join-Path stopped on it with "Cannot find drive".
 function Get-WorkspaceRootProblem {
     param(
         [string]$Root,
@@ -30,7 +34,10 @@ function Get-WorkspaceRootProblem {
     if ([string]::IsNullOrWhiteSpace($Root)) {
         return "no root was given: pass -ReanalysisRoot, the workspace root the campaigns on this PC use"
     }
-    if ($Root -notmatch '^[A-Za-z]:[\\/]' -and $Root -notmatch '^\\\\[^\\]+\\[^\\]+') {
+    if ($Root -match '^[\\/]{2}') {
+        return "it is a network or device path; give a folder on a drive of this PC, as X:\folder"
+    }
+    if ($Root -notmatch '^[A-Za-z]:[\\/]') {
         return "it is not an absolute path"
     }
     try {
@@ -45,6 +52,13 @@ function Get-WorkspaceRootProblem {
         if (-not [string]::IsNullOrWhiteSpace($systemDrive) -and $drive.Equals($systemDrive.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
             return "it is on $drive"
         }
+    }
+    $driveType = (New-Object System.IO.DriveInfo $drive).DriveType
+    if ($driveType -eq [System.IO.DriveType]::NoRootDirectory) {
+        return "its drive $drive is not mounted on this PC"
+    }
+    if ($driveType -eq [System.IO.DriveType]::Network) {
+        return "it is on the network drive $drive; give a folder on a drive of this PC"
     }
     foreach ($folder in $Profiles) {
         if (Test-WithinFolder -Path $full -Folder $folder) { return "it is inside the user profile $folder" }

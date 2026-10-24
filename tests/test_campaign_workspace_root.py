@@ -84,15 +84,63 @@ class RunnerRootTests(unittest.TestCase):
 
     def test_the_option_comes_first_then_the_variable_and_a_blank_value_names_none(self) -> None:
         resolve = cli.resolve_workspace_root
-        self.assertEqual(resolve("F:\\a", {VARIABLE: "G:\\b"}), Path("F:\\a"))
-        self.assertEqual(resolve(None, {VARIABLE: " G:\\b "}), Path("G:\\b"))
-        self.assertEqual(resolve("  ", {VARIABLE: "G:\\b"}), Path("G:\\b"), "a blank option names no root")
+        option, variable = str(self.option_root), str(self.variable_root)
+        self.assertEqual(resolve(option, {VARIABLE: variable}), self.option_root)
+        self.assertEqual(resolve(None, {VARIABLE: f" {variable} "}), self.variable_root)
+        self.assertEqual(resolve("  ", {VARIABLE: variable}), self.variable_root, "a blank option names no root")
+        self.assertEqual((cli.workspace_root_source(option), cli.workspace_root_source("  "), cli.workspace_root_source(None)),
+                         ("--workspace-root", VARIABLE, VARIABLE))
         for environment in ({}, {VARIABLE: ""}, {VARIABLE: "   "}):
             with self.subTest(environment=environment), self.assertRaises(cli.NoWorkspaceRoot) as raised:
                 resolve(None, environment)
             self.assertIn("--workspace-root", str(raised.exception))
             self.assertIn(VARIABLE, str(raised.exception))
         self.assertEqual(cli.WORKSPACE_ROOT_VARIABLE, ports.WORKSPACE_ROOT_VARIABLE)
+
+    def test_a_relative_root_or_one_inside_a_checkout_is_refused_whichever_names_it(self) -> None:
+        """Review of 2026-10-25: a relative root was taken and read against the working directory (the code checkout,
+        for a scheduled task), plan and approve wrote there, and every unit then failed at its download on
+        Interactive's "must be an absolute path"; a root inside a checkout was taken too."""
+        checkout = self.directory / "code"
+        (checkout / ".git").mkdir(parents=True)
+        worktree = self.directory / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").write_text("gitdir: elsewhere\n", encoding="ascii")
+        cases = {"analysis": "is not an absolute path", "F:": "is not an absolute path",
+                 "F:analysis": "is not an absolute path", "\\analysis": "is not an absolute path",
+                 str(checkout / "analysis"): f"is inside the code checkout {checkout}",
+                 str(checkout): f"is inside the code checkout {checkout}",
+                 str(worktree / "data" / "analysis"): f"is inside the code checkout {worktree}"}
+        for root, problem in cases.items():
+            for option, environment, source in ((root, {VARIABLE: str(self.variable_root)}, "--workspace-root"),
+                                                (None, {VARIABLE: root}, VARIABLE)):
+                with self.subTest(root=root, source=source), self.assertRaises(cli.NoWorkspaceRoot) as raised:
+                    cli.resolve_workspace_root(option, environment)
+                self.assertIn(f"The workspace root {Path(root)}, which {source} names, {problem}", str(raised.exception))
+                self.assertIn("No campaign file was read or written", str(raised.exception))
+        self.assertEqual(cli.resolve_workspace_root(str(self.directory / "codebase" / "analysis"), {}),
+                         self.directory / "codebase" / "analysis", "a folder named like a checkout is not inside it")
+
+    def test_a_command_given_a_relative_root_is_refused_and_writes_nothing_where_it_runs(self) -> None:
+        working = self.directory / "working"
+        working.mkdir()
+        previous = os.getcwd()
+        os.chdir(working)
+        self.addCleanup(os.chdir, previous)
+        for argv in (["--workspace-root", "analysis", "status", "--campaign", "c1"],
+                     ["--workspace-root", "analysis", "approve", "--campaign", "c1", "--digest", "sha256:x",
+                      "--approval-id", "a", "--by", "b", "--statement", "s", "--covers", "1"]):
+            with self.subTest(command=argv[2]), _without_variable(), \
+                    mock.patch.object(cli, "_approved_ledger", side_effect=AssertionError("a ledger was looked for")):
+                code, out, err = _main(argv)
+            self.assertEqual((code, out), (cli.EXIT_REFUSED, ""))
+            self.assertIn("The workspace root analysis, which --workspace-root names, is not an absolute path", err)
+        with _without_variable():
+            os.environ[VARIABLE] = "analysis"
+            code, _out, err = _main(["status", "--campaign", "c1"])
+        self.assertEqual(code, cli.EXIT_REFUSED)
+        self.assertIn(f"which {VARIABLE} names, is not an absolute path", err)
+        self.assertEqual(list(working.iterdir()), [], "nothing was written where the command ran")
 
     def test_a_command_with_no_root_named_is_refused_before_it_reads_or_writes_anything(self) -> None:
         for argv in (["status", "--campaign", "c1"], ["verify-env", "--campaign", "c1"],
@@ -430,6 +478,77 @@ class SetupRootTests(unittest.TestCase):
         self.assertTrue(problems[12].startswith("no root was given: pass -ReanalysisRoot"), problems[12])
         self.assertEqual(problems[13], "it is on C:", "C: is refused by default")
         self.assertTrue(problems[14].startswith("it is inside the user profile"), problems[14])
+
+    def test_a_network_or_device_spelling_of_a_drive_and_a_drive_not_mounted_are_refused(self) -> None:
+        """Review of 2026-10-25: \\\\localhost\\C$\\... named a folder on C:, in the profile too, in a spelling the
+        drive-letter and prefix checks never saw, and was taken; \\\\?\\C:\\... stopped on an unrelated error, and a
+        drive that is not mounted on Join-Path's "Cannot find drive" at the .git walk."""
+        profile = Path(os.environ["USERPROFILE"])
+        inside_profile = "\\\\localhost\\C$\\" + str(profile.relative_to(profile.anchor)) + "\\analysis"
+        absent = next((letter for letter in "ZYXWVUTSRPONMLKJIHGE" if not os.path.exists(f"{letter}:\\")), None)
+        cases = [{"root": root} for root in (
+            "\\\\localhost\\C$\\MSDIAL\\analysis", "\\\\127.0.0.1\\c$\\x", inside_profile,
+            f"\\\\{os.environ.get('COMPUTERNAME', 'localhost')}\\C$\\x", "\\\\?\\UNC\\localhost\\C$\\x", "\\\\?\\C:\\x",
+            "\\\\.\\C:\\x", "//localhost/C$/x", "\\\\nas\\share\\analysis")]
+        if absent is not None:
+            # Off the system drive, the profile and temp as the other test names them, so only the drive is left.
+            cases.append({"root": f"{absent}:\\MSDIAL\\analysis", "SystemDrives": ["Q:"], "Profiles": [],
+                          "TempFolders": []})
+        problems = self.problems(cases)
+        self.assertEqual(len(problems), len(cases), problems)
+        for case, problem in zip(cases[:9], problems[:9]):
+            self.assertEqual(problem, "it is a network or device path; give a folder on a drive of this PC, as X:\\folder",
+                             case["root"])
+        if absent is not None:
+            self.assertEqual(problems[9], f"its drive {absent}: is not mounted on this PC")
+
+
+# The whole script, as README tells a person to run it, with a stand-in interpreter that records any call and fails:
+# a refusal must come before the root's folder is made and before anything is installed.
+FAKE_PYTHON = "@echo %* >> \"%~dp0called.txt\"\r\n@exit /b 1\r\n"
+
+
+@unittest.skipUnless(os.name == "nt" and shutil.which("powershell.exe"), "Windows PowerShell")
+class SetupScriptTests(unittest.TestCase):
+    """setup-windows.ps1 itself: -ReanalysisRoot has no default, and a refused root stops the script (review of
+    2026-10-25: SetupRootTests calls the function alone, so restoring the D: default or dropping the throw passed)."""
+
+    def setUp(self) -> None:
+        self.directory = Path(tempfile.mkdtemp(prefix="setup-script-")).resolve()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        self.python = self.directory / "tools" / "python.cmd"
+        self.python.parent.mkdir()
+        self.python.write_text(FAKE_PYTHON, encoding="ascii", newline="")
+        for name in ("interactive", "catalog"):
+            (self.directory / name).mkdir()
+
+    def setup(self, *arguments: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+             str(TESTS.parent / "setup-windows.ps1"), "-Python", str(self.python),
+             "-InteractiveRoot", str(self.directory / "interactive"), "-CatalogRoot", str(self.directory / "catalog"),
+             *arguments],
+            capture_output=True, text=True, timeout=120, creationflags=subprocess.CREATE_NO_WINDOW)
+
+    def assert_refused(self, completed: subprocess.CompletedProcess, root: str, problem: str) -> None:
+        self.assertNotEqual(completed.returncode, 0, completed.stdout)
+        said = " ".join((completed.stderr + completed.stdout).split())
+        self.assertIn(f"The repository reanalysis workspace root cannot be '{root}': {problem}", said)
+        self.assertNotIn("Repository reanalysis workspace:", completed.stdout, "no folder was made")
+        self.assertFalse((self.python.parent / "called.txt").exists(), "nothing was installed")
+
+    def test_without_a_root_the_script_stops_before_it_makes_or_installs_anything(self) -> None:
+        self.assert_refused(self.setup(), "", "no root was given: pass -ReanalysisRoot")
+
+    def test_a_refused_root_stops_the_script_and_its_folder_is_not_made(self) -> None:
+        root = self.directory / "analysis"
+        system = root.drive.casefold() in ("c:", os.environ.get("SystemDrive", "C:").casefold())
+        self.assert_refused(self.setup("-ReanalysisRoot", str(root)), str(root),
+                            f"it is on {root.drive}" if system else "it is inside the temporary folder")
+        self.assertFalse(root.exists())
+        shared = "\\\\localhost\\C$\\" + str(root.relative_to(root.anchor))
+        self.assert_refused(self.setup("-ReanalysisRoot", shared), shared, "it is a network or device path")
+        self.assertFalse(root.exists())
 
 
 if __name__ == "__main__":

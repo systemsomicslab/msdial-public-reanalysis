@@ -54,6 +54,9 @@ time: as `workspace_root` to every `msdial_repository_reanalysis_plan` and
 `--workspace-root` (or through `MSDIAL_REPOSITORY_WORKSPACE_ROOT`). Reading an
 archived campaign means naming the archive root. Wherever it is, the root is not
 on C:, in the user profile, in a temporary folder, or inside a code checkout.
+The runner refuses a root that is not an absolute path or lies inside a code
+checkout, and its plan summary, the text a person approves, names the root and
+the raw retention; `setup-windows.ps1` refuses the rest.
 The `MSDIAL_REPOSITORY_WORKSPACE_ROOT` of the Interactive MCP server in
 `.mcp.json` bounds a Claude session to one root: a session that works on another
 root needs that value changed and the server reconnected. Each unit gets:
@@ -79,7 +82,9 @@ units, 1,051,091 sample records, and 365,276 raw-file records.
    -ReanalysisRoot <workspace root>`, adding `-InteractiveRoot` and
    `-CatalogRoot` when the defaults do not match the analysis PC. The root has
    no default; the script refuses one on C:, in the user profile, in a
-   temporary folder, or inside a code checkout.
+   temporary folder, or inside a code checkout, and takes only a folder on a
+   mounted drive of this PC named by its letter (`X:\...`), never a network or
+   device path (`\\server\share`, `\\?\...`) or a mapped network drive.
 4. Install and authenticate Claude Code if `claude --version` is unavailable.
 5. Run `claude` from this directory, or double-click `Start Claude Code.cmd`.
 6. Approve the two project-scoped MCP servers when Claude Code asks.
@@ -160,9 +165,16 @@ the MS-DIAL results (2026-10-01), and every before-production check is placed
 `method.txt` and its MSP annotator settings load must be one the approval
 names, with the sha256 it names, and what the unit's answers name for its
 role; the names must agree across `method.txt`, `workflow-settings.json` and
-the run manifest; and every MSP annotator row must state its own
-`target_omics`. It names files, never their locations, and does not apply to a
-unit without `provenance/campaign-authorization.json`. CLS-1, CLS-2, CLS-3,
+the run manifest; every MSP annotator row must state its own
+`target_omics`; and what the method annotates with must be what the approval
+states for the unit's ion mode (review of 2026-10-25): the annotation profile,
+the LBM's score cutoffs and priority, and each MSP annotator row's library,
+priority, tolerances, score cutoffs, RT use, target omics and library kind. The
+plan writes that annotation contract into the manifest and the authorization,
+read from the pinned Interactive, and refuses a tiered profile whose LBM2 the
+pinned Interactive would replace with its official one. It names files, never
+their locations, and does not apply to a unit without
+`provenance/campaign-authorization.json`. CLS-1, CLS-2, CLS-3,
 ORD-1, PKH-1 and SPL-1 are `record_only`,
 and so are PRE-1, which never FAILs, and PAIR-1 (2026-10-06), which lists as a
 WARN every input the lease paired with a declared raw file by inference

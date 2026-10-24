@@ -37,8 +37,10 @@ THE ORDER OF USE
 
 THE WORKSPACE ROOT IS NAMED, NEVER ASSUMED (2026-10-24). Every command takes it from --workspace-root (an option
 before the command), else from the environment variable MSDIAL_REPOSITORY_WORKSPACE_ROOT, and where neither names
-one (a blank value names none) it refuses and exits 2, reading and writing no campaign file. The root is chosen per
-campaign: production runs on a root of its own, and D:\\13_MSDIAL_Public_Reanalysis\\analysis, the runner's default
+one (a blank value names none) it refuses and exits 2, reading and writing no campaign file; so it does for a root
+that is not an absolute path or lies inside a code checkout (review of 2026-10-25). plan says which of the two named
+the root, and the summary a person approves names it and the raw retention. The root is chosen per campaign:
+production runs on a root of its own, and D:\\13_MSDIAL_Public_Reanalysis\\analysis, the runner's default
 until then, keeps the pilots and preflights, whose ledgers are read by naming it. The task definition
 schedule-command prints names the root itself, so a scheduled runner never depends on the variable. While a command
 runs, the variable is set to that root in this process and put back afterwards: the Interactive tools the runner
@@ -137,7 +139,9 @@ THE RESOURCE MAP (--resources, default campaign-resources.local.json beside this
 *.local.json is git-ignored) is the only place a library's location is written:
     {"schema": "msdial-campaign-resources.v1", "libraries": {"<file name>": "<where it is on this machine>"}}
 The plan pins only the map's libraries the profile names (2026-10-24); the summary lists the others as left
-unpinned, and states each ion mode's annotation profile and LBM score cutoffs as the pinned Interactive applies them.
+unpinned, and states each ion mode's annotation profile, LBM score cutoffs and priority and MSP annotator rows as the
+pinned Interactive applies them, which the authorization carries to the gate's LIB-2 (2026-10-25). A tiered profile
+whose LBM2 the pinned Interactive would replace with its official one is not approvable.
 
 WHAT IT NEVER DOES
 - Decide whether a unit may run: Interactive's campaign_disposition says so after the raw-header preflight.
@@ -199,17 +203,53 @@ def _campaign_directory(workspace_root: Path, campaign_id: str) -> Path:
 
 
 class NoWorkspaceRoot(Exception):
-    """Neither --workspace-root nor MSDIAL_REPOSITORY_WORKSPACE_ROOT names a root: main says so, exits EXIT_REFUSED."""
+    """Neither --workspace-root nor MSDIAL_REPOSITORY_WORKSPACE_ROOT names a usable root (none, a relative one, or one
+    inside a code checkout): main says so, exits EXIT_REFUSED."""
+
+
+def workspace_root_source(option: str | Path | None) -> str:
+    """What names the campaign's workspace root, as resolve_workspace_root takes it: the option, else the variable."""
+    return "--workspace-root" if option is not None and str(option).strip() else WORKSPACE_ROOT_VARIABLE
+
+
+def _code_checkout(folder: Path) -> Path | None:
+    """The code checkout a folder lies in (the nearest one with a .git folder, or a worktree's .git file), or None."""
+    for candidate in (folder, *folder.parents):
+        try:
+            if (candidate / ".git").exists():
+                return candidate
+        except OSError:
+            continue
+    return None
 
 
 def resolve_workspace_root(option: str | Path | None, environment: Any = None) -> Path:
     """The campaign's workspace root: --workspace-root, else MSDIAL_REPOSITORY_WORKSPACE_ROOT, a blank value naming
     none (2026-10-24). Until then a command without the option fell back to D:\\13_MSDIAL_Public_Reanalysis\\analysis
     without a word, so one aimed at a production root elsewhere looked on D:, reported its campaign unapproved, or
-    planned against the pilots' workspaces."""
+    planned against the pilots' workspaces.
+
+    The root named is refused where it is not an absolute path or lies inside a code checkout (review of 2026-10-25).
+    A relative root ("analysis", or a drive alone, "F:") was taken and read against the working directory: plan and
+    approve wrote the manifest and the ledger there (the code checkout, for a scheduled task), and every unit then
+    failed at its download on Interactive's "must be an absolute path". Raw data and MS-DIAL outputs never go inside a
+    code checkout either. C:, the user profile and temporary folders are refused by setup-windows.ps1, not here, and
+    the summary a person approves names the root (plan.summary_text)."""
     for value in (option, (os.environ if environment is None else environment).get(WORKSPACE_ROOT_VARIABLE)):
         if value is not None and str(value).strip():
-            return Path(str(value).strip())
+            root = Path(str(value).strip())
+            named = f"The workspace root {root}, which {workspace_root_source(option)} names,"
+            if not root.is_absolute():
+                raise NoWorkspaceRoot(
+                    f"{named} is not an absolute path (a drive and a folder, as F:\\MSDIAL\\analysis): it would be "
+                    f"read against the working directory, and Interactive refuses it at each unit's download. No "
+                    f"campaign file was read or written.")
+            checkout = _code_checkout(root)
+            if checkout is not None:
+                raise NoWorkspaceRoot(
+                    f"{named} is inside the code checkout {checkout}, and raw data and MS-DIAL outputs never go "
+                    f"inside a code checkout. No campaign file was read or written.")
+            return root
     raise NoWorkspaceRoot(
         f"No workspace root is named: give --workspace-root <folder> before the command, or set "
         f"{WORKSPACE_ROOT_VARIABLE}. The root is chosen per campaign (production on a root of its own; "
@@ -285,6 +325,9 @@ def command_plan(args: argparse.Namespace) -> int:
         print(f"Campaign {args.campaign} is already approved; its manifest is not replaced"
               + (f" (its ledger cannot be read: {found['detail']})." if found["detail"] else "."), file=sys.stderr)
         return EXIT_REFUSED
+    # Which of the two named the root, said before anything is read against it; the summary names the root itself.
+    print(f"Workspace root {args.workspace_root}, as {getattr(args, 'workspace_root_source', '--workspace-root')} "
+          f"names it.", file=sys.stderr)
     libraries: dict[str, str] = {}
     if args.resources:
         libraries = ports.load_resources(args.resources)["libraries"]
@@ -1134,10 +1177,12 @@ def main(argv: list[str] | None = None) -> int:
         stream = open(args.log_file, "a", encoding="utf-8", buffering=1)
         sys.stdout = sys.stderr = stream
         print(f"--- {_now()} campaign-runner.py {' '.join(sys.argv[1:] if argv is None else argv)}")
+    args.workspace_root_source = workspace_root_source(args.workspace_root)
     try:
         args.workspace_root = resolve_workspace_root(args.workspace_root)
     except NoWorkspaceRoot as error:
-        # Refused before any command reads a ledger or writes anything (2026-10-24): no root is assumed.
+        # Refused before any command reads a ledger or writes anything (2026-10-24): no root is assumed, and none that
+        # is relative or inside a code checkout is taken (review of 2026-10-25).
         print(str(error), file=sys.stderr)
         return EXIT_REFUSED
     try:

@@ -6095,12 +6095,44 @@ LIBRARY_ROLE_WORDS = {"lbm": "LBM", "msp": "MSP library", "text": "text database
 METHOD_LIBRARY_KEYS = (("lbm file path", "lbm"), ("msp file path", "msp"), ("text db file path", "text"))
 METHOD_LIBRARY_TABLES = (("msp annotator settings file path", "msp", "msp_file_path"),
                          ("text annotator settings file path", "text", "text_db_file_path"))
-# The LBM score cutoffs the method file states, recorded beside the verdict.
+# The LBM score cutoffs the method file states, recorded beside the verdict and held to the approval's.
 METHOD_LBM_CUTOFFS = (("weighted", "weighted dot product cutoff for lbm-based annotation"),
                       ("simple", "simple dot product cutoff for lbm-based annotation"),
                       ("reverse", "reverse dot product cutoff for lbm-based annotation"))
+# The method-file keys of the annotation profile and of the LBM annotator's priority, held to the approval's.
+METHOD_ANNOTATION_PROFILE = "annotation pipeline profile"
+METHOD_LBM_PRIORITY = "lbm annotator priority"
+# The settings of an MSP annotator row the approval states (the plan's MSP_ROW_SETTINGS, which a test holds equal), by
+# the column of Interactive's msp_annotator_settings.tsv that writes each.
+MSP_ROW_COLUMNS = (("priority", "priority"), ("rt_tolerance", "rt_tolerance"), ("ms1_tolerance", "ms1_tolerance"),
+                   ("ms2_tolerance", "ms2_tolerance"), ("weighted_dot_product_cutoff", "weighted_dot_product_cutoff"),
+                   ("simple_dot_product_cutoff", "simple_dot_product_cutoff"),
+                   ("reverse_dot_product_cutoff", "reverse_dot_product_cutoff"),
+                   ("matched_peaks_percentage_cutoff", "matched_peaks_percentage_cutoff"),
+                   ("minimum_spectrum_match", "minimum_spectrum_match"),
+                   ("use_rt_scoring", "use_retention_information_for_scoring"),
+                   ("use_rt_filtering", "use_retention_information_for_filtering"), ("target_omics", "target_omics"))
+# The library kinds the Console reads as an in-silico (predicted) MSP (the plan's PREDICTED_LIBRARY_KINDS); any
+# other, a blank one included, is acquired.
+PREDICTED_LIBRARY_KINDS = frozenset({"predicted", "insilico", "computed", "generated", "predictedmsp"})
 # Each library file's sha256, by its location, size and time, so one gate process reads a library once.
 _LIBRARY_SHA256: dict = {}
+
+
+def _library_kind(value: object) -> str:
+    return "predicted" if str(value or "").strip().casefold() in PREDICTED_LIBRARY_KINDS else "acquired"
+
+
+def _same_setting(stated: object, approved: object) -> bool:
+    """Whether a method or settings file's value is the approved one: a number by its value, so "0.10" is 0.1, a
+    switch by its word (True and "True"), and anything else by its text, case aside."""
+    if isinstance(approved, bool) or str(approved).strip().casefold() in ("true", "false"):
+        return str(stated).strip().casefold() == str(approved).strip().casefold()
+    try:
+        return math.isclose(float(str(stated).strip()), float(str(approved).strip()), rel_tol=1e-9, abs_tol=1e-12)
+    except (TypeError, ValueError):
+        return str(stated if stated is not None else "").strip().casefold() == \
+            str(approved if approved is not None else "").strip().casefold()
 
 
 def _library_role(name: str) -> str:
@@ -6196,7 +6228,14 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
     - the names disagree between the sources: method.txt, workflow-settings.json and the run manifest's prepared
       libraries, and the answers against the approval;
     - an MSP annotator row states no target_omics, so the Console scores it as the project's Target omics;
-    - the method's Target omics is not the one the answers give.
+    - the method's Target omics is not the one the answers give;
+    - what the method annotates with is not what the approval states for the unit's ion mode (its annotation contract,
+      plan.annotation_contract, review of 2026-10-25): the annotation pipeline profile; where an LBM is loaded, its
+      score cutoffs and its priority; and the MSP annotator rows, each by its id, with its library, priority,
+      tolerances, score cutoffs, matched peaks, RT use, target omics and library kind as the Console reads it. The
+      13 preflight units of 2026-10-14 ran LBM cutoffs of 0.15/0.15/0.3 against 0.1/0.1/0.1 two days later, and
+      nothing compared them: the method's template can change after the plan stated them (Interactive's settings
+      name it, and no pin covers them). What the approval does not state (an approval made before) is not compared.
     It names files, never their locations. The method's LBM cutoffs and Target omics are recorded beside the verdict.
     A unit without the approval copy is no campaign unit, and the check does not apply to it (not evaluable, not
     required).
@@ -6248,9 +6287,11 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
 
     problems: list = []
     unread: list = []
-    # What the method loads: (role, name, location), and each MSP annotator row.
+    # What the method loads: (role, name, location), and each MSP annotator row (as recorded, and with every setting).
     loaded: list = []
     msp_rows: list = []
+    msp_settings: list = []
+    msp_table_unread = False
     for key, role in METHOD_LIBRARY_KEYS:
         if fields.get(key):
             location = _library_location(fields[key], method.parent)
@@ -6262,6 +6303,7 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
         rows, why = _library_table(table, column)
         if rows is None:
             unread.append(why)
+            msp_table_unread = msp_table_unread or role == "msp"
             continue
         for index, row in enumerate(rows, start=1):
             if not row.get(column):
@@ -6271,6 +6313,7 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
             if role == "msp":
                 msp_rows.append({"annotator_id": row.get("annotator_id") or f"row {index}", "library": name,
                                  "target_omics": row.get("target_omics", ""), "library_kind": row.get("library_kind", "")})
+                msp_settings.append({**row, "annotator_id": msp_rows[-1]["annotator_id"], "library": name})
     loaded_by_role: dict = {}
     for role, name, _location in loaded:
         loaded_by_role.setdefault(role, set()).add(name)
@@ -6380,6 +6423,60 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
     if target and fields.get("target omics") and target.casefold() != fields["target omics"].casefold():
         problems.append(f"the answers give Target omics {target}, and method.txt states {fields['target omics']}")
 
+    # What the method annotates with is what the approval states for this unit's ion mode (review of 2026-10-25).
+    contracts = (authorization or {}).get("annotation")
+    contract = contracts.get(ion_mode) if isinstance(contracts, dict) else None
+    compared: list = []
+    if isinstance(contract, dict):
+        mode_words = f"for {ion_mode or 'its'} units"
+        profile_id = str(contract.get("profile_id") or "").strip()
+        if profile_id:
+            compared.append("annotation profile")
+            stated = fields.get(METHOD_ANNOTATION_PROFILE, "")
+            if stated.casefold() != profile_id.casefold():
+                problems.append(f"method.txt states annotation pipeline profile {stated or 'none'}, and the approval "
+                                f"states {profile_id} {mode_words}")
+        approved_cutoffs = contract.get("lbm_cutoffs")
+        if loaded_by_role.get("lbm") and isinstance(approved_cutoffs, dict) and approved_cutoffs:
+            compared.append("LBM cutoffs")
+            if any(name in approved_cutoffs and not _same_setting(fields.get(key), approved_cutoffs[name])
+                   for name, key in METHOD_LBM_CUTOFFS):
+                problems.append(
+                    "method.txt states LBM cutoffs weighted/simple/reverse "
+                    + "/".join(str(fields.get(key) or "none") for _name, key in METHOD_LBM_CUTOFFS)
+                    + ", and the approval states " + "/".join(str(approved_cutoffs.get(name, "none"))
+                                                             for name, _key in METHOD_LBM_CUTOFFS) + f" {mode_words}")
+        priority = contract.get("lbm_priority")
+        if loaded_by_role.get("lbm") and priority is not None:
+            compared.append("LBM priority")
+            if not _same_setting(fields.get(METHOD_LBM_PRIORITY), priority):
+                problems.append(f"method.txt states LBM annotator priority {fields.get(METHOD_LBM_PRIORITY) or 'none'}, "
+                                f"and the approval states {priority} {mode_words}")
+        approved_rows = contract.get("msp_rows")
+        # An MSP settings file that cannot be read leaves its rows unknown: said above as not evaluable, not compared.
+        if isinstance(approved_rows, list) and not msp_table_unread:
+            compared.append("MSP annotator rows")
+            wanted = {str(row.get("annotator_id") or "").casefold(): row for row in approved_rows if isinstance(row, dict)}
+            have = {str(row["annotator_id"]).casefold(): row for row in msp_settings}
+            if set(wanted) != set(have):
+                problems.append(f"the run's MSP annotators are {_names({row['annotator_id'] for row in msp_settings})}, "
+                                f"and the approval states "
+                                f"{_names({str(row.get('annotator_id') or '') for row in wanted.values()})} {mode_words}")
+            for key in sorted(set(wanted) & set(have)):
+                row, approved_row = have[key], wanted[key]
+                differ = []
+                if str(approved_row.get("library") or "").casefold() not in ("", row["library"].casefold()):
+                    differ.append(f"library {row['library']}, approved {approved_row['library']}")
+                for setting, column in MSP_ROW_COLUMNS:
+                    if setting in approved_row and not _same_setting(row.get(column, ""), approved_row[setting]):
+                        differ.append(f"{setting} {row.get(column) or 'blank'}, approved {approved_row[setting]}")
+                if "library_kind" in approved_row and \
+                        _library_kind(row.get("library_kind")) != _library_kind(approved_row["library_kind"]):
+                    differ.append(f"library kind {_library_kind(row.get('library_kind'))}, approved "
+                                  f"{_library_kind(approved_row['library_kind'])}")
+                if differ:
+                    problems.append(f"the MSP annotator {row['annotator_id']} states " + "; ".join(differ))
+
     cutoffs = {name: fields.get(key) for name, key in METHOD_LBM_CUTOFFS if key in fields}
     evidence = {
         "applicable": True, "ion_mode": ion_mode, "target_omics": fields.get("target omics", ""),
@@ -6390,11 +6487,13 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
         "msp_rows": msp_rows,
         "approved": sorted(item["name"] for item in approved.values()),
         "expected_from": "answers" if asked is not None else "approval_ion_modes" if moded is not None else "",
+        # What of the annotation the approval states was held to it; none for an approval that states none.
+        "annotation_compared": compared,
     }
     if problems:
         report.add("LIB-2", stage, LIB2_TITLE, FAIL,
-                   f"{len(problems)} problem(s) with the libraries this run will load: " + "; ".join(problems[:8])
-                   + ("; ..." if len(problems) > 8 else "") + ".", problems=problems, **evidence)
+                   f"{len(problems)} problem(s) with the libraries this run will load or how it annotates with them: "
+                   + "; ".join(problems[:8]) + ("; ..." if len(problems) > 8 else "") + ".", problems=problems, **evidence)
         return
     if unread:
         report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
@@ -6403,7 +6502,9 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
         return
     report.add("LIB-2", stage, LIB2_TITLE, PASS,
                f"method.txt loads {_names({name for _role, name, _location in loaded})}: each is a library the approval "
-               "names, with its sha256, and what this unit was to load; the other records name the same.", **evidence)
+               "names, with its sha256, and what this unit was to load; the other records name the same; "
+               + (f"its {', '.join(compared)} are the ones the approval states." if compared else
+                  "the approval states no annotation to hold the method to."), **evidence)
 
 
 # --------------------------------------------------------------------------------------------

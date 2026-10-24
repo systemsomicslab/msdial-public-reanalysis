@@ -3,7 +3,9 @@
 The MB-POST preflight units of 2026-10-14 and -15 were approved with one LBM2 and loaded the official one:
 Interactive's tiered_lipid_msp strategy took its catalog's LBM over the answer's, and the runner's records named the
 approved file. LIB-2 reads what the method loads (method.txt and the MSP annotator settings it names), hashes each
-file, and holds it to the approval copy in provenance, to the answers the unit was given, and to the other records.
+file, and holds it to the approval copy in provenance, to the answers the unit was given, and to the other records;
+since the review of 2026-10-25 it also holds the method to the annotation the approval states for the unit's ion mode
+(profile, LBM cutoffs and priority, MSP annotator rows).
 
 The fixtures are written as Interactive and the runner write them: the runner's copy of the approval in provenance;
 Interactive's method.txt, msp_annotator_settings.tsv, workflow-settings.json, run manifest and guided-answers.json in
@@ -21,7 +23,9 @@ from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
+import campaign_fakes  # noqa: E402,F401  (puts scripts/ on the path)
 import test_verify_inputs_and_acquisition as inputs  # noqa: E402  (loads the gate)
+from campaign import plan  # noqa: E402
 
 verifier = inputs.verifier
 _check, _write = inputs._check, inputs._write
@@ -36,10 +40,30 @@ TSV_HEADER = ("annotator_id", "msp_file_path", "priority", "rt_tolerance", "ms1_
               "weighted_dot_product_cutoff", "simple_dot_product_cutoff", "reverse_dot_product_cutoff",
               "matched_peaks_percentage_cutoff", "minimum_spectrum_match", "use_retention_information_for_scoring",
               "use_retention_information_for_filtering", "target_omics", "evidence_tier")
+PROFILE_ID = "lipid-rule-msp-high-low-v1"
+# The settings of the tiered profile's two MSP rows, as Interactive's annotation_pipeline sets and writes them.
+TIER_SETTINGS = {
+    "msp_high_quality": {"priority": 2, "rt_tolerance": 0.5, "ms1_tolerance": 0.01, "ms2_tolerance": 0.05,
+                         "weighted_dot_product_cutoff": 0.6, "simple_dot_product_cutoff": 0.6,
+                         "reverse_dot_product_cutoff": 0.8, "matched_peaks_percentage_cutoff": 0.0,
+                         "minimum_spectrum_match": 3, "use_rt_scoring": False, "use_rt_filtering": False},
+    "msp_low_quality": {"priority": 1, "rt_tolerance": 0.5, "ms1_tolerance": 0.01, "ms2_tolerance": 0.25,
+                        "weighted_dot_product_cutoff": 0.5, "simple_dot_product_cutoff": 0.5,
+                        "reverse_dot_product_cutoff": 0.5, "matched_peaks_percentage_cutoff": 0.0,
+                        "minimum_spectrum_match": 1, "use_rt_scoring": False, "use_rt_filtering": False},
+}
 
 
 def _sha(name: str) -> str:
     return hashlib.sha256(f"synthetic {name}\n".encode()).hexdigest()
+
+
+def _contract(msp: str) -> dict:
+    """An ion mode's annotation contract as the plan writes it into the approval (plan.annotation_contract)."""
+    return {"profile_id": PROFILE_ID, "lbm": APPROVED_LBM, "lbm_cutoffs": {"weighted": 0.1, "simple": 0.1, "reverse": 0.1},
+            "lbm_priority": 3,
+            "msp_rows": [{"annotator_id": annotator, "library": msp, **settings, "target_omics": "Metabolomics",
+                          "library_kind": "acquired"} for annotator, settings in TIER_SETTINGS.items()]}
 
 
 class LibraryUnit:
@@ -61,11 +85,20 @@ class LibraryUnit:
             {"name": NEGATIVE_MSP, "sha256": _sha(NEGATIVE_MSP), "role": "msp", "ion_modes": ["Negative"]},
             {"name": POSITIVE_MSP, "sha256": _sha(POSITIVE_MSP), "role": "msp", "ion_modes": ["Positive"]},
         ]
+        # What the approval states each ion mode's units annotate with (None: an approval made before it stated any).
+        self.annotation: "dict | None" = {"Negative": _contract(NEGATIVE_MSP), "Positive": _contract(POSITIVE_MSP)}
         self.ion_mode = "Negative"
         self.target_omics = "Lipidomics"
-        # What method.txt loads, and each MSP annotator row: (annotator id, library, target omics).
+        # What method.txt loads, and each MSP annotator row: (annotator id, library, target omics), with the settings
+        # TIER_SETTINGS gives its id as row_settings changes them; a library_kind column only where a test writes one.
         self.lbm = APPROVED_LBM
         self.rows = [("msp_high_quality", NEGATIVE_MSP, "Metabolomics"), ("msp_low_quality", NEGATIVE_MSP, "Metabolomics")]
+        self.row_settings: dict = {}
+        self.library_kinds: dict = {}
+        # The annotation profile, LBM priority and LBM cutoffs (weighted, simple, reverse) method.txt states.
+        self.method_profile = PROFILE_ID
+        self.method_lbm_priority = "3"
+        self.method_cutoffs = ("0.1", "0.1", "0.1")
         # What workflow-settings.json and the run manifest name, where a test makes them differ from the method.
         self.settings_lbm: "str | None" = None
         self.prepared_sha: dict = {}
@@ -82,31 +115,37 @@ class LibraryUnit:
             _write(self.workspace / "provenance" / "campaign-authorization.json", {
                 "schema": "msdial-campaign-authorization.v1", "approval_id": "approval-1", "campaign_id": "c1",
                 "manifest_digest": "sha256:" + "0" * 64, "covers": [1, 3, 4, 5, "split"], "units": ["unit-syn"],
-                "raw_retention_policy": "delete_after_validated_output", "libraries": self.approval})
+                "raw_retention_policy": "delete_after_validated_output", "libraries": self.approval,
+                **({"annotation": self.annotation} if self.annotation is not None else {})})
         _write(self.workspace / "provenance" / "run-manifest.json", {
             "schema": "msdial-public-reanalysis-run.v1",
             "project": {"repository": "mb_post", "accession": "MPST-SYN", "analysis_unit_id": "unit-syn",
                         "ion_mode": self.ion_mode},
             "workspace": str(self.workspace), "output_directory": str(self.output)})
         table = self.output / "msp_annotator_settings.tsv"
-        lines = ["\t".join(TSV_HEADER)]
+        header = TSV_HEADER + (("library_kind",) if self.library_kinds else ())
+        lines = ["\t".join(header)]
+        columns = dict(verifier.MSP_ROW_COLUMNS)
         for index, (annotator, library, omics) in enumerate(self.rows, start=1):
-            values = {"annotator_id": annotator, "msp_file_path": self.location(library), "priority": str(3 - index),
-                      "target_omics": omics, "evidence_tier": "tier"}
-            lines.append("\t".join(values.get(column, "0") for column in TSV_HEADER))
+            settings = {**TIER_SETTINGS.get(annotator, {"priority": 3 - index}), **self.row_settings.get(annotator, {})}
+            values = {columns[key]: str(value) for key, value in settings.items()}
+            values.update({"annotator_id": annotator, "msp_file_path": self.location(library), "target_omics": omics,
+                           "evidence_tier": "tier", "library_kind": self.library_kinds.get(annotator, "")})
+            lines.append("\t".join(values.get(column, "0") for column in header))
         table.write_text("\n".join(lines) + "\n", encoding="ascii")
+        weighted, simple, reverse = self.method_cutoffs
         (self.output / "method.txt").write_text("\n".join([
             f"MSP annotator settings file path: {table}",
-            "Annotation pipeline profile: lipid-rule-msp-high-low-v1",
-            "LBM annotator priority: 3",
+            f"Annotation pipeline profile: {self.method_profile}",
+            f"LBM annotator priority: {self.method_lbm_priority}",
             f"Ion mode: {self.ion_mode}",
             f"Target omics: {self.target_omics}",
             "Msp file path: ",
             f"Lbm file path: {self.location(self.lbm) if self.lbm else ''}",
             "Text DB file path: ",
-            "Weighted dot product cutoff for LBM-based annotation: 0.1",
-            "Simple dot product cutoff for LBM-based annotation: 0.1",
-            "Reverse dot product cutoff for LBM-based annotation: 0.1",
+            f"Weighted dot product cutoff for LBM-based annotation: {weighted}",
+            f"Simple dot product cutoff for LBM-based annotation: {simple}",
+            f"Reverse dot product cutoff for LBM-based annotation: {reverse}",
         ]) + "\n", encoding="utf-8")
         settings_lbm = self.settings_lbm or self.lbm
         _write(self.output / "workflow-settings.json", {
@@ -130,7 +169,7 @@ class LibraryUnit:
         return self.workspace
 
 
-class LoadedLibrariesTests(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -142,6 +181,8 @@ class LoadedLibrariesTests(unittest.TestCase):
         self.assertNotIn(PRIVATE_FOLDER, json.dumps(check.as_dict()), "LIB-2 names files, never their locations")
         return report, check
 
+
+class LoadedLibrariesTests(Base):
     def test_a_unit_that_loads_the_approved_libraries_passes(self) -> None:
         report, check = self.lib2()
         self.assertEqual(verifier.PASS, check.status, check.detail)
@@ -150,6 +191,8 @@ class LoadedLibrariesTests(unittest.TestCase):
                          {(APPROVED_LBM, "lbm", _sha(APPROVED_LBM)), (NEGATIVE_MSP, "msp", _sha(NEGATIVE_MSP))})
         self.assertEqual(check.evidence["lbm_cutoffs"], {"weighted": "0.1", "simple": "0.1", "reverse": "0.1"})
         self.assertEqual((check.evidence["target_omics"], check.evidence["expected_from"]), ("Lipidomics", "answers"))
+        self.assertEqual(check.evidence["annotation_compared"],
+                         ["annotation profile", "LBM cutoffs", "LBM priority", "MSP annotator rows"])
         self.assertNotIn("LIB-2", report.run_blocked_by)
 
     def test_the_official_lbm_loaded_in_place_of_the_approved_one_fails(self) -> None:
@@ -273,6 +316,102 @@ class LoadedLibrariesTests(unittest.TestCase):
         check = _check(report, "LIB-2")
         self.assertEqual((check.status, check.required), (verifier.NOT_EVALUABLE, True))
         self.assertIn("LIB-2", report.run_blocked_by)
+
+
+class ApprovedAnnotationTests(Base):
+    """Review of 2026-10-25: LIB-2 read the method's LBM cutoffs and only recorded them, so 13 preflight units ran
+    0.15/0.15/0.3 against the 0.1/0.1/0.1 of the two that followed, and a template changed after the plan would have
+    passed the same way. The method is now held to what the approval states for the unit's ion mode."""
+
+    def assert_fails(self, *words: str) -> None:
+        report, check = self.lib2()
+        self.assertEqual(verifier.FAIL, check.status, check.detail)
+        for text in words:
+            self.assertIn(text, check.detail)
+        self.assertIn("LIB-2", report.run_blocked_by)
+
+    def test_lbm_cutoffs_other_than_the_approved_ones_fail(self) -> None:
+        self.unit.method_cutoffs = ("0.15", "0.15", "0.3")
+        self.assert_fails("method.txt states LBM cutoffs weighted/simple/reverse 0.15/0.15/0.3, and the approval states "
+                          "0.1/0.1/0.1 for Negative units")
+
+    def test_one_cutoff_off_fails_and_the_same_values_spelled_otherwise_pass(self) -> None:
+        self.unit.method_cutoffs = ("0.1", "0.1", "0.11")
+        self.assert_fails("weighted/simple/reverse 0.1/0.1/0.11, and the approval states 0.1/0.1/0.1")
+        self.unit.method_cutoffs = ("0.10", "1e-1", ".1")
+        self.unit.method_lbm_priority = "3.0"
+        _report, check = self.lib2()
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_another_annotation_profile_or_lbm_priority_fails(self) -> None:
+        self.unit.method_profile = "lipid-rule-msp-high-low-insilico-v1"
+        self.unit.method_lbm_priority = "1"
+        self.assert_fails(f"method.txt states annotation pipeline profile lipid-rule-msp-high-low-insilico-v1, and the "
+                          f"approval states {PROFILE_ID} for Negative units",
+                          "method.txt states LBM annotator priority 1, and the approval states 3 for Negative units")
+
+    def test_an_msp_row_with_other_thresholds_priority_or_library_kind_fails(self) -> None:
+        self.unit.row_settings = {"msp_high_quality": {"weighted_dot_product_cutoff": 0.99, "ms2_tolerance": 5},
+                                  "msp_low_quality": {"priority": 9, "use_rt_scoring": True}}
+        self.unit.library_kinds = {"msp_high_quality": "predicted"}
+        self.assert_fails(
+            "the MSP annotator msp_high_quality states ms2_tolerance 5, approved 0.05; weighted_dot_product_cutoff 0.99, "
+            "approved 0.6; library kind predicted, approved acquired",
+            "the MSP annotator msp_low_quality states priority 9, approved 1; use_rt_scoring True, approved False")
+
+    def test_a_predicted_library_approved_as_such_passes_whatever_spelling_the_console_reads(self) -> None:
+        for row in self.unit.annotation["Negative"]["msp_rows"]:
+            row["library_kind"] = "predicted"
+        self.unit.library_kinds = {"msp_high_quality": "InSilico", "msp_low_quality": "predictedmsp"}
+        _report, check = self.lib2()
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.unit.library_kinds = {"msp_high_quality": "in silico", "msp_low_quality": "predicted"}
+        self.assert_fails("the MSP annotator msp_high_quality states library kind acquired, approved predicted")
+
+    def test_an_msp_annotator_the_approval_does_not_state_or_one_missing_fails(self) -> None:
+        self.unit.rows.append(("msp_in_silico", NEGATIVE_MSP, "Metabolomics"))
+        self.assert_fails("the run's MSP annotators are msp_high_quality, msp_in_silico, msp_low_quality, and the "
+                          "approval states msp_high_quality, msp_low_quality for Negative units")
+        self.unit.rows = self.unit.rows[:1]
+        self.assert_fails("the run's MSP annotators are msp_high_quality, and the approval states msp_high_quality, "
+                          "msp_low_quality for Negative units")
+
+    def test_the_contract_of_the_units_own_ion_mode_is_the_one_held(self) -> None:
+        """A Negative unit is held to the Negative contract: the Positive one names another MSP and other cutoffs."""
+        self.unit.annotation["Positive"]["lbm_cutoffs"] = {"weighted": 0.15, "simple": 0.15, "reverse": 0.3}
+        _report, check = self.lib2()
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.unit.annotation["Negative"]["msp_rows"][0]["library"] = POSITIVE_MSP
+        self.assert_fails(f"the MSP annotator msp_high_quality states library {NEGATIVE_MSP}, approved {POSITIVE_MSP}")
+
+    def test_an_approval_that_states_no_annotation_holds_the_method_to_nothing(self) -> None:
+        """An approval made before the plan stated the annotation contract: what it does not state is not compared."""
+        self.unit.annotation = None
+        self.unit.method_cutoffs = ("0.15", "0.15", "0.3")
+        _report, check = self.lib2()
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertEqual(check.evidence["annotation_compared"], [])
+        self.assertIn("the approval states no annotation to hold the method to", check.detail)
+        self.unit.annotation = {"Negative": {"profile_id": None, "lbm": APPROVED_LBM, "lbm_cutoffs": None,
+                                             "lbm_priority": None, "msp_rows": None}}
+        _report, check = self.lib2()
+        self.assertEqual((check.status, check.evidence["annotation_compared"]), (verifier.PASS, []))
+
+    def test_rows_of_an_msp_settings_file_that_cannot_be_read_are_not_compared(self) -> None:
+        workspace = self.unit.write()
+        (self.unit.output / "msp_annotator_settings.tsv").write_text("annotator_id\tpriority\nmsp_high_quality\t2\n",
+                                                                     encoding="ascii")
+        report = verifier.verify(workspace, "before-production")
+        check = _check(report, "LIB-2")
+        self.assertIn("LIB-2", report.run_blocked_by, "what it loads is not known, so the run stops")
+        self.assertNotIn("MSP annotator rows", check.evidence["annotation_compared"])
+        self.assertNotIn("the run's MSP annotators are", check.detail)
+
+    def test_the_gate_reads_the_settings_the_plan_states(self) -> None:
+        """The gate stands alone, so it repeats the plan's row settings and library kinds; they are held equal."""
+        self.assertEqual([setting for setting, _column in verifier.MSP_ROW_COLUMNS], list(plan.MSP_ROW_SETTINGS))
+        self.assertEqual(verifier.PREDICTED_LIBRARY_KINDS, plan.PREDICTED_LIBRARY_KINDS)
+        self.assertEqual(set(_contract(NEGATIVE_MSP)), set(plan.ANNOTATION_CONTRACT_KEYS))
 
 
 if __name__ == "__main__":
