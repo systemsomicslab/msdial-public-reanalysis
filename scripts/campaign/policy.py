@@ -1117,6 +1117,9 @@ PIN_IDENTITY = {
     # provenance_status and pinned: the build record still verifies, and its commits are still one of
     # Interactive's PINNED_BUILDS (0.5.17). Interactive refuses a campaign preflight otherwise.
     "extractor": ("binary_sha256", "inventory_sha256", "provenance_status", "pinned"),
+    # The LC-MS parameter template Interactive's settings name (ports.PinReader.template, review 2): whichever file it
+    # is, its bytes give the method its LBM cutoffs and every other template setting.
+    "template": ("sha256",),
     "interactive": ("version", "commit", "dirty"),
     "catalog": ("version", "commit", "dirty"),
     "gate": ("commit", "dirty"),

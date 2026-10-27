@@ -967,7 +967,8 @@ class World:
                  retention: str = "delete_after_validated_output", covers: tuple[str, ...] = ("1", "3", "4", "5", "split"),
                  known_bytes: int = 10 * 1000**3, size_known: bool = True, legacy_policy: bool = False,
                  library_modes: bool = False, console_version: str | None = None,
-                 download_groups: dict[str, list[str]] | None = None) -> None:
+                 download_groups: dict[str, list[str]] | None = None, template_pin: bool = False,
+                 console_record_matches: bool = True) -> None:
         self.root = root
         self.workspace_root = root / "analysis"
         self.directory = self.workspace_root / "_campaigns" / "test-campaign"
@@ -1030,7 +1031,13 @@ class World:
             for item in self.pins["libraries"]:
                 item.update(role="lbm" if item["name"] == LBM else "msp", ion_modes=modes[item["name"]])
         if console_version is not None:
-            self.pins["console"]["version"] = console_version
+            # The version a build record gives, and whether that record is of the pinned bytes (console_record_matches;
+            # since review 2 ports.PinReader.console records no version from one that is not).
+            self.pins["console"].update(version=console_version, provenance_matches=console_record_matches)
+        if template_pin:
+            # As the plan pins it since review 2 (ports.PinReader.template): the parameter template, by its sha256.
+            self.pins["template"] = {"name": "synthetic-template.txt", "exists": True,
+                                     "sha256": hashlib.sha256(b"template").hexdigest(), "bytes": 8, "named_by": "settings"}
         # What Interactive's finalisation of a production run records it loaded (console_run_finalisation.libraries),
         # by default a Positive unit's approved libraries; None records none. And the libraries the run manifest names
         # as the run is prepared (output/run-manifest.json); None writes no run manifest, as before.

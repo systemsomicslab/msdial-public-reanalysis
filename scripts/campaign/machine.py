@@ -280,7 +280,11 @@ def _read_object(path: Path) -> dict[str, Any]:
 
 def _console_version(console: Mapping[str, Any]) -> str:
     """The pinned Console's version for the Catalog's msdial_version: the version its pin records (its build's own
-    version output, ports.console_version), else the commit its build provenance names; "" where neither is known."""
+    version output, ports.console_version), else the commit its build provenance names; "" where neither is known,
+    and where that build provenance does not describe the pinned bytes (provenance_matches not true, review 2): a
+    record left beside a rebuilt or replaced Console names another build."""
+    if console.get("provenance_matches") is not True:
+        return ""
     version = str(console.get("version") or "").strip()
     head = str(console.get("recorded_git_head") or "").strip()
     return version or (f"commit {head}" if head else "")
@@ -2327,7 +2331,13 @@ class Runner:
         left not evaluable where it is required (2026-10-02). Such a unit counts as failed, so it is retried
         twice and then its raw data go. Any other FAIL, a WARN and any other check left not evaluable are
         recorded, and the unit runs. A gate that gives no usable report holds the unit (_gate_hold).
+
+        The pins are compared first (review 2): the method is written from the pinned Interactive, libraries and
+        parameter template, so with one of them changed every unit alike would fail LIB-2 and lose its raw data,
+        where the pin pause stops the campaign once and lifts when they match again.
         """
+        if self._pin_check_failed():
+            return False
         answers = self.answers(unit, unit["minimum_peak_height"])
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_run", self.stamp(), tool="msdial_prepare_guided_analysis")
         result = self.ports.interactive.prepare_guided(input_path=unit["input_path"], answers=answers)

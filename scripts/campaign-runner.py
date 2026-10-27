@@ -203,8 +203,9 @@ def _campaign_directory(workspace_root: Path, campaign_id: str) -> Path:
 
 
 class NoWorkspaceRoot(Exception):
-    """Neither --workspace-root nor MSDIAL_REPOSITORY_WORKSPACE_ROOT names a usable root (none, a relative one, or one
-    inside a code checkout): main says so, exits EXIT_REFUSED."""
+    """Neither --workspace-root nor MSDIAL_REPOSITORY_WORKSPACE_ROOT names a usable root (none, a relative one, a
+    network or device path, one on a mapped network drive, or one inside a code checkout): main says so, exits
+    EXIT_REFUSED."""
 
 
 def workspace_root_source(option: str | Path | None) -> str:
@@ -223,6 +224,15 @@ def _code_checkout(folder: Path) -> Path | None:
     return None
 
 
+def _mapped_network_drive(drive: str) -> bool:
+    """Whether a drive letter ("Z:") is a mapped network drive (GetDriveTypeW's DRIVE_REMOTE); False off Windows."""
+    if os.name != "nt" or not drive:
+        return False
+    import ctypes
+
+    return ctypes.windll.kernel32.GetDriveTypeW(f"{drive}\\") == 4
+
+
 def resolve_workspace_root(option: str | Path | None, environment: Any = None) -> Path:
     """The campaign's workspace root: --workspace-root, else MSDIAL_REPOSITORY_WORKSPACE_ROOT, a blank value naming
     none (2026-10-24). Until then a command without the option fell back to D:\\13_MSDIAL_Public_Reanalysis\\analysis
@@ -233,8 +243,15 @@ def resolve_workspace_root(option: str | Path | None, environment: Any = None) -
     A relative root ("analysis", or a drive alone, "F:") was taken and read against the working directory: plan and
     approve wrote the manifest and the ledger there (the code checkout, for a scheduled task), and every unit then
     failed at its download on Interactive's "must be an absolute path". Raw data and MS-DIAL outputs never go inside a
-    code checkout either. C:, the user profile and temporary folders are refused by setup-windows.ps1, not here, and
-    the summary a person approves names the root (plan.summary_text)."""
+    code checkout either. A network or device path (\\\\server\\share, \\\\?\\..., \\\\.\\...) and a mapped network
+    drive are refused too (review 2): \\\\localhost\\C$\\Users\\... names a folder on C: in the user profile in a
+    spelling neither this check nor the person reading the summary need recognise, and it was taken.
+
+    C:, the user profile and temporary folders are not refused here (the tests plan in temporary folders, and the
+    project's rule asks for an explicit confirmation of another root, not a refusal). The summary a person approves
+    names the root and says, in capitals, where it lies on C:, in the profile or in a temporary folder
+    (plan.workspace_root_cautions). setup-windows.ps1 refuses them only for the root it is given, which it makes and
+    prints; no campaign reads that root, so it protects none."""
     for value in (option, (os.environ if environment is None else environment).get(WORKSPACE_ROOT_VARIABLE)):
         if value is not None and str(value).strip():
             root = Path(str(value).strip())
@@ -244,6 +261,15 @@ def resolve_workspace_root(option: str | Path | None, environment: Any = None) -
                     f"{named} is not an absolute path (a drive and a folder, as F:\\MSDIAL\\analysis): it would be "
                     f"read against the working directory, and Interactive refuses it at each unit's download. No "
                     f"campaign file was read or written.")
+            if root.drive.startswith(("\\\\", "//")):
+                raise NoWorkspaceRoot(
+                    f"{named} is a network or device path, which can name a folder on C: or in the user profile in "
+                    f"another spelling: give a folder on a drive of this PC, as F:\\MSDIAL\\analysis. No campaign file "
+                    f"was read or written.")
+            if _mapped_network_drive(root.drive):
+                raise NoWorkspaceRoot(
+                    f"{named} is on {root.drive}, a mapped network drive: give a folder on a drive of this PC, as "
+                    f"F:\\MSDIAL\\analysis. No campaign file was read or written.")
             checkout = _code_checkout(root)
             if checkout is not None:
                 raise NoWorkspaceRoot(
@@ -348,6 +374,8 @@ def command_plan(args: argparse.Namespace) -> int:
         "console": reader.console() if args.console else {"exists": False},
         "extractor": reader.extractor(),
         "libraries": plan.library_pins(reader.library_identities(), profile),
+        # The parameter template the plan reads the LBM cutoffs from, pinned so a change pauses the campaign (review 2).
+        "template": reader.template(),
         **reader.code(),
     }
     try:

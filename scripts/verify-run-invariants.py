@@ -6235,10 +6235,17 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
       tolerances, score cutoffs, matched peaks, RT use, target omics and library kind as the Console reads it. The
       13 preflight units of 2026-10-14 ran LBM cutoffs of 0.15/0.15/0.3 against 0.1/0.1/0.1 two days later, and
       nothing compared them: the method's template can change after the plan stated them (Interactive's settings
-      name it, and no pin covers them). What the approval does not state (an approval made before) is not compared.
+      name it). What the approval does not state (an approval made before) is not compared.
     It names files, never their locations. The method's LBM cutoffs and Target omics are recorded beside the verdict.
     A unit without the approval copy is no campaign unit, and the check does not apply to it (not evaluable, not
     required).
+
+    What it reads is the method Interactive's prepare wrote. Interactive's start builds the plan again and writes
+    method.txt and the MSP settings again before the Console runs (review 2), so this check holds the started method
+    only through the pins: everything the comparison above rests on is pinned (Interactive's commit, each library's
+    sha256 and, since review 2, the parameter template's sha256, ports.PinReader.template), and the runner compares the
+    pins before every Console start and pauses the campaign where one changed. After the run the same check, at the
+    later stages, reads the method that ran and records what differs.
 
     RUN POLICY: blocks_run (2026-10-24, with the user's decision that the campaign's LBM2 is the one its profile
     names). A run that loads a library nobody approved annotates every feature with it: its results are not the

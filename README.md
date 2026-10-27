@@ -54,9 +54,15 @@ time: as `workspace_root` to every `msdial_repository_reanalysis_plan` and
 `--workspace-root` (or through `MSDIAL_REPOSITORY_WORKSPACE_ROOT`). Reading an
 archived campaign means naming the archive root. Wherever it is, the root is not
 on C:, in the user profile, in a temporary folder, or inside a code checkout.
-The runner refuses a root that is not an absolute path or lies inside a code
-checkout, and its plan summary, the text a person approves, names the root and
-the raw retention; `setup-windows.ps1` refuses the rest.
+The runner refuses a root that is not an absolute path, is a network or device
+path (`\\server\share`, `\\localhost\C$\...`, `\\?\...`), lies on a mapped
+network drive or lies inside a code checkout. It does not refuse C:, the user
+profile or a temporary folder: its plan summary, the text a person approves,
+names the root and the raw retention, and says in capitals where the root is
+on the system drive, in the user profile or in a temporary folder, so the
+person approving confirms such a root knowingly or plans again.
+`setup-windows.ps1` checks only the root it is given, which it creates; no
+campaign reads that root, so it protects no campaign's.
 The `MSDIAL_REPOSITORY_WORKSPACE_ROOT` of the Interactive MCP server in
 `.mcp.json` bounds a Claude session to one root: a session that works on another
 root needs that value changed and the server reconnected. Each unit gets:
@@ -171,10 +177,19 @@ states for the unit's ion mode (review of 2026-10-25): the annotation profile,
 the LBM's score cutoffs and priority, and each MSP annotator row's library,
 priority, tolerances, score cutoffs, RT use, target omics and library kind. The
 plan writes that annotation contract into the manifest and the authorization,
-read from the pinned Interactive, and refuses a tiered profile whose LBM2 the
-pinned Interactive would replace with its official one. It names files, never
-their locations, and does not apply to a unit without
-`provenance/campaign-authorization.json`. CLS-1, CLS-2, CLS-3,
+read from the pinned Interactive, with the profile's retention-time answers
+applied to the MSP rows as Interactive applies them, and refuses a tiered
+profile whose LBM2 the pinned Interactive would replace with its official one,
+or a strategy that loads a library the profile does not name (the official
+strategy, or the tiered one given no `libraries.lbm_path`). It names files,
+never their locations, and does not apply to a unit without
+`provenance/campaign-authorization.json`. LIB-2 reads the method Interactive's
+prepare wrote, and Interactive's start writes it again; the parameter template
+its LBM cutoffs come from (the one Interactive's settings name, else its own)
+is pinned by sha256 with the code and the libraries, and the runner compares
+the pins before each unit's prepare and each Console start, so a template
+changed during a campaign pauses it instead of failing every later unit or
+running unseen. CLS-1, CLS-2, CLS-3,
 ORD-1, PKH-1 and SPL-1 are `record_only`,
 and so are PRE-1, which never FAILs, and PAIR-1 (2026-10-06), which lists as a
 WARN every input the lease paired with a declared raw file by inference

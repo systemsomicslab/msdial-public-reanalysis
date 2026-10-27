@@ -6,8 +6,11 @@ command aimed at the production root looked on D:, said the campaign had no appr
 pilots' workspaces. The runner now takes --workspace-root, else MSDIAL_REPOSITORY_WORKSPACE_ROOT, and refuses
 with neither; the backend check compares the root the listener on the campaign port was started for with the
 campaign's (its environment, else the campaign's launch record), so a backend left running for another
-campaign's root is refused; setup-windows.ps1 refuses a root on C:, in the user profile, in a temporary folder or
-inside a code checkout instead of any root off D:.
+campaign's root is refused. The runner refuses a relative root, a network or device path, a mapped network drive
+and a root inside a code checkout; a root on C:, in the user profile or in a temporary folder it leaves to the
+person approving, whose summary says so first (review 2). setup-windows.ps1 refuses a root on C:, in the user
+profile, in a temporary folder or inside a code checkout instead of any root off D:, but only the root it is given,
+which it makes: no campaign reads that root, so it protects none.
 
 The process tests start a stand-in for Interactive's app.py (test_campaign_backend_lifetime.FAKE_APP) on scratch
 ports 8790, 8795 and 8796, never Interactive itself, and stop every process they started.
@@ -120,6 +123,38 @@ class RunnerRootTests(unittest.TestCase):
                 self.assertIn("No campaign file was read or written", str(raised.exception))
         self.assertEqual(cli.resolve_workspace_root(str(self.directory / "codebase" / "analysis"), {}),
                          self.directory / "codebase" / "analysis", "a folder named like a checkout is not inside it")
+
+    def test_a_network_or_device_path_or_a_mapped_network_drive_is_refused_whichever_names_it(self) -> None:
+        """Review 2: \\\\localhost\\C$\\Users\\... names a folder on C: in the user profile, and the runner took it,
+        while its docstring and README said setup-windows.ps1 refused such roots; that script checks only the root it
+        is given, which no campaign reads."""
+        profile = Path(os.environ.get("USERPROFILE") or self.directory)
+        inside_profile = "\\\\localhost\\C$\\" + str(profile.relative_to(profile.anchor)) + "\\analysis"
+        for root in ("\\\\localhost\\C$\\MSDIAL\\analysis", inside_profile, "\\\\127.0.0.1\\c$\\x",
+                     "\\\\?\\C:\\analysis", "\\\\?\\UNC\\localhost\\C$\\x", "\\\\.\\C:\\analysis", "//localhost/C$/x",
+                     "\\\\nas\\share\\analysis"):
+            for option, environment, source in ((root, {VARIABLE: str(self.variable_root)}, "--workspace-root"),
+                                                (None, {VARIABLE: root}, VARIABLE)):
+                with self.subTest(root=root, source=source), self.assertRaises(cli.NoWorkspaceRoot) as raised:
+                    cli.resolve_workspace_root(option, environment)
+                self.assertIn(f"which {source} names, is a network or device path", str(raised.exception))
+                self.assertIn("No campaign file was read or written", str(raised.exception))
+        with mock.patch.object(cli, "_mapped_network_drive", side_effect=lambda drive: drive.upper() == "Z:"):
+            with self.assertRaises(cli.NoWorkspaceRoot) as raised:
+                cli.resolve_workspace_root("Z:\\MSDIAL\\analysis", {})
+            self.assertIn("is on Z:, a mapped network drive", str(raised.exception))
+            self.assertEqual(cli.resolve_workspace_root(str(self.option_root), {}), self.option_root)
+        self.assertIs(cli._mapped_network_drive(Path(tempfile.gettempdir()).drive), False, "a local drive")
+        # A root on C:, in the profile or in a temporary folder is taken here, and said first in the summary.
+        self.assertEqual(cli.resolve_workspace_root(str(self.option_root), {}), self.option_root)
+
+    def test_a_command_given_a_network_root_is_refused_and_writes_nothing(self) -> None:
+        with _without_variable(), \
+                mock.patch.object(cli, "_approved_ledger", side_effect=AssertionError("a ledger was looked for")):
+            code, out, err = _main(["--workspace-root", "\\\\localhost\\C$\\analysis", "status", "--campaign", "c1"])
+        self.assertEqual((code, out), (cli.EXIT_REFUSED, ""))
+        self.assertIn("is a network or device path", err)
+        self.assertEqual(list(self.directory.iterdir()), [], "nothing was written")
 
     def test_a_command_given_a_relative_root_is_refused_and_writes_nothing_where_it_runs(self) -> None:
         working = self.directory / "working"

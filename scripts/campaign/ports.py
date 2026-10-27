@@ -293,10 +293,33 @@ class PinReader:
             record["provenance_matches"] = recorded.get("binary_sha256") == record["assembly_sha256"]
             # What the Catalog records as a run's msdial_version: the Console's own version output, as its build
             # recorded it, else the commit it was built from. Not an identity (policy.PIN_IDENTITY): the bytes are.
-            version = console_version(recorded)
+            # Taken only from a record of these bytes (review 2): one left beside a rebuilt or replaced Console names
+            # another build, and every run record would have named it (machine._console_version reads it alike).
+            version = console_version(recorded) if record["provenance_matches"] else ""
             if version:
                 record["version"] = version
         return record
+
+    def template(self) -> dict[str, Any]:
+        """The LC-MS parameter template the pinned Interactive's _workflow takes for a unit whose answers name none
+        (plan.lcms_parameter_template), by file name and sha256, and whose it is; {} where this Interactive takes no
+        template so. Its LBM cutoffs are the ones the plan states and LIB-2 holds each method to, and Interactive's
+        settings name it, which its GUI's path save rewrites. No pin covered it (review 2): a template changed during
+        a campaign failed every later unit at LIB-2, each after its download and diagnostic, and one changed after
+        a unit's before-production gate ran unseen, since Interactive's start writes the method again. As a pin it
+        pauses the campaign before the next unit and before every Console start (policy.PIN_IDENTITY)."""
+        try:
+            from msdial_app import agent_workflow
+
+            from .plan import lcms_parameter_template
+
+            path, whose = lcms_parameter_template(agent_workflow)
+        except (ImportError, AttributeError):
+            return {}
+        if not path.is_file():
+            return {"name": path.name, "exists": False, "named_by": whose}
+        digest, size = self._cached_sha256(str(path))
+        return {"name": path.name, "exists": True, "sha256": digest, "bytes": size, "named_by": whose}
 
     def extractor(self) -> dict[str, Any]:
         from msdial_app.raw_metadata_extractor import inspect_raw_metadata_extractor
@@ -333,6 +356,7 @@ class PinReader:
             "console": self.console(),
             "extractor": self.extractor(),
             "libraries": self.library_identities(),
+            "template": self.template(),
             **self.code(),
         }
 
