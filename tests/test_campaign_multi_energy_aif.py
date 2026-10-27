@@ -28,15 +28,19 @@ from test_campaign_machine import Base  # noqa: E402
 PINNED = "C:/fake/MSDIALCUI.exe"
 RULE = "multi_ce_aif_with_console_825"
 HOLD = "aif_multi_ce_awaiting_console"
+DIFFER = "aif_energy_sets_differ_between_inputs"
+HELD_DIFFERING = "aif_collision_energies_differ_between_inputs"
 
 
 class MultiEnergyAifRunnerTests(Base):
-    def campaign(self, *, consoles_825=(PINNED,), saved="", takes_console=True):
+    def campaign(self, *, consoles_825=(PINNED,), saved="", takes_console=True, disposition="aif_multi_ce",
+                 differing_sets_run=True):
         world = self.world(("u1", "u2"))
-        world.scripts["u1"] = fakes.UnitScript(disposition="aif_multi_ce")
+        world.scripts["u1"] = fakes.UnitScript(disposition=disposition)
         world.consoles_825 = set(consoles_825)
         world.saved_console = saved
         world.preflight_takes_console = takes_console
+        world.differing_sets_run = differing_sets_run
         book = world.open()
         self.addCleanup(book.close)
         runner = world.runner(book)
@@ -64,7 +68,9 @@ class MultiEnergyAifRunnerTests(Base):
         _world, book, _runner = self.campaign()
         summary = machine.summary(book)
 
-        self.assertEqual(summary["multi_energy_aif_runs"], {"units": 1, "unit_keys": ["u1"], "rule": RULE})
+        self.assertEqual(summary["multi_energy_aif_runs"], {
+            "units": 1, "unit_keys": ["u1"], "rule": RULE,
+            "energy_sets_differ": {"units": 0, "unit_keys": [], "recorded_as": DIFFER}})
         self.assertEqual(summary["disposition_held"]["units"], 0)
         document, _tsv = machine.export_status(book)
         row = next(item for item in document["units"] if item["unit_key"] == "u1")
@@ -119,6 +125,88 @@ class MultiEnergyAifRunnerTests(Base):
         self.assertEqual(book.unit("u1")["state"], "disposition_held")
         self.assertFalse([row for row in book.events(machine.DISPOSITION_HOLD_LIFTED) if row["unit_key"] == "u1"])
         self.assertEqual(len(self.preflight_consoles(world, book, "u1")), 2)
+
+
+class DifferingEnergySetsRunnerTests(Base):
+    """Inputs whose energy sets differ run as is, on record (user decision, 2026-10-08; Interactive 0.5.36), and the
+    runner's records say why the unit ran."""
+
+    campaign = MultiEnergyAifRunnerTests.campaign
+
+    def test_the_unit_runs_and_its_status_says_why(self) -> None:
+        world, book, _runner = self.campaign(disposition="aif_multi_ce_differing")
+
+        unit = book.unit("u1")
+        self.assertEqual((unit["state"], unit["failures"]), ("done", 0))
+        self.assertTrue([start for start in world.interactive.console_starts if start[0] == "u1"])
+        record = json.loads(unit["disposition_json"])
+        self.assertIs(record["aif_multi_ce_run"]["energy_sets_differ"], True)
+        self.assertEqual(len(record["aif_multi_ce_run"]["collision_energy_sets"]), 2)
+        self.assertEqual(record["warnings"], [DIFFER])
+        preflighted = next(json.loads(row["detail_json"]) for row in book.transitions("u1")
+                           if row["to_state"] == "preflighted")
+        self.assertEqual(preflighted, {"energy_sets_differ": DIFFER})
+        attempts = [json.loads(row["detail_json"] or "{}") for row in book.attempts("u1") if row["step"] == "preflight"]
+        self.assertEqual(attempts[-1]["warnings"], [DIFFER])
+        self.assertIs(attempts[-1]["aif_multi_ce_run"]["energy_sets_differ"], True)
+
+        summary = machine.summary(book)
+        self.assertEqual(summary["multi_energy_aif_runs"]["unit_keys"], ["u1"])
+        self.assertEqual(summary["multi_energy_aif_runs"]["energy_sets_differ"],
+                         {"units": 1, "unit_keys": ["u1"], "recorded_as": DIFFER})
+        document, tsv = machine.export_status(book)
+        rows = {item["unit_key"]: item for item in document["units"]}
+        self.assertIn(machine.AIF_ENERGY_SETS_DIFFER_WARNING, rows["u1"]["warnings"])
+        self.assertIn("runs as AIF as it is", machine.AIF_ENERGY_SETS_DIFFER_WARNING)
+        self.assertNotIn(machine.AIF_ENERGY_SETS_DIFFER_WARNING, rows["u2"]["warnings"])
+        self.assertIn(DIFFER, tsv)
+
+    def test_a_unit_an_earlier_interactive_held_runs_after_an_operators_recheck(self) -> None:
+        """Held as aif_collision_energies_differ_between_inputs by 0.5.34-0.5.35; the recheck, decided by 0.5.36,
+        runs it, and the disposition_hold_lifted event says what held it and that the sets differ."""
+        world, book, runner = self.campaign(disposition="aif_multi_ce_differing", differing_sets_run=False)
+        unit = book.unit("u1")
+        self.assertEqual(unit["state"], "disposition_held")
+        self.assertEqual(json.loads(unit["disposition_json"])["reasons"], [HELD_DIFFERING])
+        self.assertEqual(machine.summary(book)["multi_energy_aif_runs"]["energy_sets_differ"]["units"], 0)
+        document, _tsv = machine.export_status(book)
+        held = next(item for item in document["units"] if item["unit_key"] == "u1")
+        self.assertNotIn(machine.AIF_ENERGY_SETS_DIFFER_WARNING, held["warnings"])
+
+        world.differing_sets_run = True
+        book.add_request("recheck_held", "u1", "Interactive 0.5.36 runs differing sets", "Test Person", runner.stamp())
+        runner.run(until_idle=True, max_iterations=2000)
+
+        self.assertEqual((book.unit("u1")["state"], book.unit("u1")["failures"]), ("done", 0))
+        lifted = [json.loads(row["detail_json"]) for row in book.events(machine.DISPOSITION_HOLD_LIFTED)
+                  if row["unit_key"] == "u1"]
+        self.assertEqual(len(lifted), 1)
+        self.assertEqual(lifted[0]["held_for"], [HELD_DIFFERING])
+        self.assertEqual(lifted[0]["warnings"], [DIFFER])
+        self.assertIs(lifted[0]["aif_multi_ce_run"]["energy_sets_differ"], True)
+        self.assertEqual(machine.summary(book)["multi_energy_aif_runs"]["energy_sets_differ"]["unit_keys"], ["u1"])
+
+    def test_without_825_the_unit_is_still_held(self) -> None:
+        _world, book, _runner = self.campaign(disposition="aif_multi_ce_differing", consoles_825=())
+
+        self.assertEqual(book.unit("u1")["state"], "disposition_held")
+        self.assertEqual(json.loads(book.unit("u1")["disposition_json"])["reasons"], [HOLD])
+
+    def test_the_policy_reads_the_record(self) -> None:
+        self.assertTrue(policy.energy_sets_differ({"aif_multi_ce_run": {"energy_sets_differ": True}}))
+        self.assertFalse(policy.energy_sets_differ({"aif_multi_ce_run": {"collision_energies": [10.0, 20.0]}}))
+        self.assertFalse(policy.energy_sets_differ({"aif_multi_ce_run": {"energy_sets_differ": "yes"}}))
+        self.assertFalse(policy.energy_sets_differ(None))
+        self.assertEqual(policy.AIF_CE_SETS_DIFFER_RECORDED, DIFFER)
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
+    def test_the_names_match_interactive_where_it_has_them(self) -> None:
+        from msdial_app import raw_metadata_preflight
+
+        if not hasattr(raw_metadata_preflight, "AIF_CE_SETS_DIFFER_RECORDED"):
+            self.skipTest("this Interactive predates 0.5.36")
+        self.assertEqual(raw_metadata_preflight.AIF_CE_SETS_DIFFER_RECORDED, policy.AIF_CE_SETS_DIFFER_RECORDED)
+        self.assertEqual(raw_metadata_preflight.AIF_CE_DIFFERS_HOLD, policy.HOLD_CE_DIFFERS)
 
 
 class DispositionRecordTests(unittest.TestCase):

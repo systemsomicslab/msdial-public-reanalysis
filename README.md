@@ -175,7 +175,18 @@ those same `ms2_collision_energies`, and the Console the run manifest records
 the disposition's `multi_energy_aif_console` probe found it in that assembly, or
 the gate finds both of #825's markers there itself. A multi-energy AIF row on a
 Console without #825, one whose disposition holds the unit or records no such
-run, and one whose energies differ from the unit's or are unrecorded, FAIL. A
+run, and one whose energies differ from the unit's or are unrecorded, FAIL.
+Inputs whose energy sets differ run as they are, on record (the user's decision
+of 2026-10-08; Interactive 0.5.36): where `aif_multi_ce_run` records
+`energy_sets_differ` true, each row must record the set the disposition's
+`aif_collision_energies_by_input` records for its input, within the unit's
+energies. Those sets are keyed by each input's path relative to the manifest's
+`input_directory` (`/`-separated, compared without case:
+`path_relative_to_input_directory`, the second-round answer of 2026-10-08), so
+`POS/QC_01.mzML` and `NEG/QC_01.mzML` are each held to their own set; a record
+keyed by another scheme is not read. ACQ-1 is then a WARN that names each set and the decision
+(`aif_energy_sets_differ_between_inputs`), which stops no run. Without that
+record, differing sets still FAIL. A
 single-energy AIF unit is still expected as SWATH whatever the Console.
 Archive members of a unit-scoped
 archive that no sample row pairs with, which Interactive 0.5.31 includes as
@@ -187,7 +198,59 @@ CLS-3 and PAIR-1: each WARNs listing them with
 with no attributed input beside them is listed under
 `samples_without_attributed_input`, not as missing or undelivered). INP-1 FAILs
 them only from a download shared with other units, and PAIR-1 FAILs where their
-record falls short of the rule. CLS-2 reads what the download
+record falls short of the rule. Interactive 0.5.36 converts an unpaired mzXML
+in a campaign into an unattributed input (its lineage row the conversion, named
+after the mzXML, listed in `unattributed_members.converted`), and records what
+it leaves out of the unit in `unattributed_members.left_out` (an
+opposite-polarity name, a shared archive's member, a member no declaration
+names). INP-1 FAILs, blocking the run, where a member `left_out` names reaches
+the run or a converted unattributed input is not the conversion of the mzXML it
+names; PAIR-1 FAILs, on record only, where `converted` or `left_out` falls
+short. Which one of a sample's encodings runs is the user's one rule of
+2026-10-09 (`one_encoding_per_sample_2026_10_09`), which supersedes the
+case-by-case answers of 2026-10-08 (the readable twin of an undecodable mzML,
+`chosen_other_encoding`, a copy nearest the data root), whose checks are gone:
+of a sample's readable files exactly one is used, the highest in the order
+vendor format, mzML, mzXML; a tie goes to the first path without case; the next
+is taken where the chosen one cannot be read or converted; the file used is that
+sample's own input; and every other is recorded with its reason. The gate
+recomputes the rule from Interactive's record (`manifest.encoding_choices` and
+each used input's lineage `encoding_choice`): INP-1 FAILs, blocking the run, a
+choice the rule does not make (a file passed over as unreadable must carry a
+reason that applies to its encoding: `undecodable` an mzML's,
+`conversion_failed`, `requires_conversion` and `polarity_contradicts_declaration`
+an mzXML's, `incomplete_container` and a raw-header reason a vendor file's), a
+choice missing from the lineage row or the manifest, a file left unused that
+runs (in a split part, by its raw owner's choices too), a file used that runs
+unattributed or as another sample than its rows, or a pairing rule's inference
+(`name_pairing`, `inferred_name_pairings`), give it, a vendor file excluded for
+its raw header with the sample's next encoding not taken
+(`encoding_fallback_not_taken`), two files of one sample (one stem, polarities
+that make one sample as Interactive merges them, so a path stating none is one
+sample's with one stating the unit's own, or paired to one sample row whatever
+their stems, by an exact name, a prefix or a leading identifier, or else as
+the one row whose named file has its stem, in any encoding, under one
+polarity; not two sample rows' own) that both run, an input beside a
+lease-excluded encoding of its sample that no choice records, and a file of a
+sample the unit records (a running input's, a candidate's of any choice, the
+used file excluded or none used included, or an excluded file's) that an
+archive member listing shows extracted, or a download that is no archive
+delivered, and that no choice, input, exclusion or `left_out` record names,
+nor, in a declared unit, leaves out by not declaring it (a plain download only:
+an archive member no declaration names stays out on Interactive's `left_out`
+record, `not_named_by_the_catalog_declaration`). A `left_out` entry takes
+the rule's choice from a file the rule uses before the one of its sample that
+runs only where its reason removes that file: a reason it could not be read
+that applies to its encoding, with its exclusion or failed conversion on
+record (`requires_conversion` outside a campaign), a polarity its path states
+other than the unit's, a declaration that does not name it, or a stem two
+sample rows share; any other reason (a shared archive's, none) is a FAIL.
+A sample whose file used was excluded is named as running on no file. A
+declared input the rule left unused is counted beside the candidates, not as
+missing. CONV-1 FAILs a choice that uses an mzXML whose conversion did not
+complete, or leaves one unused as `conversion_failed` whose conversion did.
+PAIR-1 lists each choice (WARN) and FAILs, on record only, where the record does
+not follow the rule. CLS-2 reads what the download
 delivered from the archive member listings and the downloads, counting a
 vendor folder fetched file by file (a Waters `.raw`) as one input and a
 companion file (`.wiff.scan`) as none: an approved sample whose file was
@@ -227,8 +290,13 @@ decides for it: with #825 a multi-energy AIF unit runs as AIF
 (`multi_ce_aif_with_console_825`; its disposition records `aif_multi_ce_run`
 and the probe), without it the unit is held as before. A recheck that releases a
 held unit writes a `disposition_hold_lifted` event, and `status` counts such
-runs under `multi_energy_aif_runs`. Inputs whose energies differ, or an input
-with no recorded energy, still hold the unit with that Console. The plan records
+runs under `multi_energy_aif_runs`. An input with no recorded energy still holds
+the unit with that Console. Inputs whose energy sets differ run with Interactive
+0.5.36 (0.5.34-0.5.35 held them as `aif_collision_energies_differ_between_inputs`,
+which a recheck decides again): the unit's `status` warning says it ran as it is,
+on record, and `status` counts it under `multi_energy_aif_runs.energy_sets_differ`;
+the `preflighted` transition and a `disposition_hold_lifted` event carry the
+same. The plan records
 Interactive's probe in the Console pin (`multi_energy_aif`) and prints what it
 means, and refuses neither, since a Console without #825 only holds such units.
 A campaign pinned to a Console without #825 cannot change it in place (a changed
@@ -396,6 +464,42 @@ until you do: disable it with `schtasks /Change /TN "MSDIAL-campaign-ID"
 /Disable` or delete it with `schtasks /Delete /TN "MSDIAL-campaign-ID" /F`. The
 runner changes no task itself. Neither command stops the backend the last runner
 started; stop it yourself once no job runs in it.
+
+Only `approve` makes a campaign's ledger (2026-10-15). On that day
+`verify-env` run before `approve` created an empty `ledger.sqlite` (the schema,
+no campaign, no approval, no unit), `approve` then refused the campaign as
+already approved, and the scheduled task's `run` made the file again at every
+restart. Every other command (`run`, `verify-env`, `status`, `export`,
+`pause`, `resume`, `skip`, `retry`, `release-held`, `recheck-held`,
+`revoke`) now reads the ledger's state without opening it: where there is no
+ledger, or only an empty one, it says the campaign has no approval yet and to
+approve it first, and exits with code 2, creating and writing nothing (`run`
+before it takes the campaign, locks the Catalog or starts a backend). `approve`
+takes an empty ledger as absent and records the approval into it (an
+`empty_ledger_approved` event, written in the approval's own transaction, says
+so), and `plan` does not refuse one; both still refuse a ledger that holds a
+campaign, an approval or a unit, or that cannot be read. Should `approve` meet
+an error, it reads the ledger again before it says nothing was recorded: an
+approval already committed keeps its `campaign-authorization.json`.
+
+A unit Interactive excludes at its download is excluded, not failed (the
+contract of 2026-10-15). Where every declared analysis input a download lacks is
+a declared archive the extract stage expanded that holds no file MS-DIAL opens,
+the failed lease's `download_failure` carries `retryable` false and a
+`disposition` whose `decision` is `exclude`, with the reason
+`declared_inputs_unsupported_format` and the inputs (each declared path, its
+archive, how many files it held and their commonest suffixes); Interactive
+0.5.40 gives the download job the same record as its own `download_failure`,
+which the runner reads where the unit manifest has none. The runner reads only
+a record of the job it polls: one an earlier job's lease left in the manifest
+says nothing of a unit retried since. It then
+counts no failure and does not retry the unit; it ends `excluded` with that
+terminal reason and the inputs in its terminal detail, and its raw data are
+deleted under boundary 5 as for every other exclusion. `status` counts excluded
+units by reason (`excluded_by_reason`: `preflight_exclude`, `download_blocked`,
+`declared_inputs_unsupported_format`). The same failure recorded without a
+disposition, as by an Interactive before the contract, is retried and fails as
+before.
 
 ## Codex pre-audit
 

@@ -70,12 +70,17 @@ class UnitScript:
 
     # ok; fail (HTTP 503); corrupt (a checksum that does not match, not the network); stall; hold (bytes keep
     # arriving and the job never ends until it is cancelled); blocked; interrupt; shared (waiting for another
-    # unit's lease to fetch a shared object, no bytes of its own, then ok)
+    # unit's lease to fetch a shared object, no bytes of its own, then ok); unsupported_inputs (the attribute stage
+    # finds that every declared input is an archive holding no file MS-DIAL opens, and the failed-lease record
+    # carries the exclusion disposition of the contract of 2026-10-15); unsupported_inputs_legacy (the same
+    # failure as an Interactive before the contract records it: no disposition)
     downloads: list[str] = field(default_factory=lambda: ["ok"])
     # run, split, skip, exclude, none, malformed; aif_hold (Interactive 0.5.31: a skip with hold true for a
     # multi-collision-energy AIF unit, aif_multi_ce_awaiting_console); aif_multi_ce (Interactive 0.5.34: such a unit
     # decided for the Console the preflight is given, else the saved one (World.saved_console): run as AIF under
-    # multi_ce_aif_with_console_825 where that Console is in World.consoles_825, held as aif_hold otherwise)
+    # multi_ce_aif_with_console_825 where that Console is in World.consoles_825, held as aif_hold otherwise);
+    # aif_multi_ce_differing (the same, its inputs' energy sets differing: Interactive 0.5.36 runs it on record,
+    # 0.5.34-0.5.35 held it as aif_collision_energies_differ_between_inputs, World.differing_sets_run)
     disposition: str = "run"
     # Whether the preflight applies its disposition (a campaign unit, Interactive 0.5.17), and whether
     # classify_preflight then does; held: what disposition_hold holds the unit for, if anything.
@@ -102,6 +107,33 @@ class UnitScript:
     no_order_record: bool = False
     # The warnings Interactive's guided plan validation raises (level warning; they stop nothing).
     plan_warnings: list[str] = field(default_factory=list)
+
+
+def unsupported_inputs_failure(unit: str, *, disposition: bool = True) -> dict[str, Any]:
+    """The download_failure Interactive's lease writes when its attribute stage finds that every declared analysis
+    input it lacks is a declared archive the extract stage expanded that holds no file MS-DIAL opens
+    (match_declared_inputs). With `disposition`, as the contract of 2026-10-15 has it (DeclaredInputsUnsupportedError:
+    retryable false and the exclude disposition); without, the plain ValueError of an Interactive before it."""
+    reason = (f"Analysis unit {unit} declares its analysis inputs, and 2 of its 2 declared analysis inputs are not in "
+              "the download: FILES/batch1.zip, FILES/batch2.zip; 2 of them were archives inside FILES that the extract "
+              "stage expanded, and none of the files they held is one MS-DIAL opens (.wiff: 24, .wiff.scan: 24). "
+              "Refusing to run it without them.")
+    record: dict[str, Any] = {
+        "reason": reason, "error_type": "DeclaredInputsUnsupportedError" if disposition else "ValueError",
+        "objects_completed": 1, "objects_declared": 1, "stage": "attribute",
+    }
+    if disposition:
+        record["retryable"] = False
+        record["disposition"] = {
+            "decision": "exclude", "reason": "declared_inputs_unsupported_format",
+            "inputs": [
+                {"declared": "FILES/batch1.zip", "archive": "FILES/batch1.zip", "files": 24,
+                 "suffixes": {".wiff": 12, ".wiff.scan": 12}},
+                {"declared": "FILES/batch2.zip", "archive": "FILES/batch2.zip", "files": 24,
+                 "suffixes": {".wiff": 12, ".wiff.scan": 12}},
+            ],
+        }
+    return record
 
 
 def _write(path: Path, value: Any) -> None:
@@ -328,6 +360,15 @@ class FakeInteractive:
                 self._update(manifest_path, lambda manifest: manifest.update(
                     status="download_failed", download_failure={"reason": error, "error_type": "ValueError"}))
                 job.update(status="failed", error=error)
+            elif outcome in ("unsupported_inputs", "unsupported_inputs_legacy"):
+                failure = unsupported_inputs_failure(job["unit"], disposition=outcome == "unsupported_inputs")
+                self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
+                # server.py: the job's error is str(error). Interactive 0.5.40, the contract's, also gives the job the
+                # lease's record verbatim as its download_failure (the disposition among it); an Interactive before
+                # the contract (the legacy outcome) gives the job none.
+                job.update(status="failed", error=failure["reason"])
+                if outcome == "unsupported_inputs":
+                    job["download_failure"] = json.loads(json.dumps(failure))
             else:
                 failure = dict(self.world.network_error["failure"])
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
@@ -384,7 +425,9 @@ class FakeInteractive:
             return {"completed": False, "extractor_found": True, "preflight_held": {"reason": script.held, "detail": "held"}}
         disposition = script.disposition
         multi = {}
-        if disposition == "aif_multi_ce":
+        hold_reason = "aif_multi_ce_awaiting_console"
+        warnings: list[str] = []
+        if disposition in ("aif_multi_ce", "aif_multi_ce_differing"):
             # Interactive 0.5.34: decided for console_path, else the saved setting, and probed for #825.
             console = (console_path if self.world.preflight_takes_console else "") or self.world.saved_console
             ready = bool(console) and console in self.world.consoles_825
@@ -393,8 +436,20 @@ class FakeInteractive:
                      "console_assembly": "MSDIALCUI.exe", "assembly_sha256": SHA["console"] if ready else "",
                      "probe": "multi_energy_aif_marker" if ready else ("marker_absent" if console else "no_console_configured")}
             multi = {"multi_energy_aif_console": probe}
+            differing = disposition == "aif_multi_ce_differing"
+            if ready and differing and not self.world.differing_sets_run:
+                # Interactive 0.5.34-0.5.35: inputs whose energy sets differ are held with the #825 Console.
+                ready, hold_reason = False, policy.HOLD_CE_DIFFERS
             if ready:
-                multi["aif_multi_ce_run"] = {"collision_energies": [10.0, 20.0], "rule": "multi_ce_aif_with_console_825"}
+                multi["aif_multi_ce_run"] = {"collision_energies": [10.0, 20.0, 40.0] if differing else [10.0, 20.0],
+                                             "rule": "multi_ce_aif_with_console_825"}
+                if differing:
+                    # Interactive 0.5.36 (user decision, 2026-10-08): run as is, on record.
+                    multi["aif_multi_ce_run"].update(energy_sets_differ=True, collision_energy_sets=[
+                        {"collision_energies": [10.0, 20.0], "file_count": 1},
+                        {"collision_energies": [20.0, 40.0], "file_count": 1}])
+                    multi["aif_collision_energies_by_input"] = {"A.mzML": [10.0, 20.0], "B.mzML": [20.0, 40.0]}
+                    warnings.append(policy.AIF_CE_SETS_DIFFER_RECORDED)
             disposition = "run" if ready else "aif_hold"
         hold = disposition == "aif_hold"
         if hold:
@@ -403,8 +458,8 @@ class FakeInteractive:
             record = {
                 "schema": policy.DISPOSITION_SCHEMA, "disposition": disposition,
                 "reasons": [] if disposition in ("run", "split") else
-                ["aif_multi_ce_awaiting_console"] if hold else [f"test_{disposition}"],
-                "warnings": [], "excluded_inputs": [], "split_key": {"acquisition": True} if disposition == "split" else None,
+                [hold_reason] if hold else [f"test_{disposition}"],
+                "warnings": warnings, "excluded_inputs": [], "split_key": {"acquisition": True} if disposition == "split" else None,
                 "decided_at": self._stamp(),
                 "extractor": {"sha256": self.world.extractor_sha, "inventory_sha256": SHA["extractor"],
                               "provenance_status": "verified", "pinned": True},
@@ -833,6 +888,9 @@ class World:
         # While false, a preflight decides for the saved Console whatever console_path it is sent, as Interactive
         # did for a runner that sent none.
         self.preflight_takes_console = True
+        # Interactive 0.5.36 runs a multi-energy AIF unit whose inputs' energy sets differ (disposition
+        # "aif_multi_ce_differing"), on record; while false it holds it as 0.5.34-0.5.35 did.
+        self.differing_sets_run = True
         self.extractor_sha = SHA["extractor"]
         self.instrument_family = "QTOF"
         self.instrument_family_source = "mzml_instrument_configuration"

@@ -44,6 +44,19 @@ release-held, until Interactive's own deletion takes them. The runner never reco
 (boundary 6): READ-1 holding the gate at exit 4 is a state it stores, and such a unit is reported as
 "outputs produced", never "completed".
 
+AN EXCLUSION AT THE DOWNLOAD (the contract of 2026-10-15). A unit ends excluded for three reasons, each
+Interactive's decision and none the unit's failure: preflight_exclude (the raw-header campaign_disposition),
+download_blocked (Interactive refused the download before any byte) and declared_inputs_unsupported_format
+(policy.download_exclusion: the lease's attribute stage found that every declared analysis input it lacks is a
+declared archive whose files MS-DIAL opens none of, and its failed-lease record says decision "exclude"). The last
+is read wherever a download ends failed, from the job's poll (_download_ended: the record the job's lease wrote into
+the unit manifest, else the copy Interactive 0.5.40 gives the job as its download_failure) or, for a job the backend
+lost, from the unit manifest (_download_lost), and only from a record of this job's lease (a record an earlier job's
+lease left says nothing of a unit retried since): nothing is counted, nothing is retried, and the discard deletes the
+unit's raw data under boundary 5 as for every exclusion. A failed lease whose record carries no such disposition (an
+Interactive before the contract, or any other attribute failure) is a failure, retried as before. status counts
+the excluded units by reason (excluded_by_reason).
+
 A DISPOSITION THAT HOLDS (the AIF rule of 2026-10-07, Interactive 0.5.31). A multi-collision-energy AIF unit waits
 for a patched Console: Interactive's campaign_disposition says "skip" with hold true and the reason
 aif_multi_ce_awaiting_console. The runner holds the unit (disposition_held) instead of ending it as skipped: it
@@ -68,7 +81,11 @@ Console), without #825 it is held as above. An operator's recheck-held of such a
 Console has #825, therefore brings it through: the preflighted transition and a disposition_hold_lifted event say
 what held it and what now runs it, and status counts it under multi_energy_aif_runs. The gate's ACQ-1 refuses such
 a run where the Console the run manifest records lacks #825. An Interactive before 0.5.34 is not sent the path
-and holds every such unit, as before.
+and holds every such unit, as before. Inputs whose energy sets differ run as well with Interactive 0.5.36 (user
+decision, 2026-10-08, "run as is"; policy.energy_sets_differ): the unit's status carries
+AIF_ENERGY_SETS_DIFFER_WARNING, status counts it under multi_energy_aif_runs.energy_sets_differ, and the preflight
+attempt and a disposition_hold_lifted event carry the disposition's warnings. A unit 0.5.34-0.5.35 held for them
+(policy.HOLD_CE_DIFFERS) waits for an operator's recheck-held, as every disposition hold does.
 
 AUTOMATIC RT CORRECTION (decided 2026-10-07). A campaign whose recorded policy pins it
 (policy.automatic_rt_correction_pinned) sends every Console start execute_automatic_rt_correction true and the
@@ -154,14 +171,22 @@ DISPOSITION_HELD = ledger_module.DISPOSITION_HELD
 RELEASE_HOLD = "release_disposition_hold"
 DISPOSITION_HELD_WARNING = (
     "held: Interactive's campaign disposition holds this unit (a multi-collision-energy AIF unit waits for a "
-    "patched Console, one with MsdialWorkbench#825, or its AIF inputs' collision energies differ or are "
-    "unrecorded), so it has "
+    "patched Console, one with MsdialWorkbench#825, or an AIF input's collision energies are unrecorded, or, "
+    "under an Interactive before 0.5.36, its AIF inputs' collision energies differ), so it has "
     "not run, its raw data are kept and nothing is counted against it. Only an operator's recheck-held for the "
     "unit makes its preflight again, decided for the pinned Console; nothing rechecks it by itself"
 )
 # The event a recheck writes when a unit Interactive's disposition held is decided anew and no longer held (with
 # Interactive 0.5.34 and a pinned Console that has #825, a multi-energy AIF unit then runs as AIF).
 DISPOSITION_HOLD_LIFTED = "disposition_hold_lifted"
+# What the status export says of a unit that runs as multi-energy AIF although its inputs record different energy
+# sets (user decision, 2026-10-08, "run as is"; Interactive 0.5.36): why it ran, and that it is on record.
+AIF_ENERGY_SETS_DIFFER_WARNING = (
+    "recorded: this multi-energy AIF unit's inputs record different MS2 collision-energy sets, and it runs as AIF "
+    "as it is (user decision, 2026-10-08; " + policy.AIF_CE_SETS_DIFFER_RECORDED + "): the Console with "
+    "MsdialWorkbench#825 processes each file with its own representative collision energy, so representative "
+    "energies can differ between files. Its disposition's aif_multi_ce_run records the sets"
+)
 
 
 @dataclass
@@ -1174,6 +1199,10 @@ class Runner:
             if unit is None:
                 continue
             repository, group, outcome = unit["repository"], _group(unit), row["outcome"]
+            if outcome == "blocked" and row["step"] == "download" and _loads(row["detail_json"]).get("excluded"):
+                # Interactive excluded the unit after its fetch and extraction (_download_excluded): the server
+                # delivered every byte, as for a download that finished.
+                outcome = "ok"
             if outcome == "ok":
                 if row["step"] == "download":
                     ended.add(repository)
@@ -1260,7 +1289,13 @@ class Runner:
             return self._downloaded(unit, manifest_path)
         reason = self._cancel_reason(job_id)
         detail = {"job_id": job_id, "status": status, "error": job.get("error"), "stop_reason": job.get("stop_reason")}
-        failure = self._lease_failure(unit, job_id)
+        # The lease's own record first; else the one the job itself carries. Interactive 0.5.40 (the contract of
+        # 2026-10-15) passes the failed lease's download_failure, its disposition among it, on to the job verbatim
+        # under that name, in the full record and in the summary alike; "failure" is read after it only as an older
+        # spelling. The job's copy matters where the manifest has none: a write of it the lease could not make, a
+        # manifest that cannot be read (review of 2026-10-15: reading "failure" alone missed every real job's).
+        carried = job.get("download_failure") if isinstance(job.get("download_failure"), Mapping) else job.get("failure")
+        failure = self._lease_failure(unit, job_id) or (dict(carried) if isinstance(carried, Mapping) else {})
         if failure:
             detail["failure"] = failure
         return self._download_ended(unit, status, reason, detail)
@@ -1297,6 +1332,12 @@ class Runner:
         return True
 
     def _download_ended(self, unit: dict[str, Any], status: str, reason: str, detail: dict[str, Any]) -> bool:
+        exclusion = policy.download_exclusion(detail)
+        if exclusion is not None and reason != "skip":
+            # Before the disk and the failure readings: an exclusion is made at the attribute stage, after the fetch
+            # and the extraction, so a download made again would end the same way. An operator's skip still ends
+            # the unit as skipped, as the skip request said it would.
+            return self._download_excluded(unit, exclusion, detail)
         if reason == "disk":
             # Cancelled because the disk ran short: nothing the unit did. It resumes from its .part file. A size
             # known only as a lower bound is at least what arrived, kept even should the partial file go.
@@ -1342,6 +1383,25 @@ class Runner:
         return self._download_failed(unit, result={"ok": False, "reason": outcome, **detail}, outcome=outcome,
                                      job_id=unit["download_job_id"])
 
+    def _download_excluded(self, unit: dict[str, Any], exclusion: Mapping[str, Any], detail: Mapping[str, Any]) -> bool:
+        """Interactive excluded the unit at its download's attribute stage (policy.download_exclusion, the contract
+        of 2026-10-15): every declared analysis input it lacks is a declared archive whose files MS-DIAL opens none
+        of. Interactive's decision, as a blocked download is, never the unit's failure: nothing is counted, it is
+        not retried, and it ends excluded through the discard, which deletes its raw data under boundary 5 as for
+        every exclusion. The ledger keeps the reason and the inputs as Interactive gave them (redacted, as every
+        detail is). The attempt is "blocked", uncounted, as for a download Interactive blocks: an "excluded"
+        outcome would need a new ledger schema, which a runner of the schema before it then refuses to open."""
+        self._progress.pop(unit["download_job_id"] or "", None)
+        terminal = {"reason": exclusion["reason"], "inputs": list(exclusion.get("inputs") or [])}
+        self._move(
+            unit, "discarding", pending_terminal="excluded",
+            terminal_detail=json.dumps(terminal, ensure_ascii=False, sort_keys=True),
+            detail={"step": "download", "excluded": exclusion["reason"]},
+            new_attempt={"step": "download", "outcome": "blocked", "counted": False,
+                         "detail": {**dict(detail), "excluded": exclusion["reason"]}},
+        )
+        return True
+
     def _download_lost(self, unit: dict[str, Any], unreadable: Mapping[str, Any] | None = None) -> bool:
         """The backend no longer knows the job, or (`unreadable`) its reply to the poll cannot be read: the unit
         manifest says what became of the lease. A lease still alive is waited for. Where the manifest says how
@@ -1364,6 +1424,18 @@ class Runner:
                 return True
             return False
         if status == "download_failed":
+            owner = str((manifest.get("lease_owner") or {}).get("job_id") or "")
+            if owner and owner != str(unit["download_job_id"] or ""):
+                # Another job's lease wrote this record (review of 2026-10-15), as _lease_failure reads it: a unit
+                # retried after its download failed or was excluded, its new job lost (or its poll unreadable)
+                # before that job's lease wrote the manifest. The record says nothing of this job, so it is neither
+                # this job's failure nor its exclusion; the lost job is an interruption, and an unreadable reply,
+                # whose job may still run, holds the unit.
+                if unreadable is not None:
+                    return self._unreadable_hold(unit, unreadable)
+                self._interrupted(unit, step="download", retry_state="handoff_ready",
+                                  detail={**detail, "status": status, "lease": f"a record of job {owner}'s lease"})
+                return True
             failure = manifest.get("download_failure") or {}
             reason = self._cancel_reason(unit["download_job_id"] or "")
             return self._download_ended(unit, "failed", reason, {**detail, "failure": failure})
@@ -1488,11 +1560,16 @@ class Runner:
                 "held_for": list(_loads(unit.get("disposition_json")).get("reasons") or []),
                 "disposition": disposition.disposition,
                 "aif_multi_ce_run": disposition.aif_multi_ce_run,
+                "warnings": list(disposition.warnings),
                 "console_multi_energy_aif": ({key: probe.get(key) for key in ("available", "probe", "assembly_sha256")}
                                              if probe else None),
             }, unit["unit_key"])
         if disposition.disposition == "run":
-            self._move(unit, "preflighted", disposition_json=json.dumps(record, sort_keys=True), close_attempt=close)
+            # Inputs whose energy sets differ run as is, on record (2026-10-08): the transition says why it runs.
+            differ = ({"energy_sets_differ": policy.AIF_CE_SETS_DIFFER_RECORDED}
+                      if policy.energy_sets_differ(record) else None)
+            self._move(unit, "preflighted", disposition_json=json.dumps(record, sort_keys=True), close_attempt=close,
+                       **({"detail": differ} if differ else {}))
         elif disposition.disposition == "split":
             self._move(unit, "splitting", disposition_json=json.dumps(record, sort_keys=True), close_attempt=close)
         else:
@@ -2681,6 +2758,8 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None, automatic_rt_f
         warnings.append(DISPOSITION_HELD_WARNING + (f" (disposition: {hold})" if hold else ""))
     if automatic_rt_fallback:
         warnings.append(AUTOMATIC_RT_FALLBACK_WARNING)
+    if unit["state"] != DISPOSITION_HELD and policy.energy_sets_differ(_loads(unit.get("disposition_json"))):
+        warnings.append(AIF_ENERGY_SETS_DIFFER_WARNING)
     return {
         **{key: unit.get(key) for key in TSV_COLUMNS if key not in ("report_terms", "warnings")},
         "report_terms": terms,
@@ -2783,12 +2862,22 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
             held_for[str(code)] = held_for.get(str(code), 0) + 1
     # Decided to run as multi-energy AIF with a Console that has MsdialWorkbench #825 (Interactive 0.5.34).
     multi_energy = [unit for unit in units if isinstance(_loads(unit.get("disposition_json")).get("aif_multi_ce_run"), dict)]
+    # Of them, those whose inputs record different energy sets, run as is (user decision, 2026-10-08).
+    differing = [unit for unit in multi_energy if policy.energy_sets_differ(_loads(unit.get("disposition_json")))]
+    # The excluded units by their reason: preflight_exclude (the raw-header disposition), download_blocked
+    # (Interactive refused the download) and declared_inputs_unsupported_format (Interactive's attribute stage, the
+    # contract of 2026-10-15).
+    excluded_for: dict[str, int] = {}
+    for unit in units:
+        if unit["state"] == "excluded":
+            excluded_for[str(unit["terminal_reason"])] = excluded_for.get(str(unit["terminal_reason"]), 0) + 1
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
         policy.OUTPUTS_PRODUCED: sum(1 for unit in units if unit["outputs_produced"]),
         policy.COMPLETED: sum(1 for unit in units if unit["outputs_produced"] and unit["gate_exit_final"] == 0),
         "raw_disposition": dict(sorted(raw.items())),
+        "excluded_by_reason": dict(sorted(excluded_for.items())),
         # Still on the volume, against the rules: the disk guard sees them as used space, and so should the
         # person reading this.
         "raw_held": {"units": len(held), "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in held),
@@ -2809,7 +2898,10 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
                              "warning": DISPOSITION_HELD_WARNING if disposition_held else None},
         # Run as multi-energy AIF under policy.AIF_MULTI_CE_RULE: their disposition records aif_multi_ce_run.
         "multi_energy_aif_runs": {"units": len(multi_energy), "unit_keys": [unit["unit_key"] for unit in multi_energy],
-                                  "rule": policy.AIF_MULTI_CE_RULE},
+                                  "rule": policy.AIF_MULTI_CE_RULE,
+                                  "energy_sets_differ": {"units": len(differing),
+                                                         "unit_keys": [unit["unit_key"] for unit in differing],
+                                                         "recorded_as": policy.AIF_CE_SETS_DIFFER_RECORDED}},
         # The pause in force, named: one of the four pauses of the whole campaign, each lifting by itself, or
         # an operator's own (or a contract pause an earlier runner left), which waits for an operator's resume.
         "paused": {"kind": runner["pause_kind"], "name": policy.pause_name(runner["pause_kind"]),

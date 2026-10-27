@@ -48,8 +48,22 @@ it is given, the pinned one (the runner passes it to the preflight): with #825 t
 records aif_multi_ce_run {"collision_energies", "rule": AIF_MULTI_CE_RULE} beside its probe of that Console
 (multi_energy_aif_console); without #825 the hold stays. So an operator's recheck-held of a held unit, once the
 pinned Console has #825, brings it through, and the unit's record says why (Disposition.aif_multi_ce_run). A
-unit whose AIF inputs record different energies, or one with no recorded energy, is still held with that
-Console (HOLD_CE_DIFFERS, HOLD_CE_UNRECORDED); the runner holds every hold alike, whatever its reason.
+unit with an input whose energy is unrecorded is still held with that Console (HOLD_CE_UNRECORDED); the runner
+holds every hold alike, whatever its reason.
+
+ENERGY SETS THAT DIFFER BETWEEN INPUTS (user decision, 2026-10-08, answer 6 "run as is"; Interactive 0.5.36). A
+multi-energy AIF unit whose inputs record different energy sets runs as AIF on the #825 Console as well, each file
+with its own per-file representative energy, on record: aif_multi_ce_run carries energy_sets_differ true and
+collision_energy_sets, and the disposition's warnings AIF_CE_SETS_DIFFER_RECORDED. Interactive 0.5.34-0.5.35 held
+such a unit instead (HOLD_CE_DIFFERS); an operator's recheck-held decides it again and, with 0.5.36, runs it. The
+runner says why it ran (energy_sets_differ): the unit's status warning and status's
+multi_energy_aif_runs.energy_sets_differ.
+
+AN EXCLUSION AT THE DOWNLOAD (the contract of 2026-10-15). Where every declared analysis input a download lacks is
+a declared archive the extract stage expanded that holds no file MS-DIAL opens, Interactive's failed-lease record
+says so itself: retryable false and a disposition whose decision is "exclude", reason
+declared_inputs_unsupported_format (download_exclusion). The unit is then excluded, not failed: nothing counted,
+no retry, its raw data deleted as an excluded unit's are. A failure without that disposition is the unit's.
 
 WHAT THIS MODULE NEVER DECIDES. Whether a unit may run. Interactive's classify_preflight reads the raw
 headers and writes that decision into the unit manifest as campaign_disposition (schema
@@ -74,11 +88,21 @@ DISPOSITIONS = ("run", "skip", "exclude", "split")
 # Interactive records it as disposition "skip", hold true, with this among its reasons.
 HOLD_FOR_CONSOLE = "aif_multi_ce_awaiting_console"
 # Interactive 0.5.34 (msdial-interactive-app #67): a multi-energy AIF unit decided for a Console with
-# MsdialWorkbench #825 runs as AIF under this rule, recorded as aif_multi_ce_run. The holds it keeps with that
-# Console: inputs whose energies differ from one another, and an input with no recorded energy.
+# MsdialWorkbench #825 runs as AIF under this rule, recorded as aif_multi_ce_run. The hold it keeps with that
+# Console: an input with no recorded energy. Inputs whose energies differ from one another were held as well by
+# 0.5.34-0.5.35 (HOLD_CE_DIFFERS, retired); since 0.5.36 (user decision, 2026-10-08) they run, on record
+# (AIF_CE_SETS_DIFFER_RECORDED among the disposition's warnings, and aif_multi_ce_run's energy_sets_differ).
 AIF_MULTI_CE_RULE = "multi_ce_aif_with_console_825"
 HOLD_CE_DIFFERS = "aif_collision_energies_differ_between_inputs"
 HOLD_CE_UNRECORDED = "aif_collision_energy_unrecorded"
+AIF_CE_SETS_DIFFER_RECORDED = "aif_energy_sets_differ_between_inputs"
+
+
+def energy_sets_differ(record: Mapping[str, Any] | None) -> bool:
+    """Whether a campaign disposition (as_dict, or Interactive's record) ran a multi-energy AIF unit whose inputs
+    record different energy sets, as is (Interactive 0.5.36: aif_multi_ce_run.energy_sets_differ true)."""
+    multi = record.get("aif_multi_ce_run") if isinstance(record, Mapping) else None
+    return isinstance(multi, Mapping) and multi.get("energy_sets_differ") is True
 # The fields of Interactive's multi_energy_aif_console probe a record keeps: never its console_path, a local path.
 MULTI_ENERGY_AIF_PROBE_FIELDS = ("capability", "available", "probe", "console_source", "console_assembly",
                                  "assembly_sha256")
@@ -583,6 +607,40 @@ def network_failure(detail: Mapping[str, Any], outcome: str = "failed") -> bool:
         return True
     text, types = _failure_texts(detail)
     return bool(types & _NETWORK_TYPES) or bool(_NETWORK_TEXT.search(text))
+
+
+# Interactive's exclusion of a unit at its download's attribute stage (the contract agreed on 2026-10-15). Before
+# it, such a unit's lease ended download_failed with a plain ValueError, which the runner retried twice and then
+# failed, as any failure, though no download made again could change it. Where EVERY declared input missing from
+# the download is a declared archive that the extract stage expanded and that holds no file MS-DIAL opens, and no
+# declared input is found more than once, Interactive raises DeclaredInputsUnsupportedError and its failed-lease
+# record (the manifest's download_failure, which Interactive 0.5.40 also gives the download job verbatim as its own
+# download_failure; the machine passes either as detail["failure"]) carries "retryable": false and
+#     "disposition": {"decision": "exclude", "reason": "declared_inputs_unsupported_format",
+#                     "inputs": [{"declared", "archive", "files", "suffixes": {".ext": count}}, ...]}
+# Any other attribute failure (an input missing for another reason, an input found twice) carries no disposition
+# and stays a failure, retried as any other; so does every failure an Interactive before the contract records.
+DOWNLOAD_EXCLUDE = "exclude"
+DECLARED_INPUTS_UNSUPPORTED = "declared_inputs_unsupported_format"
+# The terminal reason of an exclusion whose disposition names none (never written by the agreed contract).
+DOWNLOAD_EXCLUDE_UNSTATED = "download_exclude"
+
+
+def download_exclusion(detail: Mapping[str, Any]) -> dict[str, Any] | None:
+    """{"reason", "inputs"} when Interactive's failed-lease record excludes the unit, else None.
+
+    `detail` is what the machine passes for an ended download: the job's record with the lease's
+    download_failure under "failure". Only a disposition whose decision is "exclude" is read; the reason and the
+    inputs are kept as Interactive gave them (the machine redacts them as every detail it records). A disposition
+    of another decision is not this contract's, and the failure is then the unit's, as before it."""
+    failure = detail.get("failure")
+    disposition = failure.get("disposition") if isinstance(failure, Mapping) else None
+    if not isinstance(disposition, Mapping) or disposition.get("decision") != DOWNLOAD_EXCLUDE:
+        return None
+    reason = str(disposition.get("reason") or "").strip() or DOWNLOAD_EXCLUDE_UNSTATED
+    inputs = disposition.get("inputs")
+    return {"reason": reason, "inputs": [dict(item) if isinstance(item, Mapping) else item for item in inputs]
+            if isinstance(inputs, list) else []}
 
 
 # ---- stalls -----------------------------------------------------------------------------------------

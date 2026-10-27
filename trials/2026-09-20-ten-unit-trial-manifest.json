@@ -120,7 +120,8 @@
           "CNT-1@after-run",
           "MTH-1",
           "AIF-1",
-          "FIN-2"
+          "FIN-2",
+          "FIN-3"
         ],
         "boundary": 4
       },
