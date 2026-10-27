@@ -26,7 +26,7 @@ chat history. Clone it beside this repository:
 D:\13_MSDIAL_Public_Reanalysis\
   code\      this repository (public)
   context\   systemsomicslab/msdial-family-dev-context (private)
-  analysis\  reanalysis workspace, never committed
+  analysis\  archive of the pilots and preflights, never committed
 ```
 
 It is a separate private repository because it documents licensed vendor SDK
@@ -35,17 +35,40 @@ install locations and private MSP library paths on the development machine.
 ## Current local paths
 
 - Claude workspace: `D:\13_MSDIAL_Public_Reanalysis\code`
-- Repository reanalysis data: `D:\13_MSDIAL_Public_Reanalysis\analysis`
+- Repository reanalysis data: the workspace root chosen for each campaign and
+  passed explicitly (below); `D:\13_MSDIAL_Public_Reanalysis\analysis` is the
+  archive of the pilots and preflights
 - Interactive: `D:\0_SourceCode\msdial_interactive_app`
 - Catalog: `D:\0_SourceCode\msdial_repository_catalog`
 - Full catalog: `D:\0_SourceCode\msdial_repository_catalog\catalog-data\native-smoke.sqlite`
 - Python: detected by `setup-windows.ps1`, or supplied with `-Python`
 
-The Claude instructions and launcher are stored under `code`. All repository
-downloads, MS-DIAL processing files, and generated results use `analysis`:
+The Claude instructions and launcher are stored under `code`. Repository
+downloads, MS-DIAL processing files and generated results go under the
+workspace root of the campaign they belong to. The root is chosen per campaign
+and never assumed: production runs on a root of its own, and
+`D:\13_MSDIAL_Public_Reanalysis\analysis` keeps the pilots and preflights run
+before it, with their ledgers, as an archive. Pass the root explicitly every
+time: as `workspace_root` to every `msdial_repository_reanalysis_plan` and
+`msdial_download_repository_raw` call, and to `scripts/campaign-runner.py` as
+`--workspace-root` (or through `MSDIAL_REPOSITORY_WORKSPACE_ROOT`). Reading an
+archived campaign means naming the archive root. Wherever it is, the root is not
+on C:, in the user profile, in a temporary folder, or inside a code checkout.
+The runner refuses a root that is not an absolute path, is a network or device
+path (`\\server\share`, `\\localhost\C$\...`, `\\?\...`), lies on a mapped
+network drive or lies inside a code checkout. It does not refuse C:, the user
+profile or a temporary folder: its plan summary, the text a person approves,
+names the root and the raw retention, and says in capitals where the root is
+on the system drive, in the user profile or in a temporary folder, so the
+person approving confirms such a root knowingly or plans again.
+`setup-windows.ps1` checks only the root it is given, which it creates; no
+campaign reads that root, so it protects no campaign's.
+The `MSDIAL_REPOSITORY_WORKSPACE_ROOT` of the Interactive MCP server in
+`.mcp.json` bounds a Claude session to one root: a session that works on another
+root needs that value changed and the server reconnected. Each unit gets:
 
 ```text
-D:\13_MSDIAL_Public_Reanalysis\analysis\<repository>\<accession>\<analysis-unit-id>\
+<workspace_root>\<repository>\<accession>\<analysis-unit-id>\
   raw\downloads\
   raw\data\
   provenance\
@@ -61,9 +84,13 @@ units, 1,051,091 sample records, and 365,276 raw-file records.
 2. Copy `.mcp.example.json` to `.mcp.json` and replace the example paths with
    paths on the analysis PC. The local `.mcp.json` is intentionally ignored by
    Git because it contains machine-specific paths.
-3. Run `powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1` with
-   `-InteractiveRoot`, `-CatalogRoot`, and `-ReanalysisRoot` when the defaults
-   do not match the analysis PC.
+3. Run `powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1
+   -ReanalysisRoot <workspace root>`, adding `-InteractiveRoot` and
+   `-CatalogRoot` when the defaults do not match the analysis PC. The root has
+   no default; the script refuses one on C:, in the user profile, in a
+   temporary folder, or inside a code checkout, and takes only a folder on a
+   mounted drive of this PC named by its letter (`X:\...`), never a network or
+   device path (`\\server\share`, `\\?\...`) or a mapped network drive.
 4. Install and authenticate Claude Code if `claude --version` is unavailable.
 5. Run `claude` from this directory, or double-click `Start Claude Code.cmd`.
 6. Approve the two project-scoped MCP servers when Claude Code asks.
@@ -140,7 +167,30 @@ counts as failed, and `record_only` where the FAIL is recorded and the unit
 runs. The user decided it: a FAIL stops the run only for the checks that break
 the MS-DIAL results (2026-10-01), and every before-production check is placed
 (2026-10-02). ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1 are
-`blocks_run`. CLS-1, CLS-2, CLS-3, ORD-1, PKH-1 and SPL-1 are `record_only`,
+`blocks_run`, and so is LIB-2 (2026-10-24): in a campaign unit, every library
+`method.txt` and its MSP annotator settings load must be one the approval
+names, with the sha256 it names, and what the unit's answers name for its
+role; the names must agree across `method.txt`, `workflow-settings.json` and
+the run manifest; every MSP annotator row must state its own
+`target_omics`; and what the method annotates with must be what the approval
+states for the unit's ion mode (review of 2026-10-25): the annotation profile,
+the LBM's score cutoffs and priority, and each MSP annotator row's library,
+priority, tolerances, score cutoffs, RT use, target omics and library kind. The
+plan writes that annotation contract into the manifest and the authorization,
+read from the pinned Interactive, with the profile's retention-time answers
+applied to the MSP rows as Interactive applies them, and refuses a tiered
+profile whose LBM2 the pinned Interactive would replace with its official one,
+or a strategy that loads a library the profile does not name (the official
+strategy, or the tiered one given no `libraries.lbm_path`). It names files,
+never their locations, and does not apply to a unit without
+`provenance/campaign-authorization.json`. LIB-2 reads the method Interactive's
+prepare wrote, and Interactive's start writes it again; the parameter template
+its LBM cutoffs come from (the one Interactive's settings name, else its own)
+is pinned by sha256 with the code and the libraries, and the runner compares
+the pins before each unit's prepare and each Console start, so a template
+changed during a campaign pauses it instead of failing every later unit or
+running unseen. CLS-1, CLS-2, CLS-3,
+ORD-1, PKH-1 and SPL-1 are `record_only`,
 and so are PRE-1, which never FAILs, and PAIR-1 (2026-10-06), which lists as a
 WARN every input the lease paired with a declared raw file by inference
 (`input_names_paired_by_inference`), so each such pairing is on record; a split
@@ -490,6 +540,51 @@ units by reason (`excluded_by_reason`: `preflight_exclude`, `download_blocked`,
 `declared_inputs_unsupported_format`). The same failure recorded without a
 disposition, as by an Interactive before the contract, is retried and fails as
 before.
+
+A download several units share is fetched once (2026-10-24). Interactive's lease
+fetches through the accession's download store, whose gc deletes an object under
+the approval once no live claim keeps it, and only a pending claim keeps one for
+a unit that has not started. The runner made none, so with raw data deleted after
+each unit, the first unit's cleanup let the store collect the object its siblings
+were to fetch next, and each fetched it again (MPST000012's four units fetched one
+14.78 GB tar four times) while the plan's summary said "fetched once". Now, before
+a unit of a download group of more than one unit downloads, the runner claims the
+group's objects, by the Catalog's URLs, for every other unit of it that will still
+download (Interactive's `pre_claim_downloads`, the claim a batch approval makes).
+A unit that ends without validated outputs (excluded, skipped, failed, stopped)
+releases what it claimed and never read through the store's own release, with the
+approval only where raw data are deleted under a live boundary 5, so the store
+collects what no sibling still needs; a claim a lease materialized is left to
+Interactive's cleanup or discard. A claim that cannot be made never stops a
+download: a `shared_download_not_claimed` event says so. Each finished download's
+attempt records what its lease moved (`transfer`: transferred bytes, objects
+fetched, refetched and found in the store), and `status` adds it up under
+`downloads`, beside the bytes the units' raw trees hold, so a shared object
+fetched again shows. The plan's summary says "each shared object fetched once"
+only for an Interactive whose lease uses the store and that has
+`pre_claim_downloads` (`pins.interactive.pre_claim_downloads`); otherwise it gives
+the distinct bytes as the least and the per-unit sum as the most.
+
+The runner takes the workspace root per campaign (2026-10-24). Until then a
+command without `--workspace-root` used `D:\13_MSDIAL_Public_Reanalysis\analysis`
+without a word, so one aimed at another root looked on D:, said the campaign had
+no approval, or planned against the pilots' workspaces. Every command now takes
+the root from `--workspace-root` (given before the command), else from
+`MSDIAL_REPOSITORY_WORKSPACE_ROOT`, and with neither it refuses (exit code 2),
+reading and writing no campaign file. The task definition `schedule-command` prints
+names the root itself, so a scheduled runner does not depend on the variable;
+the pilots and preflights are read by naming the archive root. While a command
+runs, the runner sets `MSDIAL_REPOSITORY_WORKSPACE_ROOT` to the campaign's root
+in its own process and puts the user's value back afterwards, so the Interactive
+tools it calls in-process are bounded to that root, as an MCP session is to its
+own. A backend already answering on the campaign port is used only if it was
+started for the campaign's root: the root is read from that process's
+environment, or, where that cannot be read, from the campaign's
+`backend-launch.json`, which now keeps it, when that record names the process.
+One started for another root, for none, or whose root cannot be read is refused,
+naming both roots (`run` exits with code 3; a campaign paused for its backend
+stays paused): a backend left running for a campaign on the archive root would
+otherwise take the new campaign's jobs into the old campaign's job registry.
 
 ## Codex pre-audit
 

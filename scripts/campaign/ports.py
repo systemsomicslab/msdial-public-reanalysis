@@ -26,6 +26,12 @@ calls discard_download_lease, and only once discard_download_lease's own refusal
 apply, as the cleanup records its crossing only for a preview that is ready. Nothing here deletes a
 unit's output or its mzTab-M, and nothing works around a refusal that protects them.
 
+THE DOWNLOAD STORE'S CLAIMS ARE INTERACTIVE'S OWN (2026-10-24). InteractivePort.pre_claim is the batch pre-claim
+Interactive makes at a batch approval (repository_reanalysis.pre_claim_downloads), and release_claims releases a
+claim through the store's own DownloadStore.release, with the approval passed only where the campaign deletes raw
+data under a live boundary 5, so whatever the store's gc then deletes it deletes by its own rules. Neither touches a
+claim a lease materialized.
+
 Fake ports with the same methods drive tests/test_campaign_machine.py and test_campaign_resume.py; no
 test downloads anything or starts a Console.
 """
@@ -37,6 +43,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -173,6 +180,22 @@ def automatic_rt_correction_generation(assembly: bytes) -> str:
     return policy.AUTOMATIC_RT_NONE
 
 
+# An absolute location, as the Catalog refuses one anywhere in a run record (storage._ABSOLUTE_LOCATION).
+_ABSOLUTE_LOCATION = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|\\\\[^\\\s]|file://", re.IGNORECASE)
+
+
+def console_version(recorded: Mapping[str, Any]) -> str:
+    """The Console's version as its build provenance (msdial-console-build-provenance.json) records it: the first
+    line of the binary's own version output ("5.5.<build> / commit <sha>"), else "commit <git_head>", else nothing.
+    A line that names a location is not taken, since the version travels into the Catalog's run record."""
+    lines = str(recorded.get("binary_version_output") or "").strip().splitlines()
+    first = lines[0].strip() if lines else ""
+    if first and not _ABSOLUTE_LOCATION.search(first):
+        return first[:200]
+    head = str(recorded.get("git_head") or "").strip().casefold()
+    return f"commit {head}" if re.fullmatch(r"[0-9a-f]{7,64}", head) else ""
+
+
 class PinReader:
     """Reads the identities a campaign pins, the same way at plan time and before every unit.
 
@@ -268,7 +291,51 @@ class PinReader:
                 recorded = {}
             record["recorded_git_head"] = str(recorded.get("git_head") or "")
             record["provenance_matches"] = recorded.get("binary_sha256") == record["assembly_sha256"]
+            # What the Catalog records as a run's msdial_version: the Console's own version output, as its build
+            # recorded it, else the commit it was built from. Not an identity (policy.PIN_IDENTITY): the bytes are.
+            # Taken only from a record of these bytes (review 2): one left beside a rebuilt or replaced Console names
+            # another build, and every run record would have named it (machine._console_version reads it alike).
+            version = console_version(recorded) if record["provenance_matches"] else ""
+            if version:
+                record["version"] = version
         return record
+
+    def template(self, profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """The LC-MS parameter template the pinned Interactive's _workflow takes for a unit whose answers name none
+        (plan.lcms_parameter_template), by file name and sha256, and whose it is; {} where this Interactive takes no
+        template so. Its LBM cutoffs are the ones the plan states and LIB-2 holds each method to, and Interactive's
+        settings name it, which its GUI's path save rewrites. No pin covered it (review 2): a template changed during
+        a campaign failed every later unit at LIB-2, each after its download and diagnostic, and one changed after
+        a unit's before-production gate ran unseen, since Interactive's start writes the method again. As a pin it
+        pauses the campaign before the next unit and before every Console start (policy.PIN_IDENTITY).
+
+        Given the profile (the plan), it also names the ion modes whose units take it, those whose answers name no
+        template_path. A template the answers name is one of the profile's libraries (library:<file name>,
+        plan.template_path_problems) and pinned as one; where every ion mode's answers name one, no unit takes this
+        template, and nothing is pinned by its bytes, so a GUI save of the settings' path pauses nothing (review 3:
+        this pin held the settings' template for such a profile, and a change to the answers' one paused nothing).
+        Without the profile (PinReader.current) it is read as it is, which the plan's pin is compared with."""
+        modes = None
+        if profile is not None:
+            from .plan import ION_MODES, answered_templates
+
+            answered = answered_templates(profile)
+            modes = [mode for mode in ION_MODES if mode not in answered]
+            if not modes:
+                return {"named_by": "answers", "ion_modes": []}
+        whom = {} if modes is None else {"ion_modes": modes}
+        try:
+            from msdial_app import agent_workflow
+
+            from .plan import lcms_parameter_template
+
+            path, whose = lcms_parameter_template(agent_workflow)
+        except (ImportError, AttributeError):
+            return {}
+        if not path.is_file():
+            return {"name": path.name, "exists": False, "named_by": whose, **whom}
+        digest, size = self._cached_sha256(str(path))
+        return {"name": path.name, "exists": True, "sha256": digest, "bytes": size, "named_by": whose, **whom}
 
     def extractor(self) -> dict[str, Any]:
         from msdial_app.raw_metadata_extractor import inspect_raw_metadata_extractor
@@ -295,7 +362,7 @@ class PinReader:
         catalog_root = self.catalog_root or Path(msdial_repository_catalog.__file__).resolve().parents[2]
         return {
             "interactive": {"version": msdial_app.__version__, **git_state(interactive_root),
-                            "lease_uses_store": lease_uses_store()},
+                            "lease_uses_store": lease_uses_store(), "pre_claim_downloads": pre_claims_downloads()},
             "catalog": {"version": getattr(msdial_repository_catalog, "__version__", ""), **git_state(catalog_root)},
             "gate": git_state(self.gate_root),
         }
@@ -305,6 +372,7 @@ class PinReader:
             "console": self.console(),
             "extractor": self.extractor(),
             "libraries": self.library_identities(),
+            "template": self.template(),
             **self.code(),
         }
 
@@ -336,6 +404,17 @@ def lease_uses_store(tools: Any = None) -> bool:
     if tools is None:
         from msdial_app import mcp_server as tools
     return hasattr(tools, "msdial_download_store_status")
+
+
+def pre_claims_downloads(module: Any = None) -> bool:
+    """Whether the runner claims a shared download for every sibling unit before the first of them downloads it
+    (machine.Runner._claim_shared_downloads, 2026-10-24): it does wherever Interactive has
+    repository_reanalysis.pre_claim_downloads, the claim a batch approval makes. Without that claim the first unit's
+    cleanup lets the store collect an object the next sibling has not claimed yet, and each sibling fetches it again
+    (MPST000012's four units fetched its one 14.78 GB tar four times)."""
+    if module is None:
+        from msdial_app import repository_reanalysis as module
+    return callable(getattr(module, "pre_claim_downloads", None))
 
 
 def default_extractor_path(interactive_root: str | Path) -> Path:
@@ -407,6 +486,7 @@ class InteractivePort:
             "split_parent_release": hasattr(self.rr, "cleanup_split_parent"),
             "cancel_job": hasattr(self.tools, "msdial_cancel_job"),
             "lease_uses_store": lease_uses_store(self.tools),
+            "pre_claim_downloads": pre_claims_downloads(self.rr),
         }
 
     def download(
@@ -746,6 +826,57 @@ class InteractivePort:
             return _exception_result(error, "cleanup_split_parent")
         return {"ok": True, "deleted": bool((result or {}).get("deleted")), "detail": result}
 
+    def pre_claim(self, *, workspace_root: str, units: list[dict[str, Any]]) -> dict[str, Any]:
+        """Interactive's batch pre-claim (repository_reanalysis.pre_claim_downloads): a pending claim of each unit, in
+        its accession's download store, on each object it will fetch. A pending claim keeps an object through the
+        release of another unit that shares it, so the store's gc does not collect it before this unit has had it.
+        Idempotent: a live claim is kept as it is (a released one is opened again, its earlier life kept). `units` are
+        {analysis_unit_id, repository, accession, objects: [{url}]}. {"ok": True, "claimed": [{analysis_unit_id,
+        claims, live}]}; nothing here downloads or deletes."""
+        function = getattr(self.rr, "pre_claim_downloads", None)
+        if function is None:
+            return {"ok": False, "reason": "unsupported", "detail": "Interactive has no pre_claim_downloads (plan item 15)."}
+        try:
+            claimed = function(workspace_root, [dict(unit) for unit in units])
+        except Exception as error:  # noqa: BLE001
+            return _exception_result(error, "pre_claim_downloads")
+        return {"ok": True, "claimed": [
+            {key: item.get(key) for key in ("analysis_unit_id", "claims", "live")} for item in claimed or []]}
+
+    def release_claims(
+        self, *, workspace_root: str, repository: str, accession: str, unit_id: str, reason: str,
+        authorization_path: str = "",
+    ) -> dict[str, Any]:
+        """Release the claims a unit that has ended holds in its accession's download store and never read: the
+        pending ones (a sibling's pre-claim, or a lease's claim on an object it never linked into the unit), each
+        through DownloadStore.release with `reason` (one of the store's RELEASE_REASONS). With authorization_path the
+        store then collects what no live claim keeps, under that campaign approval (its gc, boundary 5: it deletes
+        nothing for an approval that is revoked, does not cover boundary 5 for every unit whose claim named the
+        object, or keeps raw data); without one the claims are released and nothing is deleted. A claim a lease
+        materialized is never released here: it names the bytes the unit's raw tree links, and Interactive's own
+        cleanup or discard releases it with that tree. {"ok": True, "released": n, "collected": [object id],
+        "kept": [object id], "refused": [object id]}: what the gc collected, kept for a live claim, and kept because
+        the approval does not cover every unit that released it."""
+        try:
+            from msdial_app.download_store import DownloadStore
+        except ImportError as error:
+            return {"ok": False, "reason": "unsupported", "detail": f"Interactive has no download store: {error}"}
+        released: list[str] = []
+        found: dict[str, set[str]] = {"collected": set(), "kept": set(), "refused": set()}
+        try:
+            store = DownloadStore(workspace_root, repository, accession)
+            for claim in store.claims_for_unit(unit_id):
+                if claim.get("state") != "pending":
+                    continue
+                result = store.release(str(claim["url"]), unit_id, reason, authorization=authorization_path or None)
+                released.extend(str(item.get("url_key") or "") for item in result.get("released") or [])
+                gc = result.get("gc") or {}
+                for key, items in found.items():
+                    items.update(str(item.get("object_id")) for item in gc.get(key) or [])
+        except Exception as error:  # noqa: BLE001
+            return {**_exception_result(error, "DownloadStore.release"), "released": len(released)}
+        return {"ok": True, "released": len(released), **{key: sorted(items) for key, items in found.items()}}
+
     def live_attempt(self, manifest_path: str) -> dict[str, Any] | None:
         """The unit's run attempt whose Console may still be running, read from its manifest."""
         if not manifest_path or not Path(manifest_path).is_file():
@@ -915,6 +1046,25 @@ class CatalogPort:
             return _exception_result(error, "msdial_catalog_reanalysis_handoff")
         return {"ok": True, **result}
 
+    def download_objects(self, unit_ids: list[str]) -> dict[str, Any]:
+        """The URLs each of these units downloads, as the Catalog's download_plan lists its objects: {"ok": True,
+        "units": {unit_id: [url]}}. They are the URLs the unit's lease fetches, the download_url of each of its raw
+        files, which the handoff copies; Interactive's store keys a claim by its URL."""
+        try:
+            catalog = read_only_catalog(self.database)
+            try:
+                planned = catalog.download_plan(list(unit_ids))
+            finally:
+                catalog.close()
+        except Exception as error:  # noqa: BLE001
+            return _exception_result(error, "download_plan")
+        urls: dict[str, list[str]] = {str(unit): [] for unit in unit_ids}
+        for item in planned.get("objects") or []:
+            for unit in item.get("selected_consumer_unit_ids") or []:
+                if str(unit) in urls and str(item.get("url") or "").strip():
+                    urls[str(unit)].append(str(item["url"]))
+        return {"ok": True, "units": urls}
+
     def record_run(self, **values: Any) -> dict[str, Any]:
         try:
             result = self.tools.msdial_catalog_record_analysis_run(database=self.database, **values)
@@ -1064,6 +1214,8 @@ def backend_creation_flags() -> int:
 # back to "child", recording why.
 BACKEND_LAUNCH_METHODS = ("auto", "wmi", "child")
 BACKEND_BROKER = Path(__file__).resolve().with_name("backend_launch.py")
+# The campaign's workspace root, in the backend's environment as in an MCP server's (Interactive's boundary).
+WORKSPACE_ROOT_VARIABLE = "MSDIAL_REPOSITORY_WORKSPACE_ROOT"
 
 
 class BackendLaunchError(Exception):
@@ -1195,6 +1347,41 @@ def listening_pid(port: int) -> int | None:
     except Exception:  # noqa: BLE001 - ImportError, AccessDenied: not knowable here
         return None
     return None
+
+
+def process_environment(pid: Any) -> dict[str, str] | None:
+    """A running process's environment block, if psutil can read it (on Windows from the process's memory, which a
+    process of the same user allows). None: not knowable here (no psutil, no such process, access denied)."""
+    if not pid:
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        return {str(key): str(value) for key, value in psutil.Process(int(pid)).environ().items()}
+    except (psutil.Error, OSError):
+        return None
+
+
+def environment_value(environment: Mapping[str, str], name: str) -> str | None:
+    """One variable of an environment block, read as the process itself reads it: on Windows, whatever its case."""
+    if name in environment:
+        return environment[name]
+    if os.name == "nt":
+        return next((value for key, value in environment.items() if key.upper() == name.upper()), None)
+    return None
+
+
+def same_workspace_root(left: str | Path, right: str | Path) -> bool:
+    """Whether two spellings name one workspace root: resolved where the volume answers, compared as Windows does."""
+    def resolved(value: str | Path) -> str:
+        try:
+            return str(Path(value).resolve())
+        except OSError:
+            return os.path.abspath(str(value))
+
+    return _same_path(resolved(left), resolved(right))
 
 
 def process_descends_from(pid: Any, ancestor: Any, ancestor_created_at: float | None = None, *, depth: int = 4) -> bool | None:
@@ -1411,6 +1598,15 @@ class BackendSupervisor:
     memory they lasted one runner, so the pause never engaged and a slow start was started again. Without a
     `state` they are kept in memory (MemoryStartState).
 
+    IT SERVES THE CAMPAIGN'S WORKSPACE ROOT (2026-10-24). The runner gives every backend it starts the campaign's
+    root as MSDIAL_REPOSITORY_WORKSPACE_ROOT, beside the campaign's job registry, and the launch record keeps it.
+    A backend already answering on the port is used only where it was started for the same root (check): the root
+    is read from the listener's own environment, else from the launch record where that names the listener (or
+    psutil cannot say which process listens). One started for another root, or for none (by hand, or from a
+    session), is refused, and so is one whose root neither can say: production runs on a root of its own, and a
+    backend left running for a campaign on the archive root would otherwise take the new campaign's jobs into
+    the old campaign's registry.
+
     The backend's own output stream is discarded unless log_directory is given (run --backend-log). It
     is Interactive's, not the runner's: an uncaught traceback there can quote a file location, and no
     private library location may reach a log the runner writes. What each job did stays in the job
@@ -1464,7 +1660,7 @@ class BackendSupervisor:
     def environment(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
         environment = dict(os.environ if base is None else base)
         environment["MSDIAL_INTERACTIVE_JOBS_FILE"] = str(self.jobs_file)
-        environment["MSDIAL_REPOSITORY_WORKSPACE_ROOT"] = self.workspace_root
+        environment[WORKSPACE_ROOT_VARIABLE] = self.workspace_root
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         return environment
 
@@ -1540,7 +1736,34 @@ class BackendSupervisor:
         root = str(config.get("root") or "")
         if root and Path(root).resolve() != self.interactive_root.resolve():
             problems.append(f"it runs from another checkout ({root})")
+        # The workspace root it was started for (2026-10-24): the campaign's, or it is another campaign's backend.
+        served, source = self.served_workspace_root()
+        if served is None:
+            problems.append(f"the workspace root it was started for cannot be read (neither its environment nor a "
+                            f"launch record that names it says; this campaign's is {self.workspace_root})")
+        elif not served:
+            problems.append(f"it was started for no workspace root ({source} sets no {WORKSPACE_ROOT_VARIABLE}; this "
+                            f"campaign's is {self.workspace_root})")
+        elif not same_workspace_root(served, self.workspace_root):
+            problems.append(f"it was started for another workspace root ({served}, as {source} says; this campaign's "
+                            f"is {self.workspace_root})")
         return problems
+
+    def served_workspace_root(self) -> tuple[str | None, str]:
+        """The workspace root the backend on the campaign port was started for, and what says so: the listener's own
+        environment (its MSDIAL_REPOSITORY_WORKSPACE_ROOT, "" where it sets none), else the launch record beside the
+        campaign's job registry, where the record keeps a root and names the listener, or psutil cannot say which
+        process listens (origin() cannot either then). (None, "") where neither says it."""
+        listener = listening_pid(self.port)
+        environment = process_environment(listener)
+        if environment is not None:
+            served = (environment_value(environment, WORKSPACE_ROOT_VARIABLE) or "").strip()
+            return served, f"the environment of pid {listener}"
+        record = self._read_launch_record()
+        recorded = str(record.get("workspace_root") or "").strip()
+        if recorded and (listener is None or listener == record.get("pid") or self._owns(record, listener)):
+            return recorded, "the campaign's launch record"
+        return None, ""
 
     # ---- the start state, kept in the ledger ----
 
@@ -1956,7 +2179,7 @@ class BackendSupervisor:
                 if error.may_have_started:
                     # What is known of a start that may have happened, for origin() to recognise its backend.
                     error.record.update(started_at=_now().isoformat(timespec="seconds"), port=self.port,
-                                        interactive_root=str(self.interactive_root))
+                                        interactive_root=str(self.interactive_root), workspace_root=self.workspace_root)
                     self._write_launch_record(error.record)
                     raise
                 if method == "wmi":
@@ -1967,7 +2190,7 @@ class BackendSupervisor:
             if wmi_failure:
                 record["wmi_failure"] = wmi_failure
         record.update(started_at=_now().isoformat(timespec="seconds"), port=self.port,
-                      interactive_root=str(self.interactive_root))
+                      interactive_root=str(self.interactive_root), workspace_root=self.workspace_root)
         self._write_launch_record(record)
         return record
 

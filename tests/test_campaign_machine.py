@@ -270,6 +270,137 @@ class HappyPathTests(Base):
         self.assertNotIn("5", self.boundaries(book, "u1"))
 
 
+class LibraryRecordTests(Base):
+    """A run's records name the libraries it loaded beside the ones its approval names (2026-10-24). Until then the
+    campaign record and the Catalog's run named the pins alone, and so named the approved LBM2 for the preflight units
+    that loaded the official one."""
+
+    @staticmethod
+    def record(book: ledger.Ledger, unit: str = "u1") -> dict:
+        return json.loads((Path(book.unit(unit)["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def differences(book: ledger.Ledger) -> list[dict]:
+        return [json.loads(row["detail_json"]) for row in book.events(machine.LIBRARIES_DIFFER)]
+
+    def test_the_records_name_what_the_run_loaded_and_what_was_approved(self) -> None:
+        world = self.world()
+        book = self.finish(world)
+        record = self.record(book)
+        loaded = [{"name": fakes.LBM, "sha256": fakes.SHA["lbm"], "role": "lbm"},
+                  {"name": fakes.POSITIVE_MSP, "sha256": fakes.SHA["positive"], "role": "msp"}]
+        self.assertEqual(record["libraries_as_run"], loaded)
+        self.assertEqual(record["libraries_as_run_source"], machine.FINALISATION_LIBRARIES)
+        self.assertEqual(record["libraries_authorized"],
+                         [{"name": item["name"], "sha256": item["sha256"]} for item in world.pins["libraries"]])
+        self.assertNotIn("libraries", record["pins"], "the pins are the approval's libraries, recorded as such")
+        provenance = next(iter(world.catalog.runs.values()))["provenance"]
+        self.assertEqual((provenance["libraries_as_run"], provenance["libraries_as_run_source"]),
+                         (loaded, machine.FINALISATION_LIBRARIES))
+        self.assertEqual(provenance["libraries_authorized"], record["libraries_authorized"])
+        self.assertNotIn("libraries", provenance)
+        self.assertEqual(self.differences(book), [], "the run loaded the approved libraries")
+
+    def test_a_run_that_loaded_another_lbm_is_recorded_as_it_ran_and_said_once(self) -> None:
+        """The preflight's substitution: the approval names one LBM2 and the run loads another."""
+        world = self.world(library_modes=True)
+        world.run_libraries = [
+            {"name": fakes.POSITIVE_MSP, "role": "msp", "sha256": fakes.SHA["positive"]},
+            {"name": "Synthetic-official.lbm2", "role": "lbm", "sha256": "e" * 64},
+        ]
+        book = self.finish(world)
+        record = self.record(book)
+        self.assertEqual([item["name"] for item in record["libraries_as_run"]], ["Synthetic-official.lbm2", fakes.POSITIVE_MSP])
+        self.assertEqual(record["libraries_authorized"][2], {"name": fakes.LBM, "sha256": fakes.SHA["lbm"], "role": "lbm",
+                                                             "ion_modes": ["Positive", "Negative"]})
+        runs = list(world.catalog.runs.values())
+        self.assertEqual(runs[-1]["provenance"]["libraries_as_run"], record["libraries_as_run"])
+        job = book.unit("u1")["run_job_id"]
+        self.assertEqual(self.differences(book), [{
+            "job_id": job, "source": machine.FINALISATION_LIBRARIES, "not_authorized": ["Synthetic-official.lbm2"],
+            "sha256_differs": [], "sha256_unrecorded": [], "authorized_not_run": [fakes.LBM],
+        }], "said once, though the run is recorded at its end, at the unit's end and in the campaign record")
+        self.assertEqual([row["unit_key"] for row in book.events(machine.LIBRARIES_DIFFER)], ["u1"])
+
+    def test_other_bytes_under_an_approved_name_are_said(self) -> None:
+        world = self.world()
+        world.run_libraries = [{"name": fakes.POSITIVE_MSP, "role": "msp", "sha256": "d" * 64},
+                               {"name": fakes.LBM, "role": "lbm", "sha256": fakes.SHA["lbm"]}]
+        book = self.finish(world)
+        (difference,) = self.differences(book)
+        self.assertEqual((difference["sha256_differs"], difference["not_authorized"], difference["authorized_not_run"]),
+                         ([fakes.POSITIVE_MSP], [], []), "without ion modes in the pins, nothing is said not run")
+
+    def test_before_finalisation_the_run_manifest_it_was_prepared_with_is_read(self) -> None:
+        world = self.world()
+        world.run_libraries = None
+        world.prepared_libraries = [{"name": fakes.POSITIVE_MSP, "filename": fakes.POSITIVE_MSP, "role": "msp",
+                                     "sha256": fakes.SHA["positive"], "private": True}]
+        book = self.finish(world)
+        record = self.record(book)
+        self.assertEqual(record["libraries_as_run_source"], machine.PREPARED_LIBRARIES)
+        self.assertEqual(record["libraries_as_run"], [{"name": fakes.POSITIVE_MSP, "sha256": fakes.SHA["positive"], "role": "msp"}])
+
+    def test_a_unit_that_never_ran_records_no_libraries_as_run(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(disposition="exclude")
+        book = self.finish(world)
+        record = self.record(book)
+        self.assertEqual((record["state"], record["libraries_as_run"], record["libraries_as_run_source"]),
+                         ("excluded", None, None))
+        self.assertEqual(len(record["libraries_authorized"]), 3)
+        self.assertEqual(self.differences(book), [])
+
+    def test_the_catalog_records_the_pinned_consoles_version(self) -> None:
+        world = self.world(console_version="5.5.260101 / commit 0123abc45")
+        book = self.finish(world)
+        self.assertEqual({run["msdial_version"] for run in world.catalog.runs.values()}, {"5.5.260101 / commit 0123abc45"})
+        self.assertEqual(self.record(book)["pins"]["console_version"], "5.5.260101 / commit 0123abc45")
+        # A campaign pinned before the pin recorded a version: the commit its build provenance names, else nothing.
+        self.assertEqual(machine._console_version({"recorded_git_head": "fedcba987", "provenance_matches": True}),
+                         "commit fedcba987")
+        self.assertEqual(machine._console_version({}), "")
+
+    def test_a_build_record_of_other_bytes_names_no_version(self) -> None:
+        """Review 2: a build record left beside a rebuilt or replaced Console names another build; the version it
+        gives, or its commit, went into every run record all the same."""
+        stale = {"version": "5.5.250101 / commit aaaaaaa11", "recorded_git_head": "aaaaaaa1111111",
+                 "provenance_matches": False}
+        self.assertEqual(machine._console_version(stale), "")
+        world = self.world(console_version="5.5.250101 / commit aaaaaaa11", console_record_matches=False)
+        book = self.finish(world)
+        self.assertEqual({run["msdial_version"] for run in world.catalog.runs.values()}, {""})
+        self.assertIsNone(self.record(book)["pins"]["console_version"])
+
+    def test_a_finalisation_of_another_job_is_not_this_runs(self) -> None:
+        """The finalisation Interactive writes once a Console returns stays in the unit manifest until a new run
+        supersedes it, so a retry that ends before its own Console returns must not be recorded with the libraries an
+        earlier attempt loaded: those are read only for the job that wrote them, else the prepared run manifest."""
+        world = self.world()
+        world.prepared_libraries = [{"name": fakes.POSITIVE_MSP, "filename": fakes.POSITIVE_MSP, "role": "msp",
+                                     "sha256": fakes.SHA["positive"], "private": True}]
+        world.run_libraries = [{"name": "Synthetic-earlier.lbm2", "role": "lbm", "sha256": "e" * 64}]
+        book = self.finish(world)
+        unit = book.unit("u1")
+        runner = world.runner(book)
+        manifest = runner._manifest(unit)
+        self.assertEqual(manifest["console_run_finalisation"]["job_id"], unit["run_job_id"])
+        ran, source = runner._libraries_as_run(unit, unit["run_job_id"], manifest)
+        self.assertEqual((source, [item["name"] for item in ran]), (machine.FINALISATION_LIBRARIES, ["Synthetic-earlier.lbm2"]))
+        ran, source = runner._libraries_as_run(unit, "job-of-a-later-attempt", manifest)
+        self.assertEqual((source, ran), (machine.PREPARED_LIBRARIES, [
+            {"name": fakes.POSITIVE_MSP, "sha256": fakes.SHA["positive"], "role": "msp"}]))
+
+    def test_the_console_version_is_read_from_its_build_provenance(self) -> None:
+        self.assertEqual(ports.console_version({"binary_version_output": "5.5.260101 / commit 0123abc45\nmore",
+                                                "git_head": "a" * 40}), "5.5.260101 / commit 0123abc45")
+        self.assertEqual(ports.console_version({"git_head": "A" * 40}), "commit " + "a" * 40)
+        # A version line that names a location is not taken: the version travels into the Catalog's run record.
+        self.assertEqual(ports.console_version({"binary_version_output": r"C:\builds\MSDIALCUI.exe 5.5",
+                                                "git_head": "b" * 40}), "commit " + "b" * 40)
+        self.assertEqual(ports.console_version({"binary_version_output": "", "git_head": "not a commit"}), "")
+
+
 class FailureTests(Base):
     def test_a_failed_unit_is_retried_twice_then_its_raw_data_go(self) -> None:
         world = self.world(("u1", "u2"))
@@ -730,6 +861,59 @@ class PinTests(Base):
         world.pin_source.values["console"]["inventory_sha256"] = world.pins["console"]["inventory_sha256"]
         book = self.finish(world)
         self.assertEqual([book.unit(key)["state"] for key in ("u1", "u2")], ["done", "done"])
+
+    @staticmethod
+    def changed_template(world: fakes.World, after: str) -> None:
+        """The parameter template Interactive's settings name changes once `after` (a call of the fake Interactive)
+        returns, as the GUI's path save would change it during a campaign."""
+        call = getattr(world.interactive, after)
+        changed = []
+
+        def then_change(**arguments):
+            result = call(**arguments)
+            if not changed:
+                changed.append(after)
+                world.pin_source.values["template"]["sha256"] = "8" * 64
+            return result
+
+        setattr(world.interactive, after, then_change)
+
+    def test_a_template_changed_after_the_diagnostic_pauses_the_campaign_before_the_prepare(self) -> None:
+        """Review 2: the plan reads the LBM cutoffs from the template Interactive's settings name, and nothing pinned
+        it, so a template changed during a campaign failed every later unit at LIB-2, each after its download and
+        diagnostic, retried and then its raw data discarded. Pinned, the change pauses the campaign once, before the
+        unit's method is written, and costs no unit anything."""
+        world = self.world(("u1", "u2"), template_pin=True)
+        self.changed_template(world, "estimate")
+        book = self.finish(world, max_iterations=20)
+        unit = book.unit("u1")
+        self.assertEqual((book.runner()["pause_kind"], unit["state"], unit["failures"]), ("pin", "diagnosed", 0))
+        self.assertIn("template.sha256", book.runner()["pause_reason"])
+        self.assertFalse([name for name, _ in world.interactive.calls if name == "prepare_guided"], "no method written")
+        self.assertEqual(book.unit("u2")["state"], "pending", "the next unit is not downloaded")
+        book.close()
+        world.pin_source.values["template"]["sha256"] = world.pins["template"]["sha256"]
+        book = self.finish(world)
+        self.assertEqual([(book.unit(key)["state"], book.unit(key)["failures"]) for key in ("u1", "u2")],
+                         [("done", 0), ("done", 0)])
+
+    def test_a_template_changed_after_the_gate_pauses_the_campaign_before_the_console_starts(self) -> None:
+        """Review 2: the before-production gate reads the method prepare wrote, and Interactive's start writes it again
+        from the template its settings name then; a template changed between the two ran unseen until the after-run
+        gates recorded it. The pin comparison before each Console start pauses the campaign instead."""
+        world = self.world(("u1",), template_pin=True)
+        self.changed_template(world, "prepare_guided")
+        book = self.finish(world, max_iterations=20)
+        self.assertEqual((book.runner()["pause_kind"], book.unit("u1")["state"]), ("pin", "prepared"))
+        self.assertIn("template.sha256", book.runner()["pause_reason"])
+        self.assertNotIn(("u1", "run"), world.interactive.console_starts, "the production Console did not start")
+
+    def test_a_campaign_pinned_before_the_template_was_pinned_does_not_compare_it(self) -> None:
+        recorded = {"console": {"binary_sha256": "1" * 64}}
+        self.assertEqual(policy.pin_differences(recorded, {**recorded, "template": {"sha256": "2" * 64}}), [])
+        pinned = {**recorded, "template": {"sha256": "2" * 64}}
+        self.assertEqual(policy.pin_differences(pinned, {**recorded, "template": {"name": "t.txt", "exists": False}}),
+                         ["template.sha256"], "a template that is gone is a changed one")
 
 
 class PrivacyTests(Base):

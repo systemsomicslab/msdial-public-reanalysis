@@ -207,6 +207,86 @@ class FakeInteractive:
         self.step_fallback = False
         self.legacy_estimate = False
         self.estimate_patch: dict[str, Any] = {}
+        # The accession download store (plan item 15), as far as the runner meets it, for the units whose lease
+        # fetches through it (world.unit_objects): each unit's claim on each URL, {state, source, reason}; the URLs
+        # whose object the store holds; every fetch a lease made, (unit, url); and what its gc collected. A lease
+        # claims its URLs as it starts (a live claim is kept as it is), fetches an object the store does not hold
+        # and reuses one it does, and materializes its claims as it completes. Interactive's cleanup and discard
+        # release the unit's claims with its raw tree, and the gc then collects every object no live claim keeps,
+        # as the real store's does under a campaign approval that deletes raw data. pre_claim_supported false plays
+        # an Interactive without pre_claim_downloads.
+        self.claims: dict[tuple[str, str], dict[str, Any]] = {}
+        self.objects: set[str] = set()
+        self.fetches: list[tuple[str, str]] = []
+        self.collected: list[str] = []
+        self.pre_claim_supported = True
+
+    # ---- the download store ----
+    def _claim(self, url: str, unit: str, source: str) -> dict[str, Any]:
+        claim = self.claims.get((url, unit))
+        if claim is None or claim["state"] not in ("pending", "materialized"):
+            claim = {"state": "pending", "source": source, "reason": None}
+            self.claims[(url, unit)] = claim
+        return claim
+
+    def _gc(self) -> None:
+        for url in sorted(self.objects):
+            if not any(claim["state"] in ("pending", "materialized")
+                       for (claimed, _unit), claim in self.claims.items() if claimed == url):
+                self.objects.discard(url)
+                self.collected.append(url)
+
+    def _release_unit(self, unit: str, reason: str) -> None:
+        for (_url, claimant), claim in self.claims.items():
+            if claimant == unit and claim["state"] in ("pending", "materialized"):
+                claim.update(state="released", reason=reason)
+        self._gc()
+
+    def _fetch_or_reuse(self, unit: str) -> dict[str, Any] | None:
+        """The store stage of a lease that completed: the unit manifest's download_cache, or None for a unit whose
+        lease does not fetch through the store."""
+        urls = self.world.unit_objects.get(unit) or []
+        if not urls:
+            return None
+        objects = []
+        for url in urls:
+            self._claim(url, unit, "lease")
+            fetched = url not in self.objects
+            action = "reused"
+            if fetched:
+                action = "refetched" if any(item == url for _unit, item in self.fetches) else "fetched"
+                self.fetches.append((unit, url))
+                self.objects.add(url)
+            self.claims[(url, unit)]["state"] = "materialized"
+            objects.append({"url": url, "action": action, "cache_hit": not fetched,
+                            "transferred_bytes": 1000 if fetched else 0})
+        return {"transferred_bytes": sum(item["transferred_bytes"] for item in objects),
+                "objects_fetched": sum(1 for item in objects if not item["cache_hit"]),
+                "cache_hits": sum(1 for item in objects if item["cache_hit"]), "objects": objects}
+
+    def pre_claim(self, *, workspace_root: str, units: list[dict[str, Any]]) -> dict[str, Any]:
+        self.calls.append(("pre_claim", {"units": [item["analysis_unit_id"] for item in units]}))
+        if not self.pre_claim_supported:
+            return {"ok": False, "reason": "unsupported", "detail": "Interactive has no pre_claim_downloads (plan item 15)."}
+        claimed = []
+        for item in units:
+            states = [self._claim(entry["url"], item["analysis_unit_id"], "batch_plan")["state"] for entry in item["objects"]]
+            claimed.append({"analysis_unit_id": item["analysis_unit_id"], "claims": len(states), "live": len(states)})
+        return {"ok": True, "claimed": claimed}
+
+    def release_claims(self, *, workspace_root: str, repository: str, accession: str, unit_id: str, reason: str,
+                       authorization_path: str = "") -> dict[str, Any]:
+        self.calls.append(("release_claims", {"unit_id": unit_id, "reason": reason,
+                                              "authorization_path": authorization_path}))
+        released = 0
+        for (_url, claimant), claim in self.claims.items():
+            if claimant == unit_id and claim["state"] == "pending":
+                claim.update(state="released", reason=reason)
+                released += 1
+        before = len(self.collected)
+        if authorization_path:
+            self._gc()
+        return {"ok": True, "released": released, "collected": self.collected[before:], "kept": [], "refused": []}
 
     # ---- helpers ----
     def _job_id(self, prefix: str) -> str:
@@ -263,6 +343,9 @@ class FakeInteractive:
                           "outcome": outcome, "unit": unit, "manifest_path": str(manifest_path), "maximum_bytes": maximum,
                           "remote_bytes": script.remote_bytes, "repository": arguments["repository"]}
         self.download_starts.append(unit)
+        for url in self.world.unit_objects.get(unit) or []:
+            # The lease's own claim, as fetch_or_reuse makes it: a pre-claim is kept as it is.
+            self._claim(url, unit, "lease")
         return {"ok": True, "job_id": job}
 
     def _due(self, ticks: int) -> Any:
@@ -348,7 +431,9 @@ class FakeInteractive:
                 workspace = Path(manifest_path).parent.parent
                 (workspace / "raw" / "data").mkdir(parents=True, exist_ok=True)
                 (workspace / "raw" / "data" / "S1.mzML").write_bytes(b"x" * 1000)
-                self._update(manifest_path, lambda manifest: manifest.update(status="raw_metadata_required", input_candidates=[]))
+                cache = self._fetch_or_reuse(job["unit"])
+                self._update(manifest_path, lambda manifest: manifest.update(
+                    status="raw_metadata_required", input_candidates=[], **({"download_cache": cache} if cache else {})))
                 job.update(status="completed", result={"manifest_path": manifest_path})
             elif outcome == "cancelled":
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed"))
@@ -381,6 +466,11 @@ class FakeInteractive:
             for item in manifest.get("run_attempts") or []:
                 if item.get("job_id") == job["id"]:
                     item.update(ended_at=self._stamp(), exit_code=exit_code)
+            if kind == "run" and self.world.run_libraries is not None:
+                # Interactive's finalisation of every production run records the libraries it loaded (0.5.37).
+                manifest["console_run_finalisation"] = {
+                    "schema": "msdial-console-run-finalisation.v1", "job_id": job["id"],
+                    "libraries": json.loads(json.dumps(self.world.run_libraries))}
             if kind == "run" and outcome in ("ok", "late_fail"):
                 output = Path(manifest["output_directory"])
                 output.mkdir(parents=True, exist_ok=True)
@@ -607,6 +697,10 @@ class FakeInteractive:
     def prepare_guided(self, *, input_path: str, answers: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("prepare_guided", {"answers": answers}))
         manifest_path = (answers.get("workflow_overrides") or {}).get("repository_run_manifest") or ""
+        if self.world.prepared_libraries is not None:
+            # The run manifest Interactive writes as it prepares the run, with the libraries it will load.
+            output = Path((self.store.read(manifest_path) or {})["output_directory"])
+            _write(output / "run-manifest.json", {"libraries": json.loads(json.dumps(self.world.prepared_libraries))})
         script = self.world.scripts.get(self._unit_of_manifest(manifest_path)) or UnitScript()
         validation = [{"level": "warning", "message": message} for message in script.plan_warnings]
         return {"plan": {"validation": validation, "ready_to_prepare": True}, "preparation": {}, "messages": []}
@@ -631,6 +725,7 @@ class FakeInteractive:
         manifest = self.store.read(manifest_path) or {}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
         self._update(manifest_path, lambda current: current.update(status="raw_cleaned"))
+        self._release_unit(unit, "raw_cleaned")
         return {"ok": True, "deleted": True}
 
     def discard_blockers(self, manifest: dict[str, Any]) -> list[str]:
@@ -709,6 +804,7 @@ class FakeInteractive:
             return {"ok": True, "deleted": False, "part_ended": True, "raw_release_deferred_to": manifest["split_from"]["manifest_path"]}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
         self._update(manifest_path, ended)
+        self._release_unit(self._unit_of_manifest(manifest_path), "discarded")
         return {"ok": True, "deleted": True}
 
     def release_split_parent(self, *, manifest_path: str, authorization_path: str,
@@ -735,6 +831,7 @@ class FakeInteractive:
             self._update(path, lambda current: current.update(status="discarded", disposition_hold_released_by="operator_skip"))
         manifest = self.store.read(manifest_path) or {}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
+        self._release_unit(self._unit_of_manifest(manifest_path), "raw_cleaned")
         return {"ok": True, "deleted": True}
 
     def live_attempt(self, manifest_path: str) -> dict[str, Any] | None:
@@ -767,6 +864,8 @@ class FakeCatalog:
         self.saved: list[dict[str, Any]] = []
         self.runs: dict[str, dict[str, Any]] = {}
         self.drift: set[str] = set()
+        # The units whose download URLs the runner asked for (download_objects), call by call.
+        self.object_requests: list[list[str]] = []
 
     def class_decision(self, unit_id: str, purpose: str) -> dict[str, Any]:
         digest = self.world.class_digest(unit_id) + ("-drifted" if unit_id in self.drift else "")
@@ -783,6 +882,10 @@ class FakeCatalog:
 
     def copy_handoff(self, response: dict[str, Any], destination: Path) -> dict[str, Any]:
         return ports.copy_handoff(response, destination)
+
+    def download_objects(self, unit_ids: list[str]) -> dict[str, Any]:
+        self.object_requests.append(list(unit_ids))
+        return {"ok": True, "units": {unit: list(self.world.unit_objects.get(unit) or []) for unit in unit_ids}}
 
     def record_run(self, **values: Any) -> dict[str, Any]:
         self.runs[values["run_id"]] = values
@@ -862,7 +965,10 @@ class World:
 
     def __init__(self, root: Path, unit_ids: list[str], *, policy_values: dict[str, Any] | None = None,
                  retention: str = "delete_after_validated_output", covers: tuple[str, ...] = ("1", "3", "4", "5", "split"),
-                 known_bytes: int = 10 * 1000**3, size_known: bool = True, legacy_policy: bool = False) -> None:
+                 known_bytes: int = 10 * 1000**3, size_known: bool = True, legacy_policy: bool = False,
+                 library_modes: bool = False, console_version: str | None = None,
+                 download_groups: dict[str, list[str]] | None = None, template_pin: bool = False,
+                 console_record_matches: bool = True) -> None:
         self.root = root
         self.workspace_root = root / "analysis"
         self.directory = self.workspace_root / "_campaigns" / "test-campaign"
@@ -919,6 +1025,27 @@ class World:
             "catalog": {"version": "0.6.1", "commit": "b" * 40, "dirty": False},
             "gate": {"commit": "c" * 40, "dirty": False},
         }
+        if library_modes:
+            # As the plan pins them since 2026-10-24 (plan.library_pins): each with its role and the ion modes it serves.
+            modes = {POSITIVE_MSP: ["Positive"], NEGATIVE_MSP: ["Negative"], LBM: ["Positive", "Negative"]}
+            for item in self.pins["libraries"]:
+                item.update(role="lbm" if item["name"] == LBM else "msp", ion_modes=modes[item["name"]])
+        if console_version is not None:
+            # The version a build record gives, and whether that record is of the pinned bytes (console_record_matches;
+            # since review 2 ports.PinReader.console records no version from one that is not).
+            self.pins["console"].update(version=console_version, provenance_matches=console_record_matches)
+        if template_pin:
+            # As the plan pins it since review 2 (ports.PinReader.template): the parameter template, by its sha256.
+            self.pins["template"] = {"name": "synthetic-template.txt", "exists": True,
+                                     "sha256": hashlib.sha256(b"template").hexdigest(), "bytes": 8, "named_by": "settings"}
+        # What Interactive's finalisation of a production run records it loaded (console_run_finalisation.libraries),
+        # by default a Positive unit's approved libraries; None records none. And the libraries the run manifest names
+        # as the run is prepared (output/run-manifest.json); None writes no run manifest, as before.
+        self.run_libraries: list[dict[str, Any]] | None = [
+            {"name": POSITIVE_MSP, "filename": POSITIVE_MSP, "role": "msp", "sha256": SHA["positive"], "private": True},
+            {"name": LBM, "filename": LBM, "role": "lbm", "sha256": SHA["lbm"], "private": True},
+        ]
+        self.prepared_libraries: list[dict[str, Any]] | None = None
         self.campaign = {
             "campaign_id": "test-campaign", "pool": "declared", "manifest_path": str(manifest_path),
             "manifest_digest": self.digest, "analysis_purpose": "annotation of every experimental spectrum",
@@ -941,15 +1068,26 @@ class World:
         }
         self.approval = {"approval_id": "approval-1", "manifest_digest": self.digest, "approved_by": "Test Person",
                          "approved_at": "2026-10-01T00:00:00+00:00", "statement": "Approved for the test.", "covers": list(covers)}
+        # download_groups: the units that share download objects, by group id, as the Catalog's download_plan groups
+        # them; each such group's units share one accession and fetch one object (unit_objects, by URL). Every other
+        # unit is a group of its own and fetches nothing through the fake store.
+        grouped = {unit: group for group, members in (download_groups or {}).items() for unit in members}
+        first = {group: unit_ids.index(members[0]) for group, members in (download_groups or {}).items()}
+        self.unit_objects: dict[str, list[str]] = {
+            unit: [f"https://repository.example/download/{group}.tar"] for unit, group in grouped.items()}
         self.units = [
-            {"unit_key": unit, "catalog_unit_id": unit, "repository": "metabolights", "accession": f"MTBLS{index + 9000}",
-             "order_index": index, "download_group_id": f"group-{index}", "approved_class_digest": self.class_digest(unit),
+            {"unit_key": unit, "catalog_unit_id": unit, "repository": "metabolights",
+             "accession": f"MTBLS{first.get(grouped.get(unit, ''), index) + 9000}",
+             "order_index": index, "download_group_id": grouped.get(unit, f"group-{index}"),
+             "approved_class_digest": self.class_digest(unit),
              "class_kind": "abstention", "known_bytes": known_bytes, "size_known": int(size_known), "has_archive": 0,
              "instrument": "Agilent 6545 Q-TOF", "ion_mode": "Positive"}
             for index, unit in enumerate(unit_ids)
         ]
-        self.groups = [{"group_id": f"group-{index}", "unit_count": 1, "known_bytes": known_bytes, "size_known": size_known}
-                       for index in range(len(unit_ids))]
+        self.groups = [{"group_id": group, "unit_count": len(members), "known_bytes": known_bytes, "size_known": size_known}
+                       for group, members in (download_groups or {}).items()]
+        self.groups += [{"group_id": f"group-{index}", "unit_count": 1, "known_bytes": known_bytes, "size_known": size_known}
+                        for index, unit in enumerate(unit_ids) if unit not in grouped]
         self.ledger_path = self.directory / "ledger.sqlite"
         with ledger_module.Ledger(self.ledger_path, durable=False) as book:
             book.create(self.campaign, self.approval, self.units, self.groups, "2026-10-01T00:00:00+00:00")

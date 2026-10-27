@@ -54,6 +54,14 @@ disk is exactly those bytes, so Interactive's campaign_authorization can check a
 digest a person approved by hashing the file. Nothing in it names a private library's location:
 libraries are pinned by file name, sha256 and size.
 
+THE LIBRARIES PINNED ARE THE ONES THE PROFILE NAMES (2026-10-24). The plan pins, and so the approval names, only the
+resource map's libraries the profile names as library:<file name>, each with the role it is loaded in and the ion
+modes whose units load it (library_pins); the map's other libraries are listed as left unpinned. The manifest also
+states, for a unit of each ion mode, the annotation profile the pinned Interactive applies and the LBM score cutoffs
+it writes into the method, read from that Interactive's code (annotation_record), and the summary says both. The plan
+used to pin every mapped library, so a map that still locates the official LBM2 the profile replaced would have put
+it into the approval.
+
 THE AUTOMATIC RT CORRECTION IS STATED IN WHAT A PERSON APPROVES. The campaign runs it on, with at most 12 anchors,
 #826's local window (the Console's 1.5 min) and an uncorrected fallback after an anchor-selection failure, Blanks
 interpolated only by a recorded injection order (decided 2026-10-07). A --policy override may change that, and is
@@ -70,13 +78,15 @@ profile that gives any of those is refused, since the decision is #826 with Inte
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import policy
@@ -283,6 +293,39 @@ def replan_states(workspace_root: Path, campaign_ids: Iterable[str]) -> dict[str
         finally:
             connection.close()
     return result
+
+
+def workspace_root_cautions(workspace_root: str | Path, environment: Mapping[str, str] | None = None) -> list[str]:
+    """Where the workspace root lies that the project keeps no campaign data (C:, the user profile, a temporary
+    folder), as the summary a person approves says it (review 2). The runner refuses a relative root, a network or
+    device path and one inside a code checkout (campaign-runner.py, resolve_workspace_root), but not these: its tests
+    plan in temporary folders, and an approval may name such a root knowingly, so the words say it instead.
+    setup-windows.ps1 refuses them only for the root it is given, which no campaign reads."""
+    environment = os.environ if environment is None else environment
+    text = str(workspace_root or "").strip()
+    if not text:
+        return []
+
+    def spelled(value: str) -> str:
+        # Long names and one case, so a folder spelled with an 8.3 name or in another case is the same folder.
+        return os.path.normcase(os.path.realpath(value))
+
+    root = spelled(text)
+
+    def inside(folder: str) -> bool:
+        base = spelled(folder).rstrip("\\/")
+        return bool(base) and (root == base or root.startswith(base + os.sep))
+
+    cautions = []
+    drive = PureWindowsPath(str(environment.get("SystemDrive") or "").strip()).drive
+    if drive and PureWindowsPath(root).drive.casefold() == drive.casefold():
+        cautions.append(f"on the system drive {drive}")
+    profile = str(environment.get("USERPROFILE") or "").strip()
+    if profile and inside(profile):
+        cautions.append("inside the user profile")
+    if any(inside(folder) for folder in {str(environment.get(name) or "").strip() for name in ("TEMP", "TMP")} if folder):
+        cautions.append("inside a temporary folder")
+    return cautions
 
 
 def legacy_accession_workspace(workspace_root: Path, repository: str, accession: str) -> bool:
@@ -558,7 +601,496 @@ def profile_problems(profile: Mapping[str, Any] | None, library_names: Iterable[
     missing = sorted(library_references(profile) - set(library_names))
     if missing:
         problems.append(f"the profile names libraries the plan did not pin: {', '.join(missing)}")
+    problems.extend(template_path_problems(profile))
     return problems
+
+
+# ---- the libraries the profile names, and how the pinned Interactive annotates with them --------------------
+
+# The role a library is loaded in, by its suffix, as Interactive names it (sharing._role_of).
+LIBRARY_ROLES = {".lbm": "lbm", ".lbm2": "lbm", ".msp": "msp", ".msp2": "msp"}
+# The library strategy for which the pinned Interactive applies its tiered annotation profile (LBM, then a strict
+# and a broad MSP tier: annotation_pipeline.tiered_lcms_annotation, from agent_workflow._apply_libraries).
+TIERED_STRATEGY = "tiered_lipid_msp"
+# The LBM score cutoffs, by the name the summary gives each and the state key Interactive's method writer reads.
+LBM_CUTOFF_KEYS = (("weighted", "lbm_weighted_dot_product"), ("simple", "lbm_simple_dot_product"),
+                   ("reverse", "lbm_reverse_dot_product"))
+# Interactive's own LC-MS parameter template, used where neither the answers nor its settings name another.
+DEFAULT_TEMPLATE = "msdial_console_param4lipidomics.txt"
+# How the summary says whose a parameter template is (lcms_parameter_template).
+TEMPLATE_WHOSE = {"interactive": ", Interactive's own", "answers": ", which the answers name",
+                  "settings": ", which Interactive's settings name"}
+# The settings of an MSP annotator row the manifest states and the authorization carries to the gate's LIB-2, by the
+# key Interactive's annotation profile gives each (annotation_pipeline.tiered_lcms_annotation), besides its id, its
+# library (by file name) and its library kind.
+MSP_ROW_SETTINGS = ("priority", "rt_tolerance", "ms1_tolerance", "ms2_tolerance", "weighted_dot_product_cutoff",
+                    "simple_dot_product_cutoff", "reverse_dot_product_cutoff", "matched_peaks_percentage_cutoff",
+                    "minimum_spectrum_match", "use_rt_scoring", "use_rt_filtering", "target_omics")
+# The library kinds the Console reads as an in-silico (predicted) MSP; any other, a blank one included, is acquired.
+PREDICTED_LIBRARY_KINDS = frozenset({"predicted", "insilico", "computed", "generated", "predictedmsp"})
+# What an ion mode's annotation contract holds (annotation_contract): what the gate's LIB-2 holds the method to.
+ANNOTATION_CONTRACT_KEYS = ("profile_id", "lbm", "lbm_cutoffs", "lbm_priority", "msp_rows")
+# The parts of a tiered ion mode's contract that LIB-2 compares only where they are stated, so the plan must have read
+# them (annotation_problems, review 3), with the words the refusal gives each.
+CONTRACT_PART_WORDS = (("profile_id", "its annotation profile"), ("lbm_cutoffs", "its LBM cutoffs"),
+                       ("msp_rows", "its MSP annotator rows"))
+# The libraries the probe of the tiered strategy names (tiered_lbm_from_answers); none of them exists or is read.
+PROBE_LBM, PROBE_OFFICIAL_LBM, PROBE_MSP = ("campaign-plan-probe.lbm2", "campaign-plan-probe-official.lbm2",
+                                            "campaign-plan-probe.msp")
+
+
+def contract_part_unread(key: str, value: Any) -> bool:
+    """Whether a part of an ion mode's contract was not read: no profile id, LBM cutoffs that are not all three
+    stated, or no MSP rows (an empty list states that there are none)."""
+    if key == "lbm_cutoffs":
+        return not isinstance(value, Mapping) or any(value.get(name) is None for name, _state in LBM_CUTOFF_KEYS)
+    if key == "msp_rows":
+        return not isinstance(value, list)
+    return not value
+
+
+def library_role(name: str) -> str:
+    return LIBRARY_ROLES.get(Path(str(name)).suffix.casefold(), "text")
+
+
+def library_kind(value: Any) -> str:
+    """An MSP's library kind as the Console reads it: predicted for an in-silico library, else acquired."""
+    return "predicted" if str(value or "").strip().casefold() in PREDICTED_LIBRARY_KINDS else "acquired"
+
+
+def ion_mode_answers(profile: Mapping[str, Any] | None, mode: str) -> dict[str, Any]:
+    """The profile's answers for a unit of one ion mode, merged as Runner.answers merges them. The answer seed
+    Interactive gives each unit, which it merges first, names no library."""
+    from .machine import _merge
+
+    profile = profile or {}
+    answers = profile.get("answers") if isinstance(profile.get("answers"), Mapping) else {}
+    by_mode = profile.get("by_ion_mode") if isinstance(profile.get("by_ion_mode"), Mapping) else {}
+    extra = by_mode.get(mode) if isinstance(by_mode.get(mode), Mapping) else {}
+    return _merge(dict(answers), dict(extra))
+
+
+def library_ion_modes(profile: Mapping[str, Any] | None) -> dict[str, list[str]]:
+    """Each library the profile names, with the ion modes whose units are given it (none for one named only outside
+    the answers a unit is given)."""
+    modes: dict[str, list[str]] = {name: [] for name in sorted(library_references(profile))}
+    for mode in ION_MODES:
+        for name in sorted(library_references(ion_mode_answers(profile, mode))):
+            modes.setdefault(name, []).append(mode)
+    return modes
+
+
+def split_libraries(profile: Mapping[str, Any] | None, names: Iterable[str]) -> tuple[list[str], list[str]]:
+    """The resource map's libraries the plan pins, which are the ones the profile names as library:<file name>, and
+    the ones it leaves unpinned. Pinning every mapped library would approve, with the rest, a library no unit is to
+    load, such as the official LBM2 the profile replaced while the map still locates it."""
+    named = library_references(profile)
+    names = sorted({str(name) for name in names})
+    return [name for name in names if name in named], [name for name in names if name not in named]
+
+
+def library_pins(identities: Iterable[Mapping[str, Any]], profile: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The pinned libraries' identities, each with the role it is loaded in and the ion modes whose units load it,
+    which the authorization carries to each unit for the gate's LIB-2."""
+    modes = library_ion_modes(profile)
+    return [{**dict(item), "role": library_role(item["name"]), "ion_modes": list(modes.get(item["name"], []))}
+            for item in identities]
+
+
+def lcms_parameter_template(agent_workflow: Any, answer: Any = None) -> tuple[Path, str]:
+    """The LC-MS parameter template the pinned Interactive's _workflow takes, and whose it is ("answers", "settings" or
+    "interactive"): the answers' template_path, else the one its settings name now (load_user_settings), else its
+    own; a path naming no file falls back to its own, as _existing_path does. `answer` is a location: a profile names
+    its template as library:<file name>, which template_location resolves as Runner.answers does. The plan reads the
+    template's LBM cutoffs from it. The pins hold the one a unit whose answers name none takes by its sha256
+    (ports.PinReader.template), and one the answers name as a library, so each is held where it is read (review 3:
+    the template pin held the settings' one for a profile whose answers named another)."""
+    settings = agent_workflow.load_user_settings()
+    default = Path(agent_workflow.RESOURCES) / DEFAULT_TEMPLATE
+    template = agent_workflow._existing_path(answer or settings.get("template_path"), default)
+    return template, ("interactive" if template == default.resolve() else "answers" if answer else "settings")
+
+
+def _one_library(value: Any) -> str | None:
+    """The file name a value names as library:<file name>, where it is exactly one such reference."""
+    names = library_references(value)
+    return next(iter(names)) if isinstance(value, str) and len(names) == 1 else None
+
+
+def template_location(value: Any, library_paths: Mapping[str, str] | None) -> str | None:
+    """Where the parameter template an ion mode's answers name as library:<file name> is on this machine, from the
+    resource map, as Runner.answers resolves it before Interactive reads it; None for any other value, or a name the
+    map does not locate. Read unresolved, "library:x.txt" names no file, and the plan stated Interactive's own
+    template's cutoffs under the answers' name while the run read the library's (review 3)."""
+    name = _one_library(value)
+    location = (library_paths or {}).get(name) if name else None
+    return str(location) if location else None
+
+
+def answered_templates(profile: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The template_path each ion mode's answers give, for the modes whose answers give one."""
+    found = {mode: ion_mode_answers(profile, mode).get("template_path") for mode in ION_MODES}
+    return {mode: value for mode, value in found.items() if value not in (None, "")}
+
+
+def template_path_problems(profile: Mapping[str, Any] | None) -> list[str]:
+    """An ion mode whose answers name a parameter template other than as library:<file name>. No pin holds such a
+    template, and a relative path resolves against the backend's working directory, so the plan could neither read
+    its cutoffs as the run does nor see it change (review 3)."""
+    modes = [mode for mode, value in answered_templates(profile).items() if _one_library(value) is None]
+    if not modes:
+        return []
+    return [f"the answers of {' and '.join(modes)} units name a parameter template (template_path) other than as "
+            "library:<file name>, which no pin holds: name it as library:<file name>, which the plan pins as a "
+            "library, or leave it out"]
+
+
+def interactive_annotation() -> dict[str, Any]:
+    """What the Interactive on the path (the plan's pinned one) does in annotation, read from its code, never
+    restated here: its tiered annotation profile (tiered), the LBM score cutoffs it writes into the method where the
+    profile sets none (lbm_cutoffs) and where they come from. An Interactive with agent_workflow.LBM_TEMPLATE_CUTOFFS
+    carries the parameter template's cutoffs into the method; one without wrote its method writer's defaults
+    (workflow.LBM_DOT_PRODUCT_CUTOFFS) over them. The template is the one Interactive's _workflow takes: the answers'
+    template_path, else its settings', else its own. lbm_cutoffs are those of a unit whose answers name none, and
+    template_cutoffs gives them for one whose answers name one (review of 2026-10-25: the plan read the settings'
+    alone). tiered_lbm_from_answers says whether its tiered_lipid_msp strategy loads the LBM the answers name
+    (tiered_lbm_from_answers()). retention_time_use is how its _workflow applies the answers' retention-time use to
+    the annotator rows right after the library strategy (agent_workflow._apply_retention_time_use): it rewrites each
+    MSP row's RT use and tolerance, which the tiered profile alone does not set (review 2). What its code does not
+    have is None, and problems says why."""
+    found: dict[str, Any] = {"tiered": None, "lbm_cutoffs": None, "lbm_cutoffs_source": "", "template_cutoffs": None,
+                             "tiered_lbm_from_answers": None, "retention_time_use": None, "problems": []}
+    try:
+        from msdial_app import workflow
+    except Exception as error:  # noqa: BLE001 - not read, so not stated; the summary says so
+        found["problems"].append(f"msdial_app.workflow could not be imported ({type(error).__name__})")
+        return found
+    defaults = getattr(workflow, "LBM_DOT_PRODUCT_CUTOFFS", None)
+    if isinstance(defaults, Mapping) and all(key in defaults for key, _state in LBM_CUTOFF_KEYS):
+        found["lbm_cutoffs"] = {key: defaults[key] for key, _state in LBM_CUTOFF_KEYS}
+        found["lbm_cutoffs_source"] = "Interactive's method writer (workflow.LBM_DOT_PRODUCT_CUTOFFS)"
+    try:
+        from msdial_app import agent_workflow
+
+        carried = getattr(agent_workflow, "LBM_TEMPLATE_CUTOFFS", None)
+        if isinstance(carried, Mapping):
+
+            def template_cutoffs(answer: Any) -> tuple[dict[str, Any] | None, str]:
+                # As agent_workflow._workflow takes an LC-MS template: the answers', else the settings', else its own.
+                template, whose = lcms_parameter_template(agent_workflow, answer)
+                lbm = workflow.load_parameter_template(template).get("lbm_annotator") or {}
+                if not all(carried.get(state) in lbm for _key, state in LBM_CUTOFF_KEYS):
+                    return None, ""
+                return ({key: lbm[carried[state]] for key, state in LBM_CUTOFF_KEYS},
+                        f"the parameter template {template.name}{TEMPLATE_WHOSE[whose]}")
+
+            cutoffs, source = template_cutoffs(None)
+            if cutoffs is not None:
+                found["lbm_cutoffs"], found["lbm_cutoffs_source"] = cutoffs, source
+            found["template_cutoffs"] = template_cutoffs
+    except Exception as error:  # noqa: BLE001
+        found["problems"].append(f"the parameter template's LBM cutoffs could not be read ({type(error).__name__})")
+    try:
+        from msdial_app.annotation_pipeline import tiered_lcms_annotation
+
+        found["tiered"] = tiered_lcms_annotation
+    except Exception as error:  # noqa: BLE001
+        found["problems"].append(f"msdial_app.annotation_pipeline could not be imported ({type(error).__name__})")
+    try:
+        from msdial_app import agent_workflow
+
+        found["tiered_lbm_from_answers"] = tiered_lbm_from_answers(agent_workflow)
+    except Exception as error:  # noqa: BLE001
+        found["problems"].append(f"whether its {TIERED_STRATEGY} strategy loads the LBM the answers name could not be "
+                                 f"read ({type(error).__name__})")
+    try:
+        from msdial_app import agent_workflow
+
+        if callable(getattr(agent_workflow, "_apply_retention_time_use", None)):
+            found["retention_time_use"] = agent_workflow._apply_retention_time_use
+    except Exception as error:  # noqa: BLE001
+        found["problems"].append(f"how its workflow applies the answers' retention-time use could not be read "
+                                 f"({type(error).__name__})")
+    return found
+
+
+def tiered_lbm_from_answers(agent_workflow: Any) -> bool:
+    """Whether the pinned Interactive's tiered_lipid_msp strategy loads the LBM its answers name (libraries.lbm_path).
+
+    Every Interactive before the fix of 2026-10-24 (0.5.47) loaded its library catalog's official LBM in its place,
+    while the answers, and every record the runner built from them, named the profile's: the 15 MB-POST preflight
+    units ran so, and the plan approved them as the profile's (review of 2026-10-25). The strategy is applied as
+    agent_workflow._apply_libraries applies it, to answers naming a probe LBM2 and MSP, with the catalog it would
+    consult standing in for one whose official LBM is a third probe name, and the LBM it loads is read back. None of
+    the three exists, and nothing is read or written: the fixed strategy records an LBM2 it cannot find by name."""
+    state: dict[str, Any] = {"library_provenance": []}
+    answers = {"library_strategy": TIERED_STRATEGY, "libraries": {"lbm_path": PROBE_LBM, "msp_paths": [PROBE_MSP]}}
+    official = {"id": "lipidomics", "kind": "lbm", "local_path": PROBE_OFFICIAL_LBM, "record_id": "probe",
+                "record_url": "", "doi": "", "license": "", "downloaded": True}
+    catalog = getattr(agent_workflow, "catalog_status", None)
+    if catalog is not None:
+        agent_workflow.catalog_status = lambda: [dict(official)]
+    try:
+        agent_workflow._apply_libraries(state, {}, answers)
+    finally:
+        if catalog is not None:
+            agent_workflow.catalog_status = catalog
+    return Path(str(state.get("lbm_path") or "")).name == PROBE_LBM
+
+
+def msp_row_contract(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One MSP annotator row of Interactive's annotation profile as the approval states it: its id, its library by file
+    name (never a location), the settings LIB-2 compares (MSP_ROW_SETTINGS) and its library kind as the Console reads
+    it."""
+    contract = {"annotator_id": str(row.get("annotator_id") or ""),
+                "library": PureWindowsPath(str(row.get("msp_file_path") or "").replace("/", "\\")).name}
+    contract.update({key: row[key] for key in MSP_ROW_SETTINGS if key in row})
+    contract["library_kind"] = library_kind(row.get("library_kind"))
+    return contract
+
+
+class RetentionTimeUseUnread(Exception):
+    """The answers give a retention-time use, and how the pinned Interactive applies it to the MSP rows could not be
+    read: annotation_record states no rows then, and says why."""
+
+
+def msp_rows_as_run(rows: Iterable[Any], answers: Mapping[str, Any], retention_time_use: Any) -> list[dict[str, Any]]:
+    """The tiered profile's MSP rows as the pinned Interactive's _workflow leaves them, as the approval states each
+    (msp_row_contract). _workflow applies the answers' retention-time use (use_retention_time_for_annotation and
+    retention_time_tolerance) right after the library strategy (agent_workflow._apply_retention_time_use), and from
+    Interactive 0.5.45 that rewrites every MSP row's RT scoring and filtering and, given a tolerance, its RT tolerance.
+    Read from tiered_lcms_annotation alone, the contract stated the profile's False/False and 0.5 while the run wrote
+    True/True and the answers' tolerance, so LIB-2 would have failed every unit of a profile that answers true (review
+    2). The pinned Interactive's own function is applied to copies of the rows, so its code decides, never a
+    restatement here. Answers that give no retention-time use need nothing applied; ones that give one when the
+    function cannot be read, or cannot be applied, raise RetentionTimeUseUnread."""
+    state: dict[str, Any] = {"msp_annotators": [copy.deepcopy(dict(row)) for row in rows if isinstance(row, Mapping)],
+                             "text_annotators": []}
+    if answers.get("use_retention_time_for_annotation") is not None:
+        if not callable(retention_time_use):
+            raise RetentionTimeUseUnread("how the pinned Interactive applies the answers' retention-time use to the MSP "
+                                         "rows could not be read, so the rows are not stated")
+        try:
+            retention_time_use(state, copy.deepcopy(dict(answers)))
+        except Exception as error:  # noqa: BLE001 - Interactive's _workflow would raise on the same answers
+            raise RetentionTimeUseUnread(f"the answers' retention-time use could not be applied to the MSP rows as the "
+                                         f"pinned Interactive applies it ({type(error).__name__}), so the rows are not "
+                                         "stated") from error
+    return [msp_row_contract(row) for row in state["msp_annotators"]]
+
+
+def _msp_row_words(row: Mapping[str, Any]) -> str:
+    def value(key: str) -> str:
+        return str(row.get(key, "?"))
+
+    return (f"{row['annotator_id']} ({row['library']}; priority {value('priority')}; MS1/MS2 tolerance "
+            f"{value('ms1_tolerance')}/{value('ms2_tolerance')}; weighted/simple/reverse "
+            f"{value('weighted_dot_product_cutoff')}/{value('simple_dot_product_cutoff')}/"
+            f"{value('reverse_dot_product_cutoff')}; matched peaks {value('matched_peaks_percentage_cutoff')}, at least "
+            f"{value('minimum_spectrum_match')}; RT scoring/filtering {value('use_rt_scoring')}/{value('use_rt_filtering')}"
+            f" within {value('rt_tolerance')} min; target omics {value('target_omics')}; {row['library_kind']})")
+
+
+def _named(value: Any) -> str:
+    """The libraries a value names as library:<file name>, as one text."""
+    return ", ".join(sorted(library_references(value)))
+
+
+def annotation_record(
+    profile: Mapping[str, Any] | None,
+    pinned: Iterable[Mapping[str, Any]],
+    not_pinned: Iterable[str],
+    interactive: Any = DETECT,
+    library_paths: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """What the manifest states of its libraries and their annotation, words included, so the digest a person
+    approves covers them: the libraries the plan pinned (the profile's) and the resource map's others, left unpinned;
+    and for a unit of each ion mode its library strategy, the annotation profile the pinned Interactive applies for
+    it, its LBM and the LBM score cutoffs that Interactive writes into the method (interactive_annotation). The
+    cutoffs a profile's workflow_overrides set are its own, over those of the template the unit takes; a template_path
+    the answers name (library:<file name>) is read where the resource map (`library_paths`, read here and stated
+    nowhere) locates it, as Interactive reads it once Runner.answers resolves it (review 3). `interactive` is
+    interactive_annotation(), or DETECT to read it.
+
+    Each ion mode's item is also the annotation contract the authorization carries to the gate's LIB-2
+    (annotation_contract, review of 2026-10-25): the profile id, the LBM, its cutoffs and its priority, and each MSP
+    annotator row the tiered profile sets, with the answers' retention-time use applied as the pinned Interactive's
+    workflow applies it (msp_rows_as_run), so a method that drifts from what was approved, as the 0.15/0.15/0.3 LBM
+    cutoffs of 13 preflight units did from 0.1/0.1/0.1, stops the run. A tiered strategy given an LBM in libraries
+    also says whether the pinned Interactive loads it (lbm_from_profile, tiered_lbm_from_answers): one that loads its
+    official LBM in its place, or cannot be probed, is not approvable (annotation_problems). So is a strategy that
+    loads a library the profile does not name (unnamed_library): the official strategy, and the tiered one given no
+    libraries.lbm_path, which loads its catalog's official LBM; the plan pins only what the profile names, so LIB-2
+    would stop every unit (review 2)."""
+    found = interactive_annotation() if interactive is DETECT else dict(interactive)
+    problems = list(found.get("problems") or [])
+    pinned = [dict(item) for item in pinned]
+    not_pinned = sorted(str(item) for item in not_pinned)
+    lines = []
+    if pinned:
+        lines.append("  libraries pinned, the ones the profile names: " + ", ".join(
+            f"{item['name']} ({item.get('role') or library_role(item['name'])}"
+            + (f"; {', '.join(item['ion_modes'])}" if item.get("ion_modes") else "") + ")" for item in pinned))
+    else:
+        lines.append("  libraries pinned: none")
+    lines.append("  libraries in the resource map left unpinned, since the profile names none of them: "
+                 + (", ".join(not_pinned) if not_pinned else "none"))
+    by_mode: dict[str, dict[str, Any]] = {}
+    if profile is None:
+        lines.append("  annotation: the manifest has no profile")
+    for mode in ION_MODES if profile is not None else ():
+        answers = ion_mode_answers(profile, mode)
+        libraries = answers.get("libraries") if isinstance(answers.get("libraries"), Mapping) else {}
+        overrides = answers.get("workflow_overrides") if isinstance(answers.get("workflow_overrides"), Mapping) else {}
+        strategy = str(answers.get("library_strategy") or "")
+        lbm = _named(libraries.get("lbm_path")) or _named(overrides.get("lbm_path"))
+        item: dict[str, Any] = {"library_strategy": strategy or None, "lbm": lbm or None, "profile_id": None,
+                                "lbm_cutoffs": None, "lbm_cutoffs_source": "", "lbm_priority": None, "msp_rows": None}
+        tiered = found.get("tiered")
+        rows: list[dict[str, Any]] = []
+        rt_answered = answers.get("use_retention_time_for_annotation") is not None
+        if strategy == TIERED_STRATEGY and callable(tiered):
+            msp = sorted(library_references(libraries.get("msp_paths")))
+            try:
+                annotation = tiered(lbm, msp[0] if msp else "")
+                item["profile_id"] = str(annotation.get("profile_id") or "") or None
+                lbm_annotator = annotation.get("lbm_annotator")
+                item["lbm_priority"] = lbm_annotator.get("priority") if isinstance(lbm_annotator, Mapping) else None
+                if isinstance(annotation.get("msp_annotators"), list):
+                    rows = msp_rows_as_run(annotation["msp_annotators"], answers, found.get("retention_time_use"))
+                    item["msp_rows"] = rows
+            except RetentionTimeUseUnread as error:
+                # Rows the answers' RT use would rewrite unseen are not stated, so LIB-2 holds the method to none.
+                problems.append(str(error))
+            except Exception as error:  # noqa: BLE001 - not read, so not stated; the summary says so
+                problems.append(f"the tiered annotation profile could not be read ({type(error).__name__})")
+        if strategy == TIERED_STRATEGY and _named(libraries.get("lbm_path")):
+            item["lbm_from_profile"] = found.get("tiered_lbm_from_answers")
+        # A library the strategy loads that the profile does not name, which the plan cannot pin (split_libraries):
+        # LIB-2 would stop every unit on it, after its download and diagnostic (review 2).
+        if strategy == "official":
+            item["unnamed_library"] = "its library catalog's official library (library strategy official)"
+        elif strategy == TIERED_STRATEGY and not _named(libraries.get("lbm_path")):
+            item["unnamed_library"] = (f"its library catalog's official LBM (the {TIERED_STRATEGY} strategy, given no "
+                                       "libraries.lbm_path)")
+        stated = {key: overrides[state] for key, state in LBM_CUTOFF_KEYS if state in overrides}
+        template = answers.get("template_path")
+        # The cutoffs of the template this unit takes: the settings' or Interactive's own (found["lbm_cutoffs"]), or
+        # the one its answers name, which Interactive takes over its settings' (agent_workflow._workflow). One that
+        # carries no template's cutoffs writes its method writer's whatever the template (found["lbm_cutoffs"]).
+        base = dict(found["lbm_cutoffs"]) if found.get("lbm_cutoffs") else None
+        base_source = str(found.get("lbm_cutoffs_source") or "")
+        if template and callable(found.get("template_cutoffs")):
+            base, base_source = None, ""
+            location = template_location(template, library_paths)
+            if location is None:
+                named = _named(template) or "not as library:<file name>"
+                problems.append(f"the parameter template the answers name ({named}) is not one the resource map "
+                                "locates, so its LBM cutoffs were not read")
+            else:
+                try:
+                    cutoffs, source = found["template_cutoffs"](location)
+                except Exception as error:  # noqa: BLE001 - not read, so not stated; the summary says so
+                    cutoffs, source = None, ""
+                    problems.append(f"the LBM cutoffs of the template the answers name could not be read "
+                                    f"({type(error).__name__})")
+                if cutoffs:
+                    base, base_source = dict(cutoffs), source
+        if stated:
+            # Interactive applies the overrides over the template the unit takes, so the others are that template's
+            # (review 3: they were the settings' template's, whatever the answers named).
+            item["lbm_cutoffs"] = {key: stated.get(key, (base or {}).get(key)) for key, _state in LBM_CUTOFF_KEYS}
+            item["lbm_cutoffs_source"] = (f"the profile's workflow_overrides ({', '.join(sorted(stated))})"
+                                          + (f", the others from {base_source}" if len(stated) < len(LBM_CUTOFF_KEYS)
+                                             and base_source else ""))
+        elif base:
+            item["lbm_cutoffs"], item["lbm_cutoffs_source"] = base, base_source
+        by_mode[mode] = item
+        cutoffs = item["lbm_cutoffs"]
+        loads = ""
+        if "lbm_from_profile" in item and item["lbm_from_profile"] is False:
+            loads = (", WHICH THE PINNED INTERACTIVE DOES NOT LOAD: its tiered_lipid_msp strategy loads its library "
+                     "catalog's official LBM in its place")
+        elif "lbm_from_profile" in item and item["lbm_from_profile"] is not True:
+            loads = (", which the pinned Interactive may not load: whether its tiered_lipid_msp strategy loads the LBM "
+                     "the answers name could not be read")
+        if item.get("unnamed_library"):
+            loads += (f", and the pinned Interactive loads {item['unnamed_library']}, WHICH THE PLAN DOES NOT PIN: it "
+                      "pins only the libraries the profile names")
+        lines.append(
+            f"  annotation of {mode} units: library strategy {strategy or 'not stated'}; annotation profile "
+            + (f"{item['profile_id']} (the pinned Interactive's annotation_pipeline)" if item["profile_id"] else
+               "none" + (f" (library strategy {strategy})" if strategy else ""))
+            + f"; the profile's LBM {lbm or 'none'}{loads}; LBM cutoffs weighted/simple/reverse "
+            + ("/".join(str(cutoffs.get(key)) for key, _state in LBM_CUTOFF_KEYS) + f" from {item['lbm_cutoffs_source']}"
+               if cutoffs else "not readable from the pinned Interactive's code")
+            + (f"; LBM priority {item['lbm_priority']}" if item["lbm_priority"] is not None else "")
+        )
+        if rows:
+            lines.append(f"    MSP annotators of {mode} units, as that profile sets them"
+                         + (", with the answers' retention-time use applied as the pinned Interactive's workflow "
+                            "applies it" if rt_answered else "") + ": "
+                         + "; ".join(_msp_row_words(row) for row in rows))
+    if problems:
+        lines.append("  not read from the pinned Interactive: " + "; ".join(dict.fromkeys(problems)))
+    return {"libraries_not_pinned": not_pinned, "by_ion_mode": by_mode, "statement": lines}
+
+
+def annotation_problems(manifest: Mapping[str, Any]) -> list[str]:
+    """Why the manifest's units would not annotate with the libraries its profile names: the pinned Interactive's
+    tiered_lipid_msp strategy loads its library catalog's official LBM in place of the profile's, or whether it does
+    could not be read (review of 2026-10-25); or the strategy loads a library the profile does not name, which the
+    plan does not pin (unnamed_library, review 2). Approved, every unit would download and run its diagnostic before
+    LIB-2 stopped it, and then fail. Every ion mode is read, whatever the units' Catalog ion modes: a unit runs in the
+    mode its raw data give (a Mixed split's part, a header that overrides the declaration), and takes that mode's
+    answers (review 3). A tiered ion mode whose contract the plan could not read in full is refused too: LIB-2
+    compares only what the contract states, so cutoff, priority or MSP-row drift would pass it unseen (review 3).
+    A manifest planned before the plan stated these says nothing either way."""
+    annotation = manifest.get("annotation") if isinstance(manifest.get("annotation"), Mapping) else {}
+    by_mode = annotation.get("by_ion_mode") if isinstance(annotation.get("by_ion_mode"), Mapping) else {}
+    problems = []
+    for mode in sorted(by_mode, key=str):
+        item = by_mode[mode]
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("unnamed_library"):
+            # The official strategy loads its catalog's library whatever the profile names (annotation_record).
+            remedy = (f"use library strategy {TIERED_STRATEGY} with the LBM2 named as libraries.lbm_path, as "
+                      "library:<file name>, since the official strategy loads its catalog's library whatever the "
+                      "profile names" if item.get("library_strategy") == "official" else
+                      "name the library in the profile as library:<file name> (the LBM2 as libraries.lbm_path)")
+            problems.append(f"the pinned Interactive loads {item['unnamed_library']} for {mode} units, which the plan "
+                            "does not pin, since it pins only the libraries the profile names, so LIB-2 would stop "
+                            f"every unit: {remedy}, and plan again")
+        unread = [words for key, words in CONTRACT_PART_WORDS if key in item and contract_part_unread(key, item[key])]
+        if item.get("library_strategy") == TIERED_STRATEGY and unread:
+            problems.append(f"the plan could not read {', '.join(unread)} for {mode} units from the pinned Interactive "
+                            "(the summary says why), so LIB-2 would not hold the method to them: plan again once the "
+                            "plan can read them")
+        if "lbm_from_profile" not in item or item["lbm_from_profile"] is True:
+            continue
+        if item["lbm_from_profile"] is False:
+            problems.append(f"the pinned Interactive's {TIERED_STRATEGY} strategy loads its library catalog's official "
+                            f"LBM, not the profile's {item.get('lbm')}, for {mode} units: pin an Interactive that loads "
+                            "the LBM its answers name, and plan again")
+        else:
+            problems.append(f"whether the pinned Interactive's {TIERED_STRATEGY} strategy loads the profile's LBM "
+                            f"{item.get('lbm')} for {mode} units could not be read: plan again with an Interactive "
+                            "the plan can probe")
+    return problems
+
+
+def annotation_contract(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]] | None:
+    """What the manifest states each ion mode's units annotate with, as the authorization carries it to the gate's
+    LIB-2 (review of 2026-10-25): the annotation profile id, the LBM by file name, its score cutoffs and priority, and
+    each MSP annotator row (msp_row_contract), None where the manifest does not state one. Names only, never a
+    location. None for a manifest planned before the plan stated its annotation."""
+    annotation = manifest.get("annotation") if isinstance(manifest.get("annotation"), Mapping) else None
+    by_mode = (annotation or {}).get("by_ion_mode")
+    if not isinstance(by_mode, Mapping):
+        return None
+    return {str(mode): {key: item.get(key) for key in ANNOTATION_CONTRACT_KEYS}
+            for mode, item in by_mode.items() if isinstance(item, Mapping)}
 
 
 AUTOMATIC_RT_ANSWER = "execute_automatic_rt_correction"
@@ -957,6 +1489,9 @@ def build_manifest(
     unit_ids: Sequence[str] | None = None,
     ion_mobility_evidence: Any = DETECT,
     policy_overrides: Iterable[str] = (),
+    libraries_not_pinned: Iterable[str] = (),
+    annotation_code: Any = DETECT,
+    library_paths: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The manifest for one pool, or for a pilot of named units (`unit_ids`, pool "pilot"). `catalog` is a
     read-only Catalog; nothing is written anywhere.
@@ -964,6 +1499,10 @@ def build_manifest(
     `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
     `ion_mobility_evidence` is the Catalog's helper, None for the fallback rule, or DETECT to look it up.
     `policy_overrides` names the policy fields a --policy file set, so the manifest can say what it changed.
+    `libraries_not_pinned` names the resource map's libraries the profile does not name (split_libraries), which
+    the manifest lists as left unpinned; `annotation_code` is what annotation_record reads of the pinned
+    Interactive, or DETECT to read it; `library_paths` locates the pinned libraries, for annotation_record to read a
+    parameter template the profile names as one, and goes into no manifest.
     """
     policy_overrides = sorted({str(item) for item in policy_overrides})
     if (unit_ids is None) == (pool is None or pool == PILOT):
@@ -1103,6 +1642,8 @@ def build_manifest(
         "created_at": policy.iso(now or datetime.now(timezone.utc)),
         "analysis_purpose": analysis_purpose,
         "workspace_root": str(workspace_root),
+        # Where the root lies that the project keeps no campaign data, as the summary says it first (review 2).
+        "workspace_root_cautions": workspace_root_cautions(workspace_root),
         "raw_retention_policy": raw_retention_policy,
         "catalog": {"database": catalog_database, "version": catalog_version},
         "selection": {
@@ -1120,6 +1661,10 @@ def build_manifest(
         "automatic_rt_correction": automatic_rt_correction_record(campaign_policy.as_dict(), profile, policy_overrides),
         "profile": dict(profile) if profile is not None else None,
         "pins": dict(pins),
+        # The libraries pinned and left unpinned, and how the pinned Interactive annotates with them, as the summary
+        # states it, words included, so the digest a person approves covers both.
+        "annotation": annotation_record(profile, pins.get("libraries") or [], libraries_not_pinned, annotation_code,
+                                        library_paths),
         "units": units,
         "groups": used_groups,
         "exclusions": excluded,
@@ -1239,6 +1784,7 @@ def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> lis
     if not libraries:
         problems.append("the manifest pins no library: plan again with --resources")
     problems.extend(profile_problems(manifest.get("profile"), [item["name"] for item in libraries]))
+    problems.extend(annotation_problems(manifest))
     problems.extend(automatic_rt_correction_problems(
         manifest.get("profile"), manifest.get("pins", {}).get("console"), manifest.get("policy")
     ))
@@ -1293,6 +1839,7 @@ def authorization_record(
     for item in covers:
         text = str(item).strip()
         boundaries.append(int(text) if text.isdecimal() else text)
+    contract = annotation_contract(manifest)
     return {
         "schema": AUTHORIZATION_SCHEMA,
         "approval_id": approval_id,
@@ -1305,7 +1852,14 @@ def authorization_record(
         "covers": boundaries,
         "units": [unit["unit_id"] for unit in manifest["units"]],
         "raw_retention_policy": manifest["raw_retention_policy"],
-        "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in manifest["pins"]["libraries"]],
+        # Each library by name and sha256, with the role it is loaded in and the ion modes whose units load it where
+        # the plan recorded them (library_pins): the gate's LIB-2 reads them, and Interactive refuses only a location.
+        "libraries": [{"name": item["name"], "sha256": item["sha256"],
+                       **{key: item[key] for key in ("role", "ion_modes") if key in item}}
+                      for item in manifest["pins"]["libraries"]],
+        # What each ion mode's units annotate with, as the manifest states it (annotation_contract): LIB-2 holds the
+        # method to it, so cutoffs, priorities or a profile other than the approved ones stop the run.
+        **({"annotation": contract} if contract is not None else {}),
         "revoked_at": None,
     }
 
@@ -1334,7 +1888,10 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     """What a person approves. The transfer is printed as the pinned Interactive's lease makes it, which is
     the approval quantity: until the lease fetches through the download store (pins.interactive
     .lease_uses_store, plan item 15) each unit fetches its own objects, so the bytes moved and held are the
-    per-unit sum, and the distinct bytes are what sharing would move."""
+    per-unit sum, and the distinct bytes are what sharing would move. Each shared object is said to be fetched
+    once only where the runner also claims it for every sibling before the first of them downloads
+    (pins.interactive.pre_claim_downloads, 2026-10-24); without that claim the distinct bytes are the least the
+    transfer can be, and the per-unit sum the most."""
     totals = manifest["totals"]
     version = str((manifest.get("pins", {}).get("interactive") or {}).get("version") or "?")
 
@@ -1363,13 +1920,43 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     if unread:
         lines.append(f"  ion mobility not read for {len(unread)} planned units whose Catalog record could not be read, "
                      f"so not excluded for it ({', '.join(unread[:5])}{', ...' if len(unread) > 5 else ''})")
+    # Where the raw data and outputs go, and whether the raw data stay (boundary 1 states both). The root is chosen per
+    # campaign since 2026-10-24, and until the review of 2026-10-25 only the manifest named it, never these words.
+    root = str(manifest.get("workspace_root") or "")
+    lines.append(f"  workspace root {root}: every unit's raw data, MS-DIAL outputs and records, and this campaign's "
+                 "ledger, are written under it" if root else "  workspace root: not stated")
+    cautions = [str(item) for item in manifest.get("workspace_root_cautions") or []]
+    if cautions:
+        where = cautions[0] if len(cautions) == 1 else ", ".join(cautions[:-1]) + " and " + cautions[-1]
+        lines.append(f"  THE WORKSPACE ROOT IS {where.upper()}, where the project keeps no campaign data: approve it only "
+                     "if that is meant")
+    retention = str(manifest.get("raw_retention_policy") or "")
+    # Boundary 5 covers more than the validated case (review 2): the runner discards the raw data of a unit that ends
+    # without validated outputs too (Runner._discard_raw), as decided on 2026-09-30.
+    lines.append(f"  raw retention {retention or 'not stated'}" + (
+        ": each unit's raw data are deleted when the unit ends (boundary 5): once its outputs are validated, and also "
+        "when it ends without validated outputs (failed after its retries, excluded or skipped), so they are not kept "
+        "for diagnosis" if retention == "delete_after_validated_output"
+        else ": each unit's raw data are kept" if retention == "keep" else ""))
     lower = " at least" if totals["units_of_unknown_size"] else ""
     lines.append(f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}")
-    if (manifest.get("pins", {}).get("interactive") or {}).get("lease_uses_store") is True:
+    interactive = manifest.get("pins", {}).get("interactive") or {}
+    if interactive.get("lease_uses_store") is True and interactive.get("pre_claim_downloads") is True:
         lines += [
             f"  transfer and disk:{lower} {tb(totals['distinct_bytes_known'])} of known size, each shared object fetched "
             f"once through Interactive {version}'s download store; lower bound {tb(totals['distinct_bytes_lower_bound'])}",
+            "  before a unit of a download group downloads, the runner claims the group's objects in the store for every "
+            "unit of it still to download, so no unit's cleanup deletes what a sibling has yet to read",
             f"  without the store the units would fetch {tb(totals['per_unit_known_bytes'])}",
+        ]
+    elif interactive.get("lease_uses_store") is True:
+        # The store, and nothing that claims an object for a unit that has not started (a manifest planned before the
+        # runner pre-claimed, 2026-10-24): an earlier sibling's cleanup may delete what the next one then fetches again.
+        lines += [
+            f"  transfer and disk:{lower} {tb(totals['distinct_bytes_known'])} of known size where no shared object is "
+            f"fetched twice, up to {tb(totals['per_unit_known_bytes'])}: Interactive {version}'s lease fetches through "
+            "the download store, but nothing claims an object for a unit that has not started, so once an earlier "
+            "unit's raw data are deleted the next unit of its group may fetch it again",
         ]
     else:
         lines += [
@@ -1389,10 +1976,46 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
             f"  planned beside an earlier accession-level workspace, left as it is: {len(legacy)} accessions "
             f"({', '.join(legacy[:5])}{', ...' if len(legacy) > 5 else ''})"
         )
+    annotation = manifest.get("annotation")
+    if isinstance(annotation, Mapping) and isinstance(annotation.get("statement"), list):
+        lines += [str(line) for line in annotation["statement"]]
+    else:
+        lines.append("  libraries and annotation: not stated (the manifest was planned before the plan stated them)")
+    lines += template_pin_text(manifest)
     lines += correction["statement"]
     lines.append(multi_energy_aif_text((manifest.get("pins") or {}).get("console") or {}))
     lines.append(f"  manifest digest {digest}")
     return "\n".join(lines)
+
+
+def template_pin_text(manifest: Mapping[str, Any]) -> list[str]:
+    """What the summary says of the LC-MS parameter templates the units take and what holds each: one the answers of
+    an ion mode name, as library:<file name>, is pinned with the libraries; the template pin holds the one the other
+    modes' units take (ports.PinReader.template). The template pin was said to be the run's template for a profile
+    whose answers named another (review 3)."""
+    profile = manifest.get("profile") if isinstance(manifest.get("profile"), Mapping) else None
+    answered = {mode: str(value) for mode, value in answered_templates(profile).items()}
+    lines = []
+    for value in sorted(set(answered.values())):
+        modes = " and ".join(mode for mode in ION_MODES if answered.get(mode) == value)
+        name = _one_library(value)
+        lines.append(f"  LC-MS parameter template of {modes} units {name}, which the answers name, pinned as a library "
+                     "by its sha256: a change to it pauses the campaign before the next unit or Console start" if name
+                     else f"  LC-MS parameter template of {modes} units {value}, which the answers name other than as "
+                     "library:<file name>: NOT PINNED, so the plan is not approvable")
+    others = [mode for mode in ION_MODES if mode not in answered]
+    if not others:
+        return lines
+    template = (manifest.get("pins") or {}).get("template") or {}
+    whom = f" of {' and '.join(others)} units" if answered else ""
+    if template.get("sha256"):
+        lines.append(f"  LC-MS parameter template{whom} {template.get('name')}"
+                     f"{TEMPLATE_WHOSE.get(str(template.get('named_by')), '')}, pinned by its sha256 "
+                     f"{str(template['sha256'])[:12]}...: a change to it pauses the campaign before the next unit or "
+                     "Console start")
+    else:
+        lines.append(f"  LC-MS parameter template{whom}: not pinned, so a change to it is seen only by LIB-2, unit by unit")
+    return lines
 
 
 def manifest_automatic_rt_correction(manifest: Mapping[str, Any]) -> dict[str, Any]:

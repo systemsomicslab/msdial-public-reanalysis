@@ -15,9 +15,13 @@ Evaluate whether a future request such as "reanalyze MB-POST repositories 1 to
 2. Call Catalog status and verify that the active database is
    `D:\0_SourceCode\msdial_repository_catalog\catalog-data\native-smoke.sqlite`.
    Report study, analysis-unit, sample, and raw-file counts.
-3. Verify that every repository plan/download preview explicitly uses
-   `workspace_root="D:\13_MSDIAL_Public_Reanalysis\analysis"`, and that no raw-data or output
-   path resolves to C:, the Claude project directory, or a temporary directory.
+3. Verify that every repository plan/download preview explicitly passes the
+   workspace root chosen for the campaign as `workspace_root` (the root is
+   chosen per campaign and never assumed; ask which one when it has not been
+   named, and note that `D:\13_MSDIAL_Public_Reanalysis\analysis` is the archive
+   of the pilots and preflights), and that no raw-data or output path resolves to
+   C:, the user profile, the Claude project directory, a code checkout, or a
+   temporary directory.
 4. Search/inspect `MPST000001` through `MPST000010`. Enumerate every Catalog
    analysis unit with its `analysis_unit_id`, subrecord, project type, polarity,
    acquisition mode, target omics, review status, sample count, file count, and
@@ -67,8 +71,9 @@ Evaluate whether a future request such as "reanalyze MB-POST repositories 1 to
     a bounded default Interactive status response (five jobs, artifact counts
     rather than complete path inventories). Validation failures must return a
     client-visible structured reason and detail rather than a generic MCP error.
-    Confirm that the configured repository workspace boundary rejects an
-    absolute path outside `D:\13_MSDIAL_Public_Reanalysis\analysis`.
+    Report which root the configured repository workspace boundary (the
+    Interactive MCP server's `MSDIAL_REPOSITORY_WORKSPACE_ROOT`) names, and
+    confirm that it rejects an absolute path outside that root.
 11. Check Interactive status. If the backend is merely stopped, call
    `msdial_interactive_launch` with `open_browser=false`, then check status and
    MS-DIAL Console discovery again. Do not restart an unrecognized or

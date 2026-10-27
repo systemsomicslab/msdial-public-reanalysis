@@ -337,14 +337,16 @@ class RunPolicyTests(unittest.TestCase):
 
     def test_without_a_stated_policy_the_fixed_list_decides(self) -> None:
         report = self.report(*({"check_id": check, "status": "fail"} for check in (
-            "ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1",
+            "ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1", "LIB-2",
             "CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1")))
         self.assertEqual(policy.run_blocking_failures(report), (sorted(policy.BLOCKS_RUN_CHECKS), "runner_default"))
 
-    def test_the_users_list_is_the_eight_checks_of_2026_10_02(self) -> None:
+    def test_the_users_list_is_the_eight_checks_of_2026_10_02_and_lib_2(self) -> None:
+        """The eight the user named and placed (2026-10-01, 2026-10-02), and LIB-2 (2026-10-24): the run loads only
+        the libraries the approval names."""
         self.assertEqual(set(policy.BLOCKS_RUN_CHECKS),
-                         {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1"})
-        for check in ("ID-1", "PRE-2", "CONV-1"):
+                         {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1", "LIB-2"})
+        for check in ("ID-1", "PRE-2", "CONV-1", "LIB-2"):
             with self.subTest(check=check):
                 report = self.report({"check_id": check, "status": "fail", "run_policy": "record_only"})
                 self.assertEqual(policy.run_blocking_failures(report), ([check], "gate"),

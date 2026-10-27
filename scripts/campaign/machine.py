@@ -99,6 +99,27 @@ policy.AUTOMATIC_RT_BLANK_ANSWER: true (a Blank's model interpolated by analytic
 Interactive recorded with the analysis CSV is the raw headers' or the repository sample table's, false (a Blank
 keeps its measured RTs) for an order read from the file names or the listing, or none; the campaign record says
 which, and the prepare_run attempt keeps Interactive's plan warnings.
+
+WHAT RAN IS RECORDED, BESIDE WHAT WAS APPROVED (2026-10-24). A run's records - the Catalog's analysis_run and
+campaign-record.json - name the libraries the approval names (libraries_authorized, the pins) and the ones the run
+loaded (libraries_as_run): Interactive's finalisation of that run where it is the run's own, else the run manifest
+the run was prepared with (libraries_as_run_source says which). Where the two differ, a
+libraries_differ_from_authorization event says how. Until then both records named the pins alone, and so named the
+approved LBM2 for the preflight units that had loaded the official one. msdial_version is the pinned Console's
+version, as its build recorded it.
+
+A DOWNLOAD SEVERAL UNITS SHARE (2026-10-24). Interactive's lease fetches through the accession's download store,
+whose gc deletes an object, under the approval, once no live claim keeps it; only a pending claim, which a batch
+approval's pre-claim makes, keeps one for a unit that has not started. The runner made none, so with raw data deleted
+after each unit the first unit's cleanup let the store collect the object its siblings were next to fetch, and each
+fetched it again (MPST000012's four units fetched one 14.78 GB tar four times), while the plan's summary said each
+shared object was fetched once. Now, before any unit of a download group of more than one unit downloads, the runner
+claims the group's objects for every other unit of it that will still download (_claim_shared_downloads, through
+Interactive's pre_claim_downloads, with the Catalog's URLs). A unit that ends without validated outputs (excluded,
+skipped, failed, stopped) releases what it claimed and never read (_release_shared_claims), so the store collects an
+object no sibling still needs; a claim its lease materialized is released by Interactive's cleanup or discard, as
+before. The finished download's attempt records what the lease moved (download_transfer), and status adds it up
+(summary: downloads), so a shared object fetched again shows. A group of one unit is downloaded as before.
 """
 
 from __future__ import annotations
@@ -187,6 +208,19 @@ AIF_ENERGY_SETS_DIFFER_WARNING = (
     "MsdialWorkbench#825 processes each file with its own representative collision energy, so representative "
     "energies can differ between files. Its disposition's aif_multi_ce_run records the sets"
 )
+# Where a run record's libraries_as_run were read (Runner._libraries_as_run): Interactive's finalisation of the run,
+# or, before it, the run manifest the run was prepared with. And the event that says a run's libraries are not the
+# approved ones (library_differences).
+FINALISATION_LIBRARIES = "console_run_finalisation"
+PREPARED_LIBRARIES = "prepared_run_manifest"
+LIBRARIES_DIFFER = "libraries_differ_from_authorization"
+# The events of a download several units share (Runner._claim_shared_downloads, _release_shared_claims): the claims
+# made for the siblings before a unit of the group downloads, the claims a unit that ended released, and either one
+# that could not be made.
+SHARED_DOWNLOAD_CLAIMED = "shared_download_claimed"
+SHARED_DOWNLOAD_NOT_CLAIMED = "shared_download_not_claimed"
+SHARED_DOWNLOAD_RELEASED = "shared_download_released"
+SHARED_DOWNLOAD_NOT_RELEASED = "shared_download_not_released"
 
 
 @dataclass
@@ -234,6 +268,66 @@ def _loads(text: str | None) -> dict[str, Any]:
 def _flag(value: Any) -> bool | None:
     """A ledger 0/1 column as a record's true or false, and NULL as null."""
     return None if value is None else bool(value)
+
+
+def _read_object(path: Path) -> dict[str, Any]:
+    """A JSON object on disk, or {} where there is none or it cannot be read."""
+    try:
+        return _loads(path.read_text(encoding="utf-8-sig"))
+    except OSError:
+        return {}
+
+
+def _console_version(console: Mapping[str, Any]) -> str:
+    """The pinned Console's version for the Catalog's msdial_version: the version its pin records (its build's own
+    version output, ports.console_version), else the commit its build provenance names; "" where neither is known,
+    and where that build provenance does not describe the pinned bytes (provenance_matches not true, review 2): a
+    record left beside a rebuilt or replaced Console names another build."""
+    if console.get("provenance_matches") is not True:
+        return ""
+    version = str(console.get("version") or "").strip()
+    head = str(console.get("recorded_git_head") or "").strip()
+    return version or (f"commit {head}" if head else "")
+
+
+def as_run_libraries(entries: Iterable[Any]) -> list[dict[str, Any]]:
+    """Library records as a run record names them: file name and sha256, with the role (lbm, msp, text) and the
+    library kind (acquired, predicted) where the record gives them, and never a location."""
+    found = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("name") or entry.get("filename") or "").strip() or str(entry.get("path") or "").strip()
+        name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if not name:
+            continue
+        item = {"name": name, "sha256": str(entry.get("sha256") or "").strip().casefold()}
+        for key in ("role", "library_kind"):
+            if str(entry.get(key) or "").strip():
+                item[key] = str(entry[key]).strip()
+        found.append(item)
+    return sorted(found, key=lambda item: (item["name"].casefold(), item["sha256"]))
+
+
+def library_differences(
+    authorized: Iterable[Mapping[str, Any]], ran: Iterable[Mapping[str, Any]], ion_mode: str
+) -> dict[str, list[str]]:
+    """How the libraries a run loaded differ from the ones its approval names, by file name (compared without case):
+    loaded and not approved; loaded with another sha256 than approved, or with none recorded; and, where the
+    approval says which ion modes load each library (plan.library_pins), approved for the run's ion mode and not
+    loaded. Each list is empty when the two agree."""
+    approved = {str(item["name"]).casefold(): item for item in authorized}
+    loaded = {str(item["name"]).casefold(): item for item in ran}
+    moded = any("ion_modes" in item for item in approved.values())
+    named = {key: item for key, item in loaded.items() if key in approved}
+    return {
+        "not_authorized": sorted(item["name"] for key, item in loaded.items() if key not in approved),
+        "sha256_differs": sorted(item["name"] for key, item in named.items() if item.get("sha256")
+                                 and item["sha256"] != str(approved[key].get("sha256") or "").casefold()),
+        "sha256_unrecorded": sorted(item["name"] for item in named.values() if not item.get("sha256")),
+        "authorized_not_run": sorted(item["name"] for key, item in approved.items()
+                                     if moded and ion_mode in (item.get("ion_modes") or []) and key not in loaded),
+    }
 
 
 def _merge(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -318,6 +412,26 @@ def _downloads_next(unit: Mapping[str, Any]) -> bool:
     """Whether the unit's next call to a repository is its download: it holds no raw data yet."""
     state = unit["resume_state"] if unit["state"] in ledger_module.WAITING_STATES else unit["state"]
     return state in ("pending", "class_settled", "handoff_ready")
+
+
+def download_transfer(manifest: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What a unit's lease moved through the accession's download store, as its unit manifest's download_cache records
+    it: transferred_bytes, the objects it fetched, of them the ones it fetched again (refetched: the store had held
+    an object for the URL and no longer did) and the ones it found there (cache_hits). {} for a lease that fetched
+    without the store. A unit's downloaded_bytes are what its raw tree holds, the same for a unit that fetched a
+    shared object and one that found it in the store, so only this shows a refetch."""
+    cache = (manifest or {}).get("download_cache")
+    if not isinstance(cache, Mapping):
+        return {}
+    objects = [item for item in cache.get("objects") or [] if isinstance(item, Mapping)]
+    transferred = cache.get("transferred_bytes")
+    return {"transfer": {
+        "transferred_bytes": int(transferred if transferred is not None
+                                 else sum(int(item.get("transferred_bytes") or 0) for item in objects)),
+        "objects_fetched": sum(1 for item in objects if not item.get("cache_hit")),
+        "objects_refetched": sum(1 for item in objects if item.get("action") == "refetched"),
+        "cache_hits": sum(1 for item in objects if item.get("cache_hit")),
+    }}
 
 
 def thermo_raw_inputs(manifest: Mapping[str, Any] | None) -> int:
@@ -611,6 +725,7 @@ class Runner:
                 self.ledger.close_attempt(attempt["attempt_id"], "refused", self.stamp(), detail={"approval": str(error)})
             if current["state"] in ledger_module.TERMINAL_STATES:
                 return False
+            self._release_shared_claims(current, "stopped_no_approval")
             self.ledger.transition(
                 unit["unit_key"], "stopped_no_approval", self.stamp(), expect_from=current["state"],
                 terminal_reason="approval_missing", terminal_detail=str(error),
@@ -698,6 +813,7 @@ class Runner:
             return {"new_attempt": {"step": step, "outcome": result_outcome, "counted": counted, "detail": detail}}
 
         if kind == policy.REFUSED:
+            self._release_shared_claims(unit, "stopped_no_approval")
             self._move(
                 unit, "stopped_no_approval", terminal_reason="campaign_authorization_refused",
                 terminal_detail=json.dumps(detail, ensure_ascii=False, sort_keys=True), detail={"step": step},
@@ -1007,7 +1123,9 @@ class Runner:
         attempt = self.ledger.open_attempt(unit["unit_key"], "class", self.stamp(), tool="msdial_catalog_save_class_proposal")
         decision = self.ports.catalog.class_decision(unit["catalog_unit_id"], purpose)
         if decision.get("proposal_id") != unit["approved_class_digest"]:
-            # A grouping nobody approved: nothing is saved under the approval.
+            # A grouping nobody approved: nothing is saved under the approval, and the download the unit's siblings
+            # claimed for it is released.
+            self._release_shared_claims(unit, "stopped_policy_drift")
             self._move(
                 unit, "stopped_policy_drift", terminal_reason="class_digest_changed",
                 terminal_detail=json.dumps({"approved": unit["approved_class_digest"], "now": decision.get("proposal_id")}),
@@ -1082,6 +1200,7 @@ class Runner:
             "analysis_purpose": self.campaign["analysis_purpose"], "authorization_path": self._authorization(unit),
         }
         self._require("1")
+        self._claim_shared_downloads(unit)
         attempt = self.ledger.open_attempt(
             unit["unit_key"], "download_start", self.stamp(), tool="msdial_download_repository_raw",
             arguments=self.redact(arguments),
@@ -1142,6 +1261,85 @@ class Runner:
                 self.ledger.disk_event("pause", self.stamp(), **values)
             self._pause("disk", reason)
         return True
+
+    # ---- downloads several units share (2026-10-24) -----------------------------------------------------
+
+    def _group_members(self, unit: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """The other units of the unit's download group that download for themselves: a split part's raw data are
+        its parent's, so it neither claims nor downloads."""
+        group = _group(unit)
+        return [item for item in self.ledger.units() if item["unit_key"] != unit["unit_key"]
+                and item["role"] != "split_part" and _group(item) == group]
+
+    def _claim_shared_downloads(self, unit: Mapping[str, Any]) -> None:
+        """Before a unit of a download group several units share downloads, claim the group's objects in the
+        accession's download store for every other unit of it that will still download (a run unit whose next call
+        to a repository is its download, _downloads_next), as a batch approval's pre-claim does
+        (InteractivePort.pre_claim). The URLs are the Catalog's (CatalogPort.download_objects), which are the ones
+        each unit's lease fetches. A unit that has downloaded holds its lease's own claim, and one that has ended
+        claims nothing. Made again before every download of the group, so a unit retried after it ended is claimed
+        again; a live claim is kept as it is.
+
+        A pending claim keeps an object through the release of the unit that fetched it: without one the first
+        unit's cleanup let the store collect the object before the next sibling claimed it, and each sibling fetched
+        it again (MPST000012's four units fetched its one 14.78 GB tar four times). A unit of a group of one claims
+        nothing here. A claim that cannot be made never stops the download: it is an event, and the siblings then
+        fetch for themselves, as they did before."""
+        siblings = [item for item in self._group_members(unit) if item["role"] == "run" and _downloads_next(item)]
+        if not siblings:
+            return
+        names = [str(item["catalog_unit_id"]) for item in siblings]
+        listed = self.ports.catalog.download_objects(names)
+        result: Mapping[str, Any] = listed
+        if listed.get("ok") is not False:
+            urls = listed.get("units") or {}
+            units = [
+                {"analysis_unit_id": name, "repository": item["repository"], "accession": item["accession"],
+                 "objects": [{"url": url} for url in urls.get(name) or []]}
+                for name, item in zip(names, siblings) if urls.get(name)
+            ]
+            if not units:
+                return
+            result = self.ports.interactive.pre_claim(workspace_root=self.campaign["workspace_root"], units=units)
+        if result.get("ok") is False:
+            self._event_once(SHARED_DOWNLOAD_NOT_CLAIMED, {
+                "siblings": names, "reason": result.get("reason"), "detail": result.get("detail")}, unit["unit_key"])
+            return
+        self._event_once(SHARED_DOWNLOAD_CLAIMED, {"claimed": list(result.get("claimed") or [])}, unit["unit_key"])
+
+    def _release_shared_claims(self, unit: Mapping[str, Any], ending: str) -> None:
+        """Release what a unit of a shared download group claimed in its accession's store and will never read, as
+        it ends without validated outputs (`ending`: excluded, skipped, failed, stopped_no_approval or
+        stopped_policy_drift): a sibling's pre-claim (_claim_shared_downloads), or its own lease's claim on an object
+        it never linked (InteractivePort.release_claims), with the store's reason, failed_terminal for a failure and
+        excluded for the rest. Under a campaign that deletes raw data with boundary 5 live, the approval goes with
+        it, and the store then collects an object no other unit still claims; otherwise the claims are released and
+        nothing is deleted. A claim its lease materialized stays for Interactive's cleanup or discard, which release
+        it with the unit's raw tree. A unit of a group of one releases nothing here. What cannot be released is an
+        event, and never changes how the unit ends."""
+        if unit["role"] != "run" or not self._group_members(unit):
+            return
+        deletes = self.campaign["raw_retention_policy"] == "delete_after_validated_output" and self._live("5")
+        reason = "failed_terminal" if ending == "failed" else "excluded"
+        result = self.ports.interactive.release_claims(
+            workspace_root=self.campaign["workspace_root"], repository=unit["repository"], accession=unit["accession"],
+            unit_id=str(unit["catalog_unit_id"]), reason=reason,
+            authorization_path=self._authorization(unit) if deletes else "",
+        )
+        if result.get("ok") is False:
+            self._event_once(SHARED_DOWNLOAD_NOT_RELEASED, {
+                "ending": ending, "reason": result.get("reason"), "detail": result.get("detail")}, unit["unit_key"])
+        elif result.get("released") or result.get("collected"):
+            self._event(SHARED_DOWNLOAD_RELEASED, {
+                "ending": ending, "release_reason": reason, "approval_passed": deletes,
+                **{key: result.get(key) for key in ("released", "collected", "kept", "refused")}}, unit["unit_key"])
+
+    def _event_once(self, kind: str, detail: Mapping[str, Any], unit_key: str) -> None:
+        """An event, unless the unit already has one of this kind that says the same: a step made again after a crash
+        or a retry writes it once."""
+        recorded = self.redact(dict(detail))
+        if not any(row["unit_key"] == unit_key and _loads(row["detail_json"]) == recorded for row in self.ledger.events(kind)):
+            self._event(kind, detail, unit_key)
 
     def _download_failed(
         self, unit: dict[str, Any], *, result: dict[str, Any], outcome: str = "failed",
@@ -1318,9 +1516,11 @@ class Runner:
         raw = str(manifest.get("raw_directory") or "")
         size = self.ports.disk.tree_bytes(raw) if raw else 0
         self._progress.pop(unit["download_job_id"] or "", None)
-        # A download that finished, which ends its repository's run of network failures (_outage_streaks).
+        # A download that finished, which ends its repository's run of network failures (_outage_streaks). bytes is
+        # what the unit's raw tree holds; what its lease moved over the network is the transfer (download_transfer),
+        # which shows a shared object fetched again where the tree's bytes cannot.
         finished = {"step": "download", "outcome": "ok", "counted": False,
-                    "detail": {"job_id": unit["download_job_id"], "bytes": size}}
+                    "detail": {"job_id": unit["download_job_id"], "bytes": size, **download_transfer(manifest)}}
         if self._cancel_reason(unit["download_job_id"] or "") == "skip":
             self._move(
                 unit, "discarding", pending_terminal="skipped", manifest_path=manifest_path, downloaded_bytes=size,
@@ -2131,7 +2331,13 @@ class Runner:
         left not evaluable where it is required (2026-10-02). Such a unit counts as failed, so it is retried
         twice and then its raw data go. Any other FAIL, a WARN and any other check left not evaluable are
         recorded, and the unit runs. A gate that gives no usable report holds the unit (_gate_hold).
+
+        The pins are compared first (review 2): the method is written from the pinned Interactive, libraries and
+        parameter template, so with one of them changed every unit alike would fail LIB-2 and lose its raw data,
+        where the pin pause stops the campaign once and lifts when they match again.
         """
+        if self._pin_check_failed():
+            return False
         answers = self.answers(unit, unit["minimum_peak_height"])
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_run", self.stamp(), tool="msdial_prepare_guided_analysis")
         result = self.ports.interactive.prepare_guided(input_path=unit["input_path"], answers=answers)
@@ -2442,6 +2648,9 @@ class Runner:
                            next_attempt_at=policy.iso(self.now() + timedelta(seconds=float(delay))))
                 return True
             raw = "held"
+        # What it claimed of a download its group shares and never read, so the store may collect what no sibling
+        # still needs; before the end is committed, and made again (to no effect) should the runner stop before it.
+        self._release_shared_claims(unit, pending)
         # The gate reads a unit manifest; a unit that never downloaded has none to read.
         verdict = self._after_run_gate(unit, "final") if unit["manifest_path"] and Path(unit["manifest_path"]).is_file() else None
         exit_code = verdict.get("exit_code") if verdict else None
@@ -2638,14 +2847,14 @@ class Runner:
             "run_id": f"{unit['unit_key']}:{job}", "unit_id": unit["catalog_unit_id"], "status": status.replace(" ", "_"),
             "class_proposal_id": unit.get("class_proposal_id") or "",
             "interactive_version": str((self.pins.get("interactive") or {}).get("version") or ""),
-            "msdial_version": str((self.pins.get("console") or {}).get("version") or ""),
+            "msdial_version": _console_version(self.pins.get("console") or {}),
             "mztab_path": mztab_path, "mztab_sha256": mztab_sha256,
             "provenance": {
                 "campaign_id": self.campaign["campaign_id"], "approval_id": self.approval["approval_id"],
                 "manifest_digest": self.campaign["manifest_digest"],
                 "console_sha256": str((self.pins.get("console") or {}).get("binary_sha256") or ""),
                 "extractor_sha256": str((self.pins.get("extractor") or {}).get("binary_sha256") or ""),
-                "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
+                **self._libraries_record(unit, job, manifest),
                 "minimum_peak_height": unit.get("minimum_peak_height"), "threshold_step": unit.get("threshold_step"),
                 "coarse_threshold_step": unit.get("coarse_threshold_step"), "step_fallback": _flag(unit.get("step_fallback")),
                 "fallback_reason": unit.get("fallback_reason"),
@@ -2728,12 +2937,67 @@ class Runner:
             } if self.pins_automatic_rt else None,
             "pins": {
                 "console_sha256": (self.pins.get("console") or {}).get("binary_sha256"),
+                "console_version": _console_version(self.pins.get("console") or {}) or None,
                 "extractor_sha256": (self.pins.get("extractor") or {}).get("binary_sha256"),
-                "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
             },
+            # The libraries the approval names (the pins) and the ones the unit's last production run loaded, with
+            # where that was read; both null as-run fields for a unit that never ran (_libraries_record).
+            **self._libraries_record(unit, unit.get("run_job_id"), None),
             "written_at": self.stamp(),
         }
         _write_json(workspace / "campaign-record.json", self.redact(record))
+
+    def _libraries_record(
+        self, unit: Mapping[str, Any], job: str | None, manifest: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """What a unit's run record says of its libraries: libraries_authorized, the pins the approval names, and
+        libraries_as_run, what production run `job` loaded, with libraries_as_run_source saying where that was read
+        (_libraries_as_run). Until 2026-10-24 the records named the pins alone, and so named the approved LBM2 for
+        the 15 preflight units that ran the official one. Where the two differ, a libraries_differ_from_authorization
+        event says how, once for each difference."""
+        authorized = [
+            {"name": item["name"], "sha256": item["sha256"],
+             **{key: item[key] for key in ("role", "ion_modes") if item.get(key) is not None}}
+            for item in self.pins.get("libraries") or []
+        ]
+        ran, source = self._libraries_as_run(unit, job, manifest)
+        if ran is not None:
+            differences = library_differences(authorized, ran, self._ion_mode(unit))
+            if any(differences.values()):
+                detail = {"job_id": job, "source": source, **differences}
+                if not any(row["unit_key"] == unit["unit_key"] and _loads(row["detail_json"]) == self.redact(detail)
+                           for row in self.ledger.events(LIBRARIES_DIFFER)):
+                    self._event(LIBRARIES_DIFFER, detail, unit["unit_key"])
+        return {"libraries_authorized": authorized, "libraries_as_run": ran, "libraries_as_run_source": source}
+
+    def _libraries_as_run(
+        self, unit: Mapping[str, Any], job: str | None, manifest: Mapping[str, Any] | None
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """The libraries production run `job` of the unit loaded, by name and sha256 with their role and kind where
+        the record gives them, and the record they were read from: the unit manifest's console_run_finalisation,
+        which Interactive writes once the Console has returned, when it is this job's; else the libraries the run
+        manifest recorded as the run was prepared (output/run-manifest.json). (None, None) for a unit with no
+        production run, or whose run neither record describes."""
+        if not job:
+            return None, None
+        manifest = manifest if manifest is not None else (self._manifest(unit) or {})
+        finalisation = manifest.get("console_run_finalisation")
+        if isinstance(finalisation, Mapping) and str(finalisation.get("job_id") or "") == str(job) \
+                and isinstance(finalisation.get("libraries"), list):
+            return as_run_libraries(finalisation["libraries"]), FINALISATION_LIBRARIES
+        output = str(manifest.get("output_directory") or "").strip()
+        prepared = _read_object(Path(output) / "run-manifest.json" if output else self._workspace(unit) / "output" / "run-manifest.json")
+        if isinstance(prepared.get("libraries"), list):
+            return as_run_libraries(prepared["libraries"]), PREPARED_LIBRARIES
+        return None, None
+
+    def _ion_mode(self, unit: Mapping[str, Any]) -> str:
+        """The unit's ion mode as its runs are given it (answers): Interactive's answer seed first, then the ledger's."""
+        try:
+            seed = _loads((self._unit_directory(unit) / "answer-seed.json").read_text(encoding="utf-8"))
+        except OSError:
+            seed = {}
+        return str(seed.get("ion_mode") or unit.get("ion_mode") or "")
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -2871,6 +3135,11 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     for unit in units:
         if unit["state"] == "excluded":
             excluded_for[str(unit["terminal_reason"])] = excluded_for.get(str(unit["terminal_reason"]), 0) + 1
+    # What the finished downloads moved (download_transfer), beside what the units' raw trees hold: a shared object
+    # fetched once for its group is in one unit's transfer and every sibling's downloaded bytes.
+    finished = [_loads(row["detail_json"]) for row in ledger.attempts()
+                if row["step"] == "download" and row["outcome"] == "ok"]
+    transfers = [item["transfer"] for item in finished if isinstance(item.get("transfer"), Mapping)]
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
@@ -2882,6 +3151,10 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         # person reading this.
         "raw_held": {"units": len(held), "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in held),
                      "unit_keys": [unit["unit_key"] for unit in held]},
+        "downloads": {"finished": len(finished), "bytes": sum(int(item.get("bytes") or 0) for item in finished),
+                      "through_store": len(transfers),
+                      **{key: sum(int(item.get(key) or 0) for item in transfers)
+                         for key in ("transferred_bytes", "objects_fetched", "objects_refetched", "cache_hits")}},
         # Not run, for want of a before-production report: a warning, never a failure (2026-10-02).
         "gate_held": {"units": len(gate_held), "unit_keys": [unit["unit_key"] for unit in gate_held],
                       "warning": GATE_HELD_WARNING if gate_held else None},

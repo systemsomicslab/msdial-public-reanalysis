@@ -2,10 +2,82 @@ param(
     [string]$Python = "",
     [string]$InteractiveRoot = "D:\0_SourceCode\msdial_interactive_app",
     [string]$CatalogRoot = "D:\0_SourceCode\msdial_repository_catalog",
-    [string]$ReanalysisRoot = "D:\13_MSDIAL_Public_Reanalysis\analysis"
+    [string]$ReanalysisRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+function Test-WithinFolder {
+    param([string]$Path, [string]$Folder)
+    if ([string]::IsNullOrWhiteSpace($Folder)) { return $false }
+    $base = [System.IO.Path]::GetFullPath($Folder).TrimEnd('\')
+    return $Path.Equals($base, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $Path.StartsWith($base + '\', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# Why a folder cannot be a repository reanalysis workspace root, or "" where it can. The root is chosen per
+# campaign and passed explicitly (D:\13_MSDIAL_Public_Reanalysis\analysis keeps the pilots and preflights);
+# wherever it is, raw downloads and MS-DIAL outputs stay off C:, out of the user profile and temporary
+# folders, and out of every code checkout. The root is a folder on a drive of this PC, named by its letter: a
+# network or device path (\\server\share, \\?\..., \\.\...) and a mapped network drive are refused whole, since
+# the checks below compare drive letters and path prefixes, and \\localhost\C$\Users\<user>\analysis named a folder
+# on C: in the user profile in a spelling none of them saw (review of 2026-10-25). A drive that is not mounted is
+# said to be so, not left to the .git walk, whose Join-Path stopped on it with "Cannot find drive".
+function Get-WorkspaceRootProblem {
+    param(
+        [string]$Root,
+        [string[]]$SystemDrives = @("C:", $env:SystemDrive),
+        [string[]]$Profiles = @($env:USERPROFILE),
+        [string[]]$TempFolders = @($env:TEMP, $env:TMP, [System.IO.Path]::GetTempPath()),
+        [string[]]$Checkouts = @()
+    )
+    if ([string]::IsNullOrWhiteSpace($Root)) {
+        return "no root was given: pass -ReanalysisRoot, the workspace root the campaigns on this PC use"
+    }
+    if ($Root -match '^[\\/]{2}') {
+        return "it is a network or device path; give a folder on a drive of this PC, as X:\folder"
+    }
+    if ($Root -notmatch '^[A-Za-z]:[\\/]') {
+        return "it is not an absolute path"
+    }
+    try {
+        $full = [System.IO.Path]::GetFullPath($Root)
+    }
+    catch {
+        return "it is not a valid path"
+    }
+    $drive = [System.IO.Path]::GetPathRoot($full).TrimEnd('\')
+    $full = $full.TrimEnd('\')
+    foreach ($systemDrive in $SystemDrives) {
+        if (-not [string]::IsNullOrWhiteSpace($systemDrive) -and $drive.Equals($systemDrive.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
+            return "it is on $drive"
+        }
+    }
+    $driveType = (New-Object System.IO.DriveInfo $drive).DriveType
+    if ($driveType -eq [System.IO.DriveType]::NoRootDirectory) {
+        return "its drive $drive is not mounted on this PC"
+    }
+    if ($driveType -eq [System.IO.DriveType]::Network) {
+        return "it is on the network drive $drive; give a folder on a drive of this PC"
+    }
+    foreach ($folder in $Profiles) {
+        if (Test-WithinFolder -Path $full -Folder $folder) { return "it is inside the user profile $folder" }
+    }
+    foreach ($folder in $TempFolders) {
+        if (Test-WithinFolder -Path $full -Folder $folder) { return "it is inside the temporary folder $folder" }
+    }
+    foreach ($folder in $Checkouts) {
+        if (Test-WithinFolder -Path $full -Folder $folder) { return "it is inside the code checkout $folder" }
+    }
+    $folder = $full
+    while (-not [string]::IsNullOrEmpty($folder)) {
+        if (Test-Path -LiteralPath (Join-Path $folder ".git")) { return "it is inside the code checkout $folder" }
+        $parent = [System.IO.Path]::GetDirectoryName($folder)
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $folder) { break }
+        $folder = $parent
+    }
+    return ""
+}
 
 if ([string]::IsNullOrWhiteSpace($Python)) {
     $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
@@ -31,8 +103,9 @@ if (-not (Test-Path -LiteralPath $InteractiveRoot -PathType Container)) {
 if (-not (Test-Path -LiteralPath $CatalogRoot -PathType Container)) {
     throw "MS-DIAL Repository Catalog checkout was not found: $CatalogRoot"
 }
-if ([System.IO.Path]::GetPathRoot($ReanalysisRoot) -ne "D:\") {
-    throw "The repository reanalysis workspace must be an absolute path on D: $ReanalysisRoot"
+$problem = Get-WorkspaceRootProblem -Root $ReanalysisRoot -Checkouts @($PSScriptRoot, $InteractiveRoot, $CatalogRoot)
+if ($problem) {
+    throw "The repository reanalysis workspace root cannot be '$ReanalysisRoot': $problem."
 }
 New-Item -ItemType Directory -Path $ReanalysisRoot -Force | Out-Null
 Write-Host "Repository reanalysis workspace: $ReanalysisRoot"
