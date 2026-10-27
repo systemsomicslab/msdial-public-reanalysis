@@ -179,6 +179,20 @@ class PlanTests(unittest.TestCase):
             json.dumps({"schema": plan.AUTHORIZATION_SCHEMA, "campaign_id": campaign_id, "approval_id": "A0"}), encoding="utf-8")
         return workspace
 
+    def test_the_manifest_carries_the_cautions_on_its_workspace_root(self) -> None:
+        """Review 3: only a hand-built manifest tested the capitalised caution, so a build_manifest that dropped it
+        would approve a root on C:, in the profile or in a temporary folder with no word of it, unseen."""
+        root = self.workspace_root.resolve()
+        environment = {"SystemDrive": root.drive, "USERPROFILE": str(self.root.resolve()), "TEMP": str(root), "TMP": ""}
+        with mock.patch.dict(os.environ, environment):
+            manifest = self.manifest("declared")
+        self.assertEqual(manifest["workspace_root_cautions"],
+                         [f"on the system drive {root.drive}", "inside the user profile", "inside a temporary folder"])
+        self.assertIn(f"  THE WORKSPACE ROOT IS ON THE SYSTEM DRIVE {root.drive.upper()}, INSIDE THE USER PROFILE AND "
+                      "INSIDE A TEMPORARY FOLDER", plan.summary_text(manifest, "sha256:" + "0" * 64))
+        with mock.patch.dict(os.environ, {"SystemDrive": "Q:", "USERPROFILE": "", "TEMP": "", "TMP": ""}):
+            self.assertEqual(self.manifest("declared")["workspace_root_cautions"], [])
+
     def test_the_declared_pool_and_its_exclusions(self) -> None:
         before = hashlib.sha256(self.database.read_bytes()).hexdigest()
         manifest = self.manifest("declared")
@@ -1123,6 +1137,17 @@ class PlanTests(unittest.TestCase):
         stated = manifest["annotation"]["by_ion_mode"]["Negative"]
         self.assertTrue(stated["lbm_cutoffs"] and stated["lbm_cutoffs_source"], "read from the pinned Interactive's code")
         self.assertNotIn(str(tools), json.dumps(manifest), "the manifest names libraries, never their location")
+        # Review 3: the plan itself puts the template pin into the manifest (the runner's tests take it from fakes),
+        # for both ion modes, since the profile's answers name no template.
+        from msdial_app import agent_workflow
+
+        template, whose = plan.lcms_parameter_template(agent_workflow)
+        digest = hashlib.sha256(template.read_bytes()).hexdigest()
+        self.assertEqual(manifest["pins"]["template"], {
+            "name": template.name, "exists": True, "sha256": digest, "bytes": template.stat().st_size,
+            "named_by": whose, "ion_modes": ["Positive", "Negative"]})
+        self.assertIn(f"  LC-MS parameter template {template.name}{plan.TEMPLATE_WHOSE[whose]}, pinned by its sha256 "
+                      f"{digest[:12]}...: a change to it pauses the campaign", out)
         digest = "sha256:" + hashlib.sha256((directory / "campaign-manifest.json").read_bytes()).hexdigest()
         code, _out, err = self.approve("c-libraries", digest)
         self.assertEqual(code, 0, err)
@@ -1191,7 +1216,7 @@ class LibraryPinTests(unittest.TestCase):
                "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:P.msp"]}},
                                "Negative": {"libraries": {"msp_paths": ["library:N.msp"], "lbm_path": "library:B.lbm2"},
                                             "workflow_overrides": {"lbm_reverse_dot_product": 0.3}}}}
-    CODE = {"tiered": lambda lbm, msp: {"profile_id": f"tiered-{lbm}-{msp}"},
+    CODE = {"tiered": lambda lbm, msp: {"profile_id": f"tiered-{lbm}-{msp}", "msp_annotators": []},
             "lbm_cutoffs": {"weighted": 0.1, "simple": 0.1, "reverse": 0.1}, "lbm_cutoffs_source": "the template",
             "tiered_lbm_from_answers": True, "problems": []}
 
@@ -1305,10 +1330,17 @@ class LibraryPinTests(unittest.TestCase):
         official = {"schema": plan.PROFILE_SCHEMA, "answers": {"library_strategy": "official"},
                     "by_ion_mode": {"Positive": {"library_strategy": "tiered_lipid_msp",
                                                  "libraries": {"lbm_path": "library:A.lbm2", "msp_paths": ["library:P.msp"]}}}}
-        for profile, mode, loads in (
+        named = ("name the library in the profile as library:<file name> (the LBM2 as libraries.lbm_path), and plan "
+                 "again")
+        # Review 3: the official strategy loads its catalog's library whatever the profile names, so naming one does
+        # not clear the refusal; its remedy is the tiered strategy.
+        tiered = ("use library strategy tiered_lipid_msp with the LBM2 named as libraries.lbm_path, as library:<file "
+                  "name>, since the official strategy loads its catalog's library whatever the profile names, and plan "
+                  "again")
+        for profile, mode, loads, remedy in (
                 (no_lbm, "Positive", "its library catalog's official LBM (the tiered_lipid_msp strategy, given no "
-                                     "libraries.lbm_path)"),
-                (official, "Negative", "its library catalog's official library (library strategy official)")):
+                                     "libraries.lbm_path)", named),
+                (official, "Negative", "its library catalog's official library (library strategy official)", tiered)):
             with self.subTest(strategy=profile["answers"]["library_strategy"]):
                 record = plan.annotation_record(profile, [], [], self.CODE)
                 self.assertEqual(record["by_ion_mode"][mode]["unnamed_library"], loads)
@@ -1316,17 +1348,22 @@ class LibraryPinTests(unittest.TestCase):
                               "libraries the profile names", "\n".join(record["statement"]))
                 problems = plan.annotation_problems({"annotation": record})
                 self.assertIn(f"the pinned Interactive loads {loads} for {mode} units, which the plan does not pin, "
-                              "since it pins only the libraries the profile names, so LIB-2 would stop every unit: name "
-                              "the library in the profile as library:<file name> (the LBM2 as libraries.lbm_path)",
-                              "\n".join(problems))
+                              "since it pins only the libraries the profile names, so LIB-2 would stop every unit: "
+                              f"{remedy}", "\n".join(problems))
         record = plan.annotation_record(official, [], [], self.CODE)
         self.assertNotIn("unnamed_library", record["by_ion_mode"]["Positive"], "the tiered profile given its LBM2")
         self.assertEqual(len(plan.annotation_problems({"annotation": record})), 1, "the official Negative units only")
-        # A mode no unit of the manifest has loads its unnamed library nowhere.
-        self.assertEqual(plan.annotation_problems({"annotation": record, "units": [{"ion_mode": "Positive"}]}), [])
-        self.assertEqual(len(plan.annotation_problems({"annotation": record, "units": [{"ion_mode": "Negative"}]})), 1)
-        self.assertEqual(len(plan.annotation_problems({"annotation": record, "units": [{"ion_mode": "Both"}]})), 1,
-                         "a unit of a mode the annotation does not state: every mode is read")
+        # Naming the library under the official strategy does not clear the refusal; following its remedy does.
+        renamed = json.loads(json.dumps(official))
+        renamed["answers"]["libraries"] = {"lbm_path": "library:A.lbm2", "msp_paths": ["library:N.msp"]}
+        self.assertEqual(len(plan.annotation_problems({"annotation": plan.annotation_record(renamed, [], [], self.CODE)})), 1)
+        renamed["answers"]["library_strategy"] = "tiered_lipid_msp"
+        self.assertEqual(plan.annotation_problems({"annotation": plan.annotation_record(renamed, [], [], self.CODE)}), [])
+        # Review 3: a unit runs in the ion mode its raw data give (a Mixed split's part, a header that overrides the
+        # declaration) and takes that mode's answers, so a mode no unit is declared in is refused all the same.
+        for units in ([{"ion_mode": "Positive"}], [{"ion_mode": "Negative"}], [{"ion_mode": "Both"}], []):
+            with self.subTest(units=units):
+                self.assertEqual(len(plan.annotation_problems({"annotation": record, "units": units})), 1)
 
     @staticmethod
     def two_tiers(lbm, msp):
@@ -1377,6 +1414,10 @@ class LibraryPinTests(unittest.TestCase):
                 self.assertIsNone(record["by_ion_mode"]["Positive"]["msp_rows"])
                 self.assertEqual(record["by_ion_mode"]["Positive"]["profile_id"], "p1")
                 self.assertIn("so the rows are not stated", "\n".join(record["statement"]))
+                # Review 3: LIB-2 would compare no rows, so the manifest is not approvable.
+                self.assertIn("the plan could not read its MSP annotator rows for Positive units from the pinned "
+                              "Interactive (the summary says why), so LIB-2 would not hold the method to them",
+                              "\n".join(plan.annotation_problems({"annotation": record})))
 
     @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
     def test_the_contract_rows_are_the_rows_the_pinned_interactives_workflow_leaves(self) -> None:
@@ -1427,24 +1468,94 @@ class LibraryPinTests(unittest.TestCase):
 
     def test_a_template_the_answers_name_comes_before_the_settings_one_and_overrides_before_both(self) -> None:
         """Review of 2026-10-25: Interactive's _workflow takes the answers' template_path before its settings'; the
-        plan read the settings' alone."""
+        plan read the settings' alone. Review 3: the profile names it as library:<file name>, which the plan read
+        unresolved, so it named no file and Interactive's own template's cutoffs were stated under the answers' name;
+        it is read where the resource map locates it, as Runner.answers resolves it. Overrides that set some cutoffs
+        take the others from that template, which Interactive applies them over, not from the settings' one."""
         profile = json.loads(json.dumps(self.PROFILE))
-        profile["by_ion_mode"]["Positive"]["template_path"] = "answers-template.txt"
-        profile["by_ion_mode"]["Negative"]["template_path"] = "answers-template.txt"
+        profile["by_ion_mode"]["Positive"]["template_path"] = "library:answers-template.txt"
+        profile["by_ion_mode"]["Negative"]["template_path"] = "library:answers-template.txt"
+        located = os.path.join("synthetic", "resources", "answers-template.txt")
         read = []
 
         def template_cutoffs(answer):
             read.append(answer)
-            return {"weighted": 0.2, "simple": 0.2, "reverse": 0.4}, f"the parameter template {answer}, which the answers name"
+            return ({"weighted": 0.2, "simple": 0.2, "reverse": 0.4},
+                    f"the parameter template {Path(answer).name}, which the answers name")
 
-        record = plan.annotation_record(profile, [], [], {**self.CODE, "template_cutoffs": template_cutoffs})
+        code = {**self.CODE, "template_cutoffs": template_cutoffs}
+        record = plan.annotation_record(profile, [], [], code, {"answers-template.txt": located})
         positive, negative = record["by_ion_mode"]["Positive"], record["by_ion_mode"]["Negative"]
         self.assertEqual((positive["lbm_cutoffs"], positive["lbm_cutoffs_source"]),
                          ({"weighted": 0.2, "simple": 0.2, "reverse": 0.4},
                           "the parameter template answers-template.txt, which the answers name"))
-        self.assertEqual(negative["lbm_cutoffs"], {"weighted": 0.1, "simple": 0.1, "reverse": 0.3},
-                         "the profile's workflow_overrides come before any template")
-        self.assertEqual(read, ["answers-template.txt"])
+        self.assertEqual((negative["lbm_cutoffs"], negative["lbm_cutoffs_source"]),
+                         ({"weighted": 0.2, "simple": 0.2, "reverse": 0.3},
+                          "the profile's workflow_overrides (reverse), the others from the parameter template "
+                          "answers-template.txt, which the answers name"),
+                         "the profile's workflow_overrides over the template the answers name")
+        self.assertEqual(read, [located, located], "the template's location, never the unresolved reference")
+        self.assertNotIn("synthetic", json.dumps(record), "the location is read, and stated nowhere")
+        self.assertEqual(plan.annotation_problems({"annotation": record}), [])
+        # A template the resource map does not locate is not read (nor Interactive's own in its place): no cutoffs are
+        # stated, that is said, and the manifest is not approvable.
+        read.clear()
+        record = plan.annotation_record(profile, [], [], code, {})
+        self.assertEqual(read, [])
+        self.assertIsNone(record["by_ion_mode"]["Positive"]["lbm_cutoffs"])
+        self.assertIn("the parameter template the answers name (answers-template.txt) is not one the resource map "
+                      "locates, so its LBM cutoffs were not read", "\n".join(record["statement"]))
+        self.assertIn("the plan could not read its LBM cutoffs for Negative units from the pinned Interactive",
+                      "\n".join(plan.annotation_problems({"annotation": record})))
+        # One named other than as a library is held by no pin, so the profile is refused.
+        relative = json.loads(json.dumps(profile))
+        relative["by_ion_mode"]["Negative"]["template_path"] = "answers-template.txt"
+        names = ["A.lbm2", "B.lbm2", "P.msp", "N.msp", "answers-template.txt"]
+        self.assertEqual(plan.template_path_problems(profile), [])
+        self.assertNotIn("template_path", "\n".join(plan.profile_problems(profile, names)))
+        self.assertIn("the answers of Negative units name a parameter template (template_path) other than as "
+                      "library:<file name>, which no pin holds", "\n".join(plan.profile_problems(relative, names)))
+
+    def test_the_summary_says_which_template_each_ion_mode_takes_and_what_holds_it(self) -> None:
+        """Review 3: the summary said the template pin held the run's template for a profile whose answers named
+        another, which only the library pin holds."""
+        manifest = {"pins": {"template": {"name": "t.txt", "sha256": "ab" * 32, "named_by": "settings",
+                                          "ion_modes": ["Positive"]}},
+                    "profile": json.loads(json.dumps(self.PROFILE))}
+        manifest["profile"]["by_ion_mode"]["Negative"]["template_path"] = "library:lab-template.txt"
+        self.assertEqual(plan.template_pin_text(manifest), [
+            "  LC-MS parameter template of Negative units lab-template.txt, which the answers name, pinned as a library "
+            "by its sha256: a change to it pauses the campaign before the next unit or Console start",
+            "  LC-MS parameter template of Positive units t.txt, which Interactive's settings name, pinned by its sha256 "
+            "abababababab...: a change to it pauses the campaign before the next unit or Console start"])
+        manifest["profile"]["answers"]["template_path"] = "library:lab-template.txt"
+        manifest["pins"]["template"] = {"named_by": "answers", "ion_modes": []}
+        self.assertEqual(plan.template_pin_text(manifest), [
+            "  LC-MS parameter template of Positive and Negative units lab-template.txt, which the answers name, pinned "
+            "as a library by its sha256: a change to it pauses the campaign before the next unit or Console start"])
+        manifest["profile"]["answers"]["template_path"] = "lab-template.txt"
+        self.assertIn("other than as library:<file name>: NOT PINNED", plan.template_pin_text(manifest)[0])
+
+    def test_a_tiered_contract_the_plan_could_not_read_is_not_approvable(self) -> None:
+        """Review 3: annotation_record leaves a contract part unstated where the pinned Interactive could not be read,
+        and LIB-2 compares only what is stated, so an approval of it let cutoff, priority or MSP-row drift pass."""
+        def unreadable(lbm, msp):
+            raise RuntimeError("synthetic")
+
+        for code, unread in (({**self.CODE, "tiered": unreadable}, "its annotation profile, its MSP annotator rows"),
+                             ({**self.CODE, "tiered": None}, "its annotation profile, its MSP annotator rows"),
+                             ({**self.CODE, "lbm_cutoffs": None}, "its LBM cutoffs")):
+            with self.subTest(unread=unread):
+                problems = plan.annotation_problems({"annotation": plan.annotation_record(self.PROFILE, [], [], code)})
+                self.assertEqual(len(problems), 2, problems)
+                self.assertIn(f"the plan could not read {unread} for Negative units from the pinned Interactive",
+                              problems[0])
+        # Another strategy states no tiered contract, and a manifest planned before the contract says nothing.
+        existing = {**self.PROFILE, "answers": {**self.PROFILE["answers"], "library_strategy": "existing"}}
+        self.assertEqual(plan.annotation_problems({"annotation": plan.annotation_record(
+            existing, [], [], {**self.CODE, "tiered": None, "lbm_cutoffs": None})}), [])
+        self.assertEqual(plan.annotation_problems({"annotation": {"by_ion_mode": {
+            "Positive": {"library_strategy": "tiered_lipid_msp", "lbm_from_profile": True}}}}), [])
 
     @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
     def test_the_pinned_interactive_is_read_as_its_workflow_reads_it(self) -> None:
@@ -1542,6 +1653,20 @@ class LibraryPinTests(unittest.TestCase):
                 settings.write_bytes(own.read_bytes() + b"\nsynthetic change\n")
                 after = reader.current()["template"]
             self.assertEqual(policy.pin_differences({"template": before}, {"template": after}), ["template.sha256"])
+            # Review 3: given the profile, the pin names the ion modes whose units take this template; where every
+            # mode's answers name one (pinned as a library), no unit takes it and its bytes are not pinned, so a change
+            # to it pauses nothing.
+            profile = {"schema": plan.PROFILE_SCHEMA, "answers": {},
+                       "by_ion_mode": {"Negative": {"template_path": "library:synthetic-lab-template.txt"}}}
+            with mock.patch.object(agent_workflow, "load_user_settings", return_value={"template_path": str(settings)}):
+                pin = reader.template(profile)
+                self.assertEqual((pin["ion_modes"], pin["name"], pin["named_by"]),
+                                 (["Positive"], settings.name, "settings"))
+                profile["answers"]["template_path"] = "library:synthetic-lab-template.txt"
+                pin = reader.template(profile)
+            self.assertEqual(pin, {"named_by": "answers", "ion_modes": []})
+            self.assertEqual(policy.pin_differences({"template": pin}, {"template": after}), [])
+            self.assertNotIn("ion_modes", after, "read as it is, without the profile, for the comparison")
 
     def test_a_root_on_the_system_drive_in_the_profile_or_in_temp_is_said_first(self) -> None:
         """Review 2: the runner refuses no root on C:, in the user profile or in a temporary folder (its tests plan in

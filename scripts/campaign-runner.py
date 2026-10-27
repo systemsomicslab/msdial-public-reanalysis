@@ -374,8 +374,9 @@ def command_plan(args: argparse.Namespace) -> int:
         "console": reader.console() if args.console else {"exists": False},
         "extractor": reader.extractor(),
         "libraries": plan.library_pins(reader.library_identities(), profile),
-        # The parameter template the plan reads the LBM cutoffs from, pinned so a change pauses the campaign (review 2).
-        "template": reader.template(),
+        # The parameter template the plan reads the LBM cutoffs from, pinned so a change pauses the campaign (review 2),
+        # for the ion modes whose answers name none; one the answers name is pinned with the libraries (review 3).
+        "template": reader.template(profile),
         **reader.code(),
     }
     try:
@@ -393,6 +394,7 @@ def command_plan(args: argparse.Namespace) -> int:
             class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, args.purpose),
             catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
             replan=replan, unit_ids=unit_ids, policy_overrides=sorted(overrides or {}), libraries_not_pinned=not_pinned,
+            library_paths={name: libraries[name] for name in pinned},
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)

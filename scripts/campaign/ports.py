@@ -300,14 +300,30 @@ class PinReader:
                 record["version"] = version
         return record
 
-    def template(self) -> dict[str, Any]:
+    def template(self, profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """The LC-MS parameter template the pinned Interactive's _workflow takes for a unit whose answers name none
         (plan.lcms_parameter_template), by file name and sha256, and whose it is; {} where this Interactive takes no
         template so. Its LBM cutoffs are the ones the plan states and LIB-2 holds each method to, and Interactive's
         settings name it, which its GUI's path save rewrites. No pin covered it (review 2): a template changed during
         a campaign failed every later unit at LIB-2, each after its download and diagnostic, and one changed after
         a unit's before-production gate ran unseen, since Interactive's start writes the method again. As a pin it
-        pauses the campaign before the next unit and before every Console start (policy.PIN_IDENTITY)."""
+        pauses the campaign before the next unit and before every Console start (policy.PIN_IDENTITY).
+
+        Given the profile (the plan), it also names the ion modes whose units take it, those whose answers name no
+        template_path. A template the answers name is one of the profile's libraries (library:<file name>,
+        plan.template_path_problems) and pinned as one; where every ion mode's answers name one, no unit takes this
+        template, and nothing is pinned by its bytes, so a GUI save of the settings' path pauses nothing (review 3:
+        this pin held the settings' template for such a profile, and a change to the answers' one paused nothing).
+        Without the profile (PinReader.current) it is read as it is, which the plan's pin is compared with."""
+        modes = None
+        if profile is not None:
+            from .plan import ION_MODES, answered_templates
+
+            answered = answered_templates(profile)
+            modes = [mode for mode in ION_MODES if mode not in answered]
+            if not modes:
+                return {"named_by": "answers", "ion_modes": []}
+        whom = {} if modes is None else {"ion_modes": modes}
         try:
             from msdial_app import agent_workflow
 
@@ -317,9 +333,9 @@ class PinReader:
         except (ImportError, AttributeError):
             return {}
         if not path.is_file():
-            return {"name": path.name, "exists": False, "named_by": whose}
+            return {"name": path.name, "exists": False, "named_by": whose, **whom}
         digest, size = self._cached_sha256(str(path))
-        return {"name": path.name, "exists": True, "sha256": digest, "bytes": size, "named_by": whose}
+        return {"name": path.name, "exists": True, "sha256": digest, "bytes": size, "named_by": whose, **whom}
 
     def extractor(self) -> dict[str, Any]:
         from msdial_app.raw_metadata_extractor import inspect_raw_metadata_extractor
