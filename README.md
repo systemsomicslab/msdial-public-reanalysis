@@ -35,7 +35,9 @@ install locations and private MSP library paths on the development machine.
 ## Current local paths
 
 - Claude workspace: `D:\13_MSDIAL_Public_Reanalysis\code`
-- Repository reanalysis data: `D:\13_MSDIAL_Public_Reanalysis\analysis`
+- Repository reanalysis data: a workspace root chosen per campaign and passed
+  explicitly; MB-POST production uses `F:\MSDIAL_Public_Reanalysis\analysis`,
+  and `D:\13_MSDIAL_Public_Reanalysis\analysis` holds the pilots and preflights
 - Interactive: `D:\0_SourceCode\msdial_interactive_app`
 - Catalog: `D:\0_SourceCode\msdial_repository_catalog`
 - Full catalog: `D:\0_SourceCode\msdial_repository_catalog\catalog-data\native-smoke.sqlite`
@@ -94,16 +96,21 @@ following actions require a separate explicit human confirmation:
   (`scripts/record-reading.py --digest`), only after that person has read them
   and said what they found.
 
-A recorded campaign approval of one manifest digest stands in for the first,
-third, fourth and fifth of these, and for the automatic split, for the units
-the approval record lists, which must be that manifest's units; it never stands
-in for the second or the last. Nor is it the user's go: the production
-campaign starts only when the user gives it, asked for in the conversation
-once everything is ready (2026-10-01). `CLAUDE.md` states its rules, among them
-the raw-data deletion rule and which `before-production` gate FAILs stop a
+Inside a campaign there are no per-unit confirmations. The user records one
+approval of the campaign manifest's digest (`scripts/campaign-runner.py
+approve`), and it stands in for the first, third and fourth of these, for the
+automatic split, and for the fifth when the manifest deletes raw data after
+validated output, for the units that manifest lists; it never stands in for
+the second or the last. Nor is it the user's go: the production campaign
+starts only when the user gives it, asked for in the conversation once
+everything is ready (2026-10-01). `CLAUDE.md` states the rules in force, among
+them the raw-data retention by kind of run, the workspace root chosen per
+campaign, the annotation tiers and which `before-production` gate FAILs stop a
 campaign unit's run.
 
-The default retention policy is `keep`; a campaign approval states its own.
+Outside a campaign the default retention policy is `keep`; a campaign approval
+states its own (full-repository reanalysis deletes raw data after validated
+mzTab-M, trials keep them).
 Never combine different analysis units in one MS-DIAL run. Never redistribute
 the laboratory's private MSP libraries.
 
