@@ -150,6 +150,13 @@ def _binary_inventory(directory: Path, digest: Callable[[str], tuple[str, int]] 
     """sha256 over every assembly under a Console folder: relative path, size and content digest.
 
     Assemblies only, so a log the Console leaves beside itself does not read as a changed pin.
+
+    It is the pin's own digest, never the build record's inventory_sha256 (Interactive's
+    workflow.console_inventory), and the two differ for the same bytes: that one covers every file beside the
+    binary (.pdb, .config and .xml too) but the record itself and logs, and hashes "path<TAB>sha256" lines, this
+    one the .dll and .exe files' canonical JSON with their sizes. Recomputed from
+    the record's per-file digests, this one comes out the same (2026-10-28, the production Console's 114
+    assemblies of its record's 137 files), so the difference says nothing about the bytes.
     """
     entries = []
     for path in sorted(directory.rglob("*")):

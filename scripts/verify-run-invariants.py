@@ -6111,7 +6111,10 @@ MSP_ROW_COLUMNS = (("priority", "priority"), ("rt_tolerance", "rt_tolerance"), (
                    ("matched_peaks_percentage_cutoff", "matched_peaks_percentage_cutoff"),
                    ("minimum_spectrum_match", "minimum_spectrum_match"),
                    ("use_rt_scoring", "use_retention_information_for_scoring"),
-                   ("use_rt_filtering", "use_retention_information_for_filtering"), ("target_omics", "target_omics"))
+                   ("use_rt_filtering", "use_retention_information_for_filtering"), ("target_omics", "target_omics"),
+                   # Whether the Console names a feature from a failed or precursor-only comparison against the row's
+                   # library: false on the in-silico row (the author's decision of 2026-10-25, MsdialWorkbench #850).
+                   ("suggestions", "suggestions"))
 # The library kinds the Console reads as an in-silico (predicted) MSP (the plan's PREDICTED_LIBRARY_KINDS); any
 # other, a blank one included, is acquired.
 PREDICTED_LIBRARY_KINDS = frozenset({"predicted", "insilico", "computed", "generated", "predictedmsp"})
@@ -6121,6 +6124,17 @@ _LIBRARY_SHA256: dict = {}
 
 def _library_kind(value: object) -> str:
     return "predicted" if str(value or "").strip().casefold() in PREDICTED_LIBRARY_KINDS else "acquired"
+
+
+def _answered_target_omics(answers: dict) -> str:
+    """The Target omics the answers give the method, as Interactive applies them: a workflow_overrides target_omics
+    over everything, else target_omics_pin, else the target_omics answer. Before 2026-10-28 LIB-2 read the answer
+    alone, so a campaign pinning Lipidomics over a unit Interactive seeded as Metabolomics would have failed it."""
+    overrides = answers.get("workflow_overrides") if isinstance(answers.get("workflow_overrides"), dict) else {}
+    for value in (overrides.get("target_omics"), answers.get("target_omics_pin"), answers.get("target_omics")):
+        if str(value or "").strip():
+            return str(value).strip()
+    return ""
 
 
 def _same_setting(stated: object, approved: object) -> bool:
@@ -6228,11 +6242,15 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
     - the names disagree between the sources: method.txt, workflow-settings.json and the run manifest's prepared
       libraries, and the answers against the approval;
     - an MSP annotator row states no target_omics, so the Console scores it as the project's Target omics;
-    - the method's Target omics is not the one the answers give;
+    - the method's Target omics is not the one the answers give (a workflow_overrides target_omics, else
+      target_omics_pin, else the target_omics answer, as Interactive applies them: _answered_target_omics);
+    - an MSP is searched, or recorded in the run manifest, as another library kind than the approval names for it
+      (an in-silico library as acquired, or the reverse; plan.library_pins, 2026-10-28);
     - what the method annotates with is not what the approval states for the unit's ion mode (its annotation contract,
       plan.annotation_contract, review of 2026-10-25): the annotation pipeline profile; where an LBM is loaded, its
       score cutoffs and its priority; and the MSP annotator rows, each by its id, with its library, priority,
-      tolerances, score cutoffs, matched peaks, RT use, target omics and library kind as the Console reads it. The
+      tolerances, score cutoffs, matched peaks, RT use, target omics, suggestions where the approval states them (the
+      four-tier profile's in-silico row, 2026-10-28) and library kind as the Console reads it. The
       13 preflight units of 2026-10-14 ran LBM cutoffs of 0.15/0.15/0.3 against 0.1/0.1/0.1 two days later, and
       nothing compared them: the method's template can change after the plan stated them (Interactive's settings
       name it). What the approval does not state (an approval made before) is not compared.
@@ -6274,6 +6292,8 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
                 "name": name, "sha256": str(entry.get("sha256") or "").strip().casefold(),
                 "role": str(entry.get("role") or "").strip() or _library_role(name),
                 "ion_modes": [str(item) for item in modes] if isinstance(modes, list) else None,
+                # An MSP's library kind where the plan pinned one (plan.library_pins); none in an approval before.
+                "library_kind": str(entry.get("library_kind") or "").strip(),
             }
     method = output / "method.txt"
     if not method.is_file():
@@ -6334,7 +6354,8 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
             name = _library_name(entry.get("name") or entry.get("filename") or entry.get("path"))
             if name:
                 recorded[name.casefold()] = {"name": name, "role": str(entry.get("role") or "") or _library_role(name),
-                                             "sha256": str(entry.get("sha256") or "").strip().casefold()}
+                                             "sha256": str(entry.get("sha256") or "").strip().casefold(),
+                                             "library_kind": str(entry.get("library_kind") or "").strip()}
 
     # Each loaded library is approved, with the bytes the approval names.
     measured: dict = {}
@@ -6423,12 +6444,24 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
     if blank:
         problems.append(f"{len(blank)} MSP annotator row(s) state no target_omics, so the Console scores them as the "
                         f"project's {fields.get('target omics') or 'Target omics'}: {', '.join(blank)}")
-    target = ""
-    if answers is not None:
-        overrides = answers.get("workflow_overrides") if isinstance(answers.get("workflow_overrides"), dict) else {}
-        target = str(overrides.get("target_omics") or answers.get("target_omics") or "").strip()
+    target = _answered_target_omics(answers) if answers is not None else ""
     if target and fields.get("target omics") and target.casefold() != fields["target omics"].casefold():
         problems.append(f"the answers give Target omics {target}, and method.txt states {fields['target omics']}")
+
+    # An MSP is searched as the library kind the approval names for it (plan.library_pins, 2026-10-28): an in-silico
+    # library searched as acquired would report its matches as reference spectra, and the reverse would demote them.
+    for row in msp_rows:
+        item = approved.get(row["library"].casefold())
+        if item and item.get("library_kind") and _library_kind(row["library_kind"]) != _library_kind(item["library_kind"]):
+            problems.append(f"the MSP annotator {row['annotator_id']} searches {row['library']} as "
+                            f"{_library_kind(row['library_kind'])}, and the approval names it as "
+                            f"{_library_kind(item['library_kind'])}")
+    for key, entry in sorted(recorded.items()):
+        item = approved.get(key)
+        if item and item.get("library_kind") and entry.get("library_kind") and \
+                _library_kind(entry["library_kind"]) != _library_kind(item["library_kind"]):
+            problems.append(f"the run manifest records {entry['name']} as {_library_kind(entry['library_kind'])}, and "
+                            f"the approval names it as {_library_kind(item['library_kind'])}")
 
     # What the method annotates with is what the approval states for this unit's ion mode (review of 2026-10-25).
     contracts = (authorization or {}).get("annotation")
@@ -6512,6 +6545,428 @@ def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path
                "names, with its sha256, and what this unit was to load; the other records name the same; "
                + (f"its {', '.join(compared)} are the ones the approval states." if compared else
                   "the approval states no annotation to hold the method to."), **evidence)
+
+
+# --------------------------------------------------------------------------------------------
+# libraries: an in-silico library's matches are in-silico evidence, never identifications
+# --------------------------------------------------------------------------------------------
+
+LIB3_TITLE = "An in-silico library's matches are reported as in-silico evidence, never as identifications"
+# The Evidence source MS-DIAL writes for a match against predicted spectra, and the two Interactive counts as
+# identifications (workflow.IDENTIFICATION_EVIDENCE_SOURCES): an acquired reference spectrum and an LBM2 rule.
+IN_SILICO_EVIDENCE = "InSilico"
+IDENTIFICATION_EVIDENCE = ("ReferenceSpectrum", "RuleBased")
+# The confidence codes (Annotation tag (VS1.0); mzTab-M reliability) an accepted in-silico match may carry, and why:
+# 430, which every Console before the pending MS-DIAL change writes for it, and 450, the author's decision of
+# 2026-10-28 for an accepted in-silico match. Which one a run carries is recorded as seen, never inferred.
+IN_SILICO_CONFIDENCE_CODES = {"430": "a Console before the MS-DIAL change for in-silico confidence codes",
+                              "450": "the author's code for an accepted in-silico match (2026-10-28)"}
+# How MS-DIAL's mzTab-M declares a predicted MSP library (MTD database[n]), and the lipid RT check's tag of a lipid
+# whose retention time follows the reversed-phase order (opt_global_lipid_rt_outcome; the review list's Outcome).
+MZTAB_IN_SILICO_DATABASE = "User-defined in-silico MSP library file"
+LIPID_RT_CONFIRMED = "confirmed"
+# The clauses LIB-3 holds, by letter, in the words its detail gives each.
+LIB3_CLAUSES = (
+    ("a", "an in-silico match carries the evidence source InSilico, never ReferenceSpectrum or RuleBased"),
+    ("b", f"mzTab-M declares the in-silico library as \"{MZTAB_IN_SILICO_DATABASE}\""),
+    ("c", "the in-silico annotator row is predicted, with suggestions false"),
+    ("d", "no in-silico match is tagged lipid-RT Confirmed"),
+    ("e", "no in-silico match is counted as an identification"),
+)
+
+
+def _flag(value: object) -> bool:
+    return str(value or "").strip().casefold() == "true"
+
+
+def _tsv_rows(path: Path) -> "tuple[list[dict] | None, str]":
+    """A tab-separated export's rows, with its header as written, or None and why (by file name only)."""
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
+            return list(csv.DictReader(handle, delimiter="\t")), ""
+    except (OSError, ValueError, csv.Error) as exc:
+        return None, f"{path.name} could not be read ({type(exc).__name__})"
+
+
+def _mztab_label(value: str) -> str:
+    """The name of an mzTab-M CV parameter, [label, accession, name, value]."""
+    parts = value.strip().strip("[]").split(",")
+    return parts[2].strip() if len(parts) >= 3 else value.strip()
+
+
+def _mztab_annotation(path: Path) -> "tuple[dict | None, str]":
+    """An mzTab-M's databases (MTD database[n], with -prefix and -version) and its summary rows (SML), as dicts by
+    the SMH header, or None and why."""
+    databases: dict = {}
+    header: "list[str] | None" = None
+    rows: list = []
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            for line in handle:
+                fields = line.rstrip("\n").rstrip("\r").split("\t")
+                if fields[0] == "MTD" and len(fields) >= 3:
+                    match = re.fullmatch(r"database\[(\d+)\](?:-(prefix|version|uri))?", fields[1].strip())
+                    if match:
+                        entry = databases.setdefault(match.group(1), {})
+                        entry[match.group(2) or "label"] = (_mztab_label(fields[2]) if not match.group(2)
+                                                            else fields[2].strip())
+                elif fields[0] == "SMH":
+                    header = fields
+                elif fields[0] == "SML" and header:
+                    rows.append(dict(zip(header, fields)))
+    except OSError as exc:
+        return None, f"{path.name} could not be read ({type(exc).__name__})"
+    return {"databases": databases, "header": header or [], "rows": rows}, ""
+
+
+def _comment_annotator(comment: object) -> str:
+    """The annotator a peak table's Comment names ('...; Annotation method: <id>; ...'), as Interactive reads it."""
+    for part in str(comment or "").split("; "):
+        if part.startswith("Annotation method: "):
+            return part[len("Annotation method: "):].strip()
+    return ""
+
+
+def check_in_silico_matches_are_not_identifications(report: Report, workspace: Path, output: Path,
+                                                    stage: str = "after-run") -> None:
+    """LIB-3. A run that searched an in-silico (predicted) MSP library reports its matches as in-silico evidence, never
+    as identifications: the author's decisions of 2026-10-25 (the GLACIER tier: no suggestions, lipid matches never
+    Confirmed) and 2026-10-28 (D-B: GLACIER names are kept, as InSilico and not identifications; D-C: an accepted
+    in-silico match is coded 450). Interactive 0.5.48 searches the in-silico tier with library_kind predicted and
+    suggestions false, and MS-DIAL (#850) reports such matches as InSilico; this check reads what the run wrote:
+
+    (a) an in-silico annotator's matches carry the evidence source InSilico, never ReferenceSpectrum or RuleBased, in
+        mzTab-M's summary rows of the in-silico database and, where the run exported it, in the alignment's candidate
+        table; and an accepted in-silico match carries confidence code 430 or 450 (IN_SILICO_CONFIDENCE_CODES; the
+        codes seen are recorded, and no capability decides which one is due);
+    (b) mzTab-M declares each in-silico library the run searched as "User-defined in-silico MSP library file", and
+        no acquired library as one;
+    (c) each MSP annotator row that searches an in-silico library (by its row's library kind, the approval's in-silico
+        row and libraries, or the answers' libraries.in_silico_msp_paths) is predicted with suggestions false, every
+        such row the approval or the answers name is there, and no feature is named from an in-silico suggestion (a
+        summary row or representative candidate of it that is no accepted match);
+    (d) no in-silico match is tagged lipid-RT Confirmed (mzTab-M's opt_global_lipid_rt_outcome; the review list,
+        where the candidate table says which features an in-silico match represents);
+    (e) no in-silico match is counted as an identification: Interactive counts as identifications the named peaks of
+        the per-file peak tables (.mdpeak) whose Evidence source is ReferenceSpectrum or RuleBased
+        (workflow.parse_mdpeak), so no peak an in-silico annotator named (its Comment's Annotation method) carries
+        either. The identifications and in-silico names counted so are recorded.
+
+    Where the QA matrix marks a feature Reference matched whose representative is an in-silico match (the Console's
+    IsReferenceMatched, which the QA counts as reference_matched_count), the count is recorded and said, not judged:
+    no decision says whether that QA metric is an identification count.
+
+    Not applicable to a run that searched no in-silico library and whose approval and answers name none. Not
+    evaluable where a clause's artifact cannot be read: the MSP settings (c), the mzTab-M (a, b, d), the peak tables
+    (e). Names files and annotators, never locations or compound names. A check after production: no run_policy.
+    """
+    fields: dict = {}
+    method = output / "method.txt"
+    if method.is_file():
+        try:
+            for line in method.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+                field = _console_field(line)
+                if field:
+                    fields[field[0]] = field[1]
+        except OSError:
+            fields = {}
+    ion_mode = fields.get("ion mode", "")
+    answers_record, _reason = _read_json(output / "guided-answers.json")
+    answers = (answers_record or {}).get("answers") if isinstance((answers_record or {}).get("answers"), dict) else {}
+    if not ion_mode:
+        # Without the method, the unit's ion mode as its answers or its manifest give it (review 2).
+        recorded, _reason = _read_json(workspace / "provenance" / "run-manifest.json")
+        project = (recorded or {}).get("project") if isinstance((recorded or {}).get("project"), dict) else {}
+        ion_mode = str(answers.get("ion_mode") or project.get("ion_mode") or "").strip()
+    unread: dict = {}
+    problems: dict = {letter: [] for letter, _words in LIB3_CLAUSES}
+
+    # What names an in-silico library or annotator: the run's MSP settings, the approval, the answers, the run manifest.
+    settings = None
+    table_text = fields.get("msp annotator settings file path", "")
+    if table_text:
+        settings, why = _library_table(_library_location(table_text, method.parent), "msp_file_path")
+        if settings is None:
+            unread["c"] = why
+    else:
+        unread["c"] = ("method.txt names no MSP annotator settings file" if method.is_file()
+                       else "method.txt is absent")
+    authorization, _reason = _read_json(workspace / "provenance" / CAMPAIGN_AUTHORIZATION_FILE)
+    contracts = (authorization or {}).get("annotation")
+    contracts = contracts if isinstance(contracts, dict) else {}
+    # The unit's ion mode's contract; every mode's where the mode is not known, so a tier is never missed.
+    modes = [ion_mode] if ion_mode else sorted(contracts, key=str)
+    contract_rows = [row for mode in modes for row in (contracts.get(mode) or {}).get("msp_rows") or []
+                     if isinstance(row, dict) and _library_kind(row.get("library_kind")) == "predicted"]
+    expected_ids = {str(row.get("annotator_id") or "").strip() for row in contract_rows} - {""}
+    expected_names = {_library_name(row.get("library")) for row in contract_rows} - {""}
+    for entry in (authorization or {}).get("libraries") or []:
+        modes = entry.get("ion_modes") if isinstance(entry, dict) else None
+        if isinstance(entry, dict) and _library_kind(entry.get("library_kind")) == "predicted" and \
+                str(entry.get("library_kind") or "").strip() and (not isinstance(modes, list) or not ion_mode
+                                                                    or ion_mode in modes):
+            expected_names.add(_library_name(entry.get("name")))
+    libraries = answers.get("libraries") if isinstance(answers.get("libraries"), dict) else {}
+    answered = libraries.get("in_silico_msp_paths")
+    for text in answered if isinstance(answered, list) else [answered]:
+        if isinstance(text, str) and text.strip():
+            expected_names.add(_library_name(text))
+    prepared, _reason = _read_json(output / "run-manifest.json")
+    for entry in (prepared or {}).get("libraries") or [] if isinstance((prepared or {}).get("libraries"), list) else []:
+        if isinstance(entry, dict) and _library_kind(entry.get("library_kind")) == "predicted" and \
+                str(entry.get("library_kind") or "").strip():
+            expected_names.add(_library_name(entry.get("name") or entry.get("filename") or entry.get("path")))
+    expected_names.discard("")
+    folded_names = {name.casefold() for name in expected_names}
+
+    searched = [row for row in settings or [] if row.get("msp_file_path") and (
+        _library_kind(row.get("library_kind")) == "predicted"
+        or _library_name(row["msp_file_path"]).casefold() in folded_names
+        or row.get("annotator_id", "") in expected_ids)]
+    acquired_names = {_library_name(row["msp_file_path"]).casefold() for row in settings or []
+                      if row.get("msp_file_path") and row not in searched}
+    in_silico_ids = {row.get("annotator_id", "") for row in searched} | expected_ids
+    in_silico_ids.discard("")
+    in_silico_names = {_library_name(row["msp_file_path"]) for row in searched} | expected_names
+    folded_in_silico = {name.casefold() for name in in_silico_names}
+    acquired_names -= folded_in_silico
+    if not in_silico_ids and not in_silico_names:
+        why = f" (the MSP annotator settings could not be read: {unread['c']})" if "c" in unread and table_text else ""
+        report.add("LIB-3", stage, LIB3_TITLE, NOT_EVALUABLE,
+                   "Not applicable: the run searched no in-silico (predicted) MSP library, and neither the approval nor "
+                   f"the answers name one{why}.", required=False, applicable=False)
+        return
+
+    # (c) The in-silico rows are predicted, with suggestions false, and every one the approval or answers name is there.
+    if settings is not None:
+        for row in searched:
+            words = f"{row.get('annotator_id') or 'an MSP annotator'} ({_library_name(row['msp_file_path'])})"
+            if _library_kind(row.get("library_kind")) != "predicted":
+                problems["c"].append(f"{words} searches an in-silico library with library kind "
+                                     f"{row.get('library_kind') or 'blank'}, which the Console reads as acquired")
+            if "suggestions" not in row:
+                problems["c"].append(f"{words} states no suggestions setting, so the Console suggests names from it")
+            elif str(row["suggestions"]).strip().casefold() != "false":
+                problems["c"].append(f"{words} states suggestions {row['suggestions'] or 'blank'}, not False")
+        have_ids = {row.get("annotator_id", "") for row in settings}
+        have_names = {_library_name(row["msp_file_path"]).casefold() for row in searched}
+        for annotator in sorted(expected_ids - have_ids):
+            problems["c"].append(f"the approval states the in-silico annotator {annotator}, and the run's MSP settings "
+                                 "have no such row")
+        for name in sorted(expected_names, key=str.casefold):
+            if name.casefold() not in have_names:
+                problems["c"].append(f"{name} is named as the in-silico library, and no MSP annotator row searches it")
+
+    codes: Counter = Counter()
+    represented: set = set()
+    counted = {"alignment_in_silico_matches": 0, "peak_in_silico_names": 0, "peak_identifications": 0}
+    sources: dict = {letter: [] for letter, _words in LIB3_CLAUSES}
+    if "c" not in unread:
+        sources["c"].append("msp_annotator_settings.tsv")
+
+    # (a) and (c) in the alignment's candidate tables, where the run exported them; the in-silico representatives.
+    for table in sorted(output.glob("*.mdcandidate.tsv")):
+        rows, why = _tsv_rows(table)
+        needed = {"alignment_master_id", "annotator_id", "evidence_source", "is_reference_matched", "is_representative",
+                  "annotation_tag_vs1"}
+        if rows is None or (rows and not needed <= set(rows[0])):
+            unread.setdefault("a", why or f"{table.name} has no {', '.join(sorted(needed - set(rows[0])))} column")
+            continue
+        sources["a"].append(table.name)
+        bad = Counter()
+        suggested = 0
+        for row in rows:
+            if row.get("annotator_id", "") not in in_silico_ids:
+                continue
+            evidence = str(row.get("evidence_source") or "").strip()
+            matched = _flag(row.get("is_reference_matched"))
+            if evidence in IDENTIFICATION_EVIDENCE or (matched and evidence != IN_SILICO_EVIDENCE):
+                bad[evidence or "blank"] += 1
+            if matched and evidence == IN_SILICO_EVIDENCE:
+                code = str(row.get("annotation_tag_vs1") or "").strip()
+                if code not in IN_SILICO_CONFIDENCE_CODES:
+                    bad[f"InSilico coded {code or 'blank'}"] += 1
+            if _flag(row.get("is_representative")):
+                if matched:
+                    represented.add(str(row.get("alignment_master_id") or "").strip())
+                else:
+                    suggested += 1
+        for what, count in sorted(bad.items()):
+            problems["a"].append(f"{table.name}: {count} in-silico candidate(s) carry {what}")
+        if suggested:
+            problems["c"].append(f"{table.name}: {suggested} feature(s) are represented by an in-silico candidate that "
+                                 "is no accepted match, a name from a suggestion")
+
+    # (a), (b), (c) and (d) in mzTab-M.
+    mztabs = sorted(output.glob("*.mzTab"))
+    if not mztabs:
+        for letter in ("a", "b", "d"):
+            unread.setdefault(letter, "no .mzTab file is in the output")
+    for mztab in mztabs:
+        parsed, why = _mztab_annotation(mztab)
+        if parsed is None:
+            for letter in ("a", "b", "d"):
+                unread.setdefault(letter, why)
+            continue
+        # A database is the in-silico library's where its -version names that file (MS-DIAL writes the file name
+        # there), or, from a Console that names none, where it is labelled in-silico; its -prefix leads the summary
+        # rows' database_identifier.
+        prefixes = set()
+        for entry in parsed["databases"].values():
+            version = _library_name(entry.get("version")).casefold()
+            labelled = entry.get("label") == MZTAB_IN_SILICO_DATABASE
+            if version and version in folded_in_silico:
+                prefixes.add(str(entry.get("prefix") or "").strip())
+                if not labelled:
+                    problems["b"].append(f"{mztab.name} declares the in-silico library {_library_name(entry['version'])}"
+                                         f" as \"{entry.get('label') or 'nothing'}\"")
+            elif labelled and version and version in acquired_names:
+                problems["b"].append(f"{mztab.name} declares the acquired library {_library_name(entry['version'])} as "
+                                     f"\"{MZTAB_IN_SILICO_DATABASE}\"")
+            elif labelled:
+                prefixes.add(str(entry.get("prefix") or "").strip())
+        prefixes.discard("")
+        if in_silico_names and not prefixes:
+            problems["b"].append(f"{mztab.name} declares no database for the in-silico library "
+                                 f"{_names(in_silico_names)}")
+        sources["b"].append(mztab.name)
+        header = parsed["header"]
+        if "opt_global_evidence_source" not in header:
+            unread.setdefault("a", f"{mztab.name} carries no opt_global_evidence_source column")
+        else:
+            sources["a"].append(mztab.name)
+        if "opt_global_lipid_rt_outcome" in header:
+            sources["d"].append(mztab.name)
+        bad = Counter()
+        suggested = confirmed = 0
+        for row in parsed["rows"]:
+            # A row's evidence and code are its representative's, the first identifier's.
+            first = str(row.get("database_identifier") or "").split("|")[0].strip()
+            if ":" not in first or first.split(":", 1)[0] not in prefixes:
+                continue
+            evidence = str(row.get("opt_global_evidence_source") or "").strip()
+            code = str(row.get("reliability") or "").strip()
+            if "opt_global_evidence_source" in header:
+                # An accepted match is coded 4xx; any other code is a name MS-DIAL suggested (5xx), whatever its
+                # evidence source (a weak comparison against predicted spectra is InSilico coded 530).
+                if evidence in IDENTIFICATION_EVIDENCE:
+                    bad[evidence] += 1
+                elif evidence == IN_SILICO_EVIDENCE and code in IN_SILICO_CONFIDENCE_CODES:
+                    codes[code] += 1
+                    counted["alignment_in_silico_matches"] += 1
+                elif code.startswith("4"):
+                    bad[f"an accepted match coded {code} with evidence {evidence or 'blank'}"] += 1
+                else:
+                    suggested += 1
+            if str(row.get("opt_global_lipid_rt_outcome") or "").strip().casefold() == LIPID_RT_CONFIRMED:
+                confirmed += 1
+        for what, count in sorted(bad.items()):
+            problems["a"].append(f"{mztab.name}: {count} summary row(s) of the in-silico database carry {what}")
+        if suggested:
+            problems["c"].append(f"{mztab.name}: {suggested} summary row(s) of the in-silico database are no accepted "
+                                 "in-silico match, names from a suggestion")
+        if confirmed:
+            problems["d"].append(f"{mztab.name}: {confirmed} summary row(s) of the in-silico database are tagged "
+                                 "lipid-RT Confirmed")
+
+    # (d) in the lipid RT check's review list, for the features an in-silico match represents. Where neither mzTab-M
+    # writes an outcome nor a review list exists, the check tagged nothing.
+    reviews = sorted(output.glob("*_lipidrt_review.tsv"))
+    if mztabs and not sources["d"] and not reviews and "d" not in unread:
+        # The Console writes a review list whenever the check runs (lipid_rt_check), so none means none was tagged.
+        sources["d"].append("no lipid RT outcome or review list was written, so the check tagged nothing")
+    if reviews and not represented and not sources["d"] and "d" not in unread:
+        unread["d"] = ("mzTab-M writes no opt_global_lipid_rt_outcome, and without the candidate table which features an "
+                       "in-silico match represents in the review list is not known")
+    if represented:
+        for review in reviews:
+            rows, why = _tsv_rows(review)
+            if rows is None:
+                unread.setdefault("d", why)
+                continue
+            sources["d"].append(review.name)
+            confirmed = sum(1 for row in rows if str(row.get("ID") or "").strip() in represented
+                            and str(row.get("Outcome") or "").strip().casefold() == LIPID_RT_CONFIRMED)
+            if confirmed:
+                problems["d"].append(f"{review.name}: {confirmed} feature(s) an in-silico match represents are "
+                                     "Confirmed")
+
+    # (e) in the per-file peak tables Interactive counts identifications from.
+    peaks = sorted(output.glob("*.mdpeak"))
+    if not peaks:
+        unread.setdefault("e", "no .mdpeak peak table is in the output")
+    for peak_table in peaks:
+        rows, why = _tsv_rows(peak_table)
+        if rows is None or (rows and not {"Evidence source", "Comment"} <= set(rows[0])):
+            unread.setdefault("e", why or f"{peak_table.name} has no Evidence source or Comment column")
+            continue
+        sources["e"].append(peak_table.name)
+        bad = Counter()
+        for row in rows:
+            name = str(row.get("Name") or "").strip()
+            if not name or name.casefold() == "unknown":
+                continue
+            evidence = str(row.get("Evidence source") or "").strip()
+            if evidence in IDENTIFICATION_EVIDENCE:
+                counted["peak_identifications"] += 1
+            if _comment_annotator(row.get("Comment")) not in in_silico_ids:
+                continue
+            if evidence in IDENTIFICATION_EVIDENCE:
+                bad[evidence] += 1
+            elif evidence == IN_SILICO_EVIDENCE:
+                counted["peak_in_silico_names"] += 1
+        for what, count in sorted(bad.items()):
+            problems["e"].append(f"{peak_table.name}: {count} peak(s) an in-silico annotator named carry {what}, "
+                                 "which Interactive counts as identifications")
+
+    # The QA matrix's Reference matched cells of the features an in-silico match represents: recorded, not judged.
+    qa_cells = None
+    if represented:
+        for matrix in sorted(output.glob("*.qa.tsv")):
+            rows, _why = _tsv_rows(matrix)
+            if rows:
+                qa_cells = (qa_cells or 0) + sum(1 for row in rows if str(row.get("ID") or "").strip() in represented
+                                                 and _flag(row.get("Reference matched")))
+
+    verdicts = {}
+    for letter, _words in LIB3_CLAUSES:
+        verdicts[letter] = FAIL if problems[letter] else NOT_EVALUABLE if letter in unread and not sources[letter] \
+            else PASS
+    found = [f"({letter}) {item}" for letter, _words in LIB3_CLAUSES for item in problems[letter]]
+    evidence = {
+        "applicable": True, "ion_mode": ion_mode,
+        "in_silico_annotators": sorted(in_silico_ids), "in_silico_libraries": sorted(in_silico_names, key=str.casefold),
+        "clauses": verdicts, "sources": {letter: sorted(set(items)) for letter, items in sources.items()},
+        # The confidence codes the accepted in-silico matches carry in mzTab-M, and what each means.
+        "confidence_codes_seen": dict(sorted(codes.items())),
+        "confidence_code_basis": {code: IN_SILICO_CONFIDENCE_CODES.get(code, "not an in-silico code") for code in codes},
+        **counted,
+        "qa_reference_matched_cells_of_in_silico_features": qa_cells,
+    }
+    code_words = (", ".join(f"{code} ({IN_SILICO_CONFIDENCE_CODES.get(code, 'not an in-silico code')}) x{count}"
+                            for code, count in sorted(codes.items())) or "none (no accepted in-silico match)")
+    qa_words = (f" The QA matrix marks {qa_cells} feature-file cell(s) Reference matched whose representative is an "
+                "in-silico match (the Console's IsReferenceMatched, counted in reference_matched_count); recorded, "
+                "not judged." if qa_cells else "")
+    if found:
+        report.add("LIB-3", stage, LIB3_TITLE, FAIL,
+                   f"{len(found)} problem(s) with how the in-silico tier's matches are reported: "
+                   + "; ".join(found[:8]) + ("; ..." if len(found) > 8 else "") + "." + qa_words,
+                   problems=found, **evidence)
+        return
+    missing = [f"({letter}) {unread[letter]}" for letter, _words in LIB3_CLAUSES if verdicts[letter] == NOT_EVALUABLE]
+    if missing:
+        report.add("LIB-3", stage, LIB3_TITLE, NOT_EVALUABLE,
+                   "Whether the in-silico tier's matches are reported as in-silico evidence cannot be fully established: "
+                   + "; ".join(missing) + "." + qa_words, unread=missing, **evidence)
+        return
+    report.add("LIB-3", stage, LIB3_TITLE, PASS,
+               f"The in-silico annotator(s) {_names(in_silico_ids)} search {_names(in_silico_names)} as predicted with "
+               f"suggestions false; mzTab-M declares it as \"{MZTAB_IN_SILICO_DATABASE}\"; its "
+               f"{counted['alignment_in_silico_matches']} summary row(s) carry InSilico, none tagged lipid-RT "
+               f"Confirmed; confidence codes {code_words}; the peak tables count "
+               f"{counted['peak_identifications']} identification(s) and {counted['peak_in_silico_names']} in-silico "
+               "name(s) apart." + qa_words, **evidence)
 
 
 # --------------------------------------------------------------------------------------------
@@ -11361,6 +11816,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_method_file_reached_the_console(report, output, "after-run", provenance)
         check_aif_files_have_collision_energies(report, provenance, csv_rows, csv_reason, output, "after-run")
         check_binary_identity_is_recorded(report, run_manifest, output, "after-run")
+        check_in_silico_matches_are_not_identifications(report, workspace, output, "after-run")
 
     if "before-publish" in stages:
         check_no_metric_rests_on_a_synthetic_order(report, output, csv_rows, "before-publish", provenance)
@@ -11413,7 +11869,7 @@ COMPLETION_STAGES = (
      ("EXP-1", "CNT-1@after-run", "MTH-1", "AIF-1", "FIN-2", "FIN-3")),
     ("B7", "mztab_validated",
      "a validated terminal status, a validation record with no failure, and an mzTab-M in output",
-     ("TAB-1", "TAB-2", "BIN-1", "FIN-1")),
+     ("TAB-1", "TAB-2", "BIN-1", "FIN-1", "LIB-3")),
     ("B8", "qa_produced", "a QA matrix (*.qa.tsv) exists", ("QA-1", "ORD-2")),
     ("B9", "publication_artifacts",
      "the publication report, Materials and Methods and supplementary table exist",

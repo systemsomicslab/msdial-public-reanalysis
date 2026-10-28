@@ -95,6 +95,8 @@ class LibraryUnit:
         self.rows = [("msp_high_quality", NEGATIVE_MSP, "Metabolomics"), ("msp_low_quality", NEGATIVE_MSP, "Metabolomics")]
         self.row_settings: dict = {}
         self.library_kinds: dict = {}
+        # Each row's suggestions, by annotator id: a suggestions column is written only where a test gives some.
+        self.suggestions: dict = {}
         # The annotation profile, LBM priority and LBM cutoffs (weighted, simple, reverse) method.txt states.
         self.method_profile = PROFILE_ID
         self.method_lbm_priority = "3"
@@ -123,14 +125,16 @@ class LibraryUnit:
                         "ion_mode": self.ion_mode},
             "workspace": str(self.workspace), "output_directory": str(self.output)})
         table = self.output / "msp_annotator_settings.tsv"
-        header = TSV_HEADER + (("library_kind",) if self.library_kinds else ())
+        header = TSV_HEADER + (("library_kind",) if self.library_kinds else ()) + (
+            ("suggestions",) if self.suggestions else ())
         lines = ["\t".join(header)]
         columns = dict(verifier.MSP_ROW_COLUMNS)
         for index, (annotator, library, omics) in enumerate(self.rows, start=1):
             settings = {**TIER_SETTINGS.get(annotator, {"priority": 3 - index}), **self.row_settings.get(annotator, {})}
             values = {columns[key]: str(value) for key, value in settings.items()}
             values.update({"annotator_id": annotator, "msp_file_path": self.location(library), "target_omics": omics,
-                           "evidence_tier": "tier", "library_kind": self.library_kinds.get(annotator, "")})
+                           "evidence_tier": "tier", "library_kind": self.library_kinds.get(annotator, ""),
+                           "suggestions": self.suggestions.get(annotator, "")})
             lines.append("\t".join(values.get(column, "0") for column in header))
         table.write_text("\n".join(lines) + "\n", encoding="ascii")
         weighted, simple, reverse = self.method_cutoffs
@@ -285,6 +289,22 @@ class LoadedLibrariesTests(Base):
         self.assertEqual(verifier.FAIL, check.status, check.detail)
         self.assertIn("the answers give Target omics Lipidomics, and method.txt states Metabolomics", check.detail)
 
+    def test_the_target_omics_a_campaign_pins_is_the_one_held(self) -> None:
+        """2026-10-28: Interactive applies target_omics_pin over the target_omics answer, which for a repository unit is
+        its seed from the repository's text (agent_workflow._applied_target_omics); LIB-2 read the answer alone, so a
+        campaign pinning Lipidomics over a unit seeded Metabolomics would have failed it. A workflow_overrides
+        target_omics is applied over both."""
+        self.unit.answers["target_omics"] = "Metabolomics"
+        self.unit.answers["target_omics_pin"] = "lipidomics"
+        _report, check = self.lib2()
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.unit.target_omics = "Metabolomics"
+        _report, check = self.lib2()
+        self.assertIn("the answers give Target omics lipidomics, and method.txt states Metabolomics", check.detail)
+        self.unit.answers["workflow_overrides"] = {"target_omics": "Metabolomics"}
+        _report, check = self.lib2()
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
     def test_a_library_neither_readable_nor_recorded_is_not_evaluable(self) -> None:
         (self.unit.folder / NEGATIVE_MSP).unlink()
         self.unit.prepared_sha[NEGATIVE_MSP] = ""
@@ -367,6 +387,33 @@ class ApprovedAnnotationTests(Base):
         self.assertEqual(verifier.PASS, check.status, check.detail)
         self.unit.library_kinds = {"msp_high_quality": "in silico", "msp_low_quality": "predicted"}
         self.assert_fails("the MSP annotator msp_high_quality states library kind acquired, approved predicted")
+
+    def test_the_suggestions_the_approval_states_are_held(self) -> None:
+        """2026-10-28: the four-tier profile's in-silico row gives suggestions false, the plan states it, and the
+        method must write it; a row whose profile gives none states none, so its column is not compared."""
+        self.unit.annotation["Negative"]["msp_rows"][1]["suggestions"] = False
+        self.unit.suggestions = {"msp_high_quality": "True", "msp_low_quality": "False"}
+        _report, check = self.lib2()
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.unit.suggestions = {"msp_high_quality": "True", "msp_low_quality": "True"}
+        self.assert_fails("the MSP annotator msp_low_quality states suggestions True, approved False")
+        self.unit.suggestions = {}
+        self.assert_fails("the MSP annotator msp_low_quality states suggestions blank, approved False")
+
+    def test_an_msp_searched_as_another_kind_than_its_pin_fails(self) -> None:
+        """2026-10-28: the pins state an MSP's library kind (plan.library_pins). An in-silico library searched as
+        acquired would report its matches as reference spectra; the run manifest's record is held to it too."""
+        for item in self.unit.approval:
+            if item["name"] == NEGATIVE_MSP:
+                item["library_kind"] = "predicted"
+        for row in self.unit.annotation["Negative"]["msp_rows"]:
+            row["library_kind"] = "predicted"
+        self.unit.library_kinds = {"msp_high_quality": "predicted", "msp_low_quality": "predicted"}
+        _report, check = self.lib2()
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.unit.library_kinds = {"msp_high_quality": "acquired", "msp_low_quality": "predicted"}
+        self.assert_fails(f"the MSP annotator msp_high_quality searches {NEGATIVE_MSP} as acquired, and the approval "
+                          "names it as predicted")
 
     def test_an_msp_annotator_the_approval_does_not_state_or_one_missing_fails(self) -> None:
         self.unit.rows.append(("msp_in_silico", NEGATIVE_MSP, "Metabolomics"))

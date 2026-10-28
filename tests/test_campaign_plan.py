@@ -2278,5 +2278,251 @@ class AutomaticRtCorrectionPinTests(unittest.TestCase):
             self.assertEqual(reader.console()["automatic_rt_correction"], policy.AUTOMATIC_RT_LOCAL_SUPPORT)
 
 
+class InSilicoTierContractTests(unittest.TestCase):
+    """2026-10-28, found preparing verification V3: a profile naming an in-silico MSP (libraries.in_silico_msp_paths,
+    the fourth tier) was planned with the three-tier contract, since the plan called the pinned Interactive's tiered
+    profile without it, while that Interactive (0.5.48) writes the four-tier method; LIB-2 then failed every unit after
+    its download and diagnostic, and the plan exited 0 with no approval problem. The libraries are synthetic names."""
+
+    PROFILE = {"schema": plan.PROFILE_SCHEMA,
+               "answers": {"library_strategy": "tiered_lipid_msp", "libraries": {"lbm_path": "library:Synthetic.lbm2"}},
+               "by_ion_mode": {"Positive": {"libraries": {"msp_paths": ["library:SyntheticPositive.msp"],
+                                                          "in_silico_msp_paths": ["library:SyntheticPredictedPos.msp"]}},
+                               "Negative": {"libraries": {"msp_paths": ["library:SyntheticNegative.msp"],
+                                                          "in_silico_msp_paths": ["library:SyntheticPredictedNeg.msp"]}}}}
+    CODE = {"lbm_cutoffs": {"weighted": 0.1, "simple": 0.1, "reverse": 0.1}, "lbm_cutoffs_source": "the template",
+            "tiered_lbm_from_answers": True, "problems": []}
+
+    @staticmethod
+    def four_tiers(lbm, msp, lbm_annotator=None, in_silico_path=None):
+        """A tiered profile shaped as Interactive 0.5.48's (annotation_pipeline.tiered_lcms_annotation)."""
+        row = {"msp_file_path": msp, "target_omics": "Metabolomics", "rt_tolerance": 0.5, "use_rt_scoring": False,
+               "use_rt_filtering": False}
+        if not in_silico_path:
+            return {"profile_id": "three", "lbm_annotator": {"lbm_file_path": lbm, "priority": 3},
+                    "msp_annotators": [{**row, "annotator_id": "strict", "priority": 2},
+                                       {**row, "annotator_id": "broad", "priority": 1}]}
+        return {"profile_id": "four", "lbm_annotator": {"lbm_file_path": lbm, "priority": 4},
+                "msp_annotators": [{**row, "annotator_id": "strict", "priority": 3, "library_kind": "acquired"},
+                                   {**row, "annotator_id": "broad", "priority": 2, "library_kind": "acquired"},
+                                   {**row, "msp_file_path": in_silico_path, "annotator_id": "predicted", "priority": 1,
+                                    "library_kind": "predicted", "suggestions": False, "rt_fixed": True}]}
+
+    def test_the_in_silico_msp_the_profile_names_makes_the_four_tier_contract(self) -> None:
+        record = plan.annotation_record(self.PROFILE, [], [], {**self.CODE, "tiered": self.four_tiers})
+        positive = record["by_ion_mode"]["Positive"]
+        self.assertEqual((positive["profile_id"], positive["lbm_priority"], positive["in_silico_libraries"]),
+                         ("four", 4, ["SyntheticPredictedPos.msp"]))
+        self.assertEqual([(row["annotator_id"], row["library"], row["priority"], row["library_kind"], row.get("suggestions"))
+                          for row in positive["msp_rows"]],
+                         [("strict", "SyntheticPositive.msp", 3, "acquired", None),
+                          ("broad", "SyntheticPositive.msp", 2, "acquired", None),
+                          ("predicted", "SyntheticPredictedPos.msp", 1, "predicted", False)])
+        self.assertNotIn("rt_fixed", positive["msp_rows"][2], "only what LIB-2 compares is stated")
+        self.assertEqual(record["by_ion_mode"]["Negative"]["msp_rows"][2]["library"], "SyntheticPredictedNeg.msp")
+        text = "\n".join(record["statement"])
+        self.assertIn("the profile's LBM Synthetic.lbm2; the profile's in-silico MSP SyntheticPredictedPos.msp; LBM cutoffs", text)
+        self.assertIn("predicted (SyntheticPredictedPos.msp; priority 1;", text)
+        self.assertIn("target omics Metabolomics; predicted; suggestions False)", text)
+        self.assertIn("target omics Metabolomics; acquired)", text, "a row that gives no suggestions states none")
+        self.assertEqual(plan.annotation_problems({"annotation": record}), [])
+        contract_ = plan.annotation_contract({"annotation": record})
+        self.assertEqual(contract_["Positive"]["msp_rows"][2]["suggestions"], False)
+        # A profile without an in-silico MSP is planned as before, with the three-tier profile.
+        three = json.loads(json.dumps(self.PROFILE))
+        for mode in ("Positive", "Negative"):
+            del three["by_ion_mode"][mode]["libraries"]["in_silico_msp_paths"]
+        record = plan.annotation_record(three, [], [], {**self.CODE, "tiered": self.four_tiers})
+        self.assertEqual(record["by_ion_mode"]["Positive"]["profile_id"], "three")
+        self.assertNotIn("in_silico_libraries", record["by_ion_mode"]["Positive"])
+        self.assertNotIn("in-silico", "\n".join(record["statement"]))
+
+    def test_an_interactive_whose_tiered_profile_takes_no_in_silico_msp_is_refused(self) -> None:
+        """An Interactive before 0.5.48 has no in_silico_path: it would run three tiers while the answers and pins name
+        the fourth. The plan states no contract and refuses it, rather than approving the three-tier one; so it does
+        where whether the profile takes one cannot be read."""
+        def three_tiers(lbm, msp, lbm_annotator=None):
+            return self.four_tiers(lbm, msp)
+
+        for code, said in (({**self.CODE, "tiered": three_tiers}, "WHICH THE PINNED INTERACTIVE DOES NOT SEARCH: its "
+                            "tiered profile (annotation_pipeline.tiered_lcms_annotation) takes no in-silico MSP (no "
+                            "in_silico_path), so it would run three tiers"),
+                           ({**self.CODE, "tiered": self.four_tiers}, "which the pinned Interactive may not search: "
+                            "whether its tiered profile takes an in-silico MSP could not be read")):
+            with self.subTest(said=said[:20]), mock.patch.object(
+                    plan, "tiered_takes_in_silico", return_value=None if code["tiered"] is self.four_tiers else False):
+                record = plan.annotation_record(self.PROFILE, [], [], code)
+                positive = record["by_ion_mode"]["Positive"]
+                self.assertEqual((positive["profile_id"], positive["msp_rows"], positive["lbm_priority"]), (None, None, None))
+                self.assertIn(said, "\n".join(record["statement"]))
+                problems = plan.annotation_problems({"annotation": record})
+                self.assertEqual(len(problems), 2, problems)
+                self.assertIn("the profile names the in-silico MSP SyntheticPredictedNeg.msp for Negative units, and the "
+                              "pinned Interactive cannot be held to searching it: ", problems[0])
+                self.assertIn("pin an Interactive whose tiered profile searches an in-silico MSP (0.5.48 or later), or "
+                              "leave libraries.in_silico_msp_paths out, and plan again", problems[1])
+                self.assertFalse(any("could not read its annotation profile" in problem for problem in problems),
+                                 "the refusal says why, once")
+        self.assertIs(plan.tiered_takes_in_silico(three_tiers), False)
+        self.assertIs(plan.tiered_takes_in_silico(self.four_tiers), True)
+        self.assertIsNone(plan.tiered_takes_in_silico(max), "a builtin whose signature cannot be read")
+
+    def test_an_in_silico_msp_for_another_strategy_or_two_for_one_ion_mode_are_refused(self) -> None:
+        """Interactive's own plan refuses both: only tiered_lipid_msp searches an in-silico MSP, and it searches one."""
+        other = json.loads(json.dumps(self.PROFILE))
+        other["answers"]["library_strategy"] = "existing"
+        problems = plan.annotation_problems({"annotation": plan.annotation_record(
+            other, [], [], {**self.CODE, "tiered": self.four_tiers})})
+        self.assertIn("the profile names an in-silico MSP (SyntheticPredictedPos.msp) for Positive units, which only the "
+                      "tiered_lipid_msp strategy searches, and their strategy is existing", "\n".join(problems))
+        two = json.loads(json.dumps(self.PROFILE))
+        two["by_ion_mode"]["Positive"]["libraries"]["in_silico_msp_paths"].append("library:SyntheticPredictedOther.msp")
+        problems = plan.annotation_problems({"annotation": plan.annotation_record(
+            two, [], [], {**self.CODE, "tiered": self.four_tiers})})
+        self.assertEqual(problems, ["the profile names 2 in-silico MSPs (SyntheticPredictedOther.msp, "
+                                    "SyntheticPredictedPos.msp) for Positive units, and the tiered_lipid_msp profile "
+                                    "searches one: name one per ion mode under by_ion_mode, and plan again"])
+
+    def test_an_msp_named_bare_or_for_the_other_ion_mode_is_refused(self) -> None:
+        """Review 1: an in-silico MSP named other than as library:<file name> was neither pinned nor stated, so the
+        plan stated the three-tier contract while Interactive searched it; and Interactive refuses a file named for
+        the other ion mode (agent_workflow._name_polarity)."""
+        bare = json.loads(json.dumps(self.PROFILE))
+        bare["by_ion_mode"]["Positive"]["libraries"]["in_silico_msp_paths"] = ["SyntheticPredictedPos.msp"]
+        self.assertIn("the answers of Positive units name libraries.in_silico_msp_paths other than as library:<file "
+                      "name>, which the plan can neither pin nor state: name each as library:<file name>",
+                      plan.profile_problems(bare, ["Synthetic.lbm2", "SyntheticPositive.msp", "SyntheticNegative.msp",
+                                                   "SyntheticPredictedNeg.msp"]))
+        swapped = json.loads(json.dumps(self.PROFILE))
+        swapped["by_ion_mode"]["Positive"]["libraries"]["in_silico_msp_paths"] = ["library:Synthetic_predicted_neg.msp"]
+        problems = plan.annotation_problems({"annotation": plan.annotation_record(
+            swapped, [], [], {**self.CODE, "tiered": self.four_tiers})})
+        self.assertEqual(problems, ["the in-silico MSP Synthetic_predicted_neg.msp is named for Negative ion mode and the "
+                                    "profile gives it to Positive units, which Interactive would refuse for every unit "
+                                    "that runs in that mode: give each ion mode its own file under by_ion_mode, and "
+                                    "plan again"])
+        self.assertEqual(plan.name_polarity("x-POS.msp"), "Positive")
+        self.assertEqual(plan.name_polarity("SyntheticPredictedPos.msp"), "", "a token, not a substring")
+
+    def test_what_interactive_refuses_of_an_in_silico_msp_without_reading_it_is_refused(self) -> None:
+        """Review 2: the plan approved answers the pinned Interactive's _in_silico_library_problems refuses at its
+        prepare, after each unit's download and diagnostic: a name given twice, a file that is no .msp, and the
+        negative-mode preprocessing step for a positive-mode unit, an unknown step, or a step without the file."""
+        def positive_libraries(profile):
+            return profile["by_ion_mode"]["Positive"]["libraries"]
+
+        def negative_libraries(profile):
+            return profile["by_ion_mode"]["Negative"]["libraries"]
+
+        def step_alone(profile):
+            negative_libraries(profile).pop("in_silico_msp_paths")
+            negative_libraries(profile)["in_silico_msp_preprocessing"] = ["precursor_plus_1008_peak_removed"]
+
+        cases = {
+            "twice": (lambda profile: positive_libraries(profile)["in_silico_msp_paths"].append(
+                "library:SyntheticPredictedPos.msp"),
+                "the profile names 2 in-silico MSPs (SyntheticPredictedPos.msp) for Positive units"),
+            "suffix": (lambda profile: positive_libraries(profile).__setitem__(
+                "in_silico_msp_paths", ["library:SyntheticPredictedPos.msp2"]),
+                "the in-silico MSP SyntheticPredictedPos.msp2 for Positive units is no .msp file"),
+            "positive step": (lambda profile: profile["answers"]["libraries"].__setitem__(
+                "in_silico_msp_preprocessing", ["precursor_plus_1008_peak_removed"]),
+                "the answers of Positive units name the in-silico preprocessing precursor_plus_1008_peak_removed"),
+            "unknown step": (lambda profile: negative_libraries(profile).__setitem__(
+                "in_silico_msp_preprocessing", ["synthetic_step"]),
+                "the answers of Negative units name in-silico preprocessing synthetic_step"),
+            "step alone": (step_alone,
+                           "the answers of Negative units name libraries.in_silico_msp_preprocessing without an "
+                           "in-silico MSP"),
+        }
+        steps = {"precursor_plus_1008_peak_removed"}
+        for name, (change, said) in cases.items():
+            with self.subTest(name), mock.patch.object(plan, "in_silico_preprocessing_steps", return_value=steps):
+                profile = json.loads(json.dumps(self.PROFILE))
+                change(profile)
+                problems = plan.annotation_problems({"annotation": plan.annotation_record(
+                    profile, [], [], {**self.CODE, "tiered": self.four_tiers})})
+                self.assertIn(said, "\n".join(problems))
+        # The negative-mode step given for Negative units only is what Interactive takes.
+        profile = json.loads(json.dumps(self.PROFILE))
+        negative_libraries(profile)["in_silico_msp_preprocessing"] = ["precursor_plus_1008_peak_removed"]
+        with mock.patch.object(plan, "in_silico_preprocessing_steps", return_value=steps):
+            self.assertEqual(plan.annotation_problems({"annotation": plan.annotation_record(
+                profile, [], [], {**self.CODE, "tiered": self.four_tiers})}), [])
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
+    def test_the_preprocessing_steps_are_the_pinned_interactives(self) -> None:
+        from msdial_app import annotation_pipeline
+
+        self.assertEqual(plan.in_silico_preprocessing_steps(), set(annotation_pipeline.IN_SILICO_PREPROCESSING_STEPS))
+        self.assertIn(plan.NEGATIVE_ONLY_PREPROCESSING, plan.in_silico_preprocessing_steps())
+
+    def test_the_pins_state_each_msps_library_kind_and_the_authorization_carries_it(self) -> None:
+        names = ["Synthetic.lbm2", "SyntheticNegative.msp", "SyntheticPositive.msp", "SyntheticPredictedNeg.msp",
+                 "SyntheticPredictedPos.msp"]
+        pins = plan.library_pins([{"name": name, "sha256": "0" * 64, "bytes": 1} for name in names], self.PROFILE)
+        self.assertEqual({item["name"]: item.get("library_kind") for item in pins}, {
+            "Synthetic.lbm2": None, "SyntheticNegative.msp": "acquired", "SyntheticPositive.msp": "acquired",
+            "SyntheticPredictedNeg.msp": "predicted", "SyntheticPredictedPos.msp": "predicted"})
+        record = plan.annotation_record(self.PROFILE, pins, [], {**self.CODE, "tiered": self.four_tiers})
+        self.assertIn("SyntheticPredictedPos.msp (msp, in-silico (predicted); Positive)", record["statement"][0])
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = {"campaign_id": "c1", "raw_retention_policy": "keep", "units": [{"unit_id": "u1"}],
+                        "pins": {"libraries": pins}, "annotation": record}
+            path = Path(directory) / "campaign-manifest.json"
+            digest = plan.write_manifest(path, manifest)
+            authorization = plan.authorization_record(
+                manifest, path, digest, approval_id="A-1", approved_by="Test Person",
+                approved_at="2026-10-28T00:00:00+00:00", statement="Approved.", covers=["1"])
+        self.assertEqual({item["name"]: item.get("library_kind") for item in authorization["libraries"]},
+                         {item["name"]: item.get("library_kind") for item in pins})
+        # An MSP named both as acquired and as in-silico has no one kind: not pinned with one, and refused.
+        both = json.loads(json.dumps(self.PROFILE))
+        both["by_ion_mode"]["Negative"]["libraries"]["in_silico_msp_paths"] = ["library:SyntheticNegative.msp"]
+        pins = plan.library_pins([{"name": "SyntheticNegative.msp", "sha256": "0" * 64, "bytes": 1}], both)
+        self.assertNotIn("library_kind", pins[0])
+        self.assertIn("the profile names SyntheticNegative.msp both in libraries.msp_paths (acquired) and in "
+                      "libraries.in_silico_msp_paths (in-silico): name each MSP in one of them",
+                      plan.profile_problems(both, names))
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
+    def test_the_four_tier_contract_is_what_the_pinned_interactives_workflow_writes(self) -> None:
+        """Against the real Interactive: the contract the plan states for a profile naming an in-silico MSP is the
+        profile, LBM priority and MSP rows its own _apply_libraries and _apply_retention_time_use leave for the method,
+        for each retention-time answer (the in-silico row keeps no RT whatever is answered)."""
+        from msdial_app import agent_workflow, annotation_pipeline
+
+        found = plan.interactive_annotation()
+        if not plan.tiered_takes_in_silico(found["tiered"]):
+            self.skipTest("the Interactive checkout is older than its four-tier profile (0.5.48)")
+        official = {"id": "lipidomics", "kind": "lbm", "local_path": "Synthetic-official.lbm2", "record_id": "r",
+                    "record_url": "", "doi": "", "license": "", "downloaded": True}
+        for extra in ({}, {"use_retention_time_for_annotation": False}, {"use_retention_time_for_annotation": True},
+                      {"use_retention_time_for_annotation": True, "retention_time_tolerance": 0.3}):
+            with self.subTest(**extra):
+                profile = {"schema": plan.PROFILE_SCHEMA,
+                           "answers": {"library_strategy": "tiered_lipid_msp",
+                                       "libraries": {"lbm_path": "library:Synthetic.lbm2"}, **extra},
+                           "by_ion_mode": {"Positive": {"libraries": {
+                               "msp_paths": ["library:SyntheticPositive.msp"],
+                               "in_silico_msp_paths": ["library:SyntheticPredictedPos.msp"]}}}}
+                item = plan.annotation_record(profile, [], [], found)["by_ion_mode"]["Positive"]
+                answers = {"library_strategy": "tiered_lipid_msp", **extra,
+                           "libraries": {"lbm_path": "Synthetic.lbm2", "msp_paths": ["SyntheticPositive.msp"],
+                                         "in_silico_msp_paths": ["SyntheticPredictedPos.msp"]}}
+                state: dict = {"library_provenance": []}
+                with mock.patch.object(agent_workflow, "catalog_status", return_value=[dict(official)]):
+                    agent_workflow._apply_libraries(state, {}, answers)
+                agent_workflow._apply_retention_time_use(state, answers)
+                self.assertEqual(item["profile_id"], state["annotation_pipeline_profile"])
+                self.assertEqual(item["profile_id"], annotation_pipeline.TIERED_LCMS_IN_SILICO_PROFILE_ID)
+                self.assertEqual(item["lbm_priority"], state["lbm_annotator"]["priority"])
+                self.assertEqual(item["msp_rows"], [plan.msp_row_contract(row) for row in state["msp_annotators"]])
+                predicted = [row for row in item["msp_rows"] if row["library_kind"] == "predicted"]
+                self.assertEqual([(row["library"], row["suggestions"], row["use_rt_scoring"]) for row in predicted],
+                                 [("SyntheticPredictedPos.msp", False, False)])
+                self.assertEqual(plan.annotation_problems({"annotation": {"by_ion_mode": {"Positive": item}}}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

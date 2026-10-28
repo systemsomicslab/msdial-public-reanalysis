@@ -81,6 +81,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
+import inspect
 import json
 import os
 import re
@@ -602,6 +603,7 @@ def profile_problems(profile: Mapping[str, Any] | None, library_names: Iterable[
     if missing:
         problems.append(f"the profile names libraries the plan did not pin: {', '.join(missing)}")
     problems.extend(template_path_problems(profile))
+    problems.extend(msp_kind_problems(profile))
     return problems
 
 
@@ -622,10 +624,20 @@ TEMPLATE_WHOSE = {"interactive": ", Interactive's own", "answers": ", which the 
                   "settings": ", which Interactive's settings name"}
 # The settings of an MSP annotator row the manifest states and the authorization carries to the gate's LIB-2, by the
 # key Interactive's annotation profile gives each (annotation_pipeline.tiered_lcms_annotation), besides its id, its
-# library (by file name) and its library kind.
+# library (by file name) and its library kind. Each is stated only where the profile's row gives it: of the tiered
+# profile's rows, only the in-silico one gives suggestions (False, the author's decision of 2026-10-25).
 MSP_ROW_SETTINGS = ("priority", "rt_tolerance", "ms1_tolerance", "ms2_tolerance", "weighted_dot_product_cutoff",
                     "simple_dot_product_cutoff", "reverse_dot_product_cutoff", "matched_peaks_percentage_cutoff",
-                    "minimum_spectrum_match", "use_rt_scoring", "use_rt_filtering", "target_omics")
+                    "minimum_spectrum_match", "use_rt_scoring", "use_rt_filtering", "target_omics", "suggestions")
+# Where an ion mode's answers name its acquired MSP and its in-silico (predicted) MSP, and the parameter by which the
+# pinned Interactive's tiered profile takes the in-silico one (Interactive 0.5.48:
+# annotation_pipeline.tiered_lcms_annotation(..., in_silico_path=...), the four-tier profile).
+ACQUIRED_MSP_KEY, IN_SILICO_MSP_KEY = "msp_paths", "in_silico_msp_paths"
+IN_SILICO_PARAMETER = "in_silico_path"
+# The in-silico library's declared preprocessing, and the step Interactive refuses for a positive-mode run (the
+# negative-mode records' +1.008 artefact; agent_workflow._in_silico_preprocessing_problems).
+IN_SILICO_PREPROCESSING_KEY = "in_silico_msp_preprocessing"
+NEGATIVE_ONLY_PREPROCESSING = "precursor_plus_1008_peak_removed"
 # The library kinds the Console reads as an in-silico (predicted) MSP; any other, a blank one included, is acquired.
 PREDICTED_LIBRARY_KINDS = frozenset({"predicted", "insilico", "computed", "generated", "predictedmsp"})
 # What an ion mode's annotation contract holds (annotation_contract): what the gate's LIB-2 holds the method to.
@@ -689,12 +701,56 @@ def split_libraries(profile: Mapping[str, Any] | None, names: Iterable[str]) -> 
     return [name for name in names if name in named], [name for name in names if name not in named]
 
 
+def msp_library_kinds(profile: Mapping[str, Any] | None) -> dict[str, set[str]]:
+    """The library kind each MSP the profile names is searched as, by file name: predicted where an ion mode's answers
+    name it in libraries.in_silico_msp_paths (the in-silico tier), acquired where they name it in libraries.msp_paths.
+    A name given both has both (msp_kind_problems)."""
+    kinds: dict[str, set[str]] = {}
+    for mode in ION_MODES:
+        libraries = ion_mode_answers(profile, mode).get("libraries")
+        libraries = libraries if isinstance(libraries, Mapping) else {}
+        for key, kind in ((ACQUIRED_MSP_KEY, "acquired"), (IN_SILICO_MSP_KEY, "predicted")):
+            for name in library_references(libraries.get(key)):
+                kinds.setdefault(name, set()).add(kind)
+    return kinds
+
+
+def msp_kind_problems(profile: Mapping[str, Any] | None) -> list[str]:
+    """An MSP the profile names both as an acquired library and as an in-silico one, for one ion mode (which
+    Interactive's _in_silico_library_problems refuses too) or one each, since its pin can state one kind only; and an
+    MSP named other than as library:<file name>."""
+    both = sorted(name for name, kinds in msp_library_kinds(profile).items() if len(kinds) > 1)
+    problems = [f"the profile names {name} both in libraries.{ACQUIRED_MSP_KEY} (acquired) and in "
+                f"libraries.{IN_SILICO_MSP_KEY} (in-silico): name each MSP in one of them" for name in both]
+    # An MSP named otherwise than as library:<file name> is neither pinned nor stated: the plan stated the three-tier
+    # contract for an in-silico MSP named bare, while Interactive searched it as the fourth tier (review 1).
+    for mode in ION_MODES:
+        libraries = ion_mode_answers(profile, mode).get("libraries")
+        libraries = libraries if isinstance(libraries, Mapping) else {}
+        for key in (ACQUIRED_MSP_KEY, IN_SILICO_MSP_KEY):
+            value = libraries.get(key)
+            items = value if isinstance(value, (list, tuple)) else [value]
+            if any(item not in (None, "") and _one_library(item) is None for item in items):
+                problems.append(f"the answers of {mode} units name libraries.{key} other than as library:<file name>, "
+                                "which the plan can neither pin nor state: name each as library:<file name>")
+    return list(dict.fromkeys(problems))
+
+
 def library_pins(identities: Iterable[Mapping[str, Any]], profile: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """The pinned libraries' identities, each with the role it is loaded in and the ion modes whose units load it,
-    which the authorization carries to each unit for the gate's LIB-2."""
+    which the authorization carries to each unit for the gate's LIB-2; an MSP the profile names as an acquired or an
+    in-silico library also with that library kind (msp_library_kinds), so LIB-2 and the run records hold an in-silico
+    library to being searched as predicted (2026-10-28)."""
     modes = library_ion_modes(profile)
-    return [{**dict(item), "role": library_role(item["name"]), "ion_modes": list(modes.get(item["name"], []))}
-            for item in identities]
+    kinds = msp_library_kinds(profile)
+    pins = []
+    for item in identities:
+        pin = {**dict(item), "role": library_role(item["name"]), "ion_modes": list(modes.get(item["name"], []))}
+        kind = kinds.get(item["name"]) or set()
+        if pin["role"] == "msp" and len(kind) == 1:
+            pin["library_kind"] = next(iter(kind))
+        pins.append(pin)
+    return pins
 
 
 def lcms_parameter_template(agent_workflow: Any, answer: Any = None) -> tuple[Path, str]:
@@ -888,7 +944,36 @@ def _msp_row_words(row: Mapping[str, Any]) -> str:
             f"{value('weighted_dot_product_cutoff')}/{value('simple_dot_product_cutoff')}/"
             f"{value('reverse_dot_product_cutoff')}; matched peaks {value('matched_peaks_percentage_cutoff')}, at least "
             f"{value('minimum_spectrum_match')}; RT scoring/filtering {value('use_rt_scoring')}/{value('use_rt_filtering')}"
-            f" within {value('rt_tolerance')} min; target omics {value('target_omics')}; {row['library_kind']})")
+            f" within {value('rt_tolerance')} min; target omics {value('target_omics')}; {row['library_kind']}"
+            + (f"; suggestions {value('suggestions')}" if "suggestions" in row else "") + ")")
+
+
+def name_polarity(name: str) -> str:
+    """The ion mode a library's file name states by a "pos"/"positive" or "neg"/"negative" token, or "", as
+    Interactive's agent_workflow._name_polarity reads it."""
+    tokens = {token for token in re.split(r"[_\-.\s]+", str(name).casefold()) if token}
+    positive, negative = bool(tokens & {"pos", "positive"}), bool(tokens & {"neg", "negative"})
+    return "Positive" if positive and not negative else "Negative" if negative and not positive else ""
+
+
+def in_silico_preprocessing_steps() -> "set[str] | None":
+    """The preprocessing steps the pinned Interactive's Materials and Methods can state
+    (annotation_pipeline.IN_SILICO_PREPROCESSING_STEPS), or None where it has none to read."""
+    try:
+        from msdial_app.annotation_pipeline import IN_SILICO_PREPROCESSING_STEPS
+    except Exception:  # noqa: BLE001 - an Interactive without the in-silico tier; its refusal is said elsewhere
+        return None
+    return {str(step) for step in IN_SILICO_PREPROCESSING_STEPS}
+
+
+def tiered_takes_in_silico(tiered: Any) -> bool | None:
+    """Whether the pinned Interactive's tiered profile takes an in-silico MSP (its in_silico_path parameter,
+    Interactive 0.5.48); None where its signature cannot be read. One without it builds the three-tier profile
+    whatever the answers name, and its _apply_libraries ignores libraries.in_silico_msp_paths."""
+    try:
+        return IN_SILICO_PARAMETER in inspect.signature(tiered).parameters
+    except (TypeError, ValueError):
+        return None
 
 
 def _named(value: Any) -> str:
@@ -921,7 +1006,13 @@ def annotation_record(
     official LBM in its place, or cannot be probed, is not approvable (annotation_problems). So is a strategy that
     loads a library the profile does not name (unnamed_library): the official strategy, and the tiered one given no
     libraries.lbm_path, which loads its catalog's official LBM; the plan pins only what the profile names, so LIB-2
-    would stop every unit (review 2)."""
+    would stop every unit (review 2).
+
+    An in-silico MSP the answers name (libraries.in_silico_msp_paths, the fourth tier) is passed to the pinned
+    Interactive's tiered profile as its _apply_libraries passes it (in_silico_path), so the contract is the four-tier
+    profile it writes: the in-silico row predicted, with suggestions false (2026-10-28: the plan stated the three-tier
+    profile, and LIB-2 failed every four-tier unit). Where that Interactive's tiered profile takes no in-silico MSP, no
+    contract is stated and the plan is refused (in_silico_unsupported, annotation_problems)."""
     found = interactive_annotation() if interactive is DETECT else dict(interactive)
     problems = list(found.get("problems") or [])
     pinned = [dict(item) for item in pinned]
@@ -930,6 +1021,7 @@ def annotation_record(
     if pinned:
         lines.append("  libraries pinned, the ones the profile names: " + ", ".join(
             f"{item['name']} ({item.get('role') or library_role(item['name'])}"
+            + (", in-silico (predicted)" if item.get("library_kind") == "predicted" else "")
             + (f"; {', '.join(item['ion_modes'])}" if item.get("ion_modes") else "") + ")" for item in pinned))
     else:
         lines.append("  libraries pinned: none")
@@ -949,10 +1041,36 @@ def annotation_record(
         tiered = found.get("tiered")
         rows: list[dict[str, Any]] = []
         rt_answered = answers.get("use_retention_time_for_annotation") is not None
-        if strategy == TIERED_STRATEGY and callable(tiered):
-            msp = sorted(library_references(libraries.get("msp_paths")))
+        # The in-silico MSP the answers name for the fourth tier (2026-10-28: the plan stated the three-tier contract
+        # for a profile naming one, and LIB-2 failed every four-tier unit after its download and diagnostic).
+        in_silico = sorted(library_references(libraries.get(IN_SILICO_MSP_KEY)))
+        if in_silico:
+            item["in_silico_libraries"] = in_silico
+        # What Interactive's _in_silico_library_problems counts and reads without the file (review 2): its entries,
+        # duplicates included, and the preprocessing steps the answers declare.
+        entries = libraries.get(IN_SILICO_MSP_KEY)
+        entries = [entry for entry in (entries if isinstance(entries, (list, tuple)) else [entries])
+                   if entry not in (None, "")]
+        if len(entries) > 1:
+            item["in_silico_entries"] = len(entries)
+        steps = libraries.get(IN_SILICO_PREPROCESSING_KEY)
+        steps = [str(step) for step in (steps if isinstance(steps, (list, tuple)) else [steps]) if step not in (None, "")]
+        if steps:
+            item["in_silico_preprocessing"] = steps
+        takes_in_silico = tiered_takes_in_silico(tiered) if callable(tiered) else None
+        if strategy == TIERED_STRATEGY and callable(tiered) and in_silico and takes_in_silico is not True:
+            # An Interactive whose tiered profile takes no in-silico MSP runs three tiers: no contract is stated, and
+            # the plan is refused (annotation_problems), never approved as the three-tier contract.
+            item["in_silico_unsupported"] = (
+                f"its tiered profile (annotation_pipeline.tiered_lcms_annotation) takes no in-silico MSP (no "
+                f"{IN_SILICO_PARAMETER}), so it would run three tiers" if takes_in_silico is False else
+                "whether its tiered profile takes an in-silico MSP could not be read")
+        elif strategy == TIERED_STRATEGY and callable(tiered):
+            msp = sorted(library_references(libraries.get(ACQUIRED_MSP_KEY)))
             try:
-                annotation = tiered(lbm, msp[0] if msp else "")
+                # As agent_workflow._apply_libraries calls it: the first in-silico MSP, by keyword.
+                annotation = (tiered(lbm, msp[0] if msp else "", **{IN_SILICO_PARAMETER: in_silico[0]}) if in_silico
+                              else tiered(lbm, msp[0] if msp else ""))
                 item["profile_id"] = str(annotation.get("profile_id") or "") or None
                 lbm_annotator = annotation.get("lbm_annotator")
                 item["lbm_priority"] = lbm_annotator.get("priority") if isinstance(lbm_annotator, Mapping) else None
@@ -1017,6 +1135,13 @@ def annotation_record(
         if item.get("unnamed_library"):
             loads += (f", and the pinned Interactive loads {item['unnamed_library']}, WHICH THE PLAN DOES NOT PIN: it "
                       "pins only the libraries the profile names")
+        if in_silico:
+            loads += f"; the profile's in-silico MSP {', '.join(in_silico)}"
+            if item.get("in_silico_unsupported"):
+                loads += (", WHICH THE PINNED INTERACTIVE DOES NOT SEARCH: " if takes_in_silico is False else
+                          ", which the pinned Interactive may not search: ") + item["in_silico_unsupported"]
+            elif strategy != TIERED_STRATEGY:
+                loads += f", WHICH ONLY THE {TIERED_STRATEGY} STRATEGY SEARCHES"
         lines.append(
             f"  annotation of {mode} units: library strategy {strategy or 'not stated'}; annotation profile "
             + (f"{item['profile_id']} (the pinned Interactive's annotation_pipeline)" if item["profile_id"] else
@@ -1045,6 +1170,10 @@ def annotation_problems(manifest: Mapping[str, Any]) -> list[str]:
     mode its raw data give (a Mixed split's part, a header that overrides the declaration), and takes that mode's
     answers (review 3). A tiered ion mode whose contract the plan could not read in full is refused too: LIB-2
     compares only what the contract states, so cutoff, priority or MSP-row drift would pass it unseen (review 3).
+    So is an in-silico MSP (libraries.in_silico_msp_paths) the pinned Interactive's tiered profile cannot be shown to
+    search (no in_silico_path, Interactive before 0.5.48): it would run three tiers while the answers and pins name
+    the fourth, and the plan stated the three-tier contract until 2026-10-28; or one named for another strategy, or
+    more than one for an ion mode, which Interactive's own plan refuses.
     A manifest planned before the plan stated these says nothing either way."""
     annotation = manifest.get("annotation") if isinstance(manifest.get("annotation"), Mapping) else {}
     by_mode = annotation.get("by_ion_mode") if isinstance(annotation.get("by_ion_mode"), Mapping) else {}
@@ -1062,8 +1191,57 @@ def annotation_problems(manifest: Mapping[str, Any]) -> list[str]:
             problems.append(f"the pinned Interactive loads {item['unnamed_library']} for {mode} units, which the plan "
                             "does not pin, since it pins only the libraries the profile names, so LIB-2 would stop "
                             f"every unit: {remedy}, and plan again")
+        in_silico = [str(name) for name in item.get("in_silico_libraries") or []]
+        if in_silico and item.get("library_strategy") != TIERED_STRATEGY:
+            # Interactive's plan refuses it (agent_workflow: in_silico_msp_paths is searched only by tiered_lipid_msp).
+            problems.append(f"the profile names an in-silico MSP ({', '.join(in_silico)}) for {mode} units, which only "
+                            f"the {TIERED_STRATEGY} strategy searches, and their strategy is "
+                            f"{item.get('library_strategy') or 'not stated'}: use {TIERED_STRATEGY}, or leave "
+                            f"libraries.{IN_SILICO_MSP_KEY} out, and plan again")
+        elif max(len(in_silico), int(item.get("in_silico_entries") or 0)) > 1:
+            # Interactive's tiered profile searches one, the run's ion mode's (_in_silico_library_problems), and
+            # counts a name given twice twice.
+            count = max(len(in_silico), int(item.get("in_silico_entries") or 0))
+            problems.append(f"the profile names {count} in-silico MSPs ({', '.join(in_silico)}) for {mode} "
+                            f"units, and the {TIERED_STRATEGY} profile searches one: name one per ion mode under "
+                            "by_ion_mode, and plan again")
+        for name in in_silico:
+            # Interactive refuses a file its name says is for the other ion mode (agent_workflow._name_polarity),
+            # and one that is no .msp.
+            said = name_polarity(name)
+            if said and said != str(mode):
+                problems.append(f"the in-silico MSP {name} is named for {said} ion mode and the profile gives it to "
+                                f"{mode} units, which Interactive would refuse for every unit that runs in that mode: "
+                                "give each ion mode its own file under by_ion_mode, and plan again")
+            if PureWindowsPath(name).suffix.casefold() != ".msp":
+                problems.append(f"the in-silico MSP {name} for {mode} units is no .msp file, which the in-silico tier "
+                                "reads, so Interactive would refuse it: name an .msp, and plan again")
+        # As Interactive's tiered strategy reads them (_tiered_library_problems); another strategy reads none.
+        steps = ([str(step) for step in item.get("in_silico_preprocessing") or []]
+                 if item.get("library_strategy") == TIERED_STRATEGY else [])
+        known =in_silico_preprocessing_steps() if steps else None
+        unknown = [step for step in steps if known is not None and step not in known]
+        if unknown:
+            problems.append(f"the answers of {mode} units name in-silico preprocessing {', '.join(unknown)}, which the "
+                            "pinned Interactive's Materials and Methods cannot state, so it would refuse it: name only "
+                            f"{', '.join(sorted(known or []))}, and plan again")
+        if steps and not in_silico:
+            problems.append(f"the answers of {mode} units name libraries.{IN_SILICO_PREPROCESSING_KEY} without an "
+                            "in-silico MSP, which Interactive refuses: leave it out, and plan again")
+        if NEGATIVE_ONLY_PREPROCESSING in steps and str(mode) == "Positive":
+            problems.append(f"the answers of Positive units name the in-silico preprocessing "
+                            f"{NEGATIVE_ONLY_PREPROCESSING}, the negative-mode records' artefact, which Interactive "
+                            "refuses for a positive-mode run: give it under by_ion_mode.Negative only, and plan again")
+        if item.get("in_silico_unsupported"):
+            # Approved, the run would load the three-tier profile while the answers and pins name the in-silico MSP,
+            # and LIB-2 would stop every unit after its download and diagnostic (2026-10-28).
+            problems.append(f"the profile names the in-silico MSP {', '.join(in_silico)} for {mode} units, and the "
+                            f"pinned Interactive cannot be held to searching it: {item['in_silico_unsupported']}: "
+                            "pin an Interactive whose tiered profile searches an in-silico MSP (0.5.48 or later), or "
+                            f"leave libraries.{IN_SILICO_MSP_KEY} out, and plan again")
         unread = [words for key, words in CONTRACT_PART_WORDS if key in item and contract_part_unread(key, item[key])]
-        if item.get("library_strategy") == TIERED_STRATEGY and unread:
+        # A contract left unread because the in-silico MSP cannot be searched is refused above, with its reason.
+        if item.get("library_strategy") == TIERED_STRATEGY and unread and not item.get("in_silico_unsupported"):
             problems.append(f"the plan could not read {', '.join(unread)} for {mode} units from the pinned Interactive "
                             "(the summary says why), so LIB-2 would not hold the method to them: plan again once the "
                             "plan can read them")
@@ -1853,9 +2031,10 @@ def authorization_record(
         "units": [unit["unit_id"] for unit in manifest["units"]],
         "raw_retention_policy": manifest["raw_retention_policy"],
         # Each library by name and sha256, with the role it is loaded in and the ion modes whose units load it where
-        # the plan recorded them (library_pins): the gate's LIB-2 reads them, and Interactive refuses only a location.
+        # the plan recorded them (library_pins), and an MSP's library kind (acquired, or predicted for the in-silico
+        # tier): the gate's LIB-2 and LIB-3 read them, and Interactive refuses only a location.
         "libraries": [{"name": item["name"], "sha256": item["sha256"],
-                       **{key: item[key] for key in ("role", "ion_modes") if key in item}}
+                       **{key: item[key] for key in ("role", "ion_modes", "library_kind") if key in item}}
                       for item in manifest["pins"]["libraries"]],
         # What each ion mode's units annotate with, as the manifest states it (annotation_contract): LIB-2 holds the
         # method to it, so cutoffs, priorities or a profile other than the approved ones stop the run.
