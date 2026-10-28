@@ -6115,9 +6115,6 @@ MSP_ROW_COLUMNS = (("priority", "priority"), ("rt_tolerance", "rt_tolerance"), (
                    # Whether the Console names a feature from a failed or precursor-only comparison against the row's
                    # library: false on the in-silico row (the author's decision of 2026-10-25, MsdialWorkbench #850).
                    ("suggestions", "suggestions"))
-# The project's target omics a run's answers give, in the order Interactive applies them: workflow_overrides over the
-# state, else target_omics_pin (the campaign's pin, 2026-10-25, agent_workflow._applied_target_omics), else the
-# target_omics answer, which for a repository unit is Interactive's seed from the repository's text (_answered_target_omics).
 # The library kinds the Console reads as an in-silico (predicted) MSP (the plan's PREDICTED_LIBRARY_KINDS); any
 # other, a blank one included, is acquired.
 PREDICTED_LIBRARY_KINDS = frozenset({"predicted", "insilico", "computed", "generated", "predictedmsp"})
@@ -6674,6 +6671,13 @@ def check_in_silico_matches_are_not_identifications(report: Report, workspace: P
         except OSError:
             fields = {}
     ion_mode = fields.get("ion mode", "")
+    answers_record, _reason = _read_json(output / "guided-answers.json")
+    answers = (answers_record or {}).get("answers") if isinstance((answers_record or {}).get("answers"), dict) else {}
+    if not ion_mode:
+        # Without the method, the unit's ion mode as its answers or its manifest give it (review 2).
+        recorded, _reason = _read_json(workspace / "provenance" / "run-manifest.json")
+        project = (recorded or {}).get("project") if isinstance((recorded or {}).get("project"), dict) else {}
+        ion_mode = str(answers.get("ion_mode") or project.get("ion_mode") or "").strip()
     unread: dict = {}
     problems: dict = {letter: [] for letter, _words in LIB3_CLAUSES}
 
@@ -6689,18 +6693,19 @@ def check_in_silico_matches_are_not_identifications(report: Report, workspace: P
                        else "method.txt is absent")
     authorization, _reason = _read_json(workspace / "provenance" / CAMPAIGN_AUTHORIZATION_FILE)
     contracts = (authorization or {}).get("annotation")
-    contract = contracts.get(ion_mode) if isinstance(contracts, dict) else None
-    contract_rows = [row for row in (contract or {}).get("msp_rows") or [] if isinstance(row, dict)
-                     and _library_kind(row.get("library_kind")) == "predicted"]
+    contracts = contracts if isinstance(contracts, dict) else {}
+    # The unit's ion mode's contract; every mode's where the mode is not known, so a tier is never missed.
+    modes = [ion_mode] if ion_mode else sorted(contracts, key=str)
+    contract_rows = [row for mode in modes for row in (contracts.get(mode) or {}).get("msp_rows") or []
+                     if isinstance(row, dict) and _library_kind(row.get("library_kind")) == "predicted"]
     expected_ids = {str(row.get("annotator_id") or "").strip() for row in contract_rows} - {""}
     expected_names = {_library_name(row.get("library")) for row in contract_rows} - {""}
     for entry in (authorization or {}).get("libraries") or []:
         modes = entry.get("ion_modes") if isinstance(entry, dict) else None
         if isinstance(entry, dict) and _library_kind(entry.get("library_kind")) == "predicted" and \
-                str(entry.get("library_kind") or "").strip() and (not isinstance(modes, list) or ion_mode in modes):
+                str(entry.get("library_kind") or "").strip() and (not isinstance(modes, list) or not ion_mode
+                                                                    or ion_mode in modes):
             expected_names.add(_library_name(entry.get("name")))
-    answers_record, _reason = _read_json(output / "guided-answers.json")
-    answers = (answers_record or {}).get("answers") if isinstance((answers_record or {}).get("answers"), dict) else {}
     libraries = answers.get("libraries") if isinstance(answers.get("libraries"), dict) else {}
     answered = libraries.get("in_silico_msp_paths")
     for text in answered if isinstance(answered, list) else [answered]:
@@ -6868,7 +6873,8 @@ def check_in_silico_matches_are_not_identifications(report: Report, workspace: P
     # writes an outcome nor a review list exists, the check tagged nothing.
     reviews = sorted(output.glob("*_lipidrt_review.tsv"))
     if mztabs and not sources["d"] and not reviews and "d" not in unread:
-        sources["d"].append("no lipid RT outcome or review list was written")
+        # The Console writes a review list whenever the check runs (lipid_rt_check), so none means none was tagged.
+        sources["d"].append("no lipid RT outcome or review list was written, so the check tagged nothing")
     if reviews and not represented and not sources["d"] and "d" not in unread:
         unread["d"] = ("mzTab-M writes no opt_global_lipid_rt_outcome, and without the candidate table which features an "
                        "in-silico match represents in the review list is not known")

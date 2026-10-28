@@ -194,10 +194,12 @@ the run manifest; every MSP annotator row must state its own
 states for the unit's ion mode (review of 2026-10-25): the annotation profile,
 the LBM's score cutoffs and priority, and each MSP annotator row's library,
 priority, tolerances, score cutoffs, RT use, target omics, library kind and,
-where the approval states it, suggestions. Each MSP's pin also carries its
-library kind (an in-silico MSP is `predicted`), and the method must search it
-as that kind; the method's Target omics is held to `target_omics_pin` where the
-answers give one, as Interactive applies it. The
+where the approval states it, suggestions. Since 2026-10-28 the pin of an MSP
+the profile names in `libraries.msp_paths` or `libraries.in_silico_msp_paths`
+carries its library kind (`acquired`, or `predicted` for the in-silico one),
+and the method must search it as that kind; the method's Target omics is held
+to what Interactive applies: a `workflow_overrides` `target_omics`, else
+`target_omics_pin`, else the `target_omics` answer. The
 plan writes that annotation contract into the manifest and the authorization,
 read from the pinned Interactive, with the profile's retention-time answers
 applied to the MSP rows as Interactive applies them, and refuses a tiered
@@ -469,9 +471,12 @@ plan then states the four-tier contract the pinned Interactive's own tiered
 profile writes for it (Interactive 0.5.48: LBM priority 4, the acquired rows 3
 and 2, and the in-silico row 1, `predicted`, suggestions false, no RT); until
 2026-10-28 it stated the three-tier one, and LIB-2 failed every four-tier unit.
-A pinned Interactive whose tiered profile takes no in-silico MSP, an in-silico
-MSP named for another strategy, or more than one for an ion mode, is refused at
-the plan. After the run, LIB-3 (the author's decisions of 2026-10-25 and
+A pinned Interactive whose tiered profile takes no in-silico MSP is refused at
+the plan, and so is what that Interactive's own plan would refuse after each
+unit's download without reading the file: an in-silico MSP named for another
+strategy, more than once for an ion mode, for the other ion mode, other than as
+`library:<file name>`, or not as an `.msp`, and a preprocessing step it cannot
+state or that does not fit the ion mode. After the run, LIB-3 (the author's decisions of 2026-10-25 and
 2026-10-28) holds how such a run reports the in-silico tier's matches: (a)
 their evidence source is `InSilico`, never `ReferenceSpectrum` or `RuleBased`,
 and an accepted one is coded 430 (a Console before the MS-DIAL change) or 450

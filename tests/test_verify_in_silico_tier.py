@@ -308,7 +308,7 @@ class ClauseTests(Base):
         self.run_.candidates = self.run_.review = None
         check = self.lib3()
         self.assertEqual(check.evidence["clauses"]["d"], verifier.PASS, check.detail)
-        self.assertEqual(check.evidence["sources"]["d"], ["no lipid RT outcome or review list was written"])
+        self.assertEqual(check.evidence["sources"]["d"], ["no lipid RT outcome or review list was written, so the check tagged nothing"])
 
     def test_a_candidate_table_without_its_columns_is_set_aside_and_mztab_read(self) -> None:
         self.run_.candidates = [row[:5] + row[6:] for row in self.run_.candidates]
@@ -316,6 +316,19 @@ class ClauseTests(Base):
         check = self.lib3()
         self.assertEqual(check.evidence["clauses"]["a"], verifier.PASS, check.detail)
         self.assertEqual(check.evidence["sources"]["a"], ["AlignResult-1.mzTab"])
+
+    def test_without_the_method_the_tier_the_approval_names_is_still_held(self) -> None:
+        """Review 2: the ion mode came from method.txt alone, so a run without it read no approved in-silico tier and
+        said none was named. Unread settings leave (c) not evaluable instead."""
+        workspace = self.run_.write()
+        (self.run_.output / "method.txt").unlink()
+        report = verifier.Report(workspace)
+        verifier.check_in_silico_matches_are_not_identifications(report, workspace, self.run_.output)
+        check = _check(report, "LIB-3")
+        self.assertIs(check.evidence["applicable"], True)
+        self.assertEqual(check.evidence["in_silico_libraries"], [PREDICTED])
+        self.assertEqual(check.evidence["clauses"]["c"], verifier.NOT_EVALUABLE)
+        self.assertTrue(check.required)
 
     def test_a_summary_row_is_judged_by_its_first_identifier(self) -> None:
         self.run_.summary[0] = ("MspDB_1_acquired:A1|MspDB_2_predicted:P9", "430", "ReferenceSpectrum", "NotEvaluable")

@@ -317,7 +317,7 @@ def library_differences(
     approval says which ion modes load each library (plan.library_pins), approved for the run's ion mode and not
     loaded; and, where both state one, loaded as another library kind than approved (an in-silico MSP searched as
     acquired, or the reverse; 2026-10-28). Each list is empty when the two agree."""
-    from .plan import library_kind  # as the Console reads a library kind; imported here, as plan imports this module
+    from .plan import library_kind  # as the Console reads a library kind; imported late, as plan.py imports from here
 
     approved = {str(item["name"]).casefold(): item for item in authorized}
     loaded = {str(item["name"]).casefold(): item for item in ran}

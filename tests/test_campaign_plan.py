@@ -2398,10 +2398,64 @@ class InSilicoTierContractTests(unittest.TestCase):
         problems = plan.annotation_problems({"annotation": plan.annotation_record(
             swapped, [], [], {**self.CODE, "tiered": self.four_tiers})})
         self.assertEqual(problems, ["the in-silico MSP Synthetic_predicted_neg.msp is named for Negative ion mode and the "
-                                    "profile gives it to Positive units, which Interactive refuses: give each ion mode "
-                                    "its own file under by_ion_mode, and plan again"])
+                                    "profile gives it to Positive units, which Interactive would refuse for every unit "
+                                    "that runs in that mode: give each ion mode its own file under by_ion_mode, and "
+                                    "plan again"])
         self.assertEqual(plan.name_polarity("x-POS.msp"), "Positive")
         self.assertEqual(plan.name_polarity("SyntheticPredictedPos.msp"), "", "a token, not a substring")
+
+    def test_what_interactive_refuses_of_an_in_silico_msp_without_reading_it_is_refused(self) -> None:
+        """Review 2: the plan approved answers the pinned Interactive's _in_silico_library_problems refuses at its
+        prepare, after each unit's download and diagnostic: a name given twice, a file that is no .msp, and the
+        negative-mode preprocessing step for a positive-mode unit, an unknown step, or a step without the file."""
+        def positive_libraries(profile):
+            return profile["by_ion_mode"]["Positive"]["libraries"]
+
+        def negative_libraries(profile):
+            return profile["by_ion_mode"]["Negative"]["libraries"]
+
+        def step_alone(profile):
+            negative_libraries(profile).pop("in_silico_msp_paths")
+            negative_libraries(profile)["in_silico_msp_preprocessing"] = ["precursor_plus_1008_peak_removed"]
+
+        cases = {
+            "twice": (lambda profile: positive_libraries(profile)["in_silico_msp_paths"].append(
+                "library:SyntheticPredictedPos.msp"),
+                "the profile names 2 in-silico MSPs (SyntheticPredictedPos.msp) for Positive units"),
+            "suffix": (lambda profile: positive_libraries(profile).__setitem__(
+                "in_silico_msp_paths", ["library:SyntheticPredictedPos.msp2"]),
+                "the in-silico MSP SyntheticPredictedPos.msp2 for Positive units is no .msp file"),
+            "positive step": (lambda profile: profile["answers"]["libraries"].__setitem__(
+                "in_silico_msp_preprocessing", ["precursor_plus_1008_peak_removed"]),
+                "the answers of Positive units name the in-silico preprocessing precursor_plus_1008_peak_removed"),
+            "unknown step": (lambda profile: negative_libraries(profile).__setitem__(
+                "in_silico_msp_preprocessing", ["synthetic_step"]),
+                "the answers of Negative units name in-silico preprocessing synthetic_step"),
+            "step alone": (step_alone,
+                           "the answers of Negative units name libraries.in_silico_msp_preprocessing without an "
+                           "in-silico MSP"),
+        }
+        steps = {"precursor_plus_1008_peak_removed"}
+        for name, (change, said) in cases.items():
+            with self.subTest(name), mock.patch.object(plan, "in_silico_preprocessing_steps", return_value=steps):
+                profile = json.loads(json.dumps(self.PROFILE))
+                change(profile)
+                problems = plan.annotation_problems({"annotation": plan.annotation_record(
+                    profile, [], [], {**self.CODE, "tiered": self.four_tiers})})
+                self.assertIn(said, "\n".join(problems))
+        # The negative-mode step given for Negative units only is what Interactive takes.
+        profile = json.loads(json.dumps(self.PROFILE))
+        negative_libraries(profile)["in_silico_msp_preprocessing"] = ["precursor_plus_1008_peak_removed"]
+        with mock.patch.object(plan, "in_silico_preprocessing_steps", return_value=steps):
+            self.assertEqual(plan.annotation_problems({"annotation": plan.annotation_record(
+                profile, [], [], {**self.CODE, "tiered": self.four_tiers})}), [])
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive checkout is not where this test looks")
+    def test_the_preprocessing_steps_are_the_pinned_interactives(self) -> None:
+        from msdial_app import annotation_pipeline
+
+        self.assertEqual(plan.in_silico_preprocessing_steps(), set(annotation_pipeline.IN_SILICO_PREPROCESSING_STEPS))
+        self.assertIn(plan.NEGATIVE_ONLY_PREPROCESSING, plan.in_silico_preprocessing_steps())
 
     def test_the_pins_state_each_msps_library_kind_and_the_authorization_carries_it(self) -> None:
         names = ["Synthetic.lbm2", "SyntheticNegative.msp", "SyntheticPositive.msp", "SyntheticPredictedNeg.msp",
