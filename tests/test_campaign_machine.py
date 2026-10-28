@@ -322,6 +322,21 @@ class LibraryRecordTests(Base):
         }], "said once, though the run is recorded at its end, at the unit's end and in the campaign record")
         self.assertEqual([row["unit_key"] for row in book.events(machine.LIBRARIES_DIFFER)], ["u1"])
 
+    def test_an_in_silico_library_searched_as_acquired_is_said(self) -> None:
+        """2026-10-28: the pins state an MSP's library kind (plan.library_pins); a run that searched the in-silico MSP
+        as acquired, or an acquired one as predicted, loaded what was approved under another kind. A kind stated on
+        one side only, or spelled as another word the Console reads alike, is no difference."""
+        authorized = [{"name": "Synthetic-insilico.msp", "sha256": "a" * 64, "role": "msp", "library_kind": "predicted"},
+                      {"name": "Synthetic-acquired.msp", "sha256": "b" * 64, "role": "msp", "library_kind": "acquired"},
+                      {"name": "Synthetic.lbm2", "sha256": "c" * 64, "role": "lbm"}]
+        ran = [{"name": "Synthetic-insilico.msp", "sha256": "a" * 64, "library_kind": "acquired"},
+               {"name": "Synthetic-acquired.msp", "sha256": "b" * 64},
+               {"name": "Synthetic.lbm2", "sha256": "c" * 64, "library_kind": "acquired"}]
+        self.assertEqual(machine.library_differences(authorized, ran, "Positive")["library_kind_differs"],
+                         ["Synthetic-insilico.msp"])
+        ran[0]["library_kind"] = "InSilico"
+        self.assertEqual(machine.library_differences(authorized, ran, "Positive")["library_kind_differs"], [])
+
     def test_other_bytes_under_an_approved_name_are_said(self) -> None:
         world = self.world()
         world.run_libraries = [{"name": fakes.POSITIVE_MSP, "role": "msp", "sha256": "d" * 64},

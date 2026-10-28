@@ -315,12 +315,18 @@ def library_differences(
     """How the libraries a run loaded differ from the ones its approval names, by file name (compared without case):
     loaded and not approved; loaded with another sha256 than approved, or with none recorded; and, where the
     approval says which ion modes load each library (plan.library_pins), approved for the run's ion mode and not
-    loaded. Each list is empty when the two agree."""
+    loaded; and, where both state one, loaded as another library kind than approved (an in-silico MSP searched as
+    acquired, or the reverse; 2026-10-28). Each list is empty when the two agree."""
+    from .plan import library_kind  # as the Console reads a library kind; imported here, as plan imports this module
+
     approved = {str(item["name"]).casefold(): item for item in authorized}
     loaded = {str(item["name"]).casefold(): item for item in ran}
     moded = any("ion_modes" in item for item in approved.values())
     named = {key: item for key, item in loaded.items() if key in approved}
     return {
+        "library_kind_differs": sorted(item["name"] for key, item in named.items()
+                                       if item.get("library_kind") and approved[key].get("library_kind")
+                                       and library_kind(item["library_kind"]) != library_kind(approved[key]["library_kind"])),
         "not_authorized": sorted(item["name"] for key, item in loaded.items() if key not in approved),
         "sha256_differs": sorted(item["name"] for key, item in named.items() if item.get("sha256")
                                  and item["sha256"] != str(approved[key].get("sha256") or "").casefold()),
@@ -2957,14 +2963,17 @@ class Runner:
         event says how, once for each difference."""
         authorized = [
             {"name": item["name"], "sha256": item["sha256"],
-             **{key: item[key] for key in ("role", "ion_modes") if item.get(key) is not None}}
+             **{key: item[key] for key in ("role", "ion_modes", "library_kind") if item.get(key) is not None}}
             for item in self.pins.get("libraries") or []
         ]
         ran, source = self._libraries_as_run(unit, job, manifest)
         if ran is not None:
             differences = library_differences(authorized, ran, self._ion_mode(unit))
             if any(differences.values()):
-                detail = {"job_id": job, "source": source, **differences}
+                # Without a kind difference the detail is as it was before kinds were compared, so an event a unit
+                # already has is not said again.
+                detail = {"job_id": job, "source": source,
+                          **{key: value for key, value in differences.items() if value or key != "library_kind_differs"}}
                 if not any(row["unit_key"] == unit["unit_key"] and _loads(row["detail_json"]) == self.redact(detail)
                            for row in self.ledger.events(LIBRARIES_DIFFER)):
                     self._event(LIBRARIES_DIFFER, detail, unit["unit_key"])

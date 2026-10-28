@@ -193,7 +193,11 @@ the run manifest; every MSP annotator row must state its own
 `target_omics`; and what the method annotates with must be what the approval
 states for the unit's ion mode (review of 2026-10-25): the annotation profile,
 the LBM's score cutoffs and priority, and each MSP annotator row's library,
-priority, tolerances, score cutoffs, RT use, target omics and library kind. The
+priority, tolerances, score cutoffs, RT use, target omics, library kind and,
+where the approval states it, suggestions. Each MSP's pin also carries its
+library kind (an in-silico MSP is `predicted`), and the method must search it
+as that kind; the method's Target omics is held to `target_omics_pin` where the
+answers give one, as Interactive applies it. The
 plan writes that annotation contract into the manifest and the authorization,
 read from the pinned Interactive, with the profile's retention-time answers
 applied to the MSP rows as Interactive applies them, and refuses a tiered
@@ -458,6 +462,33 @@ like any other, and QA-1 sets aside the reference file the Methods paragraph
 names. The gate reads no column or status of the audit TSVs. A unit that fell
 back has no audit TSVs and none expected, since Interactive lists them only for
 a run with the correction on.
+
+A profile may name an in-silico MSP library for each ion mode
+(`libraries.in_silico_msp_paths`, the fourth tier of `tiered_lipid_msp`). The
+plan then states the four-tier contract the pinned Interactive's own tiered
+profile writes for it (Interactive 0.5.48: LBM priority 4, the acquired rows 3
+and 2, and the in-silico row 1, `predicted`, suggestions false, no RT); until
+2026-10-28 it stated the three-tier one, and LIB-2 failed every four-tier unit.
+A pinned Interactive whose tiered profile takes no in-silico MSP, an in-silico
+MSP named for another strategy, or more than one for an ion mode, is refused at
+the plan. After the run, LIB-3 (the author's decisions of 2026-10-25 and
+2026-10-28) holds how such a run reports the in-silico tier's matches: (a)
+their evidence source is `InSilico`, never `ReferenceSpectrum` or `RuleBased`,
+and an accepted one is coded 430 (a Console before the MS-DIAL change) or 450
+(the author's code), the codes seen being recorded; (b) mzTab-M declares the
+library as "User-defined in-silico MSP library file"; (c) the in-silico row is
+`predicted` with suggestions false, and no feature is named from an in-silico
+suggestion; (d) no in-silico match is tagged lipid-RT Confirmed; (e) no
+in-silico match is counted as an identification in the per-file peak tables
+Interactive counts them from. LIB-3 is not applicable to a run without an
+in-silico tier. Where the QA matrix marks a feature represented by an in-silico
+match Reference matched, LIB-3 records the count without judging it.
+`scripts/report-insilico-concordance.py <unit> [...] [--json]` reports, per
+unit and in aggregates only, how often the in-silico tier's top candidate shares
+the InChIKey's first block with an acquired reference match (the author's
+decision D-B: collected on Stage 1 before Stage 2 is decided); it needs the
+alignment candidate table, which a run writes only where its answers set
+`export_annotation_candidates` true.
 
 ## Running a campaign unattended
 
