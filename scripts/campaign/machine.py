@@ -156,6 +156,9 @@ JOB_COLUMN = {"downloading": "download_job_id", "diagnosing": "diagnostic_job_id
 CONSOLE_ENTRY_POINT = {"tuning": "peak_count_diagnostic", "run": "agent_run"}
 # Lease statuses that are not a finished download.
 UNFINISHED_LEASE = frozenset({"downloading", "download_failed", "discarded"})
+# A split part's statuses Interactive already counts as ended without validated output (_part_end); a part
+# ending in any other has its end recorded by its own discard (_end_part).
+PART_ENDED_STATUSES = frozenset({"skipped_by_preflight", "excluded_by_preflight", "discarded"})
 # A download job waiting for another unit's lease to fetch an object they share (plan item 15's store): it
 # moves no bytes of its own meanwhile, so it is neither stalled nor ended.
 WAITING_FOR_SHARED = "waiting_for_shared_download"
@@ -2700,7 +2703,7 @@ class Runner:
         if unit["role"] == "split_part":
             if release:
                 return self._release_part_hold(unit)
-            return "deferred_to_parent", "deleted with the split parent once every part has ended", None
+            return self._end_part(unit, manifest)
         if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
             return "kept", "the campaign keeps raw data", None
         status = manifest.get("status")
@@ -2745,6 +2748,35 @@ class Runner:
             # data are held, counted apart, until Interactive's own discard deletes them (plan item 14).
             return "held", f"not deleted ({', '.join(blockers)}): {detail}", None
         return "wait", detail, None
+
+    def _end_part(self, unit: Mapping[str, Any], manifest: Mapping[str, Any]) -> tuple[str, str, str | None]:
+        """A split part ending without validated output: its own discard, under boundary 5, records in Interactive
+        that the part has ended, deleting nothing (its raw data are its parent's).
+
+        Interactive counts a part as ended only from the part's own record: validated, skipped or excluded at its
+        preflight, discarded, or run_failed after all its runs. A part whose diagnostic failed, or that stopped
+        before its run, stays preflight_passed there, and its parent's release waited for it for good (V4,
+        MPST000063, 2026-10-29). A part Interactive already records as ended is left as it is, and so is a part
+        its disposition holds: only an operator's skip ends that one (_release_part_hold)."""
+        detail = "deleted with the split parent once every part has ended"
+        if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
+            return "deferred_to_parent", "the campaign keeps raw data", None
+        if str(manifest.get("status") or "") in PART_ENDED_STATUSES or _held_by_disposition(unit):
+            return "deferred_to_parent", detail, None
+        if not self._live("5"):
+            return ("deferred_to_parent", "no live approval covers boundary 5; the part's end is not recorded in "
+                    "Interactive, so its parent's release waits for it", None)
+        result = self.ports.interactive.discard(
+            manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+            unit_id=unit["unit_key"], parent_unit_id=unit["parent_unit_key"] or "",
+        )
+        if result.get("ok") is not False and (result.get("part_ended") or result.get("deleted")):
+            return "deferred_to_parent", f"the part's end recorded; {detail}", "5"
+        if policy.classify_result(result) in (policy.REFUSED, policy.CONTRACT):
+            # Not recorded, and asking again changes nothing: the parent's release then holds its raw data.
+            return ("deferred_to_parent", f"the part's end was not recorded ({result.get('codes') or result.get('reason')}: "
+                    f"{result.get('detail')}); its parent's release waits for it", None)
+        return "wait", str(result.get("blockers") or result.get("detail") or result.get("reason") or "not recorded"), None
 
     def _release_part_hold(self, unit: Mapping[str, Any]) -> tuple[str, str, str | None]:
         """An operator's skip of a split part Interactive's disposition holds: the part's own discard, with

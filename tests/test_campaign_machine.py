@@ -741,6 +741,24 @@ class DispositionTests(Base):
                 ended = [row["seq"] for unit in parts for row in book.transitions(unit["unit_key"]) if row["to_state"] == "done"]
                 self.assertGreater(release, max(ended))
 
+    def test_a_split_part_whose_diagnostic_failed_has_its_end_recorded_and_the_parent_is_released(self) -> None:
+        # V4, MPST000063 (2026-10-29): both parts failed at the diagnostic, Interactive still read them as
+        # preflight_passed, and the parent's raw data stayed held.
+        world = self.world(("u1",))
+        world.scripts["u1"] = fakes.UnitScript(disposition="split")
+        world.scripts["u1-DDA"] = fakes.UnitScript(diagnostics=["fail"] * 5)
+        world.interactive.split_release_supported = True
+        book = self.finish(world)
+        part = book.unit("u1-DDA")
+        self.assertEqual((part["state"], part["raw_disposition"]), ("failed", "deferred_to_parent"))
+        self.assertIn("the part's end recorded", part["raw_detail"])
+        self.assertEqual(book.unit("u1-SWATH")["state"], "done")
+        discards = [call["unit_id"] for name, call in world.interactive.calls if name == "discard"]
+        self.assertEqual(discards.count("u1-DDA"), 1, "the failed part's own discard records its end")
+        self.assertNotIn("u1-SWATH", discards, "a validated part is not discarded")
+        parent = book.unit("u1")
+        self.assertEqual((parent["state"], parent["raw_disposition"]), ("split_done", "released"))
+
 
 class ApprovalTests(Base):
     def test_a_changed_class_stops_the_unit_and_saves_nothing(self) -> None:
