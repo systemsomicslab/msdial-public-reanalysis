@@ -330,11 +330,60 @@ def check_unit_identity(report: Report, provenance: dict | None, reason: str) ->
 # eligibility
 # --------------------------------------------------------------------------------------------
 
+UNTARGETED_FROM_HEADERS = "untargeted_inferred_from_headers"
+UNTARGETED_FROM_DECLARED_ACQUISITION = "untargeted_inferred_from_declared_acquisition"
+UNTARGETED_DECLARED_MODES = frozenset({"DDA", "DIA", "AIF", "SWATH"})
+
+
+def _untargeted_basis_problem(provenance: dict) -> str:
+    """Why a campaign unit's untargeted status rests on nothing on record, or "".
+
+    Where the raw owner's Catalog handoff records untargeted as unset and the project says untargeted, a binding
+    campaign disposition must record the inference: from the headers (untargeted_inferred_from_headers), or, for a
+    unit that ran on its declaration alone (acquisition_declared_only), from its declared DDA, DIA, AIF or SWATH
+    acquisition (untargeted_inferred_from_declared_acquisition with its untargeted_inference; user decision,
+    2026-10-29). Nothing else stands for an unset declaration. A handoff that records no untargeted field at all,
+    and a unit outside a campaign, are not judged here."""
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    if project.get("untargeted") is not True:
+        return ""
+    owner, _reason = _raw_owner_manifest(provenance)
+    owner = owner if isinstance(owner, dict) else provenance
+    owner_project = owner.get("project") if isinstance(owner.get("project"), dict) else {}
+    metadata = owner_project.get("repository_metadata")
+    handoff = metadata.get("catalog_handoff") if isinstance(metadata, dict) else None
+    settings = handoff.get("technical_settings") if isinstance(handoff, dict) else None
+    if not isinstance(settings, dict) or "untargeted" not in settings or settings.get("untargeted") is not None:
+        return ""
+    dispositions = _binding_dispositions(provenance)
+    if not dispositions:
+        return ""
+    for disposition in dispositions:
+        warnings = set(disposition.get("warnings") or [])
+        if UNTARGETED_FROM_HEADERS in warnings:
+            return ""
+        inference = disposition.get("untargeted_inference")
+        if UNTARGETED_FROM_DECLARED_ACQUISITION in warnings:
+            mode = str((inference or {}).get("declared_acquisition_mode") or "").upper() if isinstance(inference, dict) else ""
+            if (isinstance(inference, dict) and inference.get("basis") == "declared_acquisition"
+                    and mode in UNTARGETED_DECLARED_MODES and "acquisition_declared_only" in warnings):
+                return ""
+            return (f"its campaign disposition records {UNTARGETED_FROM_DECLARED_ACQUISITION} without a declared-only "
+                    "run on a declared DDA, DIA, AIF or SWATH acquisition behind it")
+    return ("the repository leaves untargeted unset, the project says untargeted, and no campaign disposition records "
+            f"the inference ({UNTARGETED_FROM_HEADERS} or {UNTARGETED_FROM_DECLARED_ACQUISITION})")
+
+
 def check_execution_allowed(report: Report, provenance: dict | None, reason: str) -> None:
     """The manifest's own eligibility verdict must permit execution.
 
     The server writes execution_allowed and then consults it nowhere, so the verdict currently
     gates nothing on its own. Reading it here is what turns it back into a gate.
+
+    UNTARGETED ON RECORD (user decision, 2026-10-29). Where the raw owner's Catalog handoff leaves untargeted unset,
+    a campaign unit that runs as untargeted FAILs unless a binding disposition records the inference: from the
+    headers, or from a declared DDA, DIA, AIF or SWATH acquisition in a unit that ran on its declaration alone
+    (_untargeted_basis_problem).
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A unit judged ineligible, unresolved or
     split is not a run whose results mean anything.
@@ -353,6 +402,13 @@ def check_execution_allowed(report: Report, provenance: dict | None, reason: str
             f"Gate the parts instead: {', '.join(parts) or 'none recorded'}.",
             execution_allowed=allowed, status=provenance.get("status"), parts=parts,
         )
+        return
+    untargeted = _untargeted_basis_problem(provenance) if allowed is True else ""
+    if untargeted:
+        # The untargeted status the unit runs on is an inference only a campaign disposition may record (2026-10-29).
+        report.add("ELIG-1", stage, "Manifest permits execution", FAIL,
+                   f"execution_allowed is true, but {untargeted}: the unit was made eligible on an untargeted status "
+                   "nothing on record establishes.", execution_allowed=allowed, status=provenance.get("status"))
         return
     if allowed is True:
         report.add("ELIG-1", stage, "Manifest permits execution", PASS,
@@ -2795,7 +2851,7 @@ RAW_HEADER_REASONS = frozenset({"raw_header_unreadable", "raw_header_unsupported
 # listed vendor folder that did not arrive whole, and a vendor header the raw-metadata extractor could not read.
 ENCODING_UNREADABLE_REASONS = frozenset({
     "undecodable", CONVERSION_FAILED, "polarity_contradicts_declaration", REQUIRES_CONVERSION,
-    "incomplete_container", *RAW_HEADER_REASONS})
+    "incomplete_container", "vendor_companion_missing", *RAW_HEADER_REASONS})
 # The preflight's warning where a vendor file the rule used was excluded for a header it could not read, and the
 # sample's next encoding was not taken (the lease read no header for the rule).
 ENCODING_FALLBACK_NOT_TAKEN = "encoding_fallback_not_taken"
@@ -2818,6 +2874,8 @@ ENCODING_REASON_RANKS = {
     "polarity_contradicts_declaration": frozenset({ENCODING_MZXML_RANK}),
     REQUIRES_CONVERSION: frozenset({ENCODING_MZXML_RANK}),
     "incomplete_container": frozenset({ENCODING_VENDOR_RANK, ENCODING_RE_ENCODING_RANK}),
+    # A .wiff without its .wiff.scan (Interactive 0.5.53, 2026-10-29): a vendor file only.
+    "vendor_companion_missing": frozenset({ENCODING_VENDOR_RANK}),
     **{reason: frozenset({ENCODING_VENDOR_RANK, ENCODING_RE_ENCODING_RANK}) for reason in RAW_HEADER_REASONS},
 }
 ENCODING_RANK_NAMES = {ENCODING_VENDOR_RANK: "a vendor format", ENCODING_RE_ENCODING_RANK: "a re-encoding",
@@ -4966,11 +5024,147 @@ MULTI_ENERGY_AIF_CONSOLE_MARKERS = ("The collision-energy files of ", " nor a co
 # Interactive compares collision energies to 0.1 eV (raw_metadata_preflight.COLLISION_ENERGY_DECIMALS).
 COLLISION_ENERGY_DECIMALS = 1
 SANCTIONED_ACQUISITION_MAPPINGS: dict[tuple[str, str], str] = {("AIF", "SWATH"): AIF_AS_SWATH_FIELD}
+# A FILE NAME'S POLARITY (user decision, 2026-10-29; FILE_NAME_POLARITY_RULE), held identical in Interactive
+# (raw_metadata_preflight.py) and the gate. Read only for an input whose raw header could not be read
+# (unsupported_format: the pinned extractor opens no ZenoTOF .wiff2), in a unit whose declaration names no single
+# polarity. The base name decides: a whole token pos, positive, neg or negative (between _ - . and spaces), or
+# ESI+ / ESI- / (+) / (-) with no letter after the sign (ESI-MS, ESI-QTOF name an ion source, not a polarity). A
+# pos/neg token beside a control or ctrl token names a sample (Neg_Ctrl_1), not a polarity; a QC or blank injection
+# keeps its polarity (QC_pos_01). A name that states both polarities, or neither, states none. A folder between the
+# unit's data root and the file (``root``) that states the opposite polarity makes the name state none, with both
+# tokens on record (POS/ER_neg_01.wiff2); one that states the same polarity is recorded beside it.
+FILE_NAME_POLARITY_RULE = "unreadable_header_polarity_from_file_name_2026_10_29"
+FILE_NAME_POLARITY_TOKENS = {"pos": "Positive", "positive": "Positive", "neg": "Negative", "negative": "Negative"}
+FILE_NAME_POLARITY_SIGNS = r"(?<![A-Za-z0-9])ESI\s*([+-])(?![A-Za-z])|\(([+-])\)(?![A-Za-z])"
+FILE_NAME_POLARITY_EXEMPTING = frozenset({"control", "ctrl"})
+_FILE_NAME_POLARITY_SIGNS = re.compile(FILE_NAME_POLARITY_SIGNS, re.IGNORECASE)
+_FILE_NAME_TOKEN_SPLIT = re.compile(r"[_\-. ]+")
+_FILE_NAME_SUFFIXES = (".wiff2", ".wiff", ".mzml", ".mzxml", ".raw", ".lcd", ".d", ".abf", ".cdf")
+
+
+def _polarity_tokens(text: str) -> dict[str, str]:
+    """{polarity: the first token that states it} in one name or folder name, by FILE_NAME_POLARITY_RULE's tokens."""
+    found: dict[str, str] = {}
+    for match in _FILE_NAME_POLARITY_SIGNS.finditer(text):
+        sign = match.group(1) or match.group(2)
+        found.setdefault("Positive" if sign == "+" else "Negative", match.group(0))
+    tokens = [token for token in _FILE_NAME_TOKEN_SPLIT.split(_FILE_NAME_POLARITY_SIGNS.sub(" ", text)) if token]
+    folded = [token.casefold() for token in tokens]
+    for index, token in enumerate(folded):
+        polarity = FILE_NAME_POLARITY_TOKENS.get(token)
+        if polarity is None:
+            continue
+        if any(neighbour in FILE_NAME_POLARITY_EXEMPTING for neighbour in folded[max(index - 1, 0):index + 2]):
+            continue
+        found.setdefault(polarity, tokens[index])
+    return found
+
+
+def file_name_polarity_reading(path: object, root: object = "") -> dict[str, object]:
+    """What FILE_NAME_POLARITY_RULE reads of a path: {"polarity": "Positive", "Negative" or "", "token": the name's
+    token, "folder_token": a folder's token stating the same polarity, "conflict": the tokens that leave it unresolved}.
+    ``root`` is the unit's data root; only folders below it are read, and none where the path is not under it."""
+    text = str(path or "").replace("\\", "/").rstrip("/")
+    parts = [part for part in text.split("/") if part]
+    name = parts[-1] if parts else ""
+    for suffix in _FILE_NAME_SUFFIXES:
+        if name.casefold().endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    folders: list[str] = []
+    base = str(root or "").replace("\\", "/").rstrip("/")
+    if base and text.casefold().startswith(base.casefold() + "/"):
+        folders = [part for part in text[len(base) + 1:].split("/") if part][:-1]
+    stated = _polarity_tokens(name)
+    reading: dict[str, object] = {"polarity": "", "token": "", "folder_token": "", "conflict": []}
+    if len(stated) != 1:
+        if len(stated) > 1:
+            reading["conflict"] = sorted(stated.values())
+        return reading
+    ((polarity, token),) = stated.items()
+    same = ""
+    for folder in folders:
+        found = _polarity_tokens(folder)
+        opposite = [value for key, value in found.items() if key != polarity]
+        if opposite:
+            reading["conflict"] = [opposite[0], token]
+            return reading
+        same = same or found.get(polarity, "")
+    reading.update(polarity=polarity, token=token, folder_token=same)
+    return reading
+
+
+def file_name_polarity(path: object, root: object = "") -> tuple[str, str] | None:
+    """(polarity, the token that states it) from a path's base name, or None where it states none, both, or a folder
+    below ``root`` states the opposite (file_name_polarity_reading)."""
+    reading = file_name_polarity_reading(path, root)
+    return (str(reading["polarity"]), str(reading["token"])) if reading["polarity"] else None
+
+POLARITY_SOURCE_FILE_NAME = "file_name"
+
+
+def _polarity_basis(provenance: dict, records: dict[str, dict], csv_rows: list[dict], aliases: dict[str, str],
+                    dispositions: list[dict]) -> tuple[list[str], list[str]]:
+    """(failures, warnings) for the polarity of each row whose input's raw header could not be read
+    (unsupported_format), in a unit whose raw owner declares no single polarity. Such a row runs in a polarity only
+    on a recorded file-name inference (Interactive 0.5.53, FILE_NAME_POLARITY_RULE, user decision 2026-10-29): one
+    the binding disposition or the manifest records for its input, under that rule, whose polarity the gate reads
+    from the name again (file_name_polarity) and is the unit's ion mode. Nothing else stands in for a header:
+    a row with neither is a FAIL, and a row on an inference a WARN that names it."""
+    if not dispositions:
+        # Outside a campaign (an accession-level run, no Catalog handoff) nothing is decided by the rule: not judged.
+        return [], []
+    owner, _reason = _raw_owner_manifest(provenance)
+    owner = owner if isinstance(owner, dict) else provenance
+    if _declared_ion_mode(owner)[0]:
+        return [], []
+    inferences: dict[str, dict] = {}
+    for source in [*dispositions, provenance, owner]:
+        for item in (source.get("polarity_inferences") or []) if isinstance(source, dict) else []:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                inferences.setdefault(_path_key(item["path"]), item)
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    run_mode = str(project.get("ion_mode") or "").strip()
+    failures: list[str] = []
+    warnings: list[str] = []
+    for row in csv_rows:
+        key = _input_key(row, aliases)
+        record = records.get(key) if key else None
+        if not isinstance(record, dict) or str(record.get("outcome") or "") != "unsupported_format":
+            continue
+        if str(record.get("polarity") or "").strip() in ("Positive", "Negative"):
+            continue
+        path = str(record.get("file") or row.get("file_path") or "")
+        name = Path(path.replace("\\", "/")).name or str(row.get("file_name") or "")
+        item = inferences.get(key) or inferences.get(_path_key(path))
+        if item is None:
+            failures.append(f"{name}: its raw header could not be read, its unit declares no single polarity, and no "
+                            "file-name polarity inference is recorded for it")
+            continue
+        # Read as Interactive read it: the base name, with the folders below the raw owner's data root.
+        read = file_name_polarity(path, str(owner.get("input_directory") or ""))
+        problem = ("it is recorded from another source than its file name"
+                   if item.get("polarity_source") != POLARITY_SOURCE_FILE_NAME else
+                   f"it is recorded under {item.get('rule')!r}, not {FILE_NAME_POLARITY_RULE}"
+                   if item.get("rule") != FILE_NAME_POLARITY_RULE else
+                   "its name states no single polarity" if read is None else
+                   f"its name states {read[0]}, not the recorded {item.get('polarity')}"
+                   if read[0] != item.get("polarity") else
+                   f"the unit runs as {run_mode}" if run_mode in ("Positive", "Negative") and run_mode != read[0] else "")
+        if problem:
+            failures.append(f"{name}: its polarity inference does not hold: {problem}")
+        else:
+            warnings.append(f"{name}: its raw header could not be read, and its polarity {read[0]} is its file name's "
+                            f"token {read[1]!r}, recorded as an inference ({FILE_NAME_POLARITY_RULE})")
+    return failures, warnings
+
+
 ACQ1_SOURCES = {
     "header": "from headers", "declaration": "from the repository declaration",
     "folded_ms1_only": "MS1-only folded into DDA", "unresolved": "with no Console type resolved",
     "unsettled": "DIA with its scheme unsettled", "other": "from another source", "no_record": "with no header record",
     "sanctioned": f"AIF run as SWATH under {AIF_AS_SWATH_RULE}",
+    "polarity_from_file_name": f"with a polarity read from the file name ({FILE_NAME_POLARITY_RULE})",
 }
 
 
@@ -5369,13 +5563,17 @@ def check_acquisition_type_is_the_headers(
     multi_rows: "list[tuple[str, tuple[float, ...] | None, str, str]]" = []
     multi_failures: list[str] = []
 
+    polarity_failures: list[str] = []
+
     def refuse(**evidence) -> None:
-        typed = len(failures) - unparsed - len(multi_failures)
+        typed = len(failures) - unparsed - len(multi_failures) - len(polarity_failures)
         parts = ([f"{unparsed} carry an acquisition_type other than {domain_text}"] if unparsed else []) + (
             [f"{typed} would be deconvoluted as an acquisition type their header does not give"]
             if typed > 0 else []) + (
             [f"{len(multi_rows)} run as multi-energy AIF where the records or the Console do not allow it"]
-            if multi_failures else [])
+            if multi_failures else []) + (
+            [f"{len(polarity_failures)} run in a polarity no header, single declaration or recorded file-name "
+             "inference gives"] if polarity_failures else [])
         report.add("ACQ-1", stage, ACQ1_TITLE, FAIL,
                    f"Of the {len(rows)} row(s), " + " and ".join(parts) + ", which completes, validates and is wrong: "
                    + "; ".join(failures[:3]) + ".",
@@ -5521,6 +5719,13 @@ def check_acquisition_type_is_the_headers(
                             f"acquisition type, so its {value} rests on something other than the raw headers")
         else:
             sources["header"] += 1
+    # The polarity of an input whose header could not be read: a recorded file-name inference, or nothing (2026-10-29).
+    refused_polarity, inferred_polarity = _polarity_basis(provenance, records, csv_rows, aliases, dispositions)
+    polarity_failures.extend(refused_polarity)
+    failures.extend(refused_polarity)
+    warnings.extend(inferred_polarity)
+    if inferred_polarity:
+        sources["polarity_from_file_name"] += len(inferred_polarity)
     evidence = {"basis": dict(basis), "sources": dict(sources), "extractor_records": len(extracted)}
     overrides = [entry for entry in decisions.values() if str(entry.get("basis") or "") == "header"]
     if overrides:

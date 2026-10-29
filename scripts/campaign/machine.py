@@ -2058,6 +2058,20 @@ class Runner:
             return True
         if result.get("ok") is not False:
             result = {"ok": False, "reason": "not_started", "detail": result.get("message") or result.get("error")}
+        exclusion = policy.console_start_exclusion(result)
+        if exclusion is not None:
+            # Refused for the unit's own data (a .wiff without its .wiff.scan, MPST000063): a retry meets the same
+            # files, so the unit ends excluded through the discard, as an exclusion at its download does, nothing
+            # counted (policy.console_start_exclusion, 2026-10-29).
+            self._move(
+                unit, "discarding", pending_terminal="excluded",
+                terminal_detail=json.dumps({"reason": exclusion["reason"], "step": step, "detail": exclusion["detail"]},
+                                           ensure_ascii=False, sort_keys=True),
+                detail={"step": step, "excluded": exclusion["reason"]},
+                end_console_run=(run_id, "not_started"),
+                close_attempt=(attempt, "blocked", False, {**self.redact(dict(result)), "excluded": exclusion["reason"]}),
+            )
+            return True
         self._fail(
             unit, step=step.replace("_start", ""), result=result,
             retry_state="metadata_prepared" if diagnostic else "prepared",

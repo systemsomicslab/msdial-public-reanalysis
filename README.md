@@ -534,6 +534,23 @@ lease before 0.5.52 is gated as it always was. CONV-1 leaves out the conversion
 of an input a binding disposition excluded (a Both unit's mzXML without
 polarity, excluded as `polarity_unresolved`).
 
+Two more of 2026-10-29, from the verification campaign v4-both-20261029. A
+SCIEX .wiff without its .wiff.scan cannot be opened by the Console: Interactive
+0.5.53 excludes it at the disposition (`vendor_companion_missing`), and a
+Console start refused for it ("WIFF.SCAN is not accessible next to ...") ends
+the unit excluded, never retried (`policy.console_start_exclusion`). And where
+the pinned extractor cannot read an input's header (`unsupported_format`, every
+ZenoTOF .wiff2) in a unit that runs on its declared acquisition and declares no
+single polarity, Interactive reads the input's polarity from one polarity
+token of its file name and records it (`polarity_inferences`,
+`unreadable_header_polarity_from_file_name_2026_10_29`); ACQ-1 FAILs a row of
+such an input that runs on anything else, and WARNs naming the inference. Such a unit,
+running on its declaration alone and declaring DDA, DIA, AIF or SWATH, is
+untargeted where its record leaves that unset
+(`untargeted_inferred_from_declared_acquisition`); ELIG-1 FAILs a campaign unit
+whose handoff leaves untargeted unset and whose disposition records neither
+that inference nor `untargeted_inferred_from_headers`.
+
 ## Running a campaign unattended
 
 Launch `scripts/campaign-runner.py run` for an unattended campaign through Task
