@@ -12,11 +12,13 @@ files out; the gate's INP-1 holds both sides of that.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True
 TESTS = Path(__file__).resolve().parent
@@ -25,6 +27,7 @@ import campaign_fakes as fakes  # noqa: E402  (puts scripts/ on the path)
 import test_campaign_contract as contract  # noqa: E402  (puts Interactive and the Catalog on the path)
 import test_campaign_machine as machine_tests  # noqa: E402
 import test_campaign_plan as plan_tests  # noqa: E402
+import test_verify_conversion as conversion_tests  # noqa: E402
 from campaign import plan, policy, ports  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("verify_run_invariants_cid", TESTS.parent / "scripts" / "verify-run-invariants.py")
@@ -83,6 +86,11 @@ class NamesAreReadByAWholeToken(unittest.TestCase):
             "raw/Liver_1_timsON_pos_1-2_1_5219.d/95c44b45-8ead-43e8-afd1-de952d13d4ae_1.mcf": [],
             "load_curve.raw": [],
             "CID_30eV.raw": [],
+            # Identifiers name nothing (review L1): a hyphenated GUID, an all-hexadecimal run holding a digit.
+            "raw/x.d/95c44b45-ead1-43e8-afd1-de952d13d4ae_1.mcf": [],
+            "S_ead1.raw": [],
+            "ecd2_scan.raw": [],
+            "S_EAD_1.raw": ["EAD"],
         }
         for name, methods in cases.items():
             with self.subTest(name=name):
@@ -93,9 +101,15 @@ class NamesAreReadByAWholeToken(unittest.TestCase):
         try:
             from msdial_app import fragmentation
         except ImportError:
-            self.skipTest("the pinned Interactive predates its CID/HCD-only rule (0.5.52)")
-        self.assertEqual(plan.NON_CID_METHODS, fragmentation.NON_CID_METHODS)
-        self.assertEqual(gate.NON_CID_METHODS, fragmentation.NON_CID_METHODS)
+            self.skipTest(
+                "SKIPPED THE THREE-WAY CHECK OF THE CID/HCD-ONLY RULE: MSDIAL_INTERACTIVE_ROOT "
+                f"({contract.INTERACTIVE_ROOT}) holds no msdial_app/fragmentation.py. Point MSDIAL_INTERACTIVE_ROOT at "
+                "an Interactive 0.5.52 or later (msdial-interactive-app#85) to compare the plan's, the gate's and "
+                "Interactive's token rule and capability table.")
+        for module in (plan, gate):
+            for name in ("NON_CID_METHODS", "GUID_PATTERN", "METHOD_WORDS_PATTERN", "WORD_METHODS",
+                         "METHOD_STATEMENT_FIELD_PATTERN", "INSTRUMENT_FIELD_PATTERN"):
+                self.assertEqual(getattr(fragmentation, name), getattr(module, name), f"{module.__name__}.{name}")
         self.assertEqual((plan.NOT_CID_HCD, plan.CID_HCD_ONLY_RULE), (fragmentation.NOT_CID_HCD, fragmentation.CID_HCD_ONLY_RULE))
         self.assertEqual(gate.NOT_CID_HCD, fragmentation.NOT_CID_HCD)
         # One capability table, in three places (user decision, 2026-10-29).
@@ -107,8 +121,14 @@ class NamesAreReadByAWholeToken(unittest.TestCase):
                                    ("OAD", "LCMS-9030 Shimadzu"), ("ETD", "Thermo Fisher"), ("ECD", "Agilent 6545")):
             self.assertEqual(fragmentation.instrument_can(method, instrument), plan.instrument_can(method, instrument))
             self.assertEqual(fragmentation.instrument_can(method, instrument), gate.instrument_can(method, instrument))
-        for name in ("a_EThcD_b.raw", "8ead4b2c9.raw", "x-UVPD.mzML", "S_oad_1.lcd"):
-            self.assertEqual(fragmentation.methods_in_file_name(name), plan.file_name_methods(name))
+        for name in ("a_EThcD_b.raw", "8ead4b2c9.raw", "x-UVPD.mzML", "S_oad_1.lcd", "S_ead1.raw",
+                     "95c44b45-ead1-43e8-afd1-de952d13d4ae_1.mcf", "x_EDD_y.d"):
+            self.assertEqual(fragmentation.methods_in_file_name(name), plan.file_name_methods(name), name)
+            self.assertEqual(fragmentation.methods_in_file_name(name), gate.methods_in_file_name(name), name)
+        for values in ({"analyticalCondition / Fragmentation method": "OAD"}, {"Extract Name": "X_EAD_1"},
+                       {"Dissociation": "electron-activated dissociation"}, {"Instrument collision cell": "ETD"}):
+            self.assertEqual(fragmentation.stated_methods(values), plan.stated_methods(values), values)
+            self.assertEqual(fragmentation.stated_methods(values), gate.stated_methods(values), values)
 
 
 @unittest.skipUnless(contract.AVAILABLE, "the Interactive and Catalog checkouts are not where this test looks")
@@ -121,7 +141,7 @@ class ThePlan(unittest.TestCase):
         plan_tests.build_catalog(self.database)
         self.workspace_root = self.root / "analysis"
 
-    def manifest(self, pool: str | None = "declared", interactive: str = "", **values) -> dict:
+    def manifest(self, pool: str | None = "declared", interactive: str = "0.5.52", **values) -> dict:
         catalog = ports.read_only_catalog(self.database)
         pins = {"catalog": {"version": "0.6.1"}, "libraries": [],
                 **({"interactive": {"version": interactive}} if interactive else {})}
@@ -238,16 +258,53 @@ class ThePlan(unittest.TestCase):
         self.assertEqual(
             {"rule": "cid_hcd_only_2026_10_29", "evidence": "catalog", "methods": ["OAD"], "named_files": 1,
              "analysis_files": 3, "named_file_names": ["P_OAD_2.lcd"], "not_credible_files": 0, "instrument": "",
-             "named_samples": 0, "samples": 3},
+             "named_samples": 0, "samples": 3, "stated_samples": 0, "stated_files": 0},
             {key: value for key, value in unit["fragmentation_reading"].items() if key != "detail"})
         self.assertIn("kept out by Interactive's lease", unit["fragmentation_reading"]["detail"])
         self.assertIn("1 planned unit(s) run without some files", plan.summary_text(manifest, "sha256:" + "0" * 64))
-        with self.assertRaisesRegex(plan.PlanError, "only Interactive 0.5.52 or later keeps out"):
+        with self.assertRaisesRegex(plan.PlanError, "needs 0.5.52 or later.*1 planned unit"):
             self.manifest("declared", interactive="0.5.50")
+
+    def test_an_interactive_before_0_5_52_is_refused_whatever_the_units(self) -> None:
+        # Review L2: refused unconditionally, not only where a unit's files are named so.
+        with self.assertRaisesRegex(plan.PlanError, "The pinned Interactive is 0.5.51; the campaign needs 0.5.52"):
+            self.manifest("declared", interactive="0.5.51")
+        self.assertTrue(self.manifest("declared", interactive="0.5.52")["units"])
+
+    def test_rows_that_state_the_method_keep_their_files_out(self) -> None:
+        # Review M2: some rows state EAD; their files are planned to be kept out, the rest runs.
+        add_files_unit(self.database, "rows", "MPST000095", ["R1.wiff2", "R2.wiff2", "R3.wiff2"],
+                       instrument="Nexera/ZenoTof 7600")
+        connection = sqlite3.connect(self.database)
+        with connection:
+            connection.execute(
+                "INSERT INTO sample_attribute(attribute_id, sample_pk, field_name, normalized_field, raw_value) "
+                "VALUES ('stated-r2', 'pk-rows-1', 'analyticalCondition / Fragmentation method', 'x', 'EAD')")
+        connection.close()
+        manifest = self.manifest("declared")
+        unit = next(unit for unit in manifest["units"] if unit["unit_id"] == "rows")
+        reading = unit["fragmentation_reading"]
+
+        self.assertEqual((1, ["R2.wiff2"], 1, 1), (reading["named_files"], reading["named_file_names"],
+                                                    reading["stated_samples"], reading["stated_files"]))
+        self.assertIn("the 1 file(s) of the 1 row(s) that state the method are kept out by Interactive's lease",
+                      reading["detail"])
+
+    def test_a_statement_every_unit_of_a_study_makes_is_still_the_units(self) -> None:
+        # Review M3: the study-shared filter reads names, never a field that states the method.
+        for unit in ("ea", "eb"):
+            add_files_unit(self.database, unit, "MPST000094", [f"{unit}1.wiff2", f"{unit}2.wiff2"],
+                           instrument="ZenoTOF 7600", rows={"analyticalCondition / Fragmentation method": "EAD"})
+        exclusions = {item["unit_id"]: item["reason"] for item in self.manifest("declared")["exclusions"]}
+
+        self.assertEqual({"ea": "fragmentation_not_cid_hcd", "eb": "fragmentation_not_cid_hcd"},
+                         {key: exclusions.get(key) for key in ("ea", "eb")})
 
 
 class TheGate(unittest.TestCase):
-    CAMPAIGN = {"campaign_authorizations": [{"approval_id": "A1"}]}
+    # A lease of Interactive 0.5.52 records what the rule read; the gate judges only such a lease (review L2).
+    CAMPAIGN = {"campaign_authorizations": [{"approval_id": "A1"}],
+                "fragmentation_check": {"schema": "msdial-fragmentation-check.v1", "rule": "cid_hcd_only_2026_10_29"}}
 
     def test_a_named_input_that_reaches_the_run_fails(self) -> None:
         manifest = {**self.CAMPAIGN, "input_candidates": [r"D:\w\raw\data\S1_CID.lcd", r"D:\w\raw\data\S2_OAD_NEG.lcd"]}
@@ -257,8 +314,9 @@ class TheGate(unittest.TestCase):
 
         self.assertEqual(1, len(problems))
         self.assertIn("S2_OAD_NEG.lcd: OAD", problems[0])
-        self.assertEqual([], gate._not_cid_hcd_problems({**manifest, "campaign_authorizations": []}, None, rows),
-                         "outside a campaign an OAD analysis is the analyst's choice")
+        before = {key: value for key, value in manifest.items() if key != "fragmentation_check"}
+        self.assertEqual([], gate._not_cid_hcd_problems(before, None, rows),
+                         "a lease before 0.5.52 applied no such rule, and is gated as it always was")
 
     def test_an_input_kept_out_without_evidence_that_holds_fails(self) -> None:
         manifest = {**self.CAMPAIGN, "input_candidates": [r"D:\w\S1.lcd"], "excluded_input_candidates": [
@@ -286,6 +344,43 @@ class TheGate(unittest.TestCase):
         self.assertEqual(1, len(problems), "the running file is no problem; the one kept out on its name is")
         self.assertIn("AA_EAD_A_2.raw (evidence file_name)", problems[0])
 
+    def test_a_sample_whose_row_states_the_method_does_not_run(self) -> None:
+        stated = {"analyticalCondition / Fragmentation method": "EAD"}
+        project = {"sample_metadata": [{"sample_id": "S1", "values": {}}, {"sample_id": "S2", "values": stated}]}
+        manifest = {**self.CAMPAIGN, "project": project, "input_candidates": [r"D:\w\S1.wiff2"],
+                    "excluded_input_candidates": [{"path": r"D:\w\S2.wiff2", "reason": "fragmentation_not_cid_hcd",
+                                                   "evidence": "sample_row", "methods": ["EAD"]}]}
+        self.assertEqual([], gate._not_cid_hcd_problems(manifest, manifest, [{"file_path": r"D:\w\S1.wiff2",
+                                                                             "sample_id": "S1"}]))
+
+        problems = gate._not_cid_hcd_problems(manifest, manifest, [{"file_path": r"D:\w\S2.wiff2", "sample_id": "S2"}])
+        self.assertEqual(1, len(problems))
+        self.assertIn("sample(s) whose row states", problems[0])
+        # A CSV row that carries no sample_id is its input's lineage row's sample.
+        manifest["input_lineage"] = {"rows": [{"path": r"D:\w\S2.wiff2", "sample_id": "S2"}]}
+        problems = gate._not_cid_hcd_problems(manifest, manifest, [{"file_path": r"D:\w\S2.wiff2"}])
+        self.assertEqual(1, len(problems))
+
+    def test_conv1_leaves_out_a_conversion_the_disposition_excluded(self) -> None:
+        # Review L3: a Both unit's mzXML whose scans record no polarity converts with none, and the disposition
+        # excludes it as polarity_unresolved; CONV-1 does not fail the unit for it.
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, _row, record = conversion_tests._downloaded_conversion(temporary)
+            conversion_tests._scan_without_polarity(record)
+            conversion_tests._declare(unit.manifest, handoff="Both")
+            conversion_tests._csv(unit, paths=[])
+            failing = conversion_tests._conv1(unit)
+            unit.manifest["campaign_disposition"] = {
+                "schema": "msdial-campaign-disposition.v1", "disposition": "run", "reasons": [], "warnings": [],
+                "excluded_inputs": [{"path": record["output"]["path"], "reason": "polarity_unresolved"}],
+                "split_key": None,
+            }
+            check = conversion_tests._conv1(unit)
+
+        self.assertEqual(gate.FAIL, failing.status)
+        self.assertNotEqual(gate.FAIL, check.status, check.detail)
+        self.assertEqual(1, check.evidence["excluded_by_disposition"])
+
     def test_a_part_of_a_both_unit_is_grouped_as_its_lease_grouped_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "run-manifest.json"
@@ -309,6 +404,48 @@ class TheRunner(machine_tests.Base):
         self.assertEqual({"u1-dda-pos": "Positive", "u1-dda-neg": "Negative"},
                          {key: unit["ion_mode"] for key, unit in parts.items()})
         self.assertTrue(all(unit["state"] == "done" for unit in parts.values()))
+
+
+@unittest.skipUnless(contract.AVAILABLE, "the Interactive and Catalog checkouts are not where this test looks")
+class TheSplitContract(unittest.TestCase):
+    """Review M1: the runner reads each part's polarity from the real tool's projection of a real split."""
+
+    def test_a_real_polarity_split_reaches_the_runners_part_record(self) -> None:
+        from msdial_app import mcp_server, repository_reanalysis
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "mb_post" / "MPST1" / "uboth"
+            data = root / "raw" / "data"
+            data.mkdir(parents=True)
+            (root / "provenance").mkdir()
+            files = []
+            for name in ("S1_pos.wiff2", "S1_neg.wiff2"):
+                (data / name).write_bytes(b"x")
+                files.append(str(data / name))
+            per_file = [{"file": item, "acquisition_mode": "DDA", "ms_levels": [1, 2], "outcome": "ok",
+                         "polarity": "Positive" if "_pos" in Path(item).name else "Negative"} for item in files]
+            path = root / "provenance" / "run-manifest.json"
+            path.write_text(json.dumps({
+                "schema": "msdial-public-reanalysis-run.v1", "status": "preflight_review_required", "workspace": str(root),
+                "raw_directory": str(root / "raw"), "input_directory": str(data), "input_candidates": files,
+                "project": {"analysis_unit_id": "uboth", "repository": "mb_post", "accession": "MPST1", "ion_mode": "Both",
+                            "acquisition_mode": "DDA", "separation": "LC-MS", "untargeted": True,
+                            "sample_metadata": [{"sample_id": Path(item).stem, "raw_file": Path(item).name}
+                                                for item in files]},
+                "raw_metadata_preflight": {"summary": {"coverage": {"complete": True}, "acquisition_mode": "DDA",
+                                                       "per_file": per_file}},
+            }), encoding="utf-8")
+            split = repository_reanalysis.split_unit_by_acquisition(path, confirmed=True)
+            with mock.patch.object(mcp_server, "_request_json", return_value=split):
+                result = ports.InteractivePort(port=8766).split(manifest_path=str(path), authorization_path="a.json")
+
+        if "polarity" not in (result.get("parts") or [{}])[0]:
+            self.skipTest("SKIPPED: MSDIAL_INTERACTIVE_ROOT points at an Interactive whose split tool returns no part "
+                          "polarity (before 0.5.52, msdial-interactive-app#85)")
+        self.assertEqual({"uboth-dda-pos": "Positive", "uboth-dda-neg": "Negative"},
+                         {part["analysis_unit_id"]: part["polarity"] for part in result["parts"]})
+        # The fake answers in the same shape as the real tool.
+        self.assertTrue({"polarity", "split_key"} <= set(result["parts"][0]))
 
 
 if __name__ == "__main__":

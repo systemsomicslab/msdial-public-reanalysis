@@ -1861,7 +1861,12 @@ def check_converted_inputs_are_their_conversions(
         by_output.setdefault(_path_key(output["path"]), []).append(record)
     if by_output and not raw_roots:
         problems.append("the raw owner's manifest names no raw_directory, so where each output lies cannot be told")
-    judged = {key: items for key, items in by_output.items() if not split or key in inputs}
+    # A converted mzML a binding campaign disposition excluded never runs, so its conversion is not judged as an input's:
+    # in a Both unit an mzXML whose scans record no polarity converts with none, and the disposition excludes it as
+    # polarity_unresolved (review of 2026-10-29, L3).
+    excluded_outputs = set(_exclusion_reasons(owner, provenance))
+    judged = {key: items for key, items in by_output.items()
+              if (not split or key in inputs) and key not in excluded_outputs}
     # The raw owner converted every part's files, with the ion mode it declared.
     declared = _declared_ion_mode(owner)
     declarer = "the parent unit" if split else "the unit"
@@ -1919,6 +1924,7 @@ def check_converted_inputs_are_their_conversions(
 
     evidence = {
         "records": len(records or []), "judged": len(judged), "converted": tally["converted"], "failed": len(failed),
+        "excluded_by_disposition": sum(1 for key in by_output if key in excluded_outputs),
         "rehashed": tally["rehashed"], "released_with_raw_tree": tally["released"],
         "spectra_validated": tally["spectra"], "imputed_polarity_spectra": tally["imputed"],
         "declared_ion_mode": declared[1] or None,
@@ -2311,21 +2317,46 @@ INP1_TITLE = "Each declared analysis input is one input candidate and one CSV ro
 # CID/HCD ONLY (user decision, 2026-10-29; Interactive 0.5.52, msdial_app.fragmentation). Every reference spectrum is
 # CID/HCD-derived, so a campaign lease keeps out an input whose evidence names another fragmentation method, with
 # reason fragmentation_not_cid_hcd, the methods and the evidence (its file name, an mzML's activation terms, a
-# converted mzXML's activationMethod); absence of evidence means run. INP-1 holds both sides of it in a campaign unit
+# converted mzXML's activationMethod, a sample row that states the method); absence of evidence means run. INP-1
+# holds both sides of it where the lease applied it (its record carries fragmentation_check)
 # (_not_cid_hcd_problems): no input that reaches the run has a file name naming such a method, by the same whole-token
-# rule (a run of eight or more hexadecimal digits names nothing) on an instrument that could perform it (instrument_can:
+# rule (an identifier, a GUID or a hexadecimal run, names nothing) on an instrument that could perform it (instrument_can:
 # the unit's instrument, as its Catalog handoff records it, matches the method's capable families, or names a capable
 # vendor and no model, or none is recorded), and no input was kept out for it without evidence that holds: such a
 # name, or a method its header gave. An instrument's model name is no evidence of a method. No vendor header records the method (the SCIEX
 # Wiff2Reader writes CID for every spectrum), so the gate infers none.
 NOT_CID_HCD = "fragmentation_not_cid_hcd"
+# THE TOKEN RULE, held identical in Interactive (fragmentation.py), the campaign plan and the gate. A token is whole
+# when no letter or digit stands before it and no letter after it. It names nothing inside an identifier: a run of
+# letters and digits that is all hexadecimal and either eight long or more or holds a digit (8ead4b2c, ead1), or a
+# hyphenated GUID (95c44b45-ead1-43e8-afd1-de952d13d4ae). With words, repository text may spell a method out.
 NON_CID_METHODS = ("EAD", "OAD", "ECD", "ETD", "EThcD", "ETciD", "NETD", "EDD", "EID", "UVPD", "IRMPD")
-_NON_CID_TOKEN = re.compile(
+GUID_PATTERN = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+METHOD_WORDS_PATTERN = (
+    r"electron[- ]activated dissociation|oxygen[- ]attachment dissociation|electron[- ]capture dissociation|"
+    r"electron[- ]transfer dissociation|electron[- ]induced dissociation|ultraviolet photodissociation|"
+    r"infrared multiphoton dissociation"
+)
+WORD_METHODS = {"electron activated": "EAD", "oxygen attachment": "OAD", "electron capture": "ECD",
+                "electron transfer": "ETD", "electron induced": "EID", "ultraviolet photodissociation": "UVPD",
+                "infrared multiphoton": "IRMPD"}
+# A sample-row field that states how the ions were fragmented ("analyticalCondition / Fragmentation method"): an
+# explicit statement, held to no instrument and never read as the study's text. An instrument field names a model,
+# which says what the instrument can do, never what was done, and is no evidence at all.
+METHOD_STATEMENT_FIELD_PATTERN = r"fragment|dissociation|activation|collision"
+INSTRUMENT_FIELD_PATTERN = r"instrument"
+_CANONICAL_METHOD = {name.casefold(): name for name in NON_CID_METHODS}
+_METHOD_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])(" + "|".join(sorted(NON_CID_METHODS, key=len, reverse=True)) + r")(?![A-Za-z])", re.IGNORECASE)
-_NON_CID_CANONICAL = {name.casefold(): name for name in NON_CID_METHODS}
+_METHOD_WORDS = re.compile(METHOD_WORDS_PATTERN, re.IGNORECASE)
 _ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
-_HEX_RUN = re.compile(r"[0-9A-Fa-f]{8,}")
-NOT_CID_HCD_HEADER_EVIDENCE = ("mzml_activation", "mzxml_activation_method")
+_ALL_HEX = re.compile(r"[0-9A-Fa-f]+")
+_GUID = re.compile(GUID_PATTERN)
+_METHOD_STATEMENT_FIELD = re.compile(METHOD_STATEMENT_FIELD_PATTERN, re.IGNORECASE)
+_INSTRUMENT_FIELD = re.compile(INSTRUMENT_FIELD_PATTERN, re.IGNORECASE)
+# The evidence that holds by the methods it records: a header's (an mzML's activation, a converted mzXML's
+# activationMethod), and a sample row that states the method (sample_row).
+NOT_CID_HCD_HEADER_EVIDENCE = ("mzml_activation", "mzxml_activation_method", "sample_row")
 # WHICH INSTRUMENTS CAN FRAGMENT SO (user decision, 2026-10-29), as Interactive's fragmentation.METHOD_INSTRUMENTS
 # holds it, and the tests hold the three copies (plan, gate, Interactive) identical. A file name's token counts only
 # where the unit's instrument matches the method's capable families, or names a capable vendor and no model (a model is
@@ -2369,19 +2400,51 @@ def instrument_can(method: str, instrument: object) -> bool:
         INSTRUMENT_MODEL_WORDS, text, re.IGNORECASE)
 
 
-def _name_methods(path: str) -> list[str]:
-    """The fragmentation methods other than CID/HCD a path's base name names by a whole token; [] for none."""
-    text = str(path or "").rstrip("\\/")
-    name = re.split(r"[\\/]", text)[-1] if text else ""
+def methods_named(text: object, words: bool = False) -> list[str]:
+    """The non-CID/HCD methods a text names by a whole token (and, with `words`, by a spelled-out name), in order and
+    once each; [] for none."""
+    value = str(text or "")
     found: list[str] = []
-    for match in _NON_CID_TOKEN.finditer(name):
-        run = next((item for item in _ALNUM_RUN.finditer(name) if item.start() <= match.start() < item.end()), None)
-        if run is not None and _HEX_RUN.fullmatch(run.group(0)):
+    guids = [(item.start(), item.end()) for item in _GUID.finditer(value)]
+    for match in _METHOD_TOKEN.finditer(value):
+        if any(start <= match.start() < end for start, end in guids):
             continue
-        method = _NON_CID_CANONICAL[match.group(1).casefold()]
-        if method not in found:
-            found.append(method)
+        run = next((item for item in _ALNUM_RUN.finditer(value) if item.start() <= match.start() < item.end()), None)
+        if run is not None and _ALL_HEX.fullmatch(run.group(0)) and (
+                len(run.group(0)) >= 8 or any(character.isdigit() for character in run.group(0))):
+            continue
+        name = _CANONICAL_METHOD[match.group(1).casefold()]
+        if name not in found:
+            found.append(name)
+    if words:
+        for match in _METHOD_WORDS.finditer(value):
+            spelled = re.sub(r"[- ]+", " ", match.group(0).casefold())
+            name = next(code for start, code in WORD_METHODS.items() if spelled.startswith(start))
+            if name not in found:
+                found.append(name)
     return found
+
+
+def methods_in_file_name(path: object) -> list[str]:
+    """methods_named over a path's base name (a vendor folder's own name)."""
+    text = str(path or "").rstrip("\\/")
+    return methods_named(re.split(r"[\\/]", text)[-1] if text else "")
+
+
+def stated_methods(values: object) -> list[str]:
+    """The non-CID/HCD methods a sample row states in a field that states the method (METHOD_STATEMENT_FIELD_PATTERN),
+    an instrument field aside; [] for none."""
+    found: list[str] = []
+    for field, value in (values.items() if isinstance(values, dict) else []):
+        if _INSTRUMENT_FIELD.search(str(field)) or not _METHOD_STATEMENT_FIELD.search(str(field)):
+            continue
+        for name in methods_named(value, words=True):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+_name_methods = methods_in_file_name
 
 
 def _credible_name_methods(path: str, instrument: str) -> list[str]:
@@ -2399,18 +2462,16 @@ def _unit_instrument(manifest: dict | None) -> str:
     return str(settings.get("instrument") or "").strip()
 
 
-def _campaign_unit(manifest: dict | None) -> bool:
-    """Whether a unit's manifest records a campaign's authorization, under which the CID/HCD-only rule holds."""
-    authorizations = (manifest or {}).get("campaign_authorizations")
-    return isinstance(authorizations, list) and any(isinstance(item, dict) for item in authorizations)
-
-
 def _not_cid_hcd_problems(provenance: dict, owner: dict | None, csv_rows: list[dict] | None) -> list[str]:
-    """What stands against the CID/HCD-only rule of 2026-10-29 in a campaign unit: an input candidate or a CSV row whose
-    file name names another fragmentation method (the lease keeps such an input out before it lists its candidates),
-    and an input the lease kept out for it with no evidence that holds."""
+    """What stands against the CID/HCD-only rule of 2026-10-29 in a unit whose lease applied it: an input candidate or a
+    CSV row whose file name names another fragmentation method on an instrument that could perform it, a CSV row of a
+    sample whose row states one (stated_methods), and an input the lease kept out for it with no evidence that holds.
+
+    Only where the raw owner's lease record carries fragmentation_check (Interactive 0.5.52): a lease before it applied
+    no such rule, and a unit it made, an old campaign's finished one among them, is gated as it always was (review of
+    2026-10-29, L2)."""
     owner = owner if isinstance(owner, dict) else provenance
-    if not (_campaign_unit(owner) or _campaign_unit(provenance)):
+    if not isinstance(owner.get("fragmentation_check"), dict):
         return []
     problems = []
     # A name counts only where the raw owner's instrument, as its lease read it, could fragment so.
@@ -2427,6 +2488,29 @@ def _not_cid_hcd_problems(provenance: dict, owner: dict | None, csv_rows: list[d
             f"{len(named)} input(s) among the candidates or the CSV rows have a file name naming a fragmentation "
             "method other than CID/HCD (" + ", ".join(f"{name}: {', '.join(methods)}" for name, methods in named[:5])
             + "), which the CID/HCD-only rule of 2026-10-29 keeps out")
+    # A sample whose row states the method (the plan maps such rows to their files, and the lease keeps them out).
+    stated = {
+        str(row.get("sample_id") or "").strip()
+        for manifest in (provenance, owner)
+        for row in ((manifest.get("project") or {}).get("sample_metadata") or [])
+        if isinstance(row, dict) and str(row.get("sample_id") or "").strip()
+        and stated_methods(row.get("values") or row.get("attributes") or {})
+    }
+    # A CSV row's sample: its own sample_id where it carries one, else its input's lineage row's.
+    aliases = _input_keys_by_console_path(provenance)
+    sample_by_key = {
+        _path_key(row["path"]): str(row.get("sample_id") or "").strip()
+        for manifest in (owner, provenance) for row in _lineage_rows(manifest)
+        if isinstance(row, dict) and str(row.get("path") or "").strip()
+    }
+    running = sorted({
+        str(row.get("sample_id") or "").strip() or sample_by_key.get(_input_key(row, aliases), "")
+        for row in csv_rows or []
+    } & stated)
+    if running:
+        problems.append(
+            f"{len(running)} sample(s) whose row states a fragmentation method other than CID/HCD have a CSV row ("
+            + ", ".join(running[:5]) + "), which the CID/HCD-only rule of 2026-10-29 keeps out")
     unheld = []
     for source in [owner] if owner is provenance else [owner, provenance]:
         for item in source.get("excluded_input_candidates") or []:
@@ -4159,9 +4243,11 @@ def check_analysis_inputs_are_the_inputs(
     a download that is no archive shows delivered and that no record or declaration names. A sample whose file used was excluded is named as running on no file. A declared input the rule left unused is no
     candidate and no excluded input: it is counted beside the candidates, accounted for by its sample's choice.
 
-    CID/HCD ONLY (user decision, 2026-10-29; Interactive 0.5.52). In a campaign unit, INP-1 FAILs, with or without a
-    declaration, where an input that reaches the run has a file name naming a fragmentation method other than CID/HCD,
-    or the lease kept an input out as fragmentation_not_cid_hcd with no evidence that holds (_not_cid_hcd_problems).
+    CID/HCD ONLY (user decision, 2026-10-29; Interactive 0.5.52). In a unit whose lease applied the rule (its record
+    carries fragmentation_check), INP-1 FAILs, with or without a declaration, where an input that reaches the run has a
+    file name naming a fragmentation method other than CID/HCD on an instrument that could perform it, a CSV row is of a
+    sample whose row states one, or the lease kept an input out as fragmentation_not_cid_hcd with no evidence that
+    holds (_not_cid_hcd_problems). A lease before 0.5.52 is not judged by it.
     An input the lease kept out for it is counted beside the candidates, like any other it excluded itself.
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or

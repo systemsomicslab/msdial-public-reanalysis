@@ -521,9 +521,18 @@ unit only some of whose files are named so is planned with a
 Interactive's campaign lease keeps those files out with their evidence (also an
 mzML's activation terms, or a converted mzXML's `activationMethod`); no vendor
 header records the method, and the SCIEX wiff2 reader's CID is no evidence.
-Absence of evidence means run. INP-1 FAILs, blocking the run, a campaign unit
-whose candidates or CSV rows include a file named so, or whose lease kept an
-input out for it without evidence that holds.
+A sample row that states the method in only some rows plans the unit too, with
+the files of those rows listed to be kept out (Interactive's lease reads the
+same rows, evidence `sample_row`); a statement is never read as the study's
+text. An identifier (a GUID, an all-hexadecimal run of eight or holding a
+digit) names nothing. The plan refuses any Interactive before 0.5.52. Absence
+of evidence means run. INP-1 FAILs, blocking the run, a unit whose lease
+applied the rule (its record carries `fragmentation_check`) and whose
+candidates or CSV rows include a file named so or a sample whose row states the
+method, or whose lease kept an input out for it without evidence that holds; a
+lease before 0.5.52 is gated as it always was. CONV-1 leaves out the conversion
+of an input a binding disposition excluded (a Both unit's mzXML without
+polarity, excluded as `polarity_unresolved`).
 
 ## Running a campaign unattended
 

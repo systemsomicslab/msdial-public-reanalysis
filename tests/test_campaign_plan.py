@@ -137,7 +137,8 @@ APPROVABLE_PINS = {
     "libraries": [{"name": "P.msp", "sha256": "4" * 64, "bytes": 8}],
 }
 CODE_PINS = {
-    "interactive": {"version": "0.5.19", "commit": "a" * 40, "dirty": False, "lease_uses_store": False},
+    # 0.5.52: the plan refuses an Interactive before the CID/HCD-only rule and the split's part polarity (2026-10-29).
+    "interactive": {"version": "0.5.52", "commit": "a" * 40, "dirty": False, "lease_uses_store": False},
     "catalog": {"version": "0.6.1", "commit": "b" * 40, "dirty": False},
     "gate": {"commit": "c" * 40, "dirty": False},
 }
