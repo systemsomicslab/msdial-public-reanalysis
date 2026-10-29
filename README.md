@@ -495,6 +495,29 @@ decision D-B: collected on Stage 1 before Stage 2 is decided); it needs the
 alignment candidate table, which a run writes only where its answers set
 `export_annotation_candidates` true.
 
+Two decisions of 2026-10-29 shape what a campaign selects and runs. A unit
+whose Catalog record says `Both` polarities is in the pools: Interactive reads
+each file's polarity from its raw header and splits the unit into
+single-polarity parts, which run like any other unit (each part's ledger row
+carries its own polarity); a file whose scans switch polarity inside the one
+file is excluded (`polarity_switching`, unresolved mixed polarity being outside
+the campaign's scope), one whose header gives none as `polarity_unresolved`,
+and the rest of the unit runs. And only CID/HCD data run, since every reference
+spectrum is CID/HCD-derived (rule `cid_hcd_only_2026_10_29`): the plan excludes
+a unit as `fragmentation_not_cid_hcd` where its own evidence names another
+fragmentation method (EAD, OAD, ECD, ETD, EThcD, EID, UVPD, IRMPD and the like)
+in its label, instrument, unit evidence, every sample row, or every analysis
+file name, read as the ion-mobility option A reads evidence (the study's text,
+or an attribute every unit of a study carries alike, never excludes a unit). A
+unit only some of whose files are named so is planned with a
+`fragmentation_reading`, needs Interactive 0.5.52 or later, and that
+Interactive's campaign lease keeps those files out with their evidence (also an
+mzML's activation terms, or a converted mzXML's `activationMethod`); no vendor
+header records the method, and the SCIEX wiff2 reader's CID is no evidence.
+Absence of evidence means run. INP-1 FAILs, blocking the run, a campaign unit
+whose candidates or CSV rows include a file named so, or whose lease kept an
+input out for it without evidence that holds.
+
 ## Running a campaign unattended
 
 Launch `scripts/campaign-runner.py run` for an unattended campaign through Task

@@ -2308,6 +2308,83 @@ def check_sample_count_invariant(
 
 
 INP1_TITLE = "Each declared analysis input is one input candidate and one CSV row"
+# CID/HCD ONLY (user decision, 2026-10-29; Interactive 0.5.52, msdial_app.fragmentation). Every reference spectrum is
+# CID/HCD-derived, so a campaign lease keeps out an input whose evidence names another fragmentation method, with
+# reason fragmentation_not_cid_hcd, the methods and the evidence (its file name, an mzML's activation terms, a
+# converted mzXML's activationMethod); absence of evidence means run. INP-1 holds both sides of it in a campaign unit
+# (_not_cid_hcd_problems): no input that reaches the run has a file name naming such a method, by the same whole-token
+# rule (a run of eight or more hexadecimal digits names nothing), and no input was kept out for it without evidence
+# that holds: a name that names one, or a method its header gave. No vendor header records the method (the SCIEX
+# Wiff2Reader writes CID for every spectrum), so the gate infers none.
+NOT_CID_HCD = "fragmentation_not_cid_hcd"
+NON_CID_METHODS = ("EAD", "OAD", "ECD", "ETD", "EThcD", "ETciD", "NETD", "EDD", "EID", "UVPD", "IRMPD")
+_NON_CID_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(" + "|".join(sorted(NON_CID_METHODS, key=len, reverse=True)) + r")(?![A-Za-z])", re.IGNORECASE)
+_NON_CID_CANONICAL = {name.casefold(): name for name in NON_CID_METHODS}
+_ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
+_HEX_RUN = re.compile(r"[0-9A-Fa-f]{8,}")
+NOT_CID_HCD_HEADER_EVIDENCE = ("mzml_activation", "mzxml_activation_method")
+
+
+def _name_methods(path: str) -> list[str]:
+    """The fragmentation methods other than CID/HCD a path's base name names by a whole token; [] for none."""
+    text = str(path or "").rstrip("\\/")
+    name = re.split(r"[\\/]", text)[-1] if text else ""
+    found: list[str] = []
+    for match in _NON_CID_TOKEN.finditer(name):
+        run = next((item for item in _ALNUM_RUN.finditer(name) if item.start() <= match.start() < item.end()), None)
+        if run is not None and _HEX_RUN.fullmatch(run.group(0)):
+            continue
+        method = _NON_CID_CANONICAL[match.group(1).casefold()]
+        if method not in found:
+            found.append(method)
+    return found
+
+
+def _campaign_unit(manifest: dict | None) -> bool:
+    """Whether a unit's manifest records a campaign's authorization, under which the CID/HCD-only rule holds."""
+    authorizations = (manifest or {}).get("campaign_authorizations")
+    return isinstance(authorizations, list) and any(isinstance(item, dict) for item in authorizations)
+
+
+def _not_cid_hcd_problems(provenance: dict, owner: dict | None, csv_rows: list[dict] | None) -> list[str]:
+    """What stands against the CID/HCD-only rule of 2026-10-29 in a campaign unit: an input candidate or a CSV row whose
+    file name names another fragmentation method (the lease keeps such an input out before it lists its candidates),
+    and an input the lease kept out for it with no evidence that holds."""
+    owner = owner if isinstance(owner, dict) else provenance
+    if not (_campaign_unit(owner) or _campaign_unit(provenance)):
+        return []
+    problems = []
+    # The candidates, which the lease built after it kept such inputs out, and what each CSV row names.
+    candidates = provenance.get("input_candidates")
+    reaching = [str(item) for item in candidates] if isinstance(candidates, list) else []
+    reaching += [str(row.get("file_path") or row.get("file_name") or "") for row in csv_rows or []]
+    names = {Path(item.replace("\\", "/")).name: _name_methods(item) for item in reaching if _name_methods(item)}
+    named = list(names.items())
+    if named:
+        problems.append(
+            f"{len(named)} input(s) among the candidates or the CSV rows have a file name naming a fragmentation "
+            "method other than CID/HCD (" + ", ".join(f"{name}: {', '.join(methods)}" for name, methods in named[:5])
+            + "), which the CID/HCD-only rule of 2026-10-29 keeps out")
+    unheld = []
+    for source in [owner] if owner is provenance else [owner, provenance]:
+        for item in source.get("excluded_input_candidates") or []:
+            if not isinstance(item, dict) or item.get("reason") != NOT_CID_HCD:
+                continue
+            path = str(item.get("path") or "")
+            evidence = str(item.get("evidence") or "")
+            methods = item.get("methods") if isinstance(item.get("methods"), list) else []
+            if evidence == "file_name" and _name_methods(path):
+                continue
+            if evidence in NOT_CID_HCD_HEADER_EVIDENCE and methods:
+                continue
+            unheld.append(f"{Path(path.replace(chr(92), '/')).name} (evidence {evidence or 'none recorded'})")
+    if unheld:
+        problems.append(
+            f"the lease kept out {len(unheld)} input(s) as {NOT_CID_HCD} with no evidence that holds ("
+            + ", ".join(unheld[:5]) + "): only a file name naming another method, or one its header gave, keeps an "
+            "input out, and absence of evidence means run")
+    return problems
 
 
 def _declared_inputs(project: dict) -> tuple[list | None, str]:
@@ -3055,9 +3132,14 @@ def _unit_polarity(provenance: dict) -> str:
     (_declared_ion_mode), else the project record's ion_mode, the unit's own and then its raw owner's."""
     owner, _ = _raw_owner_manifest(provenance)
     owner = owner if isinstance(owner, dict) else provenance
-    declared = _declared_ion_mode(owner)[0]
+    declared, value, _source = _declared_ion_mode(owner)
     if declared:
         return declared.capitalize()
+    if value:
+        # The raw owner declared no single polarity (Both, admitted since 2026-10-29, or Unknown): the lease, which ran
+        # before any preflight, grouped by none (Interactive's _unit_polarity), and a split part's own ion mode, the
+        # polarity its split gave it from the headers, is not what the lease read.
+        return ""
     for manifest in (provenance, owner):
         project = manifest.get("project") if isinstance(manifest.get("project"), dict) else {}
         mode = str(project.get("ion_mode") or "").strip().casefold()
@@ -4016,6 +4098,11 @@ def check_analysis_inputs_are_the_inputs(
     a download that is no archive shows delivered and that no record or declaration names. A sample whose file used was excluded is named as running on no file. A declared input the rule left unused is no
     candidate and no excluded input: it is counted beside the candidates, accounted for by its sample's choice.
 
+    CID/HCD ONLY (user decision, 2026-10-29; Interactive 0.5.52). In a campaign unit, INP-1 FAILs, with or without a
+    declaration, where an input that reaches the run has a file name naming a fragmentation method other than CID/HCD,
+    or the lease kept an input out as fragmentation_not_cid_hcd with no evidence that holds (_not_cid_hcd_problems).
+    An input the lease kept out for it is counted beside the candidates, like any other it excluded itself.
+
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
     an input the run never opens, gives results for files that are not the unit's.
     """
@@ -4051,6 +4138,7 @@ def check_analysis_inputs_are_the_inputs(
         # round, answer 3), and so is the one encoding rule (2026-10-09): the declaration is missing, the record is not.
         choices, choice_evidence = _unattributed_choice_problems(provenance, csv_rows, unattributed)
         encoding_problems, encoding_evidence = _encoding_run_problems(provenance, csv_rows)
+        encoding_problems = [*encoding_problems, *_not_cid_hcd_problems(provenance, owner, csv_rows)]
         if choices or encoding_problems:
             report.add("INP-1", stage, INP1_TITLE, FAIL,
                        "What MS-DIAL will open is not what the lease's record lets it open: "
@@ -4169,6 +4257,9 @@ def check_analysis_inputs_are_the_inputs(
     # The one encoding rule of 2026-10-09, recomputed from its record, beside a declaration as without one.
     encoding_problems, encoding_evidence = _encoding_run_problems(provenance, csv_rows)
     problems.extend(encoding_problems)
+    # The CID/HCD-only rule of 2026-10-29: nothing named another fragmentation method runs, and nothing is kept out for
+    # it without evidence.
+    problems.extend(_not_cid_hcd_problems(provenance, owner, csv_rows))
     if len(own_candidates) - len(held) != len(csv_rows):
         problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
                         + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))

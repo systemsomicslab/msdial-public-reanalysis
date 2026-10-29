@@ -1849,7 +1849,9 @@ class Runner:
                 "accession": unit["accession"], "order_index": unit["order_index"], "role": "split_part",
                 "parent_unit_key": unit["unit_key"], "download_group_id": unit["download_group_id"],
                 "class_proposal_id": unit["class_proposal_id"], "class_kind": unit["class_kind"],
-                "instrument": unit["instrument"], "ion_mode": unit["ion_mode"], "workspace": str(workspace),
+                # A part split by polarity (a unit whose record says Both, 2026-10-29) runs in its own polarity.
+                "instrument": unit["instrument"],
+                "ion_mode": str(part.get("polarity") or "") or unit["ion_mode"], "workspace": str(workspace),
                 "manifest_path": str(part["manifest_path"]), "handoff_path": unit["handoff_path"],
                 "authorization_copy": str(copy), "raw_disposition": "deferred_to_parent",
             })

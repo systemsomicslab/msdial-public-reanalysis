@@ -53,7 +53,8 @@ UNITS = [
     ("uI", "MTBLS9", "LC-MS", "DDA", "Positive", "Unknown", "Agilent", 0, [("I.mzML", "raw", GB, "https://x/I.mzML")]),
     ("uJ", "MTBLS10", "GC-MS", "DDA", "Positive", "Unknown", "Agilent", None, [("J.mzML", "raw", GB, "https://x/J.mzML")]),
     ("uK", "MTBLS11", "LC-MS", "Unknown", "Positive", "Unknown", "Agilent", None, [("K.mzXML", "raw", GB, "https://x/K.mzXML")]),
-    ("uL", "MTBLS12", "LC-MS", "DDA", "Both", "Unknown", "Agilent", None, [("L.mzML", "raw", GB, "https://x/L.mzML")]),
+    # An ion mode the Catalog could not read: no pool admits it (Both is, since 2026-10-29).
+    ("uL", "MTBLS12", "LC-MS", "DDA", "Unknown", "Unknown", "Agilent", None, [("L.mzML", "raw", GB, "https://x/L.mzML")]),
     ("uM", "MTBLS13", "LC-MS", "DDA", "Positive", "Unknown", "Agilent", None, [("M.mzML", "raw", GB, "")]),
 ]
 
@@ -204,7 +205,7 @@ class PlanTests(unittest.TestCase):
         })
         planned = [unit["unit_id"] for unit in manifest["units"]]
         self.assertEqual(sorted(planned), ["uA", "uB", "uC"])
-        self.assertEqual(manifest["totals"]["selected_units"], 9, "untargeted, GC-MS, Both and Unknown are not selected")
+        self.assertEqual(manifest["totals"]["selected_units"], 9, "untargeted, GC-MS, an unknown ion mode and Unknown acquisition are not selected")
         self.assertEqual(abs(planned.index("uB") - planned.index("uC")), 1, "a download group's units run one after another")
         units = {unit["unit_id"]: unit for unit in manifest["units"]}
         self.assertEqual(units["uB"]["group_id"], units["uC"]["group_id"])

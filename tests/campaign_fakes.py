@@ -591,8 +591,10 @@ class FakeInteractive:
                     "split_from": {"analysis_unit_id": unit, "manifest_path": manifest_path},
                 })
             self.world.scripts.setdefault(part, UnitScript())
+            # A part split by polarity carries it, as Interactive's split key names it (dda-pos, dda-neg).
+            polarity = {"pos": "Positive", "neg": "Negative"}.get(mode.rsplit("-", 1)[-1].casefold(), "")
             parts.append({"analysis_unit_id": part, "workspace": str(part_workspace), "manifest_path": str(part_manifest),
-                          "acquisition_mode": mode})
+                          "acquisition_mode": mode, **({"polarity": polarity} if polarity else {})})
             self.split_parts.setdefault(manifest_path, [])
             if str(part_manifest) not in self.split_parts[manifest_path]:
                 self.split_parts[manifest_path].append(str(part_manifest))
