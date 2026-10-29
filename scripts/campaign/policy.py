@@ -628,6 +628,26 @@ DECLARED_INPUTS_UNSUPPORTED = "declared_inputs_unsupported_format"
 DOWNLOAD_EXCLUDE_UNSTATED = "download_exclude"
 
 
+# A CONSOLE START REFUSED FOR THE UNIT'S OWN DATA (user decision, 2026-10-29). Interactive's run validation refuses a
+# SCIEX .wiff whose .wiff.scan is not beside it (validation_error, "WIFF.SCAN is not accessible next to ..."): MB-POST
+# MPST000063 deposited none, and a retry finds the same files. Interactive 0.5.53 excludes such an input at the
+# disposition (vendor_companion_missing); a unit preflighted before it, or a companion lost since, is excluded here at
+# the start, never retried. The texts are Interactive's validation messages whose cause lies in the data.
+CONSOLE_START_DATA_DEFECTS = (("WIFF.SCAN is not accessible next to", "vendor_companion_missing"),)
+
+
+def console_start_exclusion(result: Any) -> dict[str, Any] | None:
+    """{"reason", "detail"} where a Console start was refused for the unit's own data (CONSOLE_START_DATA_DEFECTS):
+    the unit is excluded, not failed and not retried. None for anything else."""
+    if not isinstance(result, Mapping) or result.get("ok") is not False or result.get("reason") != "validation_error":
+        return None
+    text = str(result.get("detail") or "")
+    for marker, reason in CONSOLE_START_DATA_DEFECTS:
+        if marker in text:
+            return {"reason": reason, "detail": text[:500]}
+    return None
+
+
 def download_exclusion(detail: Mapping[str, Any]) -> dict[str, Any] | None:
     """{"reason", "inputs"} when Interactive's failed-lease record excludes the unit, else None.
 

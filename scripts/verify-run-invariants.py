@@ -4966,11 +4966,107 @@ MULTI_ENERGY_AIF_CONSOLE_MARKERS = ("The collision-energy files of ", " nor a co
 # Interactive compares collision energies to 0.1 eV (raw_metadata_preflight.COLLISION_ENERGY_DECIMALS).
 COLLISION_ENERGY_DECIMALS = 1
 SANCTIONED_ACQUISITION_MAPPINGS: dict[tuple[str, str], str] = {("AIF", "SWATH"): AIF_AS_SWATH_FIELD}
+# A FILE NAME'S POLARITY (user decision, 2026-10-29; FILE_NAME_POLARITY_RULE), held identical in Interactive
+# (raw_metadata_preflight.py) and the gate. Read only for an input whose raw header could not be read
+# (unsupported_format: the pinned extractor opens no ZenoTOF .wiff2), in a unit whose declaration names no single
+# polarity. The base name only, never a folder: a whole token pos, positive, neg or negative (between _ - . and
+# spaces), or ESI+ / ESI- / (+) / (-). A pos/neg token beside a control, ctrl, blank or QC token names a sample
+# (Neg_Ctrl_1), not a polarity. A name that states both polarities, or neither, states none.
+FILE_NAME_POLARITY_RULE = "unreadable_header_polarity_from_file_name_2026_10_29"
+FILE_NAME_POLARITY_TOKENS = {"pos": "Positive", "positive": "Positive", "neg": "Negative", "negative": "Negative"}
+FILE_NAME_POLARITY_SIGNS = r"(?<![A-Za-z0-9])ESI\s*([+-])|\(([+-])\)"
+FILE_NAME_POLARITY_EXEMPTING = frozenset({"control", "ctrl", "blank", "qc"})
+_FILE_NAME_POLARITY_SIGNS = re.compile(FILE_NAME_POLARITY_SIGNS, re.IGNORECASE)
+_FILE_NAME_TOKEN_SPLIT = re.compile(r"[_\-. ]+")
+_FILE_NAME_SUFFIXES = (".wiff2", ".wiff", ".mzml", ".mzxml", ".raw", ".lcd", ".d", ".abf", ".cdf")
+
+
+def file_name_polarity(path: object) -> tuple[str, str] | None:
+    """(polarity, the token that states it) from a path's base name, or None where it states none or both."""
+    name = re.split(r"[\\/]", str(path or "").rstrip("\\/"))[-1]
+    for suffix in _FILE_NAME_SUFFIXES:
+        if name.casefold().endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    found: dict[str, str] = {}
+    for match in _FILE_NAME_POLARITY_SIGNS.finditer(name):
+        sign = match.group(1) or match.group(2)
+        found.setdefault("Positive" if sign == "+" else "Negative", match.group(0))
+    tokens = [token for token in _FILE_NAME_TOKEN_SPLIT.split(_FILE_NAME_POLARITY_SIGNS.sub(" ", name)) if token]
+    folded = [token.casefold() for token in tokens]
+    for index, token in enumerate(folded):
+        polarity = FILE_NAME_POLARITY_TOKENS.get(token)
+        if polarity is None:
+            continue
+        if any(neighbour in FILE_NAME_POLARITY_EXEMPTING for neighbour in folded[max(index - 1, 0):index + 2]):
+            continue
+        found.setdefault(polarity, tokens[index])
+    if len(found) != 1:
+        return None
+    ((polarity, token),) = found.items()
+    return polarity, token
+
+POLARITY_SOURCE_FILE_NAME = "file_name"
+
+
+def _polarity_basis(provenance: dict, records: dict[str, dict], csv_rows: list[dict], aliases: dict[str, str],
+                    dispositions: list[dict]) -> tuple[list[str], list[str]]:
+    """(failures, warnings) for the polarity of each row whose input's raw header could not be read
+    (unsupported_format), in a unit whose raw owner declares no single polarity. Such a row runs in a polarity only
+    on a recorded file-name inference (Interactive 0.5.53, FILE_NAME_POLARITY_RULE, user decision 2026-10-29): one
+    the binding disposition or the manifest records for its input, under that rule, whose polarity the gate reads
+    from the name again (file_name_polarity) and is the unit's ion mode. Nothing else stands in for a header:
+    a row with neither is a FAIL, and a row on an inference a WARN that names it."""
+    owner, _reason = _raw_owner_manifest(provenance)
+    owner = owner if isinstance(owner, dict) else provenance
+    if _declared_ion_mode(owner)[0]:
+        return [], []
+    inferences: dict[str, dict] = {}
+    for source in [*dispositions, provenance, owner]:
+        for item in (source.get("polarity_inferences") or []) if isinstance(source, dict) else []:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                inferences.setdefault(_path_key(item["path"]), item)
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    run_mode = str(project.get("ion_mode") or "").strip()
+    failures: list[str] = []
+    warnings: list[str] = []
+    for row in csv_rows:
+        key = _input_key(row, aliases)
+        record = records.get(key) if key else None
+        if not isinstance(record, dict) or str(record.get("outcome") or "") != "unsupported_format":
+            continue
+        if str(record.get("polarity") or "").strip() in ("Positive", "Negative"):
+            continue
+        path = str(record.get("file") or row.get("file_path") or "")
+        name = Path(path.replace("\\", "/")).name or str(row.get("file_name") or "")
+        item = inferences.get(key) or inferences.get(_path_key(path))
+        if item is None:
+            failures.append(f"{name}: its raw header could not be read, its unit declares no single polarity, and no "
+                            "file-name polarity inference is recorded for it")
+            continue
+        read = file_name_polarity(path)
+        problem = ("it is recorded from another source than its file name"
+                   if item.get("polarity_source") != POLARITY_SOURCE_FILE_NAME else
+                   f"it is recorded under {item.get('rule')!r}, not {FILE_NAME_POLARITY_RULE}"
+                   if item.get("rule") != FILE_NAME_POLARITY_RULE else
+                   "its name states no single polarity" if read is None else
+                   f"its name states {read[0]}, not the recorded {item.get('polarity')}"
+                   if read[0] != item.get("polarity") else
+                   f"the unit runs as {run_mode}" if run_mode in ("Positive", "Negative") and run_mode != read[0] else "")
+        if problem:
+            failures.append(f"{name}: its polarity inference does not hold: {problem}")
+        else:
+            warnings.append(f"{name}: its raw header could not be read, and its polarity {read[0]} is its file name's "
+                            f"token {read[1]!r}, recorded as an inference ({FILE_NAME_POLARITY_RULE})")
+    return failures, warnings
+
+
 ACQ1_SOURCES = {
     "header": "from headers", "declaration": "from the repository declaration",
     "folded_ms1_only": "MS1-only folded into DDA", "unresolved": "with no Console type resolved",
     "unsettled": "DIA with its scheme unsettled", "other": "from another source", "no_record": "with no header record",
     "sanctioned": f"AIF run as SWATH under {AIF_AS_SWATH_RULE}",
+    "polarity_from_file_name": f"with a polarity read from the file name ({FILE_NAME_POLARITY_RULE})",
 }
 
 
@@ -5369,13 +5465,17 @@ def check_acquisition_type_is_the_headers(
     multi_rows: "list[tuple[str, tuple[float, ...] | None, str, str]]" = []
     multi_failures: list[str] = []
 
+    polarity_failures: list[str] = []
+
     def refuse(**evidence) -> None:
-        typed = len(failures) - unparsed - len(multi_failures)
+        typed = len(failures) - unparsed - len(multi_failures) - len(polarity_failures)
         parts = ([f"{unparsed} carry an acquisition_type other than {domain_text}"] if unparsed else []) + (
             [f"{typed} would be deconvoluted as an acquisition type their header does not give"]
             if typed > 0 else []) + (
             [f"{len(multi_rows)} run as multi-energy AIF where the records or the Console do not allow it"]
-            if multi_failures else [])
+            if multi_failures else []) + (
+            [f"{len(polarity_failures)} run in a polarity no header, single declaration or recorded file-name "
+             "inference gives"] if polarity_failures else [])
         report.add("ACQ-1", stage, ACQ1_TITLE, FAIL,
                    f"Of the {len(rows)} row(s), " + " and ".join(parts) + ", which completes, validates and is wrong: "
                    + "; ".join(failures[:3]) + ".",
@@ -5521,6 +5621,13 @@ def check_acquisition_type_is_the_headers(
                             f"acquisition type, so its {value} rests on something other than the raw headers")
         else:
             sources["header"] += 1
+    # The polarity of an input whose header could not be read: a recorded file-name inference, or nothing (2026-10-29).
+    refused_polarity, inferred_polarity = _polarity_basis(provenance, records, csv_rows, aliases, dispositions)
+    polarity_failures.extend(refused_polarity)
+    failures.extend(refused_polarity)
+    warnings.extend(inferred_polarity)
+    if inferred_polarity:
+        sources["polarity_from_file_name"] += len(inferred_polarity)
     evidence = {"basis": dict(basis), "sources": dict(sources), "extractor_records": len(extracted)}
     overrides = [entry for entry in decisions.values() if str(entry.get("basis") or "") == "header"]
     if overrides:
