@@ -83,8 +83,20 @@ class TheNameRuleIsInteractives(unittest.TestCase):
                      "FILE_NAME_POLARITY_EXEMPTING"):
             self.assertEqual(getattr(interactive, name), getattr(gate, name), name)
         for name in ("241202_Tomita_18_neg.wiff2", "S_Pos.wiff", "S1_ESI+.wiff2", "S1(-).raw", "x_pos_neg.raw",
-                     "Neg_Ctrl_1.raw", "QC_pos_1.wiff2", "S1.wiff2", "pos/S1.wiff2", "position_1.raw"):
+                     "Neg_Ctrl_1.raw", "QC_pos_1.wiff2", "S1.wiff2", "pos/S1.wiff2", "position_1.raw",
+                     # The review of #86: M1, L1 and L2's example names.
+                     "LC-ESI-QTOF_S1.wiff2", "S1_ESI-MS_pos.wiff2", "S1(-)MS.raw", "S1_ESI-_2.wiff2",
+                     "QC_pos_01.wiff2", "pos_QC.wiff2", "Blank_neg_1.wiff2", "S_pos_control.wiff2"):
             self.assertEqual(interactive.file_name_polarity(name), gate.file_name_polarity(name), name)
+        root = "D:/w/raw/data"
+        for path in (f"{root}/POS/ER_neg_01.wiff2", f"{root}/NEG/ER_neg_01.wiff2", f"{root}/POS/ER_pos_01.wiff2",
+                     "D:/POS/w/ER_neg_01.wiff2"):
+            self.assertEqual(interactive.file_name_polarity_reading(path, root),
+                             gate.file_name_polarity_reading(path, root), path)
+        self.assertEqual(gate.file_name_polarity("LC-ESI-QTOF_S1.wiff2"), None)
+        self.assertEqual(gate.file_name_polarity("S1_ESI-MS_pos.wiff2"), ("Positive", "pos"))
+        self.assertEqual(gate.file_name_polarity("QC_pos_01.wiff2"), ("Positive", "pos"))
+        self.assertIsNone(gate.file_name_polarity(f"{root}/POS/ER_neg_01.wiff2", root))
 
 
 class ACQ1AcceptsOnlyARecordedFileNameInference(unittest.TestCase):
@@ -135,6 +147,31 @@ class ACQ1AcceptsOnlyARecordedFileNameInference(unittest.TestCase):
         self.assertEqual(gate.FAIL, check.status)
         self.assertIn("the unit runs as Positive", check.detail)
 
+    def test_outside_a_campaign_nothing_is_judged(self) -> None:
+        # Review of #86, M2: an accession-level run, no Catalog handoff and no binding disposition.
+        manifest, rows = self.unit(None)
+        manifest.pop("campaign_disposition")
+        manifest["project"].pop("repository_metadata")
+        check = self.acq1(manifest, rows)
+
+        self.assertNotEqual(gate.FAIL, check.status, check.detail)
+
+    def test_a_folder_that_states_the_other_polarity_fails_the_inference(self) -> None:
+        manifest, rows = self.unit(dict(self.INFERENCE))
+        manifest["input_directory"] = r"D:\w"
+        check = self.acq1(manifest, rows)
+        self.assertNotEqual(gate.FAIL, check.status, "raw/data names no polarity")
+
+        path = r"D:\w\POS\241202_Tomita_18_neg.wiff2"
+        manifest, rows = self.unit({**self.INFERENCE, "path": path})
+        manifest["input_directory"] = r"D:\w"
+        manifest["raw_metadata_preflight"]["summary"]["per_file"][0]["file"] = path
+        manifest["input_candidates"] = [path]
+        rows[0]["file_path"] = path
+        check = self.acq1(manifest, rows)
+        self.assertEqual(gate.FAIL, check.status)
+        self.assertIn("its name states no single polarity", check.detail)
+
     def test_a_single_declared_polarity_needs_no_inference(self) -> None:
         check = self.acq1(*self.unit(None, declared="Negative"))
 
@@ -181,6 +218,21 @@ class ELIG1AcceptsOnlyARecordedUntargetedInference(unittest.TestCase):
                 check = self.elig1(warnings, inference)
                 self.assertEqual(gate.FAIL, check.status)
                 self.assertIn(words, check.detail)
+
+
+class TheEncodingRuleAcceptsAWiffWithoutItsScanAsUnreadable(unittest.TestCase):
+    """Review of #86, L3: Interactive 0.5.53's lease passes over a .wiff without its .wiff.scan for its sample's next
+    encoding, unused as vendor_companion_missing; the gate's recomputation of the rule takes that reason for a vendor
+    file only."""
+
+    def problems(self, used: str, unused: list[tuple[str, str]]) -> list[str]:
+        choice = {"rule": "one_encoding_per_sample_2026_10_09", "used": used,
+                  "unused": [{"path": path, "reason": reason} for path, reason in unused]}
+        return gate._encoding_rule_problems(gate._read_encoding_choice(choice, "test"), True)
+
+    def test_the_reason_holds_for_a_vendor_file_only(self) -> None:
+        self.assertEqual([], self.problems("S1.mzML", [("S1.wiff", "vendor_companion_missing")]))
+        self.assertTrue(self.problems("S1.wiff", [("S1.mzML", "vendor_companion_missing")]))
 
 
 if __name__ == "__main__":
