@@ -2313,8 +2313,10 @@ INP1_TITLE = "Each declared analysis input is one input candidate and one CSV ro
 # reason fragmentation_not_cid_hcd, the methods and the evidence (its file name, an mzML's activation terms, a
 # converted mzXML's activationMethod); absence of evidence means run. INP-1 holds both sides of it in a campaign unit
 # (_not_cid_hcd_problems): no input that reaches the run has a file name naming such a method, by the same whole-token
-# rule (a run of eight or more hexadecimal digits names nothing), and no input was kept out for it without evidence
-# that holds: a name that names one, or a method its header gave. No vendor header records the method (the SCIEX
+# rule (a run of eight or more hexadecimal digits names nothing) on an instrument that could perform it (instrument_can:
+# the unit's instrument, as its Catalog handoff records it, matches the method's capable families, or names a capable
+# vendor and no model, or none is recorded), and no input was kept out for it without evidence that holds: such a
+# name, or a method its header gave. An instrument's model name is no evidence of a method. No vendor header records the method (the SCIEX
 # Wiff2Reader writes CID for every spectrum), so the gate infers none.
 NOT_CID_HCD = "fragmentation_not_cid_hcd"
 NON_CID_METHODS = ("EAD", "OAD", "ECD", "ETD", "EThcD", "ETciD", "NETD", "EDD", "EID", "UVPD", "IRMPD")
@@ -2324,6 +2326,47 @@ _NON_CID_CANONICAL = {name.casefold(): name for name in NON_CID_METHODS}
 _ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
 _HEX_RUN = re.compile(r"[0-9A-Fa-f]{8,}")
 NOT_CID_HCD_HEADER_EVIDENCE = ("mzml_activation", "mzxml_activation_method")
+# WHICH INSTRUMENTS CAN FRAGMENT SO (user decision, 2026-10-29), as Interactive's fragmentation.METHOD_INSTRUMENTS
+# holds it, and the tests hold the three copies (plan, gate, Interactive) identical. A file name's token counts only
+# where the unit's instrument matches the method's capable families, or names a capable vendor and no model (a model is
+# a word with a digit, or one of INSTRUMENT_MODEL_WORDS), or no instrument is recorded (UNRECORDED_INSTRUMENTS).
+_TRIBRID = r"fusion|lumos|eclipse|ascend|tribrid"
+_FTICR = r"ft\s*-?\s*icr|fticr|solarix|\bapex\b"
+_ETD_CAPABLE = _TRIBRID + r"|\betd\b"
+METHOD_INSTRUMENTS = {
+    "EAD": {"capable": r"zeno\s*-?\s*tof|\b[78]600\b", "vendors": r"sciex|applied biosystems"},
+    "OAD": {"capable": r"lcms\s*-?\s*90[35]0|\b90[35]0\b", "vendors": r"shimadzu"},
+    "ETD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "EThcD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "ETciD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "NETD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "ECD": {"capable": _FTICR + r"|\bexd\b|\becd\b|6545\s*xt", "vendors": r"bruker|agilent"},
+    "EDD": {"capable": _FTICR, "vendors": r"bruker"},
+    "EID": {"capable": _FTICR + r"|\bexd\b", "vendors": r"bruker|agilent"},
+    "UVPD": {"capable": _TRIBRID + r"|\buvpd\b", "vendors": r"thermo"},
+    "IRMPD": {"capable": _FTICR + r"|ion\s*trap|\bltq\b|\blcq\b|amazon|esquire|\bhct\b|\bqtrap\b|\birmpd\b",
+              "vendors": r"bruker|thermo"},
+}
+INSTRUMENT_MODEL_WORDS = (
+    r"\d|exactive|orbitrap|tripletof|qtrap|synapt|xevo|vion|impact|maxis|timstof|compact|\bltq\b|\blcq\b|velos|"
+    r"elite|fusion|lumos|eclipse|ascend|exploris|astral|zeno|solarix|\bapex\b|q-?tof|\btof\b|ion\s*trap|amazon|"
+    r"esquire|\bhct\b|fticr|ft-icr"
+)
+UNRECORDED_INSTRUMENTS = ("", "unknown", "not available", "n/a", "na", "none", "-", "ms", "lc-ms", "lc/ms", "lcms",
+                          "mass spectrometer", "mass spectrometry")
+
+
+def instrument_can(method: str, instrument: object) -> bool:
+    """Whether a file name's method token is credible on this instrument (METHOD_INSTRUMENTS); True where none is
+    recorded, or the method has no row."""
+    text = " ".join(str(instrument or "").split())
+    if text.casefold().strip(" .") in UNRECORDED_INSTRUMENTS:
+        return True
+    row = METHOD_INSTRUMENTS.get(method)
+    if row is None or re.search(row["capable"], text, re.IGNORECASE):
+        return True
+    return bool(re.search(row["vendors"], text, re.IGNORECASE)) and not re.search(
+        INSTRUMENT_MODEL_WORDS, text, re.IGNORECASE)
 
 
 def _name_methods(path: str) -> list[str]:
@@ -2341,6 +2384,21 @@ def _name_methods(path: str) -> list[str]:
     return found
 
 
+def _credible_name_methods(path: str, instrument: str) -> list[str]:
+    """The methods a path's name names that the unit's instrument could perform (instrument_can): a name's token on an
+    instrument that could not is not credible there, and is no evidence (user decision, 2026-10-29)."""
+    return [method for method in _name_methods(path) if instrument_can(method, instrument)]
+
+
+def _unit_instrument(manifest: dict | None) -> str:
+    """The unit's instrument as its Catalog handoff's technical settings record it, as Interactive's lease read it."""
+    project = (manifest or {}).get("project") if isinstance((manifest or {}).get("project"), dict) else {}
+    metadata = project.get("repository_metadata") if isinstance(project.get("repository_metadata"), dict) else {}
+    handoff = metadata.get("catalog_handoff") if isinstance(metadata.get("catalog_handoff"), dict) else {}
+    settings = handoff.get("technical_settings") if isinstance(handoff.get("technical_settings"), dict) else {}
+    return str(settings.get("instrument") or "").strip()
+
+
 def _campaign_unit(manifest: dict | None) -> bool:
     """Whether a unit's manifest records a campaign's authorization, under which the CID/HCD-only rule holds."""
     authorizations = (manifest or {}).get("campaign_authorizations")
@@ -2355,11 +2413,14 @@ def _not_cid_hcd_problems(provenance: dict, owner: dict | None, csv_rows: list[d
     if not (_campaign_unit(owner) or _campaign_unit(provenance)):
         return []
     problems = []
+    # A name counts only where the raw owner's instrument, as its lease read it, could fragment so.
+    instrument = _unit_instrument(owner) or _unit_instrument(provenance)
     # The candidates, which the lease built after it kept such inputs out, and what each CSV row names.
     candidates = provenance.get("input_candidates")
     reaching = [str(item) for item in candidates] if isinstance(candidates, list) else []
     reaching += [str(row.get("file_path") or row.get("file_name") or "") for row in csv_rows or []]
-    names = {Path(item.replace("\\", "/")).name: _name_methods(item) for item in reaching if _name_methods(item)}
+    names = {Path(item.replace("\\", "/")).name: _credible_name_methods(item, instrument)
+             for item in reaching if _credible_name_methods(item, instrument)}
     named = list(names.items())
     if named:
         problems.append(
@@ -2374,7 +2435,7 @@ def _not_cid_hcd_problems(provenance: dict, owner: dict | None, csv_rows: list[d
             path = str(item.get("path") or "")
             evidence = str(item.get("evidence") or "")
             methods = item.get("methods") if isinstance(item.get("methods"), list) else []
-            if evidence == "file_name" and _name_methods(path):
+            if evidence == "file_name" and _credible_name_methods(path, instrument):
                 continue
             if evidence in NOT_CID_HCD_HEADER_EVIDENCE and methods:
                 continue

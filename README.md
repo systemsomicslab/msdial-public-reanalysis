@@ -506,9 +506,16 @@ and the rest of the unit runs. And only CID/HCD data run, since every reference
 spectrum is CID/HCD-derived (rule `cid_hcd_only_2026_10_29`): the plan excludes
 a unit as `fragmentation_not_cid_hcd` where its own evidence names another
 fragmentation method (EAD, OAD, ECD, ETD, EThcD, EID, UVPD, IRMPD and the like)
-in its label, instrument, unit evidence, every sample row, or every analysis
-file name, read as the ion-mobility option A reads evidence (the study's text,
-or an attribute every unit of a study carries alike, never excludes a unit). A
+in its label, unit evidence, every sample row, or every analysis file name,
+read as the ion-mobility option A reads evidence (the study's text, or an
+attribute every unit of a study carries alike, never excludes a unit). An
+instrument's model name ("LTQ Orbitrap Velos ETD") is no evidence, and a file
+name counts only where the unit's instrument could fragment so, or none is
+recorded (`METHOD_INSTRUMENTS`, one table in the plan, the gate and
+Interactive); otherwise it is recorded as not credible on that instrument. A
+sample row's name (an Extract Name "AA_EAD_A_1") is held to the instrument as a
+file name is; a row field that states the method ("Fragmentation method: OAD"),
+the label and the unit's evidence are not. A
 unit only some of whose files are named so is planned with a
 `fragmentation_reading`, needs Interactive 0.5.52 or later, and that
 Interactive's campaign lease keeps those files out with their evidence (also an

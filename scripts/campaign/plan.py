@@ -47,9 +47,14 @@ listed with its reason:
   there, so the siblings of a unit a campaign touched are planned as before;
 - fragmentation_not_cid_hcd: CID/HCD only (user decision, 2026-10-29). Every reference spectrum is CID/HCD-derived,
   so a unit is excluded where its OWN evidence names another fragmentation method (EAD, OAD, ECD, ETD, EThcD, EID,
-  UVPD, IRMPD or the like), read as the ion-mobility option A reads its evidence: the unit's label, its instrument,
-  its analysis_unit_evidence, every one of its sample rows' attributes, or every one of its analysis files' names
-  (fragmentation_reading). The study's text alone never excludes a unit, since one study can hold EAD and CID units
+  UVPD, IRMPD or the like), read as the ion-mobility option A reads its evidence: the unit's label, its
+  analysis_unit_evidence, every one of its sample rows' attributes, or every one of its analysis files' names
+  (fragmentation_reading). An instrument's model name is no evidence ("LTQ Orbitrap Velos ETD" says what the
+  instrument can do, not what was done), so no instrument field is read for a method; a file name's token counts
+  only where the unit's instrument could fragment so, or none is recorded (instrument_can, METHOD_INSTRUMENTS), and
+  is otherwise recorded as not credible on that instrument (MTBLS2372's "AA_EAD_A_1.raw" on a Thermo Exactive). So is
+  a sample row's name (MTBLS2372's Extract Name "AA_EAD_A_1"); a row field that states the method ("Fragmentation
+  method: OAD"), the label and the unit's evidence are explicit statements, which no instrument is asked to confirm. The study's text alone never excludes a unit, since one study can hold EAD and CID units
   (MPST000010: unit 86f50459 is "EAD (14 eV)", its siblings CID or OAD): a study-level field (keywords, title,
   description, ...), or an attribute every unit of a study of several units carries alike, is study text. Absence
   of evidence means run. Where only some of a unit's files or sample rows name another method, the unit is planned
@@ -577,6 +582,54 @@ _WORD_METHOD = {"electron activated": "EAD", "oxygen attachment": "OAD", "electr
                 "infrared multiphoton": "IRMPD"}
 _ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
 _HEX_RUN = re.compile(r"[0-9A-Fa-f]{8,}")
+# An instrument field names a model, which says what the instrument can do, never what was done (2026-10-29).
+INSTRUMENT_FIELD = re.compile(r"instrument", re.IGNORECASE)
+# A sample-row field that states how the ions were fragmented ("analyticalCondition / Fragmentation method"): its
+# value is an explicit statement of the method, which no instrument is asked to confirm. Any other field's value (a
+# sample, extract or assay name, a preset name) is held to the instrument as a file name is (instrument_can).
+METHOD_STATEMENT_FIELD = re.compile(r"fragment|dissociation|activation|collision", re.IGNORECASE)
+# WHICH INSTRUMENTS CAN FRAGMENT SO (user decision, 2026-10-29), as Interactive's fragmentation.METHOD_INSTRUMENTS
+# holds it, and the tests hold the three copies (plan, gate, Interactive) identical. A file name's token counts only
+# where the unit's instrument matches the method's capable families, or names a capable vendor and no model (a model is
+# a word with a digit, or one of INSTRUMENT_MODEL_WORDS), or no instrument is recorded (UNRECORDED_INSTRUMENTS).
+_TRIBRID = r"fusion|lumos|eclipse|ascend|tribrid"
+_FTICR = r"ft\s*-?\s*icr|fticr|solarix|\bapex\b"
+_ETD_CAPABLE = _TRIBRID + r"|\betd\b"
+METHOD_INSTRUMENTS = {
+    "EAD": {"capable": r"zeno\s*-?\s*tof|\b[78]600\b", "vendors": r"sciex|applied biosystems"},
+    "OAD": {"capable": r"lcms\s*-?\s*90[35]0|\b90[35]0\b", "vendors": r"shimadzu"},
+    "ETD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "EThcD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "ETciD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "NETD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "ECD": {"capable": _FTICR + r"|\bexd\b|\becd\b|6545\s*xt", "vendors": r"bruker|agilent"},
+    "EDD": {"capable": _FTICR, "vendors": r"bruker"},
+    "EID": {"capable": _FTICR + r"|\bexd\b", "vendors": r"bruker|agilent"},
+    "UVPD": {"capable": _TRIBRID + r"|\buvpd\b", "vendors": r"thermo"},
+    "IRMPD": {"capable": _FTICR + r"|ion\s*trap|\bltq\b|\blcq\b|amazon|esquire|\bhct\b|\bqtrap\b|\birmpd\b",
+              "vendors": r"bruker|thermo"},
+}
+INSTRUMENT_MODEL_WORDS = (
+    r"\d|exactive|orbitrap|tripletof|qtrap|synapt|xevo|vion|impact|maxis|timstof|compact|\bltq\b|\blcq\b|velos|"
+    r"elite|fusion|lumos|eclipse|ascend|exploris|astral|zeno|solarix|\bapex\b|q-?tof|\btof\b|ion\s*trap|amazon|"
+    r"esquire|\bhct\b|fticr|ft-icr"
+)
+UNRECORDED_INSTRUMENTS = ("", "unknown", "not available", "n/a", "na", "none", "-", "ms", "lc-ms", "lc/ms", "lcms",
+                          "mass spectrometer", "mass spectrometry")
+
+
+def instrument_can(method: str, instrument: Any) -> bool:
+    """Whether a file name's method token is credible on this instrument (METHOD_INSTRUMENTS); True where none is
+    recorded, or the method has no row."""
+    text = " ".join(str(instrument or "").split())
+    if text.casefold().strip(" .") in UNRECORDED_INSTRUMENTS:
+        return True
+    row = METHOD_INSTRUMENTS.get(method)
+    if row is None or re.search(row["capable"], text, re.IGNORECASE):
+        return True
+    return bool(re.search(row["vendors"], text, re.IGNORECASE)) and not re.search(
+        INSTRUMENT_MODEL_WORDS, text, re.IGNORECASE)
+
 # A sample-attribute or evidence field that is the study's text, never the unit's (the study's keywords, title,
 # description, abstract, summary, publication).
 STUDY_TEXT_FIELD = re.compile(r"keyword|title|description|abstract|summary|publication", re.IGNORECASE)
@@ -636,7 +689,8 @@ def unit_evidence_rows(connection: sqlite3.Connection, unit_id: str) -> list[tup
 def unread_fragmentation(problem: str) -> dict[str, Any]:
     """The reading of a unit whose Catalog record could not be read: never excluded for its fragmentation method."""
     return {"excluded": False, "evidence": "not_read", "signal": False, "methods": [], "named_files": [],
-            "analysis_files": 0, "named_samples": 0, "samples": 0, "sources": [],
+            "not_credible_files": 0, "instrument": "", "analysis_files": 0, "named_samples": 0, "samples": 0,
+            "sources": [],
             "detail": f"not read: the Catalog's record of the unit could not be read ({_clip(problem, 160)}), so it is "
                       "not excluded for its fragmentation method; Interactive's lease reads each file's name"}
 
@@ -647,8 +701,10 @@ def fragmentation_reading(
 ) -> dict[str, Any]:
     """Whether the unit is excluded for its fragmentation method, read from its own evidence (CID/HCD only, 2026-10-29).
 
-    The unit's label, its instrument and its analysis_unit_evidence values (`evidence_rows`, a study-text field
-    aside) speak for the whole unit; a sample row's attributes for that row, and a file's name for that file. The
+    The unit's label and its analysis_unit_evidence values (`evidence_rows`, a study-text or instrument field aside)
+    speak for the whole unit; a sample row's attributes (an instrument field aside) for that row, and a file's name
+    for that file, where the unit's instrument could fragment so (instrument_can). A row field that states the
+    method (METHOD_STATEMENT_FIELD) is not held to the instrument; any other row field, a name, is. The
     unit is excluded where the first name a method, or every sample row does, or every analysis file's name does.
     An attribute in `study_shared` (study_shared_attributes, read only where a row names a method) or of a
     study-text field is the study's text, and decides nothing. Returns {"excluded", "evidence" ("catalog"),
@@ -662,13 +718,12 @@ def fragmentation_reading(
             if name not in methods:
                 methods.append(name)
 
-    for field, value in (("label", record.get("label")), ("instrument", record.get("instrument"))):
-        found = methods_named(value, words=True)
-        if found:
-            note(found)
-            unit_sources.append(f"{field}: {_clip(value, 80)}")
+    found = methods_named(record.get("label"), words=True)
+    if found:
+        note(found)
+        unit_sources.append(f"label: {_clip(record.get('label'), 80)}")
     for _source, field, value in evidence_rows:
-        if STUDY_TEXT_FIELD.search(field):
+        if STUDY_TEXT_FIELD.search(field) or INSTRUMENT_FIELD.search(field):
             continue
         found = methods_named(value, words=True)
         if found:
@@ -681,9 +736,13 @@ def fragmentation_reading(
     for sample in samples:
         hits = []
         for field, value in (sample.get("attributes") or {}).items():
-            if STUDY_TEXT_FIELD.search(str(field)):
+            if STUDY_TEXT_FIELD.search(str(field)) or INSTRUMENT_FIELD.search(str(field)):
                 continue
             found = methods_named(value, words=True)
+            if not METHOD_STATEMENT_FIELD.search(str(field)):
+                # A name or an identifier (Extract Name "AA_EAD_A_1"), not a statement of the method: held to the
+                # instrument as a file name is.
+                found = [method for method in found if instrument_can(method, record.get("instrument"))]
             if not found:
                 continue
             if shared is None:
@@ -703,9 +762,15 @@ def fragmentation_reading(
         inputs = [str(item.get("path") or "") for item in record.get("files") or []
                   if isinstance(item, Mapping) and str(item.get("role") or "") in ANALYSIS_ROLES]
     inputs = [item for item in inputs if item.strip()]
-    named_files = [item for item in inputs if file_name_methods(item)]
+    instrument = str(record.get("instrument") or "")
+
+    def credible(item: str) -> list[str]:
+        return [method for method in file_name_methods(item) if instrument_can(method, instrument)]
+
+    named_files = [item for item in inputs if credible(item)]
+    not_credible = [item for item in inputs if len(credible(item)) < len(file_name_methods(item))]
     for item in named_files:
-        note(file_name_methods(item))
+        note(credible(item))
     every_sample = bool(samples) and named_samples == len(samples)
     every_file = bool(inputs) and len(named_files) == len(inputs)
     excluded = bool(unit_sources) or every_sample or every_file
@@ -724,9 +789,16 @@ def fragmentation_reading(
         detail = (f"{', '.join(methods)}: " + "; ".join(parts) + (
             ". Every reference spectrum is CID/HCD-derived (user decision, 2026-10-29)" if excluded else
             ". Not the whole unit: the files named so are kept out by Interactive's lease, and the rest runs"))
+    if not_credible:
+        named_methods = sorted({method for item in not_credible for method in file_name_methods(item)})
+        detail += ("; " if detail else "") + (
+            f"{len(not_credible)} of its {len(inputs)} analysis file(s) are named {', '.join(named_methods)}, which "
+            f"its instrument ({_clip(instrument, 60)}) could not perform: not credible on this instrument, recorded "
+            "and not excluded")
     return {
-        "excluded": excluded, "evidence": "catalog", "signal": bool(methods), "methods": methods,
+        "excluded": excluded, "evidence": "catalog", "signal": bool(methods) or bool(not_credible), "methods": methods,
         "sources": unit_sources + sample_sources, "named_files": [] if excluded else named_files,
+        "not_credible_files": len(not_credible), "instrument": instrument,
         "analysis_files": len(inputs), "named_samples": named_samples, "samples": len(samples), "detail": detail,
     }
 
@@ -2094,6 +2166,8 @@ def _fragmentation_entry(reading: Mapping[str, Any]) -> dict[str, Any]:
         "rule": CID_HCD_ONLY_RULE, "evidence": reading.get("evidence"), "methods": list(reading.get("methods") or []),
         "named_files": len(files), "analysis_files": int(reading.get("analysis_files") or 0),
         "named_file_names": [Path(item.replace("\\", "/")).name for item in files[:20]],
+        "not_credible_files": int(reading.get("not_credible_files") or 0),
+        "instrument": str(reading.get("instrument") or ""),
         "named_samples": int(reading.get("named_samples") or 0), "samples": int(reading.get("samples") or 0),
         "detail": str(reading.get("detail") or ""),
     }
@@ -2356,8 +2430,9 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     if (manifest.get("selection") or {}).get("fragmentation_rule"):
         lines.append("  CID/HCD only (user decision, 2026-10-29): every reference spectrum is CID/HCD-derived, so a unit "
                      "whose own record, every sample row or every analysis file name names another fragmentation "
-                     "method is excluded, and a file named so is kept out by Interactive's lease; absence of evidence "
-                     "means run, and no vendor header records the method")
+                     "method is excluded, and a file named so is kept out by Interactive's lease; a file name counts "
+                     "only where the unit's instrument could fragment so, an instrument's model name is no evidence, "
+                     "absence of evidence means run, and no vendor header records the method")
     partly = [unit for unit in manifest.get("units") or [] if (unit.get("fragmentation_reading") or {}).get("named_files")]
     if partly:
         lines.append(f"  {len(partly)} planned unit(s) run without some files whose names name another fragmentation "

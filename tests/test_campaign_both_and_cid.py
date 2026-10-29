@@ -98,6 +98,15 @@ class NamesAreReadByAWholeToken(unittest.TestCase):
         self.assertEqual(gate.NON_CID_METHODS, fragmentation.NON_CID_METHODS)
         self.assertEqual((plan.NOT_CID_HCD, plan.CID_HCD_ONLY_RULE), (fragmentation.NOT_CID_HCD, fragmentation.CID_HCD_ONLY_RULE))
         self.assertEqual(gate.NOT_CID_HCD, fragmentation.NOT_CID_HCD)
+        # One capability table, in three places (user decision, 2026-10-29).
+        for module in (plan, gate):
+            self.assertEqual(module.METHOD_INSTRUMENTS, fragmentation.METHOD_INSTRUMENTS)
+            self.assertEqual(module.INSTRUMENT_MODEL_WORDS, fragmentation.INSTRUMENT_MODEL_WORDS)
+            self.assertEqual(module.UNRECORDED_INSTRUMENTS, fragmentation.UNRECORDED_INSTRUMENTS)
+        for method, instrument in (("EAD", "Thermo Scientific Exactive"), ("EAD", "Nexera/ZenoTof 7600"),
+                                   ("OAD", "LCMS-9030 Shimadzu"), ("ETD", "Thermo Fisher"), ("ECD", "Agilent 6545")):
+            self.assertEqual(fragmentation.instrument_can(method, instrument), plan.instrument_can(method, instrument))
+            self.assertEqual(fragmentation.instrument_can(method, instrument), gate.instrument_can(method, instrument))
         for name in ("a_EThcD_b.raw", "8ead4b2c9.raw", "x-UVPD.mzML", "S_oad_1.lcd"):
             self.assertEqual(fragmentation.methods_in_file_name(name), plan.file_name_methods(name))
 
@@ -176,6 +185,38 @@ class ThePlan(unittest.TestCase):
         self.assertIn("fragmentation_not_cid_hcd", manifest["selection"]["exclusion_reasons"])
         self.assertIn("CID/HCD only (user decision, 2026-10-29)", plan.summary_text(manifest, "sha256:" + "0" * 64))
 
+    def test_an_instruments_model_name_is_no_evidence(self) -> None:
+        # MTBLS196: "LTQ Orbitrap Velos ETD" in the unit's instrument, its evidence and every row says what the
+        # instrument can do, not what was done (user decision, 2026-10-29).
+        model = "Thermo Scientific LTQ Orbitrap Velos ETD"
+        add_files_unit(self.database, "velos", "MTBLS196X", ["F1.raw", "F2.raw"], instrument=model,
+                       rows={"Parameter Value[Instrument]": model}, evidence=(("Instrument", model),))
+        units = {unit["unit_id"]: unit for unit in self.manifest("declared")["units"]}
+
+        self.assertIn("velos", units)
+        self.assertNotIn("fragmentation_reading", units["velos"])
+
+    def test_a_name_the_instrument_could_not_produce_is_recorded_and_runs(self) -> None:
+        # MTBLS2372: "AA_EAD_A_n" files and rows on a Thermo Exactive; EAD there is a sample code.
+        files = ["FILES/RAW_FILES/AA_EAD_A_1.raw", "FILES/RAW_FILES/AA_EAD_A_2.raw"]
+        add_files_unit(self.database, "exactive", "MTBLS2372X", files, instrument="Thermo Scientific Exactive",
+                       rows={"Extract Name": "AA_EAD_A_1", "MS Assay Name": "AA_EAD_A_1"})
+        # A row that states the method is an explicit statement, which no instrument is asked to confirm.
+        add_files_unit(self.database, "stated", "MTBLS2372Y", ["S1.raw"], instrument="Thermo Scientific Exactive",
+                       rows={"analyticalCondition / Fragmentation method": "EAD"})
+        add_files_unit(self.database, "zeno", "MPST000096", ["Z_EAD14eV_1.wiff2", "Z_EAD14eV_2.wiff2"],
+                       instrument="Nexera/ZenoTof 7600")
+        manifest = self.manifest("declared")
+        units = {unit["unit_id"]: unit for unit in manifest["units"]}
+        exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+
+        reading = units["exactive"]["fragmentation_reading"]
+        self.assertEqual((0, 2, "Thermo Scientific Exactive"),
+                         (reading["named_files"], reading["not_credible_files"], reading["instrument"]))
+        self.assertIn("not credible on this instrument", reading["detail"])
+        self.assertEqual("fragmentation_not_cid_hcd", exclusions["zeno"]["reason"], "a ZenoTOF can fragment by EAD")
+        self.assertEqual("fragmentation_not_cid_hcd", exclusions["stated"]["reason"])
+
     def test_a_study_of_one_unit_whose_keywords_name_a_method_runs(self) -> None:
         add_files_unit(self.database, "solo", "MPST000099", ["S1.lcd", "S2.lcd"], rows={"keywords": "EAD, lipidomics"})
         manifest = self.manifest("declared")
@@ -196,7 +237,8 @@ class ThePlan(unittest.TestCase):
 
         self.assertEqual(
             {"rule": "cid_hcd_only_2026_10_29", "evidence": "catalog", "methods": ["OAD"], "named_files": 1,
-             "analysis_files": 3, "named_file_names": ["P_OAD_2.lcd"], "named_samples": 0, "samples": 3},
+             "analysis_files": 3, "named_file_names": ["P_OAD_2.lcd"], "not_credible_files": 0, "instrument": "",
+             "named_samples": 0, "samples": 3},
             {key: value for key, value in unit["fragmentation_reading"].items() if key != "detail"})
         self.assertIn("kept out by Interactive's lease", unit["fragmentation_reading"]["detail"])
         self.assertIn("1 planned unit(s) run without some files", plan.summary_text(manifest, "sha256:" + "0" * 64))
@@ -231,6 +273,18 @@ class TheGate(unittest.TestCase):
         problems = gate._not_cid_hcd_problems(manifest, manifest, [{"file_path": r"D:\w\S1.lcd"}])
         self.assertEqual(1, len(problems))
         self.assertIn("S4.wiff2 (evidence file_name)", problems[0])
+
+    def test_a_name_is_held_to_the_units_instrument(self) -> None:
+        handoff = {"repository_metadata": {"catalog_handoff": {"technical_settings": {
+            "instrument": "Thermo Scientific Exactive"}}}}
+        manifest = {**self.CAMPAIGN, "project": handoff, "input_candidates": [r"D:\w\AA_EAD_A_1.raw"],
+                    "excluded_input_candidates": [
+                        {"path": r"D:\w\AA_EAD_A_2.raw", "reason": "fragmentation_not_cid_hcd", "evidence": "file_name"}]}
+
+        problems = gate._not_cid_hcd_problems(manifest, manifest, [{"file_path": r"D:\w\AA_EAD_A_1.raw"}])
+
+        self.assertEqual(1, len(problems), "the running file is no problem; the one kept out on its name is")
+        self.assertIn("AA_EAD_A_2.raw (evidence file_name)", problems[0])
 
     def test_a_part_of_a_both_unit_is_grouped_as_its_lease_grouped_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
