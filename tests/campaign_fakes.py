@@ -591,8 +591,13 @@ class FakeInteractive:
                     "split_from": {"analysis_unit_id": unit, "manifest_path": manifest_path},
                 })
             self.world.scripts.setdefault(part, UnitScript())
+            # The shape msdial_split_repository_unit returns (Interactive 0.5.52): every part carries its polarity, ""
+            # where the split did not divide by it, and its split key; a mode named dda-pos or dda-neg is such a part.
+            polarity = {"pos": "Positive", "neg": "Negative"}.get(mode.rsplit("-", 1)[-1].casefold(), "")
             parts.append({"analysis_unit_id": part, "workspace": str(part_workspace), "manifest_path": str(part_manifest),
-                          "acquisition_mode": mode})
+                          "acquisition_mode": mode, "polarity": polarity,
+                          "split_key": {"acquisition": mode.split("-", 1)[0].upper(), "ion_mobility": False,
+                                        "polarity": polarity}})
             self.split_parts.setdefault(manifest_path, [])
             if str(part_manifest) not in self.split_parts[manifest_path]:
                 self.split_parts[manifest_path].append(str(part_manifest))

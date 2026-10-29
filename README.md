@@ -495,6 +495,45 @@ decision D-B: collected on Stage 1 before Stage 2 is decided); it needs the
 alignment candidate table, which a run writes only where its answers set
 `export_annotation_candidates` true.
 
+Two decisions of 2026-10-29 shape what a campaign selects and runs. A unit
+whose Catalog record says `Both` polarities is in the pools: Interactive reads
+each file's polarity from its raw header and splits the unit into
+single-polarity parts, which run like any other unit (each part's ledger row
+carries its own polarity); a file whose scans switch polarity inside the one
+file is excluded (`polarity_switching`, unresolved mixed polarity being outside
+the campaign's scope), one whose header gives none as `polarity_unresolved`,
+and the rest of the unit runs. And only CID/HCD data run, since every reference
+spectrum is CID/HCD-derived (rule `cid_hcd_only_2026_10_29`): the plan excludes
+a unit as `fragmentation_not_cid_hcd` where its own evidence names another
+fragmentation method (EAD, OAD, ECD, ETD, EThcD, EID, UVPD, IRMPD and the like)
+in its label, unit evidence, every sample row, or every analysis file name,
+read as the ion-mobility option A reads evidence (the study's text, or an
+attribute every unit of a study carries alike, never excludes a unit). An
+instrument's model name ("LTQ Orbitrap Velos ETD") is no evidence, and a file
+name counts only where the unit's instrument could fragment so, or none is
+recorded (`METHOD_INSTRUMENTS`, one table in the plan, the gate and
+Interactive); otherwise it is recorded as not credible on that instrument. A
+sample row's name (an Extract Name "AA_EAD_A_1") is held to the instrument as a
+file name is; a row field that states the method ("Fragmentation method: OAD"),
+the label and the unit's evidence are not. A
+unit only some of whose files are named so is planned with a
+`fragmentation_reading`, needs Interactive 0.5.52 or later, and that
+Interactive's campaign lease keeps those files out with their evidence (also an
+mzML's activation terms, or a converted mzXML's `activationMethod`); no vendor
+header records the method, and the SCIEX wiff2 reader's CID is no evidence.
+A sample row that states the method in only some rows plans the unit too, with
+the files of those rows listed to be kept out (Interactive's lease reads the
+same rows, evidence `sample_row`); a statement is never read as the study's
+text. An identifier (a GUID, an all-hexadecimal run of eight or holding a
+digit) names nothing. The plan refuses any Interactive before 0.5.52. Absence
+of evidence means run. INP-1 FAILs, blocking the run, a unit whose lease
+applied the rule (its record carries `fragmentation_check`) and whose
+candidates or CSV rows include a file named so or a sample whose row states the
+method, or whose lease kept an input out for it without evidence that holds; a
+lease before 0.5.52 is gated as it always was. CONV-1 leaves out the conversion
+of an input a binding disposition excluded (a Both unit's mzXML without
+polarity, excluded as `polarity_unresolved`).
+
 ## Running a campaign unattended
 
 Launch `scripts/campaign-runner.py run` for an unattended campaign through Task
