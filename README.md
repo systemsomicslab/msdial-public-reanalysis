@@ -544,7 +544,12 @@ ZenoTOF .wiff2) in a unit that runs on its declared acquisition and declares no
 single polarity, Interactive reads the input's polarity from one polarity
 token of its file name and records it (`polarity_inferences`,
 `unreadable_header_polarity_from_file_name_2026_10_29`); ACQ-1 FAILs a row of
-such an input that runs on anything else, and WARNs naming the inference.
+such an input that runs on anything else, and WARNs naming the inference. Such a unit,
+running on its declaration alone and declaring DDA, DIA, AIF or SWATH, is
+untargeted where its record leaves that unset
+(`untargeted_inferred_from_declared_acquisition`); ELIG-1 FAILs a campaign unit
+whose handoff leaves untargeted unset and whose disposition records neither
+that inference nor `untargeted_inferred_from_headers`.
 
 ## Running a campaign unattended
 

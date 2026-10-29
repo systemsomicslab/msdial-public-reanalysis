@@ -330,11 +330,60 @@ def check_unit_identity(report: Report, provenance: dict | None, reason: str) ->
 # eligibility
 # --------------------------------------------------------------------------------------------
 
+UNTARGETED_FROM_HEADERS = "untargeted_inferred_from_headers"
+UNTARGETED_FROM_DECLARED_ACQUISITION = "untargeted_inferred_from_declared_acquisition"
+UNTARGETED_DECLARED_MODES = frozenset({"DDA", "DIA", "AIF", "SWATH"})
+
+
+def _untargeted_basis_problem(provenance: dict) -> str:
+    """Why a campaign unit's untargeted status rests on nothing on record, or "".
+
+    Where the raw owner's Catalog handoff records untargeted as unset and the project says untargeted, a binding
+    campaign disposition must record the inference: from the headers (untargeted_inferred_from_headers), or, for a
+    unit that ran on its declaration alone (acquisition_declared_only), from its declared DDA, DIA, AIF or SWATH
+    acquisition (untargeted_inferred_from_declared_acquisition with its untargeted_inference; user decision,
+    2026-10-29). Nothing else stands for an unset declaration. A handoff that records no untargeted field at all,
+    and a unit outside a campaign, are not judged here."""
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    if project.get("untargeted") is not True:
+        return ""
+    owner, _reason = _raw_owner_manifest(provenance)
+    owner = owner if isinstance(owner, dict) else provenance
+    owner_project = owner.get("project") if isinstance(owner.get("project"), dict) else {}
+    metadata = owner_project.get("repository_metadata")
+    handoff = metadata.get("catalog_handoff") if isinstance(metadata, dict) else None
+    settings = handoff.get("technical_settings") if isinstance(handoff, dict) else None
+    if not isinstance(settings, dict) or "untargeted" not in settings or settings.get("untargeted") is not None:
+        return ""
+    dispositions = _binding_dispositions(provenance)
+    if not dispositions:
+        return ""
+    for disposition in dispositions:
+        warnings = set(disposition.get("warnings") or [])
+        if UNTARGETED_FROM_HEADERS in warnings:
+            return ""
+        inference = disposition.get("untargeted_inference")
+        if UNTARGETED_FROM_DECLARED_ACQUISITION in warnings:
+            mode = str((inference or {}).get("declared_acquisition_mode") or "").upper() if isinstance(inference, dict) else ""
+            if (isinstance(inference, dict) and inference.get("basis") == "declared_acquisition"
+                    and mode in UNTARGETED_DECLARED_MODES and "acquisition_declared_only" in warnings):
+                return ""
+            return (f"its campaign disposition records {UNTARGETED_FROM_DECLARED_ACQUISITION} without a declared-only "
+                    "run on a declared DDA, DIA, AIF or SWATH acquisition behind it")
+    return ("the repository leaves untargeted unset, the project says untargeted, and no campaign disposition records "
+            f"the inference ({UNTARGETED_FROM_HEADERS} or {UNTARGETED_FROM_DECLARED_ACQUISITION})")
+
+
 def check_execution_allowed(report: Report, provenance: dict | None, reason: str) -> None:
     """The manifest's own eligibility verdict must permit execution.
 
     The server writes execution_allowed and then consults it nowhere, so the verdict currently
     gates nothing on its own. Reading it here is what turns it back into a gate.
+
+    UNTARGETED ON RECORD (user decision, 2026-10-29). Where the raw owner's Catalog handoff leaves untargeted unset,
+    a campaign unit that runs as untargeted FAILs unless a binding disposition records the inference: from the
+    headers, or from a declared DDA, DIA, AIF or SWATH acquisition in a unit that ran on its declaration alone
+    (_untargeted_basis_problem).
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A unit judged ineligible, unresolved or
     split is not a run whose results mean anything.
@@ -353,6 +402,13 @@ def check_execution_allowed(report: Report, provenance: dict | None, reason: str
             f"Gate the parts instead: {', '.join(parts) or 'none recorded'}.",
             execution_allowed=allowed, status=provenance.get("status"), parts=parts,
         )
+        return
+    untargeted = _untargeted_basis_problem(provenance) if allowed is True else ""
+    if untargeted:
+        # The untargeted status the unit runs on is an inference only a campaign disposition may record (2026-10-29).
+        report.add("ELIG-1", stage, "Manifest permits execution", FAIL,
+                   f"execution_allowed is true, but {untargeted}: the unit was made eligible on an untargeted status "
+                   "nothing on record establishes.", execution_allowed=allowed, status=provenance.get("status"))
         return
     if allowed is True:
         report.add("ELIG-1", stage, "Manifest permits execution", PASS,

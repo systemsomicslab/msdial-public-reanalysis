@@ -141,5 +141,47 @@ class ACQ1AcceptsOnlyARecordedFileNameInference(unittest.TestCase):
         self.assertNotEqual(gate.FAIL, check.status, check.detail)
 
 
+class ELIG1AcceptsOnlyARecordedUntargetedInference(unittest.TestCase):
+    """MPST000048 leaves untargeted unset, and no header can show it: Interactive 0.5.53 infers it from the declared
+    DDA where the unit runs on its declaration alone (user decision, 2026-10-29); ELIG-1 holds that record."""
+
+    INFERENCE = {"basis": "declared_acquisition", "declared_acquisition_mode": "DDA",
+                 "rule": "untargeted_inferred_from_declared_acquisition"}
+
+    def elig1(self, warnings: list[str], inference: dict | None = None, untargeted: object = None,
+              settings_untargeted: bool = True):
+        settings = {"ion_mode": "Both", "acquisition_mode": "DDA", **({"untargeted": untargeted} if settings_untargeted else {})}
+        manifest = {
+            "execution_allowed": True, "status": "preflight_passed",
+            "project": {"untargeted": True, "repository_metadata": {"catalog_handoff": {"technical_settings": settings}}},
+            "campaign_disposition": {"schema": "msdial-campaign-disposition.v1", "disposition": "run", "reasons": [],
+                                     "warnings": warnings, "excluded_inputs": [], "split_key": None, "applied": True,
+                                     **({"untargeted_inference": inference} if inference else {})},
+        }
+        report = gate.Report(Path(tempfile.gettempdir()))
+        gate.check_execution_allowed(report, manifest, "")
+        (check,) = report.checks
+        return check
+
+    def test_the_recorded_inferences_pass(self) -> None:
+        self.assertEqual(gate.PASS, self.elig1(["acquisition_declared_only", "untargeted_inferred_from_declared_acquisition"],
+                                               dict(self.INFERENCE)).status)
+        self.assertEqual(gate.PASS, self.elig1(["untargeted_inferred_from_headers"]).status)
+        self.assertEqual(gate.PASS, self.elig1([], untargeted=True).status, "declared untargeted")
+        self.assertEqual(gate.PASS, self.elig1([], settings_untargeted=False).status, "a handoff that records none")
+
+    def test_anything_else_fails(self) -> None:
+        for warnings, inference, words in (
+            ([], None, "no campaign disposition records the inference"),
+            (["untargeted_inferred_from_declared_acquisition"], dict(self.INFERENCE), "without a declared-only run"),
+            (["acquisition_declared_only", "untargeted_inferred_from_declared_acquisition"],
+             {**self.INFERENCE, "declared_acquisition_mode": "MRM"}, "without a declared-only run"),
+        ):
+            with self.subTest(words=words, warnings=warnings):
+                check = self.elig1(warnings, inference)
+                self.assertEqual(gate.FAIL, check.status)
+                self.assertIn(words, check.detail)
+
+
 if __name__ == "__main__":
     unittest.main()
