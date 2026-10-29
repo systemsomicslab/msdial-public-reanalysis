@@ -776,10 +776,14 @@ def fragmentation_reading(
         stated = stated_methods(dict(attributes))
         hits = []
         for field, value in attributes.items():
-            if STUDY_TEXT_FIELD.search(str(field)) or INSTRUMENT_FIELD.search(str(field)):
+            if INSTRUMENT_FIELD.search(str(field)):
                 continue
             if METHOD_STATEMENT_FIELD.search(str(field)):
+                # A statement of the method, read as stated_methods reads it (which maps the row's files), whatever
+                # else its field's name says ("Fragmentation method description"): its methods are the unit's too.
                 found = methods_named(value, words=True)
+            elif STUDY_TEXT_FIELD.search(str(field)):
+                continue
             else:
                 # A name or an identifier, not a statement of the method: held to the instrument as a file name is,
                 # and read as the study's text where every unit of the study carries it alike.
