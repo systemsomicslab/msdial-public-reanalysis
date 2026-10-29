@@ -793,6 +793,10 @@ class FakeInteractive:
                 self._update(manifest_path, lambda current: current.update(status="discarded"))
             return result
         blockers = self.discard_blockers(manifest)
+        if manifest.get("split_from"):
+            # A part's discard deletes nothing and keeps its output, an mzTab-M among its failure artifacts
+            # (_discard_split_part): only a validated part and a live Console refuse it.
+            blockers = [code for code in blockers if code in ("validated_status", "console_live")]
         held = self.held_by_disposition(manifest)
         if held and not release_disposition_hold:
             blockers.append("disposition_held")
@@ -827,17 +831,33 @@ class FakeInteractive:
         """A held split part keeps its parent's raw data until it is released or run. As Interactive f225e9b's
         cleanup_split_parent and _part_end do, a release with release_disposition_hold lifts the hold of EVERY
         part still held (hold_released), recording disposition_hold_released_by operator_skip on each, whether
-        or not an operator skipped that part; without it, any part still held refuses the release."""
+        or not an operator skipped that part; without it, any part still held refuses the release.
+
+        Any other part refuses it until its own record says it has ended (plan_split_parent_cleanup): validated,
+        skipped or excluded at its preflight, or discarded. A part whose diagnostic failed is still
+        preflight_passed there (V4, MPST000063, 2026-10-29)."""
         held = self._held_parts(manifest_path)
         if held and not release:
             return {"ok": True, "deleted": False, "blockers": ["disposition_held"],
                     "detail": f"{len(held)} part(s): its campaign disposition holds it"}
+        pending = [path for path in self.split_parts.get(manifest_path, [])
+                   if path not in held and not self._part_ended(self.store.read(path) or {})]
+        if pending:
+            return {"ok": True, "deleted": False, "blockers": ["part_not_ended"],
+                    "detail": f"{len(pending)} part(s): it is not recorded as ended, and has not ended"}
         for path in held:
             self._update(path, lambda current: current.update(status="discarded", disposition_hold_released_by="operator_skip"))
         manifest = self.store.read(manifest_path) or {}
         shutil.rmtree(manifest["raw_directory"], ignore_errors=True)
         self._release_unit(self._unit_of_manifest(manifest_path), "raw_cleaned")
         return {"ok": True, "deleted": True}
+
+    @staticmethod
+    def _part_ended(manifest: dict[str, Any]) -> bool:
+        if manifest.get("status") in ("mztab_validated", "completed", "raw_cleaned", "discarded"):
+            return True
+        record = manifest.get("campaign_disposition") or {}
+        return record.get("applied") is True and record.get("disposition") in ("skip", "exclude")
 
     def live_attempt(self, manifest_path: str) -> dict[str, Any] | None:
         self.settle()
