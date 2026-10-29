@@ -290,6 +290,31 @@ class ThePlan(unittest.TestCase):
         self.assertIn("the 1 file(s) of the 1 row(s) that state the method are kept out by Interactive's lease",
                       reading["detail"])
 
+    def test_a_statement_whose_field_name_holds_a_study_word_is_still_read(self) -> None:
+        # Verifying review of #45: "Fragmentation method description" states the method (stated_methods maps its
+        # files), so its methods, the signal and the detail say so, for some rows and for every row alike.
+        field = "analyticalCondition / Fragmentation method description"
+        add_files_unit(self.database, "some", "MPST000093", ["D1.wiff2", "D2.wiff2", "D3.wiff2"],
+                       instrument="ZenoTOF 7600")
+        connection = sqlite3.connect(self.database)
+        with connection:
+            connection.execute(
+                "INSERT INTO sample_attribute(attribute_id, sample_pk, field_name, normalized_field, raw_value) "
+                "VALUES ('desc-d2', 'pk-some-1', ?, 'x', 'EAD')", (field,))
+        connection.close()
+        add_files_unit(self.database, "every", "MPST000092", ["V1.wiff2", "V2.wiff2"], instrument="ZenoTOF 7600",
+                       rows={field: "EAD"})
+        manifest = self.manifest("declared")
+        units = {unit["unit_id"]: unit for unit in manifest["units"]}
+        exclusions = {item["unit_id"]: item for item in manifest["exclusions"]}
+
+        reading = units["some"]["fragmentation_reading"]
+        self.assertEqual((["EAD"], 1, ["D2.wiff2"]), (reading["methods"], reading["named_files"],
+                                                       reading["named_file_names"]))
+        self.assertIn("are kept out by Interactive's lease", reading["detail"])
+        self.assertEqual("fragmentation_not_cid_hcd", exclusions["every"]["reason"])
+        self.assertIn("EAD: 2 of its 2 sample row(s) name it", exclusions["every"]["detail"])
+
     def test_a_statement_every_unit_of_a_study_makes_is_still_the_units(self) -> None:
         # Review M3: the study-shared filter reads names, never a field that states the method.
         for unit in ("ea", "eb"):
