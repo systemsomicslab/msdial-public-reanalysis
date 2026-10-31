@@ -120,6 +120,25 @@ skipped, failed, stopped) releases what it claimed and never read (_release_shar
 object no sibling still needs; a claim its lease materialized is released by Interactive's cleanup or discard, as
 before. The finished download's attempt records what the lease moved (download_transfer), and status adds it up
 (summary: downloads), so a shared object fetched again shows. A group of one unit is downloaded as before.
+
+A .WIFF IN PLACE OF ITS .WIFF2 (the user's decision of 2026-10-31; Interactive 0.5.55). The positive part of MB-POST
+MPST000048 hung three times out of three in the .wiff2 reader while its files were read in parallel. Where a Console
+job of a unit or split part - its diagnostic or its production run - fails or times out, the unit analyses a .wiff2 and
+it has an attempt left, the runner asks Interactive to switch its inputs to the .wiff beside them
+(Runner._wiff_fallback). Interactive switches a DDA unit only, once, and only where every .wiff2 has its .wiff with that
+.wiff's .wiff.scan, and records the switch in the unit manifest (encoding_fallback). Where it switched, the attempt
+that failed counts as every failed attempt does, and the unit's next attempt resumes at its metadata preparation
+(preflighted), not at the step that failed: the analysis CSV, the diagnostic and its threshold, and the run bundle
+are made again on the files that now run, and the remaining attempts run on the .wiff. The switch is an attempt of its
+own (wiff_fallback, never counted), a wiff2_to_wiff_fallback event, a part of the failed attempt's detail, and is
+named in the unit's campaign-record.json and in the provenance of every Catalog analysis_run recorded after it. Where
+Interactive refuses (a DIA unit, a .wiff without its .wiff.scan, a unit already switched) or has no such tool, the
+retry is exactly what it was. A switch whose reply was lost is found in the unit manifest and adopted. The runner sends
+the switch the pinned extractor, with which Interactive reads each .wiff's own header first. Whichever path brings a
+switched unit to metadata_prepared or prepared - a retry, an interruption, a Console job the backend lost - a unit whose
+inputs were switched after its metadata was last prepared goes back to preflighted first (_stale_after_wiff_fallback), so
+no Console starts on a CSV, threshold or run bundle of the .wiff2. The unit record and the Catalog's run records read the
+switch from the unit manifest, with its boundary-4 crossing.
 """
 
 from __future__ import annotations
@@ -224,6 +243,11 @@ SHARED_DOWNLOAD_CLAIMED = "shared_download_claimed"
 SHARED_DOWNLOAD_NOT_CLAIMED = "shared_download_not_claimed"
 SHARED_DOWNLOAD_RELEASED = "shared_download_released"
 SHARED_DOWNLOAD_NOT_RELEASED = "shared_download_not_released"
+# A unit's switch from its .wiff2 to the .wiff beside them after a Console job failed (the user's decision of
+# 2026-10-31, policy.WIFF_FALLBACK_RULE): the event that says it, and the attempt step each ask for it is recorded as
+# (ok where Interactive switched, blocked where it refused or lacks the tool; never counted).
+WIFF_FALLBACK = "wiff2_to_wiff_fallback"
+WIFF_FALLBACK_STEP = "wiff_fallback"
 
 
 @dataclass
@@ -266,6 +290,11 @@ def _loads(text: str | None) -> dict[str, Any]:
     except ValueError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _failed_job_ids(record: Mapping[str, Any]) -> set[str]:
+    """The Console jobs whose failure a switch from .wiff2 to .wiff answered, as its record names them."""
+    return {str(item.get("job_id") or "") for item in record.get("failed_jobs") or [] if isinstance(item, Mapping)}
 
 
 def _flag(value: Any) -> bool | None:
@@ -2083,6 +2112,8 @@ class Runner:
         return True
 
     def _state_metadata_prepared(self, unit: dict[str, Any]) -> bool:
+        if self._stale_after_wiff_fallback(unit):
+            return True
         return self._console_start(unit, "tuning")
 
     def _console_ended(
@@ -2118,8 +2149,116 @@ class Runner:
             # Read by automatic_rt_fallback: the unit's next attempts run without the correction, if the policy says.
             detail[AUTOMATIC_RT_FAILED] = True
         self._production_ended(unit, {"timeout": "timed_out"}.get(outcome, outcome))
+        switched = self._wiff_fallback(unit, job_id=str(job_id or ""), step=step, outcome=outcome)
+        if switched:
+            # The attempt that failed on the .wiff2 counts as any failed attempt; the unit's next attempts run on the
+            # .wiff, from its metadata preparation, since the analysis CSV, the threshold and the run bundle all read
+            # the input list (the user's decision of 2026-10-31).
+            detail[WIFF_FALLBACK] = policy.wiff_fallback_summary(switched)
+            retry_state = policy.WIFF_FALLBACK_RESUME_STATE
         self._fail(unit, step=step, result={"ok": False, "reason": outcome, **detail}, retry_state=retry_state,
                    outcome=outcome, console_run=(run[0], outcome) if run else None, job_id=job_id)
+        return True
+
+    def _wiff_fallback(self, unit: dict[str, Any], *, job_id: str, step: str, outcome: str) -> dict[str, Any] | None:
+        """After a Console job of the unit failed or timed out, Interactive's switch of its inputs from their .wiff2 to
+        the .wiff beside them (policy.WIFF_FALLBACK_RULE, the user's decision of 2026-10-31): the record the switch
+        wrote into the unit manifest, or None where the unit stays on its inputs and is retried as before.
+
+        Asked only where it can matter: the job failed or timed out (a cancel or an interruption is no reader's), the
+        unit analyses a .wiff2, and the unit has an attempt left after this one (policy.after_failure), so a switch
+        is never recorded for a run that will not happen. Interactive decides the rest - DDA only, every .wiff2 with
+        its .wiff and the .wiff's .wiff.scan beside it, each .wiff's own header read with the pinned extractor (sent as
+        the preflight is sent it) giving one DDA sample in the unit's polarity, once per unit - and refuses otherwise;
+        a refusal, and an Interactive without the tool (unsupported), leave the retry exactly as it was. Each ask is an
+        attempt of its own (WIFF_FALLBACK_STEP, never counted), and a switch is said in a WIFF_FALLBACK event, once.
+
+        A switch whose reply was lost, or that a crash left without the transition that follows it, is found in the
+        unit manifest: an encoding_fallback whose failed jobs name this job is the switch this failure made, and is
+        adopted as made, so the unit never resumes on a CSV and threshold of the .wiff2 after its inputs changed. An
+        adoption that finds the switch already recorded says nothing again."""
+        if outcome not in policy.WIFF_FALLBACK_OUTCOMES or not job_id:
+            return None
+        manifest = self._manifest(unit) or {}
+        recorded = policy.wiff_fallback_record(manifest)
+        if recorded and job_id in _failed_job_ids(recorded):
+            if not self._wiff_fallback_attempted(unit["unit_key"]):
+                summary = policy.wiff_fallback_summary(recorded)
+                adopted = self.ledger.open_attempt(unit["unit_key"], WIFF_FALLBACK_STEP, self.stamp(),
+                                                   tool="msdial_switch_repository_unit_to_wiff")
+                self.ledger.close_attempt(adopted, "ok", self.stamp(), detail=self.redact({
+                    "job_id": job_id, "step": step, "switched": True, "adopted": True, WIFF_FALLBACK: summary}))
+                self._event(WIFF_FALLBACK, {**summary, "step": step, "adopted": True}, unit["unit_key"])
+            return recorded
+        if manifest.get(policy.WIFF_FALLBACK_FIELD) is not None or not policy.analyses_wiff2(manifest):
+            return None
+        if policy.after_failure(int(unit["failures"]), self.now(), self.policy).state != "waiting_retry":
+            return None
+        if not self._live("4"):
+            return None
+        switch = getattr(self.ports.interactive, "switch_to_wiff", None)
+        attempt = self.ledger.open_attempt(unit["unit_key"], WIFF_FALLBACK_STEP, self.stamp(),
+                                           tool="msdial_switch_repository_unit_to_wiff",
+                                           arguments={"failed_job_ids": [job_id]})
+        if switch is None:
+            result: dict[str, Any] = {"ok": False, "reason": "unsupported",
+                                      "detail": "Interactive has no msdial_switch_repository_unit_to_wiff (0.5.55)."}
+        else:
+            try:
+                result = dict(switch(manifest_path=unit["manifest_path"], failed_job_ids=[job_id],
+                                     authorization_path=self._authorization(unit),
+                                     extractor_path=str((self.pins.get("extractor") or {}).get("path") or "")) or {})
+            except Exception as error:  # noqa: BLE001 - a switch that raises is no switch; the retry goes on as before
+                result = {"ok": False, "reason": "exception", "error_type": type(error).__name__, "detail": str(error)}
+        record = policy.wiff_fallback_record({policy.WIFF_FALLBACK_FIELD: result.get(policy.WIFF_FALLBACK_FIELD)})
+        if not (result.get("ok") is not False and result.get("switched") is True and record):
+            # Read again: a switch that was made and whose reply was lost is on record in the manifest.
+            again = policy.wiff_fallback_record(self._manifest(unit))
+            if not (again and job_id in _failed_job_ids(again)):
+                self.ledger.close_attempt(attempt, "blocked", self.stamp(), detail=self.redact({
+                    "job_id": job_id, "step": step, "switched": False, "reason": result.get("reason"),
+                    "detail": result.get("detail")}))
+                return None
+            record = again
+        summary = policy.wiff_fallback_summary(record)
+        self.ledger.close_attempt(attempt, "ok", self.stamp(), detail=self.redact({
+            "job_id": job_id, "step": step, "switched": True, WIFF_FALLBACK: summary}))
+        self._event(WIFF_FALLBACK, {**summary, "step": step}, unit["unit_key"])
+        return record
+
+    def _wiff_fallback_attempted(self, unit_key: str) -> bool:
+        """Whether the ledger already records the unit's switch (a WIFF_FALLBACK_STEP attempt that switched)."""
+        return any(item["step"] == WIFF_FALLBACK_STEP and item["outcome"] == "ok" for item in self.ledger.attempts(unit_key))
+
+    def wiff_fallback_of(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """What the unit's switch from its .wiff2 to its .wiff was (policy.wiff_fallback_summary, with the boundary-4
+        crossing it was made under), read from the unit manifest, the record Interactive wrote; where the manifest
+        cannot be read, as the ledger's last WIFF_FALLBACK_STEP attempt that switched recorded it. None for a unit
+        that never switched."""
+        record = policy.wiff_fallback_record(self._manifest(unit))
+        if record:
+            return policy.wiff_fallback_summary(record, self._manifest(unit))
+        for item in reversed(self.ledger.attempts(unit["unit_key"])):
+            if item["step"] == WIFF_FALLBACK_STEP and item["outcome"] == "ok":
+                return _loads(item["detail_json"]).get(WIFF_FALLBACK) or None
+        return None
+
+    def _stale_after_wiff_fallback(self, unit: dict[str, Any]) -> bool:
+        """Send a unit back to its metadata preparation where its inputs were switched after its metadata was last
+        prepared: the analysis CSV, the threshold and the run bundle it would start from name the .wiff2. Whichever
+        path brought it to metadata_prepared or prepared - a retry, an interruption, a Console the backend lost, a
+        crash between the switch and the transition after it - it never starts a Console on them."""
+        record = policy.wiff_fallback_record(self._manifest(unit))
+        switched = policy.parse_iso(record.get("switched_at")) if record else None
+        if switched is None:
+            return False
+        prepared = [policy.parse_iso(item["ended_at"]) for item in self.ledger.attempts(unit["unit_key"])
+                    if item["step"] == "prepare_metadata" and item["outcome"] == "ok"]
+        prepared = [moment for moment in prepared if moment is not None]
+        if prepared and max(prepared) >= switched:
+            return False
+        self._move(unit, policy.WIFF_FALLBACK_RESUME_STATE,
+                   detail={WIFF_FALLBACK: "inputs switched after the metadata was prepared", "switched_at": record.get("switched_at")})
         return True
 
     def _console_lost(
@@ -2502,6 +2641,8 @@ class Runner:
         return moved
 
     def _state_prepared(self, unit: dict[str, Any]) -> bool:
+        if self._stale_after_wiff_fallback(unit):
+            return True
         return self._console_start(unit, "run")
 
     def _state_running(self, unit: dict[str, Any]) -> bool:
@@ -2915,6 +3056,12 @@ class Runner:
                 "attempt_status": status.replace(" ", "_") if not final else None,
             },
         }
+        fallback = self.wiff_fallback_of(unit)
+        if fallback:
+            # The unit's inputs were switched from its .wiff2 to its .wiff after a Console failure (2026-10-31): the
+            # rule, the failed job(s) and every file swapped, on every run record made after the switch. The .wiff2 run
+            # that failed was recorded as it ended, before the switch was asked for.
+            values["provenance"][WIFF_FALLBACK] = fallback
         if final:
             values.update(gate_verdict=policy.gate_verdict_token(exit_code), gate_exit_code=exit_code)
             values["provenance"].pop("attempt_status")
@@ -2979,6 +3126,9 @@ class Runner:
             "step_fallback": _flag(unit.get("step_fallback")),
             "fallback_reason": unit.get("fallback_reason"),
             "diagnostic_peak_count": unit.get("diagnostic_peak_count"),
+            # The switch of the unit's inputs from its .wiff2 to the .wiff beside them after a Console job failed (the
+            # user's decision of 2026-10-31): the rule, the failed job(s) and every file swapped; null where none was.
+            "encoding_fallback": self.wiff_fallback_of(unit),
             # What the campaign pinned of automatic RT correction, and whether this unit's runs went on without it
             # (null for a campaign whose policy pins none of it); whether its Blanks took a model interpolated by
             # analytical order, and the order source that decided it (blank_interpolation).

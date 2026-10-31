@@ -248,11 +248,33 @@ class InteractiveContractTests(unittest.TestCase):
         self.assertEqual(set(capabilities), {
             "version", "classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup",
             "authorized_discard", "release_disposition_hold", "split_parent_release", "cancel_job", "lease_uses_store",
-            "pre_claim_downloads",
+            "pre_claim_downloads", "wiff_fallback",
         })
         # What the runner cannot run without, since Interactive 0.5.17 (verify-env refuses otherwise).
         for name in ("cancel_job", "classify_preflight", "preflight_authorization", "disposition_hold", "authorized_cleanup"):
             self.assertTrue(capabilities[name], name)
+
+    def test_the_wiff_fallback_is_called_as_interactive_takes_it_or_is_unsupported(self) -> None:
+        """Interactive 0.5.55's msdial_switch_repository_unit_to_wiff (2026-10-31): the port passes what the tool takes,
+        and an Interactive without it answers unsupported, which leaves the unit's retry as it was."""
+        port = ports.InteractivePort(port=8766)
+        function = getattr(self.tools, "msdial_switch_repository_unit_to_wiff", None)
+        self.assertEqual(function is not None, port.capabilities()["wiff_fallback"])
+        if function is None:
+            result = port.switch_to_wiff(manifest_path="x", failed_job_ids=["j"], authorization_path="a")
+            self.assertEqual((False, "unsupported"), (result["ok"], result["reason"]))
+            return
+        accepted = set(inspect.signature(function).parameters)
+        self.assertEqual([], sorted({"manifest_path", "failed_job_ids", "confirmed", "campaign_authorization_path",
+                                     "extractor_path"}
+                                    - accepted))
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = campaign_unit(Path(temporary), status="run_failed")
+            result = port.switch_to_wiff(manifest_path=str(unit["manifest_path"]), failed_job_ids=["job-1"],
+                                         authorization_path=str(unit["authorization"]))
+        # The unit analyses no .wiff2 and records no failed job: refused, in the shape the runner reads as no switch.
+        self.assertIs(result.get("ok"), False, result)
+        self.assertFalse(result.get("switched"))
 
     def test_a_discard_interactive_would_refuse_records_no_crossing(self) -> None:
         """Interactive refuses to discard raw data beside an mzTab-M. The port's fallback finds that out
