@@ -29,6 +29,7 @@ import test_verify_lineage_built_csv as built  # noqa: E402  (loads the gate as 
 verifier = built.verifier
 _check = built._check
 RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
+EXTRACTOR_SHA = "ab" * 32
 STEMS = ("241202_Tomita_18_pos", "241202_Tomita_19_pos")
 
 
@@ -94,8 +95,12 @@ class WiffUnit(built.FolderBranchUnit):
                                   "in_place_of": swap["from"], "in_place_of_relative": swap["from_relative"],
                                   "outcome": "ok", "polarity": "Positive", "expected_polarity": "Positive",
                                   "acquisition_mode": "DDA", "header_console_acquisition_type": "DDA",
-                                  "ms_levels": [1, 2], "sample_count": 1,
+                                  "ms_levels": [1, 2], "sample_count": 1, "extractor_sha256": EXTRACTOR_SHA,
                                   "acquisition_start_time": "2024-12-02T10:00:00+00:00"} for swap in swaps],
+                # The extractor, as Interactive's _extractor_record names it: a verified build Interactive recorded as
+                # pinned.
+                "extractor": {"sha256": EXTRACTOR_SHA, "provenance_status": "verified", "pinned": True,
+                              "pin_state": "built"},
             }
         if not record:
             # Without its record, nothing names the .wiff2 the run left behind.
@@ -241,6 +246,125 @@ def _approved(unit) -> None:
     unit.manifest.setdefault("campaign_authorizations", []).append(
         {"approval_id": "approval-1", "boundary": 4, "entry_point": verifier.WIFF_FALLBACK_ENTRY_POINT,
          "validated_at": "2026-10-31T00:00:00+00:00"})
+
+
+class TheReReviewsLowFindings(unittest.TestCase):
+    """The re-review of #88 and #50 (lows 1 to 3): the switch's record holds only where each header lists exactly one
+    sample, states the polarity the gate itself recomputes for its .wiff2, stands in for its own swap's .wiff2, and was
+    read by the campaign's pinned extractor, the one the unit's preflight ran."""
+
+    def problems(self, change, *, campaign: bool = True) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = WiffUnit(temporary)
+            if campaign:
+                _campaign(unit)
+            unit.switch()
+            if campaign:
+                _approved(unit)
+            change(unit)
+            return verifier._wiff_fallback(json.loads(json.dumps(unit.manifest))).problems
+
+    def test_the_fixture_holds(self) -> None:
+        self.assertEqual([], self.problems(lambda unit: None))
+
+    def test_low_1_a_header_must_list_exactly_one_sample(self) -> None:
+        for count, said in ((0, "lists 0 samples, not exactly one"), (None, "lists no sample count, not exactly one"),
+                            (2, "lists 2 samples, not exactly one"), (True, "lists True samples")):
+            with self.subTest(count=count):
+                found = self.problems(lambda unit: unit.manifest["encoding_fallback"]["wiff_headers"][0].update(
+                    sample_count=count))
+                self.assertTrue(any(said in item for item in found), found)
+
+    def test_low_2_the_expected_polarity_is_recomputed_never_read_from_the_entry(self) -> None:
+        """The unit declares Both and names no single ion mode. A header that states Negative where the .wiff2's
+        recorded polarity is Positive does not hold, whatever its own entry calls expected."""
+        def positive_inference(unit) -> None:
+            unit.manifest["polarity_inferences"] = [
+                {"path": item, "polarity": "Positive", "polarity_source": "file_name"}
+                for item in unit.manifest["encoding_fallback"]["input_candidates_before"]]
+            unit.manifest["project"]["ion_mode"] = "Both"
+
+        def negative_claimed(unit) -> None:
+            positive_inference(unit)
+            unit.manifest["encoding_fallback"]["wiff_headers"][0].update(polarity="Negative", expected_polarity="Negative")
+
+        def nothing_recorded(unit) -> None:
+            unit.manifest["project"]["ion_mode"] = "Both"
+
+        self.assertEqual([], self.problems(positive_inference))
+        self.assertTrue(any("states Negative, and the unit runs in Positive" in item
+                            for item in self.problems(negative_claimed)))
+        self.assertTrue(any("runs in no recorded polarity" in item for item in self.problems(nothing_recorded)),
+                        "an entry's own expected_polarity is never the evidence")
+
+    def test_low_2_the_wiff2s_header_record_gives_the_polarity_first(self) -> None:
+        def header_record(unit) -> None:
+            unit.manifest["project"]["ion_mode"] = "Both"
+            for item in unit.manifest["raw_metadata_preflight"]["summary"]["per_file"]:
+                item["polarity"] = "Negative"
+
+        self.assertTrue(any("states Positive, and the unit runs in Negative" in item for item in self.problems(header_record)))
+
+    def test_low_3_the_extractor_is_the_pinned_one_and_each_entry_its_own_swaps(self) -> None:
+        cases = {
+            "name another extractor than": lambda unit: unit.manifest["encoding_fallback"]["wiff_headers"][0].update(
+                extractor_sha256="cd" * 32),
+            "not the cdcdcdcdcdcd the unit's preflight ran": lambda unit: unit.manifest["raw_metadata_preflight"].update(
+                extractor={"sha256": "cd" * 32}),
+            "is no verified build of a pinned pair": lambda unit: unit.manifest["encoding_fallback"]["extractor"].update(
+                provenance_status="stale"),
+            "records no extractor that read the .wiff headers": lambda unit: unit.manifest["encoding_fallback"].pop(
+                "extractor"),
+            "named by no sha256": lambda unit: unit.manifest["encoding_fallback"]["extractor"].update(sha256="x"),
+            "header entry stands in for": lambda unit: unit.manifest["encoding_fallback"]["wiff_headers"][0].update(
+                in_place_of=unit.manifest["encoding_fallback"]["swaps"][1]["from"]),
+        }
+        for said, change in cases.items():
+            with self.subTest(said):
+                found = self.problems(change)
+                self.assertTrue(any(said in item for item in found), found)
+
+    def test_low_3_outside_a_campaign_an_unpinned_extractor_is_not_held_to_the_pin(self) -> None:
+        self.assertEqual([], self.problems(lambda unit: unit.manifest["encoding_fallback"]["extractor"].update(
+            provenance_status="unverified", pinned=False), campaign=False))
+
+
+class TheThresholdIsMeasuredOnTheFilesThatRun(unittest.TestCase):
+    """The re-review's low 4: PKH-1 FAILs a threshold only a diagnostic the switch marked superseded, or one whose
+    representative file is no current input, produced; one measured on a .wiff that runs still produces it."""
+
+    def _pkh1(self, *diagnostics: dict):
+        import test_verify_gate_decisions_2026_10_06 as d06
+
+        with tempfile.TemporaryDirectory() as temporary:
+            unit = WiffUnit(temporary)
+            unit.switch()
+            unit.prepare()
+            entries = []
+            for representative, superseded, threshold in diagnostics:
+                entry = d06._diagnostic(threshold, count=8000, estimated=4000, step=100, within=True)
+                entry["representative"]["file_path"] = str(unit.data / representative)
+                if superseded:
+                    entry["superseded_by_encoding_fallback"] = {"rule": RULE, "switched_at": "2026-10-31T00:00:00+00:00"}
+                entries.append(entry)
+            unit.manifest["peak_height_diagnostics"] = entries
+            d06._method(unit, 1200)
+            return _check(unit.gate(), "PKH-1")
+
+    def test_a_threshold_of_a_superseded_diagnostic_fails(self) -> None:
+        check = self._pkh1((f"{STEMS[0]}.wiff", True, 1200))
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("is marked superseded", check.detail)
+
+    def test_a_threshold_measured_on_a_file_that_no_longer_runs_fails(self) -> None:
+        check = self._pkh1((f"{STEMS[0]}.wiff2", False, 1200))
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn(f"measured {STEMS[0]}.wiff2, which is no current input", check.detail)
+
+    def test_a_threshold_measured_on_the_wiff_that_runs_is_this_units(self) -> None:
+        check = self._pkh1((f"{STEMS[0]}.wiff2", True, 1200), (f"{STEMS[0]}.wiff", False, 1200))
+        self.assertNotEqual(verifier.FAIL, check.status, check.detail)
+        self.assertIn("which this unit's diagnostic measured", check.detail)
 
 
 class ReadThroughItsOwnHeader(unittest.TestCase):

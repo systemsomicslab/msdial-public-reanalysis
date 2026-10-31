@@ -702,8 +702,12 @@ class FakeInteractive:
             "failed_jobs": [{"job_id": job, "kind": (attempts.get(job) or {}).get("kind"), "failure": "exit_code",
                              "reason": None, "exit_code": (attempts.get(job) or {}).get("exit_code")}
                             for job in failed_job_ids],
-            "wiff_headers": [{"file_relative": swap["to_relative"], "polarity": "Positive",
-                              "header_console_acquisition_type": "DDA", "sample_count": 1} for swap in swaps],
+            # As Interactive 0.5.56 records them: each header read by the pinned extractor, of exactly one sample, standing
+            # in for its own swap's .wiff2.
+            "wiff_headers": [{"file": swap["to"], "file_relative": swap["to_relative"], "in_place_of": swap["from"],
+                              "outcome": "ok", "polarity": "Positive", "header_console_acquisition_type": "DDA",
+                              "sample_count": 1, "extractor_sha256": self.world.extractor_sha} for swap in swaps],
+            "extractor": {"sha256": self.world.extractor_sha, "provenance_status": "verified", "pinned": True},
             "campaign_authorization": {key: crossing[key] for key in ("approval_id", "boundary", "entry_point")},
         }
         by_source = {swap["from"]: swap["to"] for swap in swaps}
