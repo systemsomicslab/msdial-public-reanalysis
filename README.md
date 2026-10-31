@@ -578,7 +578,13 @@ failed before the switch, a DDA unit, swaps exactly of each .wiff2 for its .wiff
 with its .wiff.scan, no .wiff2 left running, each .wiff's header, and in a
 campaign the switch's boundary-4 crossing); without it they FAIL as before.
 ACQ-1 reads each .wiff through its own header, the .wiff2's disposition kept as
-the decision record.
+the decision record. Each header must list exactly one sample, state the
+polarity the gate recomputes for its .wiff2 (the unit's ion mode, else the
+.wiff2's header record, else its file-name inference), stand in for its own
+swap's .wiff2, and come from the extractor the unit's preflight ran (in a
+campaign, a verified build of a pinned pair). PKH-1 FAILs a threshold that only
+a diagnostic marked superseded by the switch, or one whose representative file
+is no current input, produced.
 
 ## Running a campaign unattended
 

@@ -4257,11 +4257,16 @@ def _encoding_unused_paths(provenance: dict) -> list[str]:
 # runs in place of its .wiff2. Review of #88 added: each failed job is a diagnostic (tuning) or a run that ended before
 # the switch; a campaign unit's switch names its approval and the unit records that approval's boundary-4 crossing of
 # the switch's entry point; and each .wiff's own header, read at the switch by the pinned extractor
-# (encoding_fallback.wiff_headers), was read, lists at most one sample, gives DDA and states the polarity the unit runs
-# in. Then each .wiff is read through that header, its .wiff2's record kept as the decision record (_per_file_records:
-# ACQ-1, and the polarity reading, where the header replaces a .wiff2's file-name inference), the .wiff2 is accounted
-# for, and the rule's choice that used it is met by its .wiff. A record that does not hold accepts nothing, and INP-1
-# names why.
+# (encoding_fallback.wiff_headers), was read, lists exactly one sample, gives DDA and states the polarity the unit runs
+# in. The re-review of #88 added: that polarity is the gate's own reading (_wiff2_polarity: the unit's ion mode, else
+# the .wiff2's header record, else its file-name inference), never the entry's expected_polarity; each entry stands in
+# for its own swap's .wiff2; and the extractor that read them (encoding_fallback.extractor, and each entry's
+# extractor_sha256) is the one the unit's preflight ran and, in a campaign, a verified build of a pinned pair
+# (_wiff_fallback_extractor_problems). PKH-1 no longer takes a threshold from a diagnostic the switch marked superseded,
+# or one whose representative is no current input (_stale_diagnostic). Then each .wiff is read through that header, its
+# .wiff2's record kept as the decision record (_per_file_records: ACQ-1, and the polarity reading, where the header
+# replaces a .wiff2's file-name inference), the .wiff2 is accounted for, and the rule's choice that used it is met by its
+# .wiff. A record that does not hold accepts nothing, and INP-1 names why.
 WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
 WIFF_FALLBACK_FIELD = "encoding_fallback"
 # How a run attempt the switch answers ended (Interactive's record_run_end): stopped for time, an error, or a non-zero
@@ -4394,25 +4399,31 @@ def _wiff_fallback(provenance: dict | None) -> _WiffFallback:
         swaps.append((source, to))
     if not swaps:
         problems.append("it swaps no file")
-    # Each .wiff's own header, read at the switch: one DDA sample, in the polarity the unit runs in.
+    # Each .wiff's own header, read at the switch by the pinned extractor: exactly one DDA sample, in the polarity the
+    # unit runs in, standing in for its own swap's .wiff2. The polarity is the gate's own reading (_wiff2_polarity),
+    # never the header entry's expected_polarity (review of #88, lows 1 to 3).
     headers = {_path_key(item.get("file")): item for item in record.get(WIFF_HEADERS) or []
                if isinstance(item, dict) and str(item.get("file") or "").strip()}
-    unit_mode = str(project.get("ion_mode") or "").strip().capitalize()
-    for _source, to in swaps:
+    problems.extend(_wiff_fallback_extractor_problems(provenance, record, list(headers.values())))
+    for source, to in swaps:
         header = headers.get(_path_key(to))
         name = Path(to.replace("\\", "/")).name or "(unnamed)"
         if header is None:
             problems.append(f"it records no header of {name} read at the switch ({WIFF_FALLBACK_FIELD}.{WIFF_HEADERS})")
             continue
         polarity, count = str(header.get("polarity") or ""), header.get("sample_count")
-        expected = unit_mode if unit_mode in ("Positive", "Negative") else str(header.get("expected_polarity") or "")
+        expected = _wiff2_polarity(provenance, source)
+        if _path_key(header.get("in_place_of") or "") != _path_key(source):
+            problems.append(f"{name}'s header entry stands in for {header.get('in_place_of') or 'no file'}, not its "
+                            f"swap's {Path(source.replace(chr(92), '/')).name}")
         if str(header.get("outcome") or "") not in ("ok", "reused"):
             problems.append(f"{name}'s header was not read ({header.get('outcome') or 'no outcome'})")
         elif header.get("header_console_acquisition_type") != "DDA":
             problems.append(f"{name}'s header gives {header.get('header_console_acquisition_type') or 'no'} Console "
                             "acquisition type, not DDA")
-        elif isinstance(count, int) and not isinstance(count, bool) and count > 1:
-            problems.append(f"{name}'s header lists {count} samples")
+        elif count != 1 or isinstance(count, bool):
+            problems.append(f"{name}'s header lists {'no sample count' if count is None else f'{count} samples'}, "
+                            "not exactly one")
         elif polarity not in ("Positive", "Negative") or polarity != expected:
             problems.append(f"{name}'s header states {polarity or 'no polarity'}, and the unit runs in "
                             f"{expected or 'no recorded polarity'}")
@@ -4452,6 +4463,71 @@ def _wiff_fallback(provenance: dict | None) -> _WiffFallback:
                         "does not swap")
     result.swaps = swaps
     return result
+
+
+def _wiff2_polarity(provenance: dict, source: str) -> str:
+    """The polarity a .wiff must state to run in place of the .wiff2 ``source``, recomputed from the records as
+    Interactive's wiff_fallback._expected_polarity reads them, never taken from the switch's own entry: the unit's ion
+    mode where it names one; else the polarity the .wiff2's raw-header record states (the unit's own preflight, the
+    verdicts a split part carried, its raw owner's preflight); else the file-name inference recorded for it (the
+    unit's, its binding dispositions', its raw owner's). '' where nothing records one."""
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    mode = str(project.get("ion_mode") or "").strip().capitalize()
+    if mode in ("Positive", "Negative"):
+        return mode
+    key = _path_key(source)
+    owner = _raw_owner_manifest(provenance)[0] if isinstance(provenance.get("split_from"), dict) else None
+    owners = [owner] if isinstance(owner, dict) else []
+    records: list = []
+    for manifest in [provenance, *owners]:
+        preflight = manifest.get("raw_metadata_preflight")
+        summary = preflight.get("summary") if isinstance(preflight, dict) else None
+        records += list(summary.get("per_file") or []) if isinstance(summary, dict) else []
+        records += list(manifest.get("header_verdicts_from_parent") or [])
+    for item in records:
+        if isinstance(item, dict) and _path_key(item.get("file") or "") == key \
+                and str(item.get("polarity") or "").strip() in ("Positive", "Negative"):
+            return str(item["polarity"]).strip()
+    for manifest in [provenance, *_binding_dispositions(provenance), *owners]:
+        for item in (manifest.get("polarity_inferences") or []) if isinstance(manifest, dict) else []:
+            if isinstance(item, dict) and _path_key(item.get("path") or "") == key \
+                    and str(item.get("polarity") or "").strip() in ("Positive", "Negative"):
+                return str(item["polarity"]).strip()
+    return ""
+
+
+def _wiff_fallback_extractor_problems(provenance: dict, record: dict, headers: list) -> list[str]:
+    """Why the extractor that read the .wiff headers is not the campaign's pinned one (review of #88, low 3), held as
+    PRE-2 holds the preflight's: encoding_fallback.extractor names a sha256 and every header entry names the same;
+    where the unit's preflight (its own, else its raw owner's) recorded its extractor, the switch's is that one; and in
+    a campaign unit it is a verified build of a pinned pair (the gate's mirror of the pins lists it as built, or
+    Interactive recorded it pinned, which PRE-2 reads as the mirror being behind)."""
+    extractor = record.get("extractor") if isinstance(record.get("extractor"), dict) else None
+    if extractor is None:
+        return ["it records no extractor that read the .wiff headers"]
+    sha256 = str(extractor.get("sha256") or "").strip().casefold()
+    if not _SHA256_TEXT.fullmatch(sha256):
+        return [f"the extractor that read the .wiff headers is named by no sha256 ({sha256[:24] or 'none'})"]
+    problems: list[str] = []
+    differing = sorted({Path(str(item.get("file") or "").replace("\\", "/")).name for item in headers
+                        if str(item.get("extractor_sha256") or "").strip().casefold() != sha256})
+    if differing:
+        problems.append(f"the headers of {', '.join(differing[:3])} name another extractor than {sha256[:12]}")
+    preflight_sha = str(_recorded_extractor(provenance).get("sha256") or "").strip().casefold()
+    if not preflight_sha and isinstance(provenance.get("split_from"), dict):
+        owner, _ = _raw_owner_manifest(provenance)
+        preflight_sha = str(_recorded_extractor(owner).get("sha256") or "").strip().casefold() if owner else ""
+    if preflight_sha and preflight_sha != sha256:
+        problems.append(f"the .wiff headers were read by extractor {sha256[:12]}, not the {preflight_sha[:12]} the "
+                        "unit's preflight ran")
+    if _binding_dispositions(provenance):
+        pin = _extractor_pin(str(extractor.get("msrawdataworkbench_commit") or "").strip(),
+                             str(extractor.get("msdialworkbench_commit") or "").strip())
+        pinned = bool(pin and pin["state"] == EXTRACTOR_PIN_BUILT) or extractor.get("pinned") is True
+        if str(extractor.get("provenance_status") or "").strip() != EXTRACTOR_VERIFIED or not pinned:
+            problems.append(f"the extractor that read the .wiff headers ({sha256[:12]}) is no verified build of a "
+                            "pinned pair, which a campaign acts only on")
+    return problems
 
 
 def _wiff_fallback_problems(provenance: dict) -> list[str]:
@@ -11081,6 +11157,36 @@ def _step_rule(item: dict, provenance: dict | None = None) -> dict:
     return {"evidence": evidence, "said": said, "broken": broken, "notes": notes}
 
 
+def _stale_diagnostic(diagnostic: dict, provenance: dict) -> str:
+    """Why a peak-count diagnostic measured other files than the ones that run, or "": the switch from .wiff2 to .wiff
+    marked it superseded (superseded_by_encoding_fallback), or its representative file - by the path it records, or the
+    input its Console alias stands for - is none of the unit's current input candidates. A representative recorded by
+    name alone is not judged: a name does not tell S1.wiff2 from S1.wiff."""
+    mark = diagnostic.get("superseded_by_encoding_fallback")
+    if mark:
+        rule = mark.get("rule") if isinstance(mark, dict) else ""
+        return f"diagnostic {diagnostic.get('job_id') or '(no job)'} is marked superseded ({rule or 'the switch'})"
+    path = str((diagnostic.get("representative") or {}).get("file_path") or "").strip() \
+        if isinstance(diagnostic.get("representative"), dict) else ""
+    if not path:
+        return ""
+    aliases = _input_keys_by_console_path(provenance)
+    # The Console paths the lineage records for each input as well, read without the disk: after the raw data are
+    # released neither the alias nor its input is there to compare, and the record still says which input it was.
+    for manifest in _lineage_manifests(provenance):
+        for row in _lineage_rows(manifest):
+            alias = row.get("console_alias") if isinstance(row.get("console_alias"), dict) else {}
+            for console in (row.get("console_path"), alias.get("path")):
+                if str(console or "").strip():
+                    aliases.setdefault(_path_key(console), _path_key(row["path"]))
+    key = aliases.get(_path_key(path), _path_key(path))
+    current = {_path_key(item) for item in provenance.get("input_candidates") or [] if str(item).strip()}
+    if key not in current:
+        return (f"diagnostic {diagnostic.get('job_id') or '(no job)'} measured "
+                f"{Path(path.replace(chr(92), '/')).name}, which is no current input of the unit")
+    return ""
+
+
 def check_threshold_was_measured_on_this_unit(
     report: Report, provenance: dict | None, reason: str, output: Path
 ) -> None:
@@ -11107,6 +11213,11 @@ def check_threshold_was_measured_on_this_unit(
     they are. The floor is absolute (_step_family): never finer than 10 for QTOF-type data or 100 for
     Fourier-transform data, whatever family step the diagnostic itself records, and a recorded family step
     is 100 or 1,000.
+
+    A THRESHOLD MEASURED ON OTHER FILES (the re-review of #88, low 4) produces nothing: a diagnostic the switch from
+    .wiff2 to .wiff marked superseded_by_encoding_fallback, and one whose representative file (by its recorded path, or
+    the input its Console alias stands for) is no current input candidate, are not read as the producing diagnostic,
+    and a threshold only such diagnostics produced is a FAIL that says which and why (_stale_diagnostic).
 
     WHAT THE PRODUCTION RUN KEPT (production_peak_counts, Interactive 0.5.28) is reported where recorded,
     against the estimate, and judged by nothing: the user asked that it be recorded (2026-10-06).
@@ -11149,6 +11260,21 @@ def check_threshold_was_measured_on_this_unit(
                    method_threshold=written, measured=measured)
         return
     producing = [item for value, item in measured_by if abs(executed - value) < 1e-9]
+    # A threshold measured on other files than those that run is not this run's (review of #88, low 4): a diagnostic the
+    # switch from .wiff2 to .wiff marked superseded, and one whose representative file is no current input (the .wiff2
+    # it measured), do not produce it.
+    stale = [(item, why) for item in producing for why in [_stale_diagnostic(item, provenance)] if why]
+    producing = [item for item in producing if not _stale_diagnostic(item, provenance)]
+    if stale and not producing:
+        report.add(
+            "PKH-1", stage, PKH1_TITLE, FAIL,
+            f"method.txt asks for a Minimum peak height of {written}, and only a diagnostic measured on other files than "
+            f"the ones that run produced it: {'; '.join(why for _item, why in stale[:3])}. Run the diagnostic again on "
+            "the files that run.",
+            method_threshold=written, measured=measured,
+            stale_diagnostics=[{"job_id": str(item.get("job_id") or ""), "reason": why} for item, why in stale[:10]],
+        )
+        return
     if producing:
         # The diagnostic that produced the threshold, the latest where several did: re-running it with
         # another step or representative is normal, and the step rule is read from the one that ran.
