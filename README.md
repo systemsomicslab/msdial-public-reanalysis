@@ -551,6 +551,26 @@ untargeted where its record leaves that unset
 whose handoff leaves untargeted unset and whose disposition records neither
 that inference nor `untargeted_inferred_from_headers`.
 
+The user's decision of 2026-10-31, from the verification campaign
+v5-mpst48-20261029, whose MPST000048 positive part hung three times out of
+three in the .wiff2 reader. The .wiff2 stays the preferred encoding; where a
+diagnostic or production run of a unit or split part fails or times out, the
+unit analyses a .wiff2 and it has an attempt left, the runner asks Interactive
+0.5.55 (`msdial_switch_repository_unit_to_wiff`) to switch it to the same
+samples' .wiff. Interactive switches a DDA unit only (ZT Scan DIA data can only
+be analysed from the .wiff2), only where every .wiff2 has its .wiff with that
+.wiff's .wiff.scan, and once, recording the switch in the unit manifest
+(`encoding_fallback`, rule `wiff2_to_wiff_after_console_failure_2026_10_31`).
+The attempt that failed counts; the unit then resumes at its metadata
+preparation, so the analysis CSV, the diagnostic's threshold and the run bundle
+are made again on the .wiff, and the remaining attempts run on them. The switch
+is a `wiff_fallback` attempt, a `wiff2_to_wiff_fallback` event, and part of the
+unit's `campaign-record.json` and of the Catalog run records after it. A refusal,
+or an Interactive without the tool, leaves the retry as it was. INP-1 and SPL-1
+accept the .wiff only where that record holds (a failed job the unit's
+run_attempts record, a DDA unit, swaps exactly of each .wiff2 for its .wiff with
+its .wiff.scan, no .wiff2 left running); without it they FAIL as before.
+
 ## Running a campaign unattended
 
 Launch `scripts/campaign-runner.py run` for an unattended campaign through Task

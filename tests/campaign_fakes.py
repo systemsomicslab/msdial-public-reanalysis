@@ -107,6 +107,12 @@ class UnitScript:
     no_order_record: bool = False
     # The warnings Interactive's guided plan validation raises (level warning; they stop nothing).
     plan_warnings: list[str] = field(default_factory=list)
+    # A SCIEX unit deposited as S.wiff2 beside S.wiff (MB-POST MPST000048): its lease gives .wiff2 input candidates
+    # (a split part takes its parent's), and Interactive 0.5.55's switch to the .wiff (2026-10-31) reads the unit's
+    # acquisition and whether each .wiff has its .wiff.scan beside it.
+    wiff2: bool = False
+    acquisition: str = "DDA"
+    wiff_scan: bool = True
 
 
 def unsupported_inputs_failure(unit: str, *, disposition: bool = True) -> dict[str, Any]:
@@ -220,6 +226,10 @@ class FakeInteractive:
         self.fetches: list[tuple[str, str]] = []
         self.collected: list[str] = []
         self.pre_claim_supported = True
+        # Interactive 0.5.55's switch from .wiff2 to .wiff (2026-10-31): whether it has the tool, and whether the reply
+        # to a switch it made is lost on the way back.
+        self.wiff_fallback_supported = True
+        self.lose_switch_reply = False
 
     # ---- the download store ----
     def _claim(self, url: str, unit: str, source: str) -> dict[str, Any]:
@@ -432,8 +442,15 @@ class FakeInteractive:
                 (workspace / "raw" / "data").mkdir(parents=True, exist_ok=True)
                 (workspace / "raw" / "data" / "S1.mzML").write_bytes(b"x" * 1000)
                 cache = self._fetch_or_reuse(job["unit"])
+                candidates: list[str] = []
+                if (self.world.scripts.get(job["unit"]) or UnitScript()).wiff2:
+                    for stem in ("S1", "S2"):
+                        for suffix in (".wiff2", ".wiff", ".wiff.scan"):
+                            (workspace / "raw" / "data" / f"{stem}{suffix}").write_bytes(b"w" * 10)
+                        candidates.append(str(workspace / "raw" / "data" / f"{stem}.wiff2"))
                 self._update(manifest_path, lambda manifest: manifest.update(
-                    status="raw_metadata_required", input_candidates=[], **({"download_cache": cache} if cache else {})))
+                    status="raw_metadata_required", input_candidates=candidates,
+                    **({"download_cache": cache} if cache else {})))
                 job.update(status="completed", result={"manifest_path": manifest_path})
             elif outcome == "cancelled":
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed"))
@@ -589,6 +606,7 @@ class FakeInteractive:
                     "status": "split_from_parent", "project": {"analysis_unit_id": part}, "workspace": str(part_workspace),
                     "raw_directory": parent["raw_directory"], "output_directory": str(part_workspace / "output"),
                     "split_from": {"analysis_unit_id": unit, "manifest_path": manifest_path},
+                    "input_candidates": list(parent.get("input_candidates") or []),
                 })
             self.world.scripts.setdefault(part, UnitScript())
             # The shape msdial_split_repository_unit returns (Interactive 0.5.52): every part carries its polarity, ""
@@ -605,8 +623,9 @@ class FakeInteractive:
         return {"written": not already, "already_split": already, "parts": parts}
 
     def prepare_metadata(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
-        self.calls.append(("prepare_metadata", {"manifest_path": manifest_path}))
         manifest = self.store.read(manifest_path) or {}
+        self.calls.append(("prepare_metadata", {"manifest_path": manifest_path,
+                                                "input_candidates": list(manifest.get("input_candidates") or [])}))
         output = Path(manifest["output_directory"])
         output.mkdir(parents=True, exist_ok=True)
         csv = output / "analysis_files.csv"
@@ -620,6 +639,47 @@ class FakeInteractive:
             preview["analytical_order"] = {"derived_from": script.order_source if header else None,
                                            "order_source": script.order_source, "files_recorded": 1}
         return {"prepared": True, "input_path": str(csv), "preview": preview}
+
+    def switch_to_wiff(self, *, manifest_path: str, failed_job_ids: list[str], authorization_path: str) -> dict[str, Any]:
+        """Interactive 0.5.55's msdial_switch_repository_unit_to_wiff (2026-10-31), as far as the runner meets it: a DDA
+        unit whose .wiff2 inputs each have a .wiff with its .wiff.scan is switched once, the record in the manifest;
+        anything else is refused with its reason. wiff_fallback_supported false plays an Interactive without the tool."""
+        self.calls.append(("switch_to_wiff", {"manifest_path": manifest_path, "failed_job_ids": list(failed_job_ids)}))
+        if not self.wiff_fallback_supported:
+            return {"ok": False, "reason": "unsupported", "detail": "Interactive has no tool msdial_switch_repository_unit_to_wiff."}
+        manifest = self.store.read(manifest_path) or {}
+        script = self.world.scripts.setdefault(self._unit_of_manifest(manifest_path), UnitScript())
+
+        def refused(reason: str, **extra: Any) -> dict[str, Any]:
+            return {"ok": False, "switched": False, "reason": reason, "detail": f"refused: {reason}", **extra}
+
+        if manifest.get(policy.WIFF_FALLBACK_FIELD):
+            return refused("already_switched", encoding_fallback=manifest[policy.WIFF_FALLBACK_FIELD])
+        wiff2 = [item for item in manifest.get("input_candidates") or [] if str(item).casefold().endswith(".wiff2")]
+        if not wiff2:
+            return refused("no_wiff2_input")
+        if script.acquisition != "DDA":
+            return refused("not_dda")
+        if not script.wiff_scan:
+            return refused("wiff_scan_missing")
+        swaps = [{"from": item, "to": item[: -len(".wiff2")] + ".wiff", "companion": item[: -len(".wiff2")] + ".wiff.scan",
+                  "from_relative": Path(item).name, "to_relative": Path(item).name[: -len(".wiff2")] + ".wiff",
+                  "sample_id": Path(item).stem} for item in wiff2]
+        attempts = {item.get("job_id"): item for item in manifest.get("run_attempts") or []}
+        record = {
+            "schema": "msdial-encoding-fallback.v1", "rule": policy.WIFF_FALLBACK_RULE, "switched_at": self._stamp(),
+            "acquisition_mode": "DDA", "swaps": swaps, "input_candidates_before": list(manifest["input_candidates"]),
+            "failed_jobs": [{"job_id": job, "kind": (attempts.get(job) or {}).get("kind"), "failure": "exit_code",
+                             "reason": None, "exit_code": (attempts.get(job) or {}).get("exit_code")}
+                            for job in failed_job_ids],
+        }
+        by_source = {swap["from"]: swap["to"] for swap in swaps}
+        self._update(manifest_path, lambda current: current.update(
+            input_candidates=[by_source.get(item, item) for item in current["input_candidates"]],
+            **{policy.WIFF_FALLBACK_FIELD: record}))
+        if self.lose_switch_reply:
+            return {"ok": False, "reason": "os_error", "error_type": "TimeoutError", "detail": "timed out"}
+        return {"ok": True, "switched": True, policy.WIFF_FALLBACK_FIELD: record}
 
     def _console(self, kind: str, *, input_path: str, answers: dict[str, Any], authorization_path: str,
                  timeout_seconds: float, idle_timeout_seconds: float) -> dict[str, Any]:

@@ -2047,6 +2047,11 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     two records that must agree. An input the parent's binding campaign disposition excluded stays
     among the parent's candidates and goes into no part.
 
+    A PART SWITCHED FROM ITS .WIFF2 TO ITS .WIFF (the user's decision of 2026-10-31, WIFF_FALLBACK_RULE) holds the
+    .wiff where the parent's record of it names the .wiff2. Where the switch's record holds (_wiff_fallback: its
+    candidates before the switch, with exactly its swaps made, are its candidates now), the part is held to the
+    parent's record by its candidates before the switch; a record that does not hold changes nothing here.
+
     RUN POLICY: record_only, as the user placed it (2026-10-02). Its FAIL does not break this part's
     results: they come from the part's own rows, whose types ACQ-1 holds to their headers, and whose
     inputs INP-1, SUM-1 and CNT-1 hold to the part's candidates, all of which do stop the run. What a
@@ -2075,13 +2080,19 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     left_out = len(candidates) - len(parent_inputs)
     claimed = sorted(_path_key(path) for item in parts for path in item.get("input_candidates") or [])
     own_inputs = sorted(_path_key(item) for item in provenance.get("input_candidates") or [])
+    # A part switched from its .wiff2 to its .wiff under a switch that holds (WIFF_FALLBACK_RULE, 2026-10-31) is held to
+    # the parent's record by its candidates before the switch: the switch is on record as exactly what changed since.
+    fallback = _wiff_fallback(provenance)
+    split_inputs = (sorted(_path_key(item) for item in (provenance.get(WIFF_FALLBACK_FIELD) or {}).get(
+        "input_candidates_before") or []) if fallback.holds else own_inputs)
     problems = []
     if parent.get("status") != "split_by_acquisition" or parent.get("execution_allowed") is not False:
         problems.append("the parent is not recorded as split and held from execution")
     if own is None:
         problems.append(f"the parent's split_into does not name {own_id or 'this part'}")
-    elif sorted(_path_key(item) for item in own.get("input_candidates") or []) != own_inputs:
-        problems.append("this part's input_candidates differ from the parent's record of it")
+    elif sorted(_path_key(item) for item in own.get("input_candidates") or []) != split_inputs:
+        problems.append("this part's input_candidates differ from the parent's record of it"
+                        + (" before its switch from .wiff2 to .wiff" if fallback.holds else ""))
     held = {_path_key(path): Path(str(path).rstrip("\\/")).name for item in parts
             for path in item.get("input_candidates") or [] if _path_key(path) in excluded}
     if held:
@@ -2107,9 +2118,11 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     report.add("SPL-1", stage, title, PASS,
                f"{own_id} is one of {len(parts)} parts holding the parent's {len(parent_inputs)} "
                "inputs exactly once"
-               + (f", the {left_out} its campaign disposition excluded in none" if left_out else "") + ".",
+               + (f", the {left_out} its campaign disposition excluded in none" if left_out else "")
+               + (f"; {fallback.sentence()}" if fallback.holds else "") + ".",
                parent=split_from.get("analysis_unit_id"), parts=len(parts),
-               **({"excluded_inputs": left_out} if left_out else {}))
+               **({"excluded_inputs": left_out} if left_out else {}),
+               **({"wiff_fallback": fallback.evidence()} if fallback.present else {}))
 
 
 # --------------------------------------------------------------------------------------------
@@ -3768,6 +3781,14 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
     rows, _reaching = _reaching_rows(provenance, csv_rows)
     problems = _encoding_record_problems(provenance, record)
     reaching = {_row_member(row, root).casefold(): row for row in rows}
+    # A switch from .wiff2 to .wiff that holds (WIFF_FALLBACK_RULE): each .wiff2 its choice used is met by its .wiff,
+    # and that .wiff, which the choice may leave unused beside its .wiff2, runs in its place. One that does not hold
+    # accepts nothing, and says why.
+    switch = _wiff_fallback(provenance)
+    problems.extend(_wiff_fallback_problems(provenance))
+    stands_in = {_aif_input_key(to, root).casefold(): _aif_input_key(source, root).casefold()
+                 for source, to in switch.swaps} if switch.holds and root else {}
+    replaced = {source: to for to, source in stands_in.items()}
     exclusions = _encoding_exclusions(provenance)
     samples = _input_samples(provenance, ("rows", "excluded"))
     names = _sample_row_names(provenance)
@@ -3778,7 +3799,8 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
     every_choice = [*choices, *(entry for entry in owner_choices if entry.identity not in identities)]
 
     reached = [f"{path} ({reason or 'no reason'}; {entry.used or 'no file'} used)"
-               for entry in every_choice for path, reason in entry.unused if path.casefold() in reaching]
+               for entry in every_choice for path, reason in entry.unused if path.casefold() in reaching
+               and stands_in.get(path.casefold()) != (entry.used or "").casefold()]
     if reached:
         problems.append(f"{len(reached)} file(s) the one encoding rule left unused reach the run all the same: "
                         + "; ".join(dict.fromkeys(reached[:5])) + " (clause 1: exactly one file of a sample is used)")
@@ -3787,6 +3809,9 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
         if not entry.used:
             continue
         row = reaching.get(entry.used.casefold())
+        if row is None and replaced.get(entry.used.casefold()) in reaching:
+            # The .wiff2 the rule used runs as its .wiff, under a switch that holds.
+            row = reaching[replaced[entry.used.casefold()]]
         if row is None:
             excluded = _encoding_used_exclusion(entry, provenance, root, exclusions)
             later = [path for path, reason in entry.unused if reason in ENCODING_ORDER_REASONS]
@@ -3830,7 +3855,10 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
                                                   paired))
     problems.extend(_unaccounted_listed_members(provenance, rows, record, every_choice, unit_polarity, names, paired))
     problems.extend(_left_out_rule_problems(provenance, rows, record, unit_polarity, names, paired, exclusions))
-    return list(dict.fromkeys(problems)), _encoding_evidence(record)
+    evidence = _encoding_evidence(record)
+    if switch.present:
+        evidence = {**evidence, "wiff_fallback": switch.evidence()}
+    return list(dict.fromkeys(problems)), evidence
 
 
 def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _EncodingRecord,
@@ -4113,6 +4141,9 @@ def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _Enc
             account(path, of_a_sample=False)
     for item in _record_left_out(provenance):
         account(item["path"], of_a_sample=False)
+    # The .wiff2 a switch that holds ran as their .wiff (WIFF_FALLBACK_RULE): on record in manifest.encoding_fallback.
+    for source in _wiff_fallback(provenance).sources().values():
+        account(source)
     undeclared = _undeclared(owner, provenance)
     keys = _sample_groups([*known, *listed], unit_polarity, names or [], paired)
     by_sample: dict[tuple, str] = {}
@@ -4133,11 +4164,21 @@ def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _Enc
 def _encoding_run_sentence(provenance: dict, csv_rows: "list[dict] | None") -> str:
     """The sentence that names each sample whose data arrived in several encodings, the file the rule used, and
     whether that file runs: a file used that was excluded on record (or a sample none of whose files could be read)
-    is named as a sample that runs on no file, never as one whose file runs. "" where no sample arrived so."""
+    is named as a sample that runs on no file, never as one whose file runs; and, where a switch from .wiff2 to .wiff
+    holds (WIFF_FALLBACK_RULE), the switch. "" where neither is so."""
     record = _encoding_record(provenance)
+    switched = _wiff_fallback(provenance).sentence()
     sentence = _encoding_sentence(record)
     if not sentence:
-        return ""
+        return switched
+    if switched:
+        return f"{_encoding_run_sentence_of(provenance, csv_rows, record, sentence)}. {switched}"
+    return _encoding_run_sentence_of(provenance, csv_rows, record, sentence)
+
+
+def _encoding_run_sentence_of(provenance: dict, csv_rows: "list[dict] | None", record: "_EncodingRecord",
+                              sentence: str) -> str:
+    """_encoding_run_sentence for a unit some of whose samples arrived in several encodings."""
     root = record.root
     rows, _reaching = _reaching_rows(provenance, csv_rows)
     exclusions = _encoding_exclusions(provenance)
@@ -4192,6 +4233,166 @@ def _encoding_unused_paths(provenance: dict) -> list[str]:
         return []
     return list(dict.fromkeys(os.path.join(record.root, path.replace("/", os.sep))
                               for entry in record.choices if entry.used for path, _reason in entry.unused))
+
+
+# A .WIFF IN PLACE OF ITS .WIFF2 (the user's decision of 2026-10-31; Interactive 0.5.55, msdial_app.wiff_fallback). The
+# one encoding rule, held jointly with the Catalog, runs a sample from its .wiff2 wherever its .wiff lies beside it, and
+# the positive part of MB-POST MPST000048 hung three times out of three in the .wiff2 reader while its files were read in
+# parallel. The .wiff2 stays the preferred encoding; where a Console job of a DDA unit or split part failed or timed out
+# and every .wiff2 it analyses has the same sample's .wiff beside it with that .wiff's .wiff.scan, Interactive switches
+# the unit's next attempt to the .wiff, once, and records it: manifest.encoding_fallback {rule WIFF_FALLBACK_RULE,
+# failed_jobs, swaps [{from, to, companion, from_relative, to_relative, sample_id}], input_candidates_before}, and on
+# each .wiff's lineage row encoding_fallback {rule, in_place_of, stands_for, in_place_of_row}. The one encoding rule's
+# own record (encoding_choices) is not rewritten. A run of the .wiff departs from that rule, and INP-1 (the listed
+# .wiff2 no record accounts for, the choice whose file used runs on nothing, the unused .wiff that runs) and SPL-1 (a
+# part's candidates against its parent's record of them) refuse it - unless the record holds (_wiff_fallback): it
+# names this rule, a failed or timed-out Console job of the unit that its run_attempts record, a DDA unit, swaps each
+# of a .wiff2 for the .wiff of its stem in its folder with that .wiff's .wiff.scan, and input candidates that are those
+# before the switch with exactly those swaps made, no .wiff2 left to run, and a lineage row of each .wiff that says it
+# runs in place of its .wiff2. Then each .wiff is read as the .wiff2 it stands in for (its header record, its file-name
+# polarity inference: one acquisition), the .wiff2 is accounted for, and the rule's choice that used it is met by its
+# .wiff. A record that does not hold accepts nothing, and INP-1 names why.
+WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
+WIFF_FALLBACK_FIELD = "encoding_fallback"
+# How a run attempt the switch answers ended (Interactive's record_run_end): stopped for time, an error, or a non-zero
+# exit; a cancel, a Console that never started and a missing .wiff.scan are no reader's failure.
+WIFF_FALLBACK_STOPS = frozenset({"timeout", "idle_timeout", "error"})
+WIFF_FALLBACK_NO_FAILURE = frozenset({"cancelled", "start_failed", "sciex_scan_sidecar"})
+
+
+@dataclass
+class _WiffFallback:
+    """A unit's switch from its .wiff2 to its .wiff: whether the manifest records one, why it does not hold, and the
+    swaps ((.wiff2, .wiff) absolute paths) it makes where it holds."""
+    present: bool = False
+    problems: list = field(default_factory=list)
+    swaps: list = field(default_factory=list)
+    failed_jobs: list = field(default_factory=list)
+
+    @property
+    def holds(self) -> bool:
+        return self.present and not self.problems
+
+    def sources(self) -> dict[str, str]:
+        """{key of each .wiff: its .wiff2's path} where the record holds, else {}."""
+        return {_path_key(to): source for source, to in self.swaps} if self.holds else {}
+
+    def sentence(self) -> str:
+        if not self.holds:
+            return ""
+        jobs = ", ".join(f"{item.get('job_id')} ({item.get('failure') or item.get('reason')})" for item in self.failed_jobs)
+        return (f"{len(self.swaps)} .wiff2 input(s) run as the .wiff beside them under {WIFF_FALLBACK_RULE}, after the "
+                f"Console job(s) {jobs} failed on them, each .wiff with its .wiff.scan, the swaps exactly what changed")
+
+    def evidence(self) -> dict:
+        if not self.present:
+            return {}
+        return {"rule": WIFF_FALLBACK_RULE, "holds": self.holds, "problems": self.problems[:10],
+                "failed_jobs": [str(item.get("job_id") or "") for item in self.failed_jobs],
+                "swaps": [{"from": Path(str(source)).name, "to": Path(str(to)).name} for source, to in self.swaps[:20]]}
+
+
+def _wiff_fallback(provenance: dict | None) -> _WiffFallback:
+    """The unit's record of a switch from its .wiff2 to its .wiff (see A .WIFF IN PLACE OF ITS .WIFF2), read and held to
+    everything that makes it the switch the user's decision allows: why it does not hold, where it does not."""
+    record = (provenance or {}).get(WIFF_FALLBACK_FIELD)
+    if record is None:
+        return _WiffFallback()
+    result = _WiffFallback(present=True)
+    problems = result.problems
+    if not isinstance(record, dict):
+        problems.append(f"manifest.{WIFF_FALLBACK_FIELD} is no object")
+        return result
+    if record.get("rule") != WIFF_FALLBACK_RULE:
+        problems.append(f"it names the rule {record.get('rule')!r}, not {WIFF_FALLBACK_RULE}")
+    # The failed Console job(s), as the unit's own run_attempts record how each ended.
+    attempts = {str(item.get("job_id") or ""): item for item in provenance.get("run_attempts") or []
+                if isinstance(item, dict) and str(item.get("job_id") or "")}
+    jobs = [item for item in record.get("failed_jobs") or [] if isinstance(item, dict)]
+    result.failed_jobs = jobs
+    if not jobs:
+        problems.append("it names no failed Console job")
+    for item in jobs:
+        job = str(item.get("job_id") or "")
+        attempt = attempts.get(job)
+        if attempt is None:
+            problems.append(f"the unit's run_attempts record no Console job {job or '(unnamed)'}")
+            continue
+        reason, exit_code = str(attempt.get("reason") or ""), attempt.get("exit_code")
+        failed = bool(attempt.get("ended_at")) and reason not in WIFF_FALLBACK_NO_FAILURE and (
+            reason in WIFF_FALLBACK_STOPS or exit_code not in (None, 0))
+        if not failed:
+            problems.append(f"Console job {job} did not fail or time out as its run attempt records it "
+                            f"({reason or 'no reason'}, exit {exit_code})")
+    # DDA only: ZT Scan DIA data can only be analysed from the .wiff2.
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    modes = {str(project.get("acquisition_mode") or "").strip().upper(), str(record.get("acquisition_mode") or "").upper()}
+    modes |= {str(item.get("console_acquisition_type") or "").strip().upper() for item in _binding_dispositions(provenance)
+              if str(item.get("console_acquisition_type") or "").strip()}
+    if modes != {"DDA"}:
+        problems.append(f"the unit is not DDA ({', '.join(sorted(item or 'unrecorded' for item in modes))}): a DIA, "
+                        "SWATH or AIF .wiff2 is never switched")
+    swaps = []
+    for item in record.get("swaps") or []:
+        source = str(item.get("from") or "") if isinstance(item, dict) else ""
+        to = str(item.get("to") or "") if isinstance(item, dict) else ""
+        companion = str(item.get("companion") or "") if isinstance(item, dict) else ""
+        name = Path(source.replace("\\", "/")).name or "(unnamed)"
+        if not source.casefold().endswith(".wiff2") or not to.casefold().endswith(".wiff"):
+            problems.append(f"the swap of {name} is not of a .wiff2 for a .wiff")
+        elif _path_key(to) != _path_key(source[: -len(".wiff2")] + ".wiff"):
+            problems.append(f"{Path(to.replace(chr(92), '/')).name} is not the .wiff of {name}'s sample beside it")
+        elif _path_key(companion) != _path_key(to + ".scan"):
+            problems.append(f"the swap of {name} names no .wiff.scan beside its .wiff")
+        swaps.append((source, to))
+    if not swaps:
+        problems.append("it swaps no file")
+    froms = [_path_key(source) for source, _to in swaps]
+    if len(set(froms)) != len(froms) or len({_path_key(to) for _source, to in swaps}) != len(swaps):
+        problems.append("it swaps one file twice")
+    # The swaps are exactly what changed: the candidates before, with each .wiff2 replaced by its .wiff.
+    before = record.get("input_candidates_before")
+    by_source = {_path_key(source): to for source, to in swaps}
+    if not isinstance(before, list):
+        problems.append("it records no input candidates before the switch")
+    else:
+        if any(key not in {_path_key(item) for item in before} for key in froms):
+            problems.append("it swaps a file that was no input candidate before the switch")
+        expected = sorted(_path_key(by_source.get(_path_key(item), item)) for item in before)
+        if expected != sorted(_path_key(item) for item in provenance.get("input_candidates") or []):
+            problems.append("the input candidates are not those before the switch with exactly its swaps made")
+    excluded = {_path_key(item) for item in _excluded_inputs(provenance)}
+    left = [Path(str(item).replace("\\", "/")).name for item in provenance.get("input_candidates") or []
+            if str(item).casefold().rstrip("\\/").endswith(".wiff2") and _path_key(item) not in excluded]
+    if left:
+        problems.append(f"{len(left)} .wiff2 input(s) still run beside the switched ones ({', '.join(left[:3])}): the "
+                        "switch is of the whole unit")
+    rows = {_path_key(row["path"]): row for row in _own_lineage_rows(provenance)}
+    switched = {_path_key(to) for _source, to in swaps}
+    for source, to in swaps:
+        fallback = (rows.get(_path_key(to)) or {}).get(WIFF_FALLBACK_FIELD)
+        if not (isinstance(fallback, dict) and fallback.get("rule") == WIFF_FALLBACK_RULE
+                and _path_key(fallback.get("in_place_of") or "") == _path_key(source)):
+            problems.append(f"the lineage row of {Path(to.replace(chr(92), '/')).name} does not say it runs in place of "
+                            f"{Path(source.replace(chr(92), '/')).name}")
+    unlisted = [Path(str(row["path"]).replace("\\", "/")).name for key, row in rows.items()
+                if isinstance(row.get(WIFF_FALLBACK_FIELD), dict) and key not in switched]
+    if unlisted:
+        problems.append(f"the lineage rows of {', '.join(unlisted[:3])} say they run in place of a .wiff2 the record "
+                        "does not swap")
+    result.swaps = swaps
+    return result
+
+
+def _wiff_fallback_problems(provenance: dict) -> list[str]:
+    """Why the unit's record of a switch from .wiff2 to .wiff does not hold, as INP-1 says it; [] for none or one that
+    holds."""
+    fallback = _wiff_fallback(provenance)
+    if not fallback.present or fallback.holds:
+        return []
+    return [f"manifest.{WIFF_FALLBACK_FIELD} does not hold ({'; '.join(fallback.problems[:5])}), so the .wiff it "
+            f"names run in place of their .wiff2 on no rule ({WIFF_FALLBACK_RULE} switches a DDA unit whose Console "
+            "job failed, every .wiff2 for its .wiff with its .wiff.scan, once, on record)"]
 
 
 def _encoding_conversion_problems(provenance: dict, records: "list | None") -> "tuple[list[str], list[str]]":
@@ -4300,6 +4501,15 @@ def check_analysis_inputs_are_the_inputs(
     encoding of its sample that no choice records, or a file of a sample the unit records that an archive listing or
     a download that is no archive shows delivered and that no record or declaration names. A sample whose file used was excluded is named as running on no file. A declared input the rule left unused is no
     candidate and no excluded input: it is counted beside the candidates, accounted for by its sample's choice.
+
+    A .WIFF IN PLACE OF ITS .WIFF2 (the user's decision of 2026-10-31; Interactive 0.5.55). A DDA unit whose Console job
+    failed or timed out on its .wiff2 may run its next attempt on the .wiff beside them, with their .wiff.scan, once.
+    The rule's .wiff2 then runs on nothing and its .wiff in its place, which this check refuses as a departure from the
+    rule - unless manifest.encoding_fallback records the switch and holds (_wiff_fallback: this rule, a failed job its
+    run_attempts record, a DDA unit, swaps each of a .wiff2 for its .wiff with its .wiff.scan that are exactly what
+    changed in the candidates, no .wiff2 left running, each .wiff's lineage row saying so). Then each .wiff2 is accounted
+    for by the record, a choice that used it is met by its .wiff, and the check says so. A record that does not hold
+    FAILs it, naming why.
 
     CID/HCD ONLY (user decision, 2026-10-29; Interactive 0.5.52). In a unit whose lease applied the rule (its record
     carries fragmentation_check), INP-1 FAILs, with or without a declaration, where an input that reaches the run has a
@@ -4803,6 +5013,11 @@ def _per_file_records(provenance: dict) -> dict[str, dict]:
         for item in source if isinstance(source, list) else []:
             if isinstance(item, dict) and str(item.get("file") or "").strip():
                 records.setdefault(_path_key(item["file"]), item)
+    # A .wiff that runs in place of its .wiff2 under a switch that holds (WIFF_FALLBACK_RULE, 2026-10-31) is read as
+    # that .wiff2's record: one acquisition, whose header the preflight read from the .wiff2.
+    for key, source in _wiff_fallback(provenance).sources().items():
+        if _path_key(source) in records:
+            records.setdefault(key, records[_path_key(source)])
     return records
 
 

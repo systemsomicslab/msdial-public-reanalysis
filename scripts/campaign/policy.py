@@ -648,6 +648,49 @@ def console_start_exclusion(result: Any) -> dict[str, Any] | None:
     return None
 
 
+# A .WIFF IN PLACE OF ITS .WIFF2 (the user's decision of 2026-10-31; Interactive 0.5.55, wiff_fallback). The positive
+# part of MB-POST MPST000048 (ZenoTOF 7600, DDA) hung three times out of three in the .wiff2 reader while its files were
+# read in parallel. The .wiff2 stays the preferred encoding; where a Console job of a DDA unit or split part - its
+# peak-count diagnostic or its production run - fails or times out, and every .wiff2 it analyses has the same sample's
+# .wiff beside it with that .wiff's .wiff.scan, Interactive's msdial_switch_repository_unit_to_wiff switches the unit's
+# inputs to the .wiff, once, on record (manifest.encoding_fallback, WIFF_FALLBACK_RULE), and never for DIA, SWATH or
+# AIF (ZT Scan DIA data can only be analysed from the .wiff2). The runner asks for it after such a failure
+# (machine.Runner._wiff_fallback) and resumes the unit at its metadata preparation, so the analysis CSV, the
+# diagnostic's threshold and the run bundle are made again on the files that run.
+WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
+WIFF_FALLBACK_FIELD = "encoding_fallback"
+# The Console job outcomes the switch answers (machine.Runner._console_ended): a failure and a timeout. A cancel is an
+# operator's, an interruption the backend's; neither is the reader's.
+WIFF_FALLBACK_OUTCOMES = frozenset({"failed", "timeout"})
+# Where a unit whose inputs were switched resumes: its metadata preparation, the first step that reads the input list.
+WIFF_FALLBACK_RESUME_STATE = "preflighted"
+
+
+def wiff_fallback_record(manifest: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The unit manifest's encoding_fallback under WIFF_FALLBACK_RULE, or {}."""
+    record = (manifest or {}).get(WIFF_FALLBACK_FIELD)
+    return dict(record) if isinstance(record, Mapping) and record.get("rule") == WIFF_FALLBACK_RULE else {}
+
+
+def analyses_wiff2(manifest: Mapping[str, Any] | None) -> bool:
+    """Whether a unit manifest's input candidates name a .wiff2: the only units the runner asks to switch."""
+    return any(str(item).rstrip("\\/").casefold().endswith(".wiff2") for item in (manifest or {}).get("input_candidates") or [])
+
+
+def wiff_fallback_summary(record: Mapping[str, Any]) -> dict[str, Any]:
+    """What a run record says of a switch: the rule, the failed jobs (id, kind, how each ended), and every file swapped
+    from and to, under the data root (never an absolute path)."""
+    return {
+        "rule": record.get("rule"),
+        "switched_at": record.get("switched_at"),
+        "failed_jobs": [{key: item.get(key) for key in ("job_id", "kind", "failure", "reason", "exit_code")}
+                        for item in record.get("failed_jobs") or [] if isinstance(item, Mapping)],
+        "swaps": [{"from": str(item.get("from_relative") or ""), "to": str(item.get("to_relative") or ""),
+                   "sample_id": str(item.get("sample_id") or "")}
+                  for item in record.get("swaps") or [] if isinstance(item, Mapping)],
+    }
+
+
 def download_exclusion(detail: Mapping[str, Any]) -> dict[str, Any] | None:
     """{"reason", "inputs"} when Interactive's failed-lease record excludes the unit, else None.
 

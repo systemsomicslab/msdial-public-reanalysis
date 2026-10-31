@@ -494,6 +494,8 @@ class InteractivePort:
             "cancel_job": hasattr(self.tools, "msdial_cancel_job"),
             "lease_uses_store": lease_uses_store(self.tools),
             "pre_claim_downloads": pre_claims_downloads(self.rr),
+            # 0.5.55: a DDA .wiff2 unit whose Console job failed switches to the .wiff beside them (2026-10-31).
+            "wiff_fallback": hasattr(self.tools, "msdial_switch_repository_unit_to_wiff"),
         }
 
     def download(
@@ -588,6 +590,16 @@ class InteractivePort:
     def split(self, *, manifest_path: str, authorization_path: str) -> dict[str, Any]:
         return self._call(
             "msdial_split_repository_unit", manifest_path=manifest_path, confirmed=False,
+            campaign_authorization_path=authorization_path,
+        )
+
+    def switch_to_wiff(self, *, manifest_path: str, failed_job_ids: list[str], authorization_path: str) -> dict[str, Any]:
+        """Interactive 0.5.55's msdial_switch_repository_unit_to_wiff under the approval (boundary 4): the unit's inputs
+        from its .wiff2 to the .wiff beside them after a Console job failed (the user's decision of 2026-10-31). An
+        Interactive without the tool answers reason unsupported, and the unit is retried as before."""
+        return self._call(
+            "msdial_switch_repository_unit_to_wiff", manifest_path=manifest_path,
+            failed_job_ids=[str(item) for item in failed_job_ids], confirmed=False,
             campaign_authorization_path=authorization_path,
         )
 
