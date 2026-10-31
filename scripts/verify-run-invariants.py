@@ -73,6 +73,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
+# MS-DIAL's text exports carry each peak's MS/MS spectrum in one field, and a ZenoTOF DDA spectrum can be longer
+# than Python's default csv field limit of 131,072 characters (MB-POST MPST000048, V5 of 2026-10-29: up to 270,713).
+# Raised for the process, to the largest value a C long holds on Windows, as MS-DIAL Interactive 0.5.54 raises it.
+csv.field_size_limit(2**31 - 1)
+
 PASS = "pass"
 FAIL = "fail"
 WARN = "warn"
