@@ -69,12 +69,19 @@ class WiffFallbackTests(machine_tests.Base):
         self.assertEqual(1, len([row for row in book.events(machine.WIFF_FALLBACK) if row["unit_key"] == "u1"]))
         failed = next(row for row in book.attempts("u1") if row["counted"])
         self.assertEqual(policy.WIFF_FALLBACK_RULE, json.loads(failed["detail_json"])[machine.WIFF_FALLBACK]["rule"])
+        # The unit record and the Catalog's runs read the switch from the manifest, with its boundary-4 crossing.
         record = json.loads((Path(unit["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
-        self.assertEqual(summary, record["encoding_fallback"])
         last = world.catalog.runs[f"u1:{unit['run_job_id']}"]
-        self.assertEqual(summary, last["provenance"][machine.WIFF_FALLBACK])
+        for written in (record["encoding_fallback"], last["provenance"][machine.WIFF_FALLBACK]):
+            self.assertEqual({key: summary[key] for key in ("rule", "swaps", "failed_jobs")},
+                             {key: written[key] for key in ("rule", "swaps", "failed_jobs")})
+            self.assertEqual((4, policy.WIFF_FALLBACK_ENTRY_POINT),
+                             (written["campaign_authorization"]["boundary"], written["campaign_authorization"]["entry_point"]))
+            self.assertEqual("DDA", written["wiff_headers"][0]["header_console_acquisition_type"])
         manifest = world.interactive.store.read(unit["manifest_path"])
         self.assertEqual(policy.WIFF_FALLBACK_RULE, manifest["encoding_fallback"]["rule"])
+        self.assertEqual(["C:/fake/RawMetadataConsoleApp.exe"], world.interactive.switch_extractors,
+                         "the pinned extractor reads the .wiff headers")
 
     def test_a_failed_diagnostic_switches_too(self) -> None:
         world = self.world()
@@ -151,6 +158,9 @@ class WiffFallbackTests(machine_tests.Base):
         world.scripts["u1"] = fakes.UnitScript(wiff2=True, disposition="split", split_modes=("dda-pos", "dda-neg"))
         world.scripts["u1-dda-pos"] = fakes.UnitScript(wiff2=True, runs=["timeout", "ok"])
         world.scripts["u1-dda-neg"] = fakes.UnitScript(wiff2=True, runs=["ok"])
+        # The parent's release checks that the parts hold its inputs, each once (review of #88): a switched part's
+        # .wiff are read as the parent's .wiff2 they stand in for.
+        world.interactive.split_release_supported = True
         book = self.finish(world)
 
         positive, negative = book.unit("u1-dda-pos"), book.unit("u1-dda-neg")
@@ -165,6 +175,65 @@ class WiffFallbackTests(machine_tests.Base):
         self.assertEqual(["diagnostic", "run"], self._console_kinds(world, "u1-dda-neg"))
         self.assertEqual(1, len(self._switch_attempts(book, "u1-dda-pos")))
         self.assertEqual([], self._switch_attempts(book, "u1-dda-neg"))
+        parent = book.unit("u1")
+        self.assertEqual((parent["state"], parent["raw_disposition"]), ("split_done", "released"),
+                         "the parent's raw data are released once its parts end, a switched one included")
+
+    def test_a_part_switched_from_its_raw_owners_downloads_and_none_without_them(self) -> None:
+        """A part's manifest carries no downloads: the .wiff's provenance is its raw owner's record (review of #88)."""
+        for downloaded, switched in ((True, True), (False, False)):
+            with self.subTest(downloaded=downloaded):
+                world = self.world()
+                world.scripts["u1"] = fakes.UnitScript(wiff2=True, disposition="split", split_modes=("dda-pos", "dda-neg"),
+                                                       wiff_downloaded=downloaded)
+                world.scripts["u1-dda-pos"] = fakes.UnitScript(wiff2=True, runs=["timeout", "ok"])
+                book = self.finish(world)
+                part = world.interactive.store.read(book.unit("u1-dda-pos")["manifest_path"])
+                self.assertNotIn("downloads", part)
+                self.assertEqual(switched, bool(part.get("encoding_fallback")))
+                (asked,) = self._switch_attempts(book, "u1-dda-pos")
+                self.assertEqual("ok" if switched else "blocked", asked["outcome"])
+
+    def test_a_header_that_does_not_support_it_leaves_the_retry_as_it_was(self) -> None:
+        world, book = self._unswitched(fakes.UnitScript(wiff2=True, wiff_header="two_samples", runs=["timeout", "ok"]))
+        (asked,) = self._switch_attempts(book, "u1")
+        self.assertEqual("wiff_header_refused", json.loads(asked["detail_json"])["reason"])
+
+    def test_a_lost_job_after_a_switch_is_prepared_again_before_any_console_starts(self) -> None:
+        """Review of #88: a switch on record, and the run's job lost to a backend restart before the runner read its end.
+        The interruption resumes the unit at prepared, whose CSV and threshold name the .wiff2; it goes back to its
+        metadata preparation instead, and only then runs."""
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, runs=["hold", "ok"], ticks=4)
+        book = world.open()
+        self.addCleanup(book.close)
+        runner = world.runner(book)
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "running")
+        unit = book.unit("u1")
+        world.interactive.switch_to_wiff(manifest_path=unit["manifest_path"], failed_job_ids=[unit["run_job_id"]],
+                                         authorization_path="")
+        world.interactive.forget()
+        self.step_until(world, book, runner, lambda: book.unit("u1")["state"] == "done", limit=800)
+
+        transitions = [row["to_state"] for row in book.transitions("u1")]
+        self.assertIn("preflighted", transitions[transitions.index("running") + 1:])
+        self.assertEqual(2, len(self._calls(world, "prepare_metadata")))
+        prepared = self._calls(world, "prepare_metadata")[1]["input_candidates"]
+        self.assertTrue(all(item.endswith(".wiff") for item in prepared))
+        self.assertEqual(["diagnostic", "run", "diagnostic", "run"], self._console_kinds(world, "u1"))
+
+    def test_an_adoption_found_again_says_nothing_again(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, runs=["timeout", "ok"])
+        world.interactive.lose_switch_reply = True
+        book = self.finish(world)
+        runner = world.runner(book)
+        unit = book.unit("u1")
+        job = json.loads(self._switch_attempts(book, "u1")[0]["detail_json"])["job_id"]
+        self.assertTrue(runner._wiff_fallback(unit, job_id=job, step="run", outcome="timeout"))
+        self.assertTrue(runner._wiff_fallback(unit, job_id=job, step="run", outcome="timeout"))
+        self.assertEqual(1, len(book.events(machine.WIFF_FALLBACK)))
+        self.assertEqual(1, len(self._switch_attempts(book, "u1")))
 
 
 if __name__ == "__main__":

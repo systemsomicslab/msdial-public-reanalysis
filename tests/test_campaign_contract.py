@@ -265,7 +265,8 @@ class InteractiveContractTests(unittest.TestCase):
             self.assertEqual((False, "unsupported"), (result["ok"], result["reason"]))
             return
         accepted = set(inspect.signature(function).parameters)
-        self.assertEqual([], sorted({"manifest_path", "failed_job_ids", "confirmed", "campaign_authorization_path"}
+        self.assertEqual([], sorted({"manifest_path", "failed_job_ids", "confirmed", "campaign_authorization_path",
+                                     "extractor_path"}
                                     - accepted))
         with tempfile.TemporaryDirectory() as temporary:
             unit = campaign_unit(Path(temporary), status="run_failed")

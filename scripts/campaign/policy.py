@@ -659,6 +659,8 @@ def console_start_exclusion(result: Any) -> dict[str, Any] | None:
 # diagnostic's threshold and the run bundle are made again on the files that run.
 WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
 WIFF_FALLBACK_FIELD = "encoding_fallback"
+# The entry point Interactive records the switch's boundary-4 crossing under.
+WIFF_FALLBACK_ENTRY_POINT = "msdial_switch_repository_unit_to_wiff"
 # The Console job outcomes the switch answers (machine.Runner._console_ended): a failure and a timeout. A cancel is an
 # operator's, an interruption the backend's; neither is the reader's.
 WIFF_FALLBACK_OUTCOMES = frozenset({"failed", "timeout"})
@@ -677,10 +679,12 @@ def analyses_wiff2(manifest: Mapping[str, Any] | None) -> bool:
     return any(str(item).rstrip("\\/").casefold().endswith(".wiff2") for item in (manifest or {}).get("input_candidates") or [])
 
 
-def wiff_fallback_summary(record: Mapping[str, Any]) -> dict[str, Any]:
-    """What a run record says of a switch: the rule, the failed jobs (id, kind, how each ended), and every file swapped
-    from and to, under the data root (never an absolute path)."""
-    return {
+def wiff_fallback_summary(record: Mapping[str, Any], manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """What a run record says of a switch: the rule, the failed jobs (id, kind, how each ended), every file swapped
+    from and to, under the data root (never an absolute path), what each .wiff's own header gave, and, where the
+    manifest is given, the boundary-4 crossing the switch was made under (the unit's campaign_authorizations entry of
+    its entry point, of the approval its record names)."""
+    summary: dict[str, Any] = {
         "rule": record.get("rule"),
         "switched_at": record.get("switched_at"),
         "failed_jobs": [{key: item.get(key) for key in ("job_id", "kind", "failure", "reason", "exit_code")}
@@ -688,7 +692,20 @@ def wiff_fallback_summary(record: Mapping[str, Any]) -> dict[str, Any]:
         "swaps": [{"from": str(item.get("from_relative") or ""), "to": str(item.get("to_relative") or ""),
                    "sample_id": str(item.get("sample_id") or "")}
                   for item in record.get("swaps") or [] if isinstance(item, Mapping)],
+        "wiff_headers": [{key: item.get(key) for key in ("file_relative", "polarity", "header_console_acquisition_type",
+                                                          "sample_count", "acquisition_start_time")}
+                         for item in record.get("wiff_headers") or [] if isinstance(item, Mapping)],
     }
+    if manifest is not None:
+        named = record.get("campaign_authorization") if isinstance(record.get("campaign_authorization"), Mapping) else {}
+        crossing = next((item for item in reversed(manifest.get("campaign_authorizations") or [])
+                         if isinstance(item, Mapping) and str(item.get("boundary")) == "4"
+                         and item.get("entry_point") == WIFF_FALLBACK_ENTRY_POINT
+                         and (not named or item.get("approval_id") == named.get("approval_id"))), None)
+        summary["campaign_authorization"] = (
+            {key: crossing.get(key) for key in ("approval_id", "boundary", "entry_point", "validated_at")}
+            if crossing else None)
+    return summary
 
 
 def download_exclusion(detail: Mapping[str, Any]) -> dict[str, Any] | None:

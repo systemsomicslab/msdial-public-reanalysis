@@ -133,7 +133,12 @@ are made again on the files that now run, and the remaining attempts run on the 
 own (wiff_fallback, never counted), a wiff2_to_wiff_fallback event, a part of the failed attempt's detail, and is
 named in the unit's campaign-record.json and in the provenance of every Catalog analysis_run recorded after it. Where
 Interactive refuses (a DIA unit, a .wiff without its .wiff.scan, a unit already switched) or has no such tool, the
-retry is exactly what it was. A switch whose reply was lost is found in the unit manifest and adopted.
+retry is exactly what it was. A switch whose reply was lost is found in the unit manifest and adopted. The runner sends
+the switch the pinned extractor, with which Interactive reads each .wiff's own header first. Whichever path brings a
+switched unit to metadata_prepared or prepared - a retry, an interruption, a Console job the backend lost - a unit whose
+inputs were switched after its metadata was last prepared goes back to preflighted first (_stale_after_wiff_fallback), so
+no Console starts on a CSV, threshold or run bundle of the .wiff2. The unit record and the Catalog's run records read the
+switch from the unit manifest, with its boundary-4 crossing.
 """
 
 from __future__ import annotations
@@ -2107,6 +2112,8 @@ class Runner:
         return True
 
     def _state_metadata_prepared(self, unit: dict[str, Any]) -> bool:
+        if self._stale_after_wiff_fallback(unit):
+            return True
         return self._console_start(unit, "tuning")
 
     def _console_ended(
@@ -2161,27 +2168,29 @@ class Runner:
         Asked only where it can matter: the job failed or timed out (a cancel or an interruption is no reader's), the
         unit analyses a .wiff2, and the unit has an attempt left after this one (policy.after_failure), so a switch
         is never recorded for a run that will not happen. Interactive decides the rest - DDA only, every .wiff2 with
-        its .wiff and the .wiff's .wiff.scan beside it, once per unit - and refuses otherwise; a refusal, and an
-        Interactive without the tool (unsupported), leave the retry exactly as it was. Each ask is an attempt of its
-        own (WIFF_FALLBACK_STEP, never counted), and a switch is said in a WIFF_FALLBACK event.
+        its .wiff and the .wiff's .wiff.scan beside it, each .wiff's own header read with the pinned extractor (sent as
+        the preflight is sent it) giving one DDA sample in the unit's polarity, once per unit - and refuses otherwise;
+        a refusal, and an Interactive without the tool (unsupported), leave the retry exactly as it was. Each ask is an
+        attempt of its own (WIFF_FALLBACK_STEP, never counted), and a switch is said in a WIFF_FALLBACK event, once.
 
         A switch whose reply was lost, or that a crash left without the transition that follows it, is found in the
         unit manifest: an encoding_fallback whose failed jobs name this job is the switch this failure made, and is
-        adopted as made, so the unit never resumes on a CSV and threshold of the .wiff2 after its inputs changed."""
+        adopted as made, so the unit never resumes on a CSV and threshold of the .wiff2 after its inputs changed. An
+        adoption that finds the switch already recorded says nothing again."""
         if outcome not in policy.WIFF_FALLBACK_OUTCOMES or not job_id:
             return None
         manifest = self._manifest(unit) or {}
         recorded = policy.wiff_fallback_record(manifest)
         if recorded and job_id in _failed_job_ids(recorded):
-            summary = policy.wiff_fallback_summary(recorded)
-            if self.wiff_fallback_of(unit["unit_key"]) is None:
+            if not self._wiff_fallback_attempted(unit["unit_key"]):
+                summary = policy.wiff_fallback_summary(recorded)
                 adopted = self.ledger.open_attempt(unit["unit_key"], WIFF_FALLBACK_STEP, self.stamp(),
                                                    tool="msdial_switch_repository_unit_to_wiff")
                 self.ledger.close_attempt(adopted, "ok", self.stamp(), detail=self.redact({
                     "job_id": job_id, "step": step, "switched": True, "adopted": True, WIFF_FALLBACK: summary}))
-            self._event(WIFF_FALLBACK, {**summary, "step": step, "adopted": True}, unit["unit_key"])
+                self._event(WIFF_FALLBACK, {**summary, "step": step, "adopted": True}, unit["unit_key"])
             return recorded
-        if recorded or not policy.analyses_wiff2(manifest):
+        if manifest.get(policy.WIFF_FALLBACK_FIELD) is not None or not policy.analyses_wiff2(manifest):
             return None
         if policy.after_failure(int(unit["failures"]), self.now(), self.policy).state != "waiting_retry":
             return None
@@ -2197,7 +2206,8 @@ class Runner:
         else:
             try:
                 result = dict(switch(manifest_path=unit["manifest_path"], failed_job_ids=[job_id],
-                                     authorization_path=self._authorization(unit)) or {})
+                                     authorization_path=self._authorization(unit),
+                                     extractor_path=str((self.pins.get("extractor") or {}).get("path") or "")) or {})
             except Exception as error:  # noqa: BLE001 - a switch that raises is no switch; the retry goes on as before
                 result = {"ok": False, "reason": "exception", "error_type": type(error).__name__, "detail": str(error)}
         record = policy.wiff_fallback_record({policy.WIFF_FALLBACK_FIELD: result.get(policy.WIFF_FALLBACK_FIELD)})
@@ -2216,13 +2226,40 @@ class Runner:
         self._event(WIFF_FALLBACK, {**summary, "step": step}, unit["unit_key"])
         return record
 
-    def wiff_fallback_of(self, unit_key: str) -> dict[str, Any] | None:
-        """What the unit's switch from its .wiff2 to its .wiff was (policy.wiff_fallback_summary), as its last
-        WIFF_FALLBACK_STEP attempt that switched records it; None for a unit that never switched."""
-        for item in reversed(self.ledger.attempts(unit_key)):
+    def _wiff_fallback_attempted(self, unit_key: str) -> bool:
+        """Whether the ledger already records the unit's switch (a WIFF_FALLBACK_STEP attempt that switched)."""
+        return any(item["step"] == WIFF_FALLBACK_STEP and item["outcome"] == "ok" for item in self.ledger.attempts(unit_key))
+
+    def wiff_fallback_of(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """What the unit's switch from its .wiff2 to its .wiff was (policy.wiff_fallback_summary, with the boundary-4
+        crossing it was made under), read from the unit manifest, the record Interactive wrote; where the manifest
+        cannot be read, as the ledger's last WIFF_FALLBACK_STEP attempt that switched recorded it. None for a unit
+        that never switched."""
+        record = policy.wiff_fallback_record(self._manifest(unit))
+        if record:
+            return policy.wiff_fallback_summary(record, self._manifest(unit))
+        for item in reversed(self.ledger.attempts(unit["unit_key"])):
             if item["step"] == WIFF_FALLBACK_STEP and item["outcome"] == "ok":
                 return _loads(item["detail_json"]).get(WIFF_FALLBACK) or None
         return None
+
+    def _stale_after_wiff_fallback(self, unit: dict[str, Any]) -> bool:
+        """Send a unit back to its metadata preparation where its inputs were switched after its metadata was last
+        prepared: the analysis CSV, the threshold and the run bundle it would start from name the .wiff2. Whichever
+        path brought it to metadata_prepared or prepared - a retry, an interruption, a Console the backend lost, a
+        crash between the switch and the transition after it - it never starts a Console on them."""
+        record = policy.wiff_fallback_record(self._manifest(unit))
+        switched = policy.parse_iso(record.get("switched_at")) if record else None
+        if switched is None:
+            return False
+        prepared = [policy.parse_iso(item["ended_at"]) for item in self.ledger.attempts(unit["unit_key"])
+                    if item["step"] == "prepare_metadata" and item["outcome"] == "ok"]
+        prepared = [moment for moment in prepared if moment is not None]
+        if prepared and max(prepared) >= switched:
+            return False
+        self._move(unit, policy.WIFF_FALLBACK_RESUME_STATE,
+                   detail={WIFF_FALLBACK: "inputs switched after the metadata was prepared", "switched_at": record.get("switched_at")})
+        return True
 
     def _console_lost(
         self, unit: dict[str, Any], *, step: str, retry_state: str, unreadable: Mapping[str, Any] | None = None
@@ -2604,6 +2641,8 @@ class Runner:
         return moved
 
     def _state_prepared(self, unit: dict[str, Any]) -> bool:
+        if self._stale_after_wiff_fallback(unit):
+            return True
         return self._console_start(unit, "run")
 
     def _state_running(self, unit: dict[str, Any]) -> bool:
@@ -3017,7 +3056,7 @@ class Runner:
                 "attempt_status": status.replace(" ", "_") if not final else None,
             },
         }
-        fallback = self.wiff_fallback_of(unit["unit_key"])
+        fallback = self.wiff_fallback_of(unit)
         if fallback:
             # The unit's inputs were switched from its .wiff2 to its .wiff after a Console failure (2026-10-31): the
             # rule, the failed job(s) and every file swapped, on every run record made after the switch. The .wiff2 run
@@ -3089,7 +3128,7 @@ class Runner:
             "diagnostic_peak_count": unit.get("diagnostic_peak_count"),
             # The switch of the unit's inputs from its .wiff2 to the .wiff beside them after a Console job failed (the
             # user's decision of 2026-10-31): the rule, the failed job(s) and every file swapped; null where none was.
-            "encoding_fallback": self.wiff_fallback_of(unit["unit_key"]),
+            "encoding_fallback": self.wiff_fallback_of(unit),
             # What the campaign pinned of automatic RT correction, and whether this unit's runs went on without it
             # (null for a campaign whose policy pins none of it); whether its Blanks took a model interpolated by
             # analytical order, and the order source that decided it (blank_interpolation).

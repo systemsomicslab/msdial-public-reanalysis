@@ -4249,15 +4249,36 @@ def _encoding_unused_paths(provenance: dict) -> list[str]:
 # names this rule, a failed or timed-out Console job of the unit that its run_attempts record, a DDA unit, swaps each
 # of a .wiff2 for the .wiff of its stem in its folder with that .wiff's .wiff.scan, and input candidates that are those
 # before the switch with exactly those swaps made, no .wiff2 left to run, and a lineage row of each .wiff that says it
-# runs in place of its .wiff2. Then each .wiff is read as the .wiff2 it stands in for (its header record, its file-name
-# polarity inference: one acquisition), the .wiff2 is accounted for, and the rule's choice that used it is met by its
-# .wiff. A record that does not hold accepts nothing, and INP-1 names why.
+# runs in place of its .wiff2. Review of #88 added: each failed job is a diagnostic (tuning) or a run that ended before
+# the switch; a campaign unit's switch names its approval and the unit records that approval's boundary-4 crossing of
+# the switch's entry point; and each .wiff's own header, read at the switch by the pinned extractor
+# (encoding_fallback.wiff_headers), was read, lists at most one sample, gives DDA and states the polarity the unit runs
+# in. Then each .wiff is read through that header, its .wiff2's record kept as the decision record (_per_file_records:
+# ACQ-1, and the polarity reading, where the header replaces a .wiff2's file-name inference), the .wiff2 is accounted
+# for, and the rule's choice that used it is met by its .wiff. A record that does not hold accepts nothing, and INP-1
+# names why.
 WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
 WIFF_FALLBACK_FIELD = "encoding_fallback"
 # How a run attempt the switch answers ended (Interactive's record_run_end): stopped for time, an error, or a non-zero
 # exit; a cancel, a Console that never started and a missing .wiff.scan are no reader's failure.
 WIFF_FALLBACK_STOPS = frozenset({"timeout", "idle_timeout", "error"})
 WIFF_FALLBACK_NO_FAILURE = frozenset({"cancelled", "start_failed", "sciex_scan_sidecar"})
+# The Console jobs the switch answers: a peak-count diagnostic (tuning) and a production run (run).
+WIFF_FALLBACK_KINDS = frozenset({"tuning", "run"})
+# The entry point Interactive records the switch's boundary-4 crossing under.
+WIFF_FALLBACK_ENTRY_POINT = "msdial_switch_repository_unit_to_wiff"
+# Where each .wiff's own raw header, read at the switch, is recorded (encoding_fallback.wiff_headers): direct evidence
+# of the file that runs, preferred over its .wiff2's record by ACQ-1 and the polarity reading (_per_file_records).
+WIFF_HEADERS = "wiff_headers"
+
+
+def _parse_moment(value: object) -> "datetime | None":
+    """An ISO 8601 time as an aware datetime (UTC where it states no zone), or None."""
+    try:
+        moment = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 @dataclass
@@ -4268,6 +4289,7 @@ class _WiffFallback:
     problems: list = field(default_factory=list)
     swaps: list = field(default_factory=list)
     failed_jobs: list = field(default_factory=list)
+    headers: dict = field(default_factory=dict)  # {key of a .wiff: its header as read at the switch}
 
     @property
     def holds(self) -> bool:
@@ -4324,6 +4346,26 @@ def _wiff_fallback(provenance: dict | None) -> _WiffFallback:
         if not failed:
             problems.append(f"Console job {job} did not fail or time out as its run attempt records it "
                             f"({reason or 'no reason'}, exit {exit_code})")
+        if str(attempt.get("kind") or "") not in WIFF_FALLBACK_KINDS:
+            problems.append(f"Console job {job} is a {attempt.get('kind') or 'kindless'} attempt, no peak-count "
+                            "diagnostic (tuning) or production run (run)")
+        ended, switched_at = _parse_moment(attempt.get("ended_at")), _parse_moment(record.get("switched_at"))
+        if ended is None or switched_at is None or ended > switched_at:
+            problems.append(f"Console job {job} did not end before the switch it is the evidence of "
+                            f"(ended {attempt.get('ended_at') or 'never'}, switched {record.get('switched_at') or 'never'})")
+    # Made under the campaign's approval: the record names the approval, and the unit's campaign_authorizations hold the
+    # boundary-4 crossing of the switch's entry point under it. A campaign unit's switch that names none was made under
+    # no approval of the campaign's.
+    named = record.get("campaign_authorization")
+    if isinstance(named, dict):
+        crossings = [item for item in provenance.get("campaign_authorizations") or [] if isinstance(item, dict)
+                     and str(item.get("boundary")) == "4" and item.get("entry_point") == WIFF_FALLBACK_ENTRY_POINT
+                     and item.get("approval_id") == named.get("approval_id")]
+        if not crossings:
+            problems.append(f"no boundary-4 crossing of {WIFF_FALLBACK_ENTRY_POINT} under approval "
+                            f"{named.get('approval_id') or '(unnamed)'} is recorded for it")
+    elif _binding_dispositions(provenance):
+        problems.append("it names no campaign approval, and the unit is a campaign unit")
     # DDA only: ZT Scan DIA data can only be analysed from the .wiff2.
     project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
     modes = {str(project.get("acquisition_mode") or "").strip().upper(), str(record.get("acquisition_mode") or "").upper()}
@@ -4347,6 +4389,29 @@ def _wiff_fallback(provenance: dict | None) -> _WiffFallback:
         swaps.append((source, to))
     if not swaps:
         problems.append("it swaps no file")
+    # Each .wiff's own header, read at the switch: one DDA sample, in the polarity the unit runs in.
+    headers = {_path_key(item.get("file")): item for item in record.get(WIFF_HEADERS) or []
+               if isinstance(item, dict) and str(item.get("file") or "").strip()}
+    unit_mode = str(project.get("ion_mode") or "").strip().capitalize()
+    for _source, to in swaps:
+        header = headers.get(_path_key(to))
+        name = Path(to.replace("\\", "/")).name or "(unnamed)"
+        if header is None:
+            problems.append(f"it records no header of {name} read at the switch ({WIFF_FALLBACK_FIELD}.{WIFF_HEADERS})")
+            continue
+        polarity, count = str(header.get("polarity") or ""), header.get("sample_count")
+        expected = unit_mode if unit_mode in ("Positive", "Negative") else str(header.get("expected_polarity") or "")
+        if str(header.get("outcome") or "") not in ("ok", "reused"):
+            problems.append(f"{name}'s header was not read ({header.get('outcome') or 'no outcome'})")
+        elif header.get("header_console_acquisition_type") != "DDA":
+            problems.append(f"{name}'s header gives {header.get('header_console_acquisition_type') or 'no'} Console "
+                            "acquisition type, not DDA")
+        elif isinstance(count, int) and not isinstance(count, bool) and count > 1:
+            problems.append(f"{name}'s header lists {count} samples")
+        elif polarity not in ("Positive", "Negative") or polarity != expected:
+            problems.append(f"{name}'s header states {polarity or 'no polarity'}, and the unit runs in "
+                            f"{expected or 'no recorded polarity'}")
+    result.headers = headers
     froms = [_path_key(source) for source, _to in swaps]
     if len(set(froms)) != len(froms) or len({_path_key(to) for _source, to in swaps}) != len(swaps):
         problems.append("it swaps one file twice")
@@ -5013,11 +5078,26 @@ def _per_file_records(provenance: dict) -> dict[str, dict]:
         for item in source if isinstance(source, list) else []:
             if isinstance(item, dict) and str(item.get("file") or "").strip():
                 records.setdefault(_path_key(item["file"]), item)
-    # A .wiff that runs in place of its .wiff2 under a switch that holds (WIFF_FALLBACK_RULE, 2026-10-31) is read as
-    # that .wiff2's record: one acquisition, whose header the preflight read from the .wiff2.
-    for key, source in _wiff_fallback(provenance).sources().items():
-        if _path_key(source) in records:
-            records.setdefault(key, records[_path_key(source)])
+    # A .wiff that runs in place of its .wiff2 under a switch that holds (WIFF_FALLBACK_RULE, 2026-10-31) is read
+    # through its own header, read at the switch (encoding_fallback.wiff_headers): direct evidence of the file that
+    # runs, where the .wiff2's (unreadable for a ZenoTOF .wiff2) was not. The .wiff2's record stays the decision record:
+    # the type the disposition decided, and its basis, are kept.
+    fallback = _wiff_fallback(provenance)
+    for key, source in fallback.sources().items():
+        base = dict(records.get(_path_key(source)) or {})
+        header = fallback.headers.get(key)
+        if header is None:
+            if base:
+                records.setdefault(key, base)
+            continue
+        merged = {**base, "file": str(header.get("file") or ""), "outcome": str(header.get("outcome") or ""),
+                  "polarity": header.get("polarity"), "acquisition_mode": header.get("acquisition_mode"),
+                  "header_console_acquisition_type": header.get("header_console_acquisition_type"),
+                  "ms_levels": header.get("ms_levels"), "acquisition_start_time": header.get("acquisition_start_time"),
+                  "header_read_from": f"{WIFF_FALLBACK_FIELD}.{WIFF_HEADERS}", "in_place_of": source}
+        if "console_acquisition_type" not in base:
+            merged["console_acquisition_type"] = header.get("header_console_acquisition_type")
+        records[key] = merged
     return records
 
 

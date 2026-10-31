@@ -38,6 +38,7 @@ class WiffUnit(built.FolderBranchUnit):
     def __init__(self, temporary: str, unit_id: str = "unit") -> None:
         super().__init__(temporary, unit_id)
         self.manifest["project"]["acquisition_mode"] = "DDA"
+        self.manifest["project"]["ion_mode"] = "Positive"
         for stem in STEMS:
             self.file(f"{stem}.wiff2", stem)
             self._download(self.data / f"{stem}.wiff", f"{stem}.wiff".encode(), verified=True)
@@ -88,6 +89,13 @@ class WiffUnit(built.FolderBranchUnit):
                 "acquisition_mode": "DDA", "swaps": swaps, "input_candidates_before": before,
                 "failed_jobs": [{"job_id": "rn1", "kind": "run", "failure": "idle_timeout", "reason": "idle_timeout",
                                  "exit_code": -3}],
+                # Each .wiff's own header, read at the switch by the pinned extractor.
+                "wiff_headers": [{"file": swap["to"], "file_relative": swap["to_relative"],
+                                  "in_place_of": swap["from"], "in_place_of_relative": swap["from_relative"],
+                                  "outcome": "ok", "polarity": "Positive", "expected_polarity": "Positive",
+                                  "acquisition_mode": "DDA", "header_console_acquisition_type": "DDA",
+                                  "ms_levels": [1, 2], "sample_count": 1,
+                                  "acquisition_start_time": "2024-12-02T10:00:00+00:00"} for swap in swaps],
             }
         if not record:
             # Without its record, nothing names the .wiff2 the run left behind.
@@ -154,6 +162,18 @@ class AWiffRunInPlaceOfItsWiff2(unittest.TestCase):
             "the unit is not DDA": dia, "names the rule": another_rule,
             "not those before the switch with exactly its swaps made": more_than_the_swaps,
             "names no .wiff.scan beside its .wiff": no_scan, "does not say it runs in place of": row_says_nothing,
+            # Review of #88 (L3): the attempt is a diagnostic or a run, and ended before the switch.
+            "attempt, no peak-count diagnostic": lambda unit: unit.manifest["run_attempts"][1].update(kind="download"),
+            "did not end before the switch": lambda unit: unit.manifest["run_attempts"][1].update(
+                ended_at="2026-11-01T00:00:00+00:00"),
+            # Each .wiff's own header: recorded, one DDA sample, in the unit's polarity.
+            "records no header of": lambda unit: unit.manifest["encoding_fallback"]["wiff_headers"].pop(),
+            "header lists 2 samples": lambda unit: unit.manifest["encoding_fallback"]["wiff_headers"][0].update(sample_count=2),
+            "Console acquisition type, not DDA": lambda unit: unit.manifest["encoding_fallback"]["wiff_headers"][0].update(
+                header_console_acquisition_type="SWATH"),
+            "header states Negative, and the unit runs in Positive":
+                lambda unit: unit.manifest["encoding_fallback"]["wiff_headers"][0].update(polarity="Negative"),
+            "header was not read": lambda unit: unit.manifest["encoding_fallback"]["wiff_headers"][0].update(outcome="failed"),
         }
         for said, change in cases.items():
             with self.subTest(said):
@@ -200,29 +220,84 @@ class AWiffRunInPlaceOfItsWiff2(unittest.TestCase):
         self.assertIn("its sample runs on nothing", refused.detail)
 
 
-class ReadAsItsWiff2(unittest.TestCase):
-    def test_each_wiff_is_read_through_its_wiff2s_header_record(self) -> None:
-        def preflight(unit) -> None:
-            unit.manifest["raw_metadata_preflight"] = {"summary": {"per_file": [
-                {"file": path, "outcome": "unsupported_format", "format": "sciex_wiff2", "acquisition_mode": "",
-                 "polarity": "", "header_console_acquisition_type": None, "console_acquisition_type": "DDA"}
-                for path in unit.manifest["input_candidates"]]}}
+def _campaign(unit) -> None:
+    """The unit as a campaign leaves it: a binding disposition decided from the declaration, every .wiff2 header
+    unreadable (unsupported_format) in a unit declared Both, and no file-name inference recorded."""
+    unit.manifest["project"]["repository_metadata"] = {"catalog_handoff": {"technical_settings": {"ion_mode": "Both"}}}
+    unit.manifest["raw_metadata_preflight"] = {"summary": {"per_file": [
+        {"file": path, "outcome": "unsupported_format", "format": "sciex_wiff2", "acquisition_mode": "",
+         "polarity": "", "header_console_acquisition_type": None, "console_acquisition_type": "DDA",
+         "console_acquisition_basis": "declaration"}
+        for path in unit.manifest["input_candidates"]]}}
+    unit.manifest["campaign_disposition"] = {"schema": "msdial-campaign-disposition.v1", "disposition": "run",
+                                             "applied": True, "console_acquisition_type": "DDA", "excluded_inputs": [],
+                                             "reasons": [], "warnings": []}
 
-        provenance = None
+
+def _approved(unit) -> None:
+    """The switch made under the campaign's approval, its boundary-4 crossing recorded, as Interactive writes it."""
+    unit.manifest["encoding_fallback"]["campaign_authorization"] = {
+        "approval_id": "approval-1", "boundary": 4, "entry_point": verifier.WIFF_FALLBACK_ENTRY_POINT}
+    unit.manifest.setdefault("campaign_authorizations", []).append(
+        {"approval_id": "approval-1", "boundary": 4, "entry_point": verifier.WIFF_FALLBACK_ENTRY_POINT,
+         "validated_at": "2026-10-31T00:00:00+00:00"})
+
+
+class ReadThroughItsOwnHeader(unittest.TestCase):
+    """Review of #88: each .wiff is read through its own header, read at the switch, and the .wiff2's record stays the
+    decision record; a record that does not hold reads nothing through the .wiff2."""
+
+    def _provenance(self, temporary: str, *, approved: bool = True) -> "tuple[WiffUnit, dict]":
+        unit = WiffUnit(temporary)
+        _campaign(unit)
+        unit.switch()
+        if approved:
+            _approved(unit)
+        return unit, json.loads(json.dumps(unit.manifest))
+
+    def test_each_wiff_is_read_through_its_own_header_beside_its_wiff2s_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            unit = WiffUnit(temporary)
-            preflight(unit)
-            unit.switch()
-            provenance = json.loads(json.dumps(unit.manifest))
+            unit, provenance = self._provenance(temporary)
             records = verifier._per_file_records(provenance)
             for stem in STEMS:
-                record = records.get(verifier._path_key(str(unit.data / f"{stem}.wiff")))
-                self.assertIsNotNone(record)
-                self.assertTrue(record["file"].endswith(f"{stem}.wiff2"))
+                record = records[verifier._path_key(str(unit.data / f"{stem}.wiff"))]
+                self.assertTrue(record["file"].endswith(f"{stem}.wiff"))
+                self.assertTrue(record["in_place_of"].endswith(f"{stem}.wiff2"))
+                self.assertEqual(("ok", "Positive", "DDA"), (record["outcome"], record["polarity"],
+                                                            record["header_console_acquisition_type"]))
+                self.assertEqual(("DDA", "declaration"), (record["console_acquisition_type"],
+                                                          record["console_acquisition_basis"]))
+
+    def test_the_wiff_header_is_the_polarity_evidence_where_the_wiff2s_was_unreadable(self) -> None:
+        """The .wiff2 of a unit declared Both ran on a file-name inference; the .wiff runs on its own header."""
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, provenance = self._provenance(temporary)
+            rows = [{"file_path": str(unit.data / f"{stem}.wiff")} for stem in STEMS]
+            failures, warnings = verifier._polarity_basis(provenance, verifier._per_file_records(provenance), rows, {},
+                                                          verifier._binding_dispositions(provenance))
+            self.assertEqual(([], []), (failures, warnings))
+            unswitched = WiffUnit(temporary, "unswitched")
+            _campaign(unswitched)
+            plain = json.loads(json.dumps(unswitched.manifest))
+            failures, _warnings = verifier._polarity_basis(
+                plain, verifier._per_file_records(plain),
+                [{"file_path": path} for path in plain["input_candidates"]], {}, verifier._binding_dispositions(plain))
+            self.assertEqual(len(STEMS), len(failures), "the .wiff2 run had no polarity evidence of its own")
+
+    def test_a_campaign_switch_needs_its_boundary_4_crossing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _unit, provenance = self._provenance(temporary, approved=False)
+            self.assertIn("it names no campaign approval, and the unit is a campaign unit",
+                          verifier._wiff_fallback(provenance).problems)
+            provenance["encoding_fallback"]["campaign_authorization"] = {"approval_id": "approval-9"}
+            self.assertTrue(any("no boundary-4 crossing" in item for item in verifier._wiff_fallback(provenance).problems))
+
+    def test_a_record_that_does_not_hold_reads_nothing_through_the_wiff2(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            unit, provenance = self._provenance(temporary)
             provenance["encoding_fallback"]["failed_jobs"][0]["job_id"] = "dg1"
-            records = verifier._per_file_records(provenance)
-            self.assertNotIn(verifier._path_key(str(unit.data / f"{STEMS[0]}.wiff")), records,
-                             "a record that does not hold reads nothing through the .wiff2")
+            self.assertNotIn(verifier._path_key(str(unit.data / f"{STEMS[0]}.wiff")),
+                             verifier._per_file_records(provenance))
 
 
 class ASwitchedSplitPart(unittest.TestCase):

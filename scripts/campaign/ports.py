@@ -593,13 +593,17 @@ class InteractivePort:
             campaign_authorization_path=authorization_path,
         )
 
-    def switch_to_wiff(self, *, manifest_path: str, failed_job_ids: list[str], authorization_path: str) -> dict[str, Any]:
+    def switch_to_wiff(
+        self, *, manifest_path: str, failed_job_ids: list[str], authorization_path: str, extractor_path: str = "",
+    ) -> dict[str, Any]:
         """Interactive 0.5.55's msdial_switch_repository_unit_to_wiff under the approval (boundary 4): the unit's inputs
-        from its .wiff2 to the .wiff beside them after a Console job failed (the user's decision of 2026-10-31). An
+        from its .wiff2 to the .wiff beside them after a Console job failed (the user's decision of 2026-10-31), each
+        .wiff's header read first with the pinned extractor (extractor_path), as the preflight reads them. An
         Interactive without the tool answers reason unsupported, and the unit is retried as before."""
         return self._call(
-            "msdial_switch_repository_unit_to_wiff", manifest_path=manifest_path,
-            failed_job_ids=[str(item) for item in failed_job_ids], confirmed=False,
+            "msdial_switch_repository_unit_to_wiff",
+            optional={"extractor_path": extractor_path} if extractor_path else None,
+            manifest_path=manifest_path, failed_job_ids=[str(item) for item in failed_job_ids], confirmed=False,
             campaign_authorization_path=authorization_path,
         )
 
