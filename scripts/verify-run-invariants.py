@@ -1593,6 +1593,31 @@ def _checksum_basis(owner: dict, not_analysed: "dict[str, tuple[str, str]] | Non
     return "insufficient", detail, evidence
 
 
+def _checksum_subject(provenance: dict, owner: dict) -> tuple[dict, str]:
+    """The manifest whose inputs SUM-1 and SUM-2 resolve, and whose lineage rows they read: "own" or "raw_owner".
+
+    A unit's own, except for a split part. A part downloaded nothing, so what vouches for its bytes is
+    its raw owner's: the downloads, archive extractions and their member listings, extracted files,
+    the declared checksums and the allow-list validator's counts. Its inputs and their lineage rows are
+    its own. Judged on the owner's candidates and rows, a part passed on its parent's: a part switched
+    from its .wiff2 to its .wiff (WIFF_FALLBACK_RULE) runs on .wiff inputs whose own rows nothing read,
+    while SUM-1 passed on the parent's .wiff2 rows. So a part that carries rows of its own is judged by
+    them, with the owner's evidence: the owner's manifest with the part's input_candidates and
+    input_lineage in place of its own. Each candidate is resolved through the part's row only; a part
+    whose own table lacks one is refused for it, never covered by the parent's row.
+
+    A part written before Interactive copied the rows into it (its input_lineage absent, or holding no
+    rows) has nothing of its own to read, and keeps the owner's candidates and rows as before.
+    """
+    if owner is provenance:
+        return owner, "own"
+    lineage = provenance.get("input_lineage")
+    rows = lineage.get("rows") if isinstance(lineage, dict) else None
+    if not isinstance(rows, list) or not rows or not isinstance(provenance.get("input_candidates"), list):
+        return owner, "raw_owner"
+    return {**owner, "input_candidates": provenance["input_candidates"], "input_lineage": lineage}, "own"
+
+
 def check_checksum_coverage(report: Report, provenance: dict | None, reason: str,
                            csv_rows: list[dict] | None = None) -> None:
     """SUM-1. Every admitted input had its declared checksum verified.
@@ -1609,7 +1634,9 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
     declaration is still a FAIL: some files could be compared and the rest were not.
 
     A split part carries its raw owner's verdict. Read on the part alone, the record is absent
-    and a FAIL on the parent would become a mere absence on the part.
+    and a FAIL on the parent would become a mere absence on the part. Its own inputs are resolved
+    through its own lineage rows where it carries them, against the owner's evidence
+    (_checksum_subject); evidence lineage_rows_of says whose rows were read.
 
     AN ARCHIVE'S PUBLISHED MD5 is the only checksum a Metabolomics Workbench archive unit has. Where
     the manifest carries input_lineage, an input extracted from an archive whose MD5 matched at
@@ -1641,19 +1668,21 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
                        f"This unit was split from another, whose manifest cannot be used: {owner_reason}")
             return
         inherited_from = str((provenance.get("split_from") or {}).get("analysis_unit_id") or "")
+    subject, rows_of = _checksum_subject(provenance, owner)
     if not isinstance(owner.get("allowlist_checksum_validation"), dict) or not isinstance(
-        owner.get("input_candidates"), list
+        subject.get("input_candidates"), list
     ):
         report.add("SUM-1", stage, title, NOT_EVALUABLE,
                    "The manifest records no checksum validation block or no input candidates.",
                    inherited_from=inherited_from)
         return
-    not_analysed = _not_analysed(provenance, owner, csv_rows)
-    kind, detail, evidence = _checksum_basis(owner, not_analysed)
+    not_analysed = _not_analysed(provenance, subject, csv_rows)
+    kind, detail, evidence = _checksum_basis(subject, not_analysed)
     if evidence.get("inputs_excluded") and evidence.get("inputs"):
         detail += _excluded_sentence(not_analysed)
     status = {"verified": PASS, "archive_verified": ARCHIVE_VERIFIED_STATUS, "download_sha256": WARN}.get(kind, FAIL)
-    report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, **evidence)
+    report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, lineage_rows_of=rows_of,
+               **evidence)
 
 
 # --------------------------------------------------------------------------------------------
@@ -10290,8 +10319,10 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     if owner is None:
         report.add("SUM-2", stage, title, NOT_EVALUABLE, owner_reason or "The manifest is absent.")
         return
-    # The inputs SUM-1 judged: what an artifact says of the inputs is said of those analysed.
-    kind, _detail, basis_evidence = _checksum_basis(owner, _not_analysed(provenance, owner, csv_rows))
+    # The inputs SUM-1 judged: what an artifact says of the inputs is said of those analysed, a split
+    # part's own where it carries their rows (_checksum_subject).
+    subject, _rows_of = _checksum_subject(provenance, owner)
+    kind, _detail, basis_evidence = _checksum_basis(subject, _not_analysed(provenance, subject, csv_rows))
     if kind not in ("download_sha256", "archive_verified"):
         report.add("SUM-2", stage, title, NOT_EVALUABLE,
                    "The inputs were checksum-verified, or SUM-1 refused them; there is no unearned "
