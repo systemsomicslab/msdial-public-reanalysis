@@ -424,6 +424,47 @@ class ReadThroughItsOwnHeader(unittest.TestCase):
                              verifier._per_file_records(provenance))
 
 
+def _left_out_wiff(reason: str):
+    """The lease's record of a declared unit, as MB-POST MPST000048's (V7, 2026-11-02): the declaration names each
+    .wiff2, so unattributed_members.left_out leaves each .wiff out for ``reason``."""
+    def change(unit) -> None:
+        root = Path(verifier._data_root(unit.manifest))
+        left_out = [{"member_name": f"{stem}.wiff", "path": (unit.data / f"{stem}.wiff").relative_to(root).as_posix(),
+                     "reason": reason} for stem in STEMS]
+        unit.manifest["unattributed_members"] = {
+            "rule": verifier.UNATTRIBUTED_RULE, "applied": False, "count": 0, "members": [], "paths": [],
+            "reason": "catalog_declared_inputs", "left_out": left_out, "left_out_count": len(left_out)}
+    return change
+
+
+class AWiffTheDeclarationDoesNotName(unittest.TestCase):
+    """V7 (MPST000048, 2026-11-02): the switch held, and INP-1 still refused the run, because the lease's record leaves
+    every .wiff out as a member no declaration names. A .wiff the switch runs in place of its .wiff2 is that sample's
+    file; any other reason to leave it out still refuses it."""
+
+    def test_a_switched_wiff_left_out_as_undeclared_runs(self) -> None:
+        report = _gate(_left_out_wiff(verifier.NOT_NAMED_BY_DECLARATION))
+        check = _check(report, "INP-1")
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn(RULE, check.detail)
+
+    def test_a_switched_wiff_left_out_for_another_reason_is_refused(self) -> None:
+        report = _gate(_left_out_wiff(verifier.POLARITY_TOKEN_CONTRADICTS_ION_MODE))
+        check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn(verifier.POLARITY_TOKEN_CONTRADICTS_ION_MODE, check.detail)
+
+    def test_an_unswitched_wiff_left_out_as_undeclared_is_refused(self) -> None:
+        def run_the_wiff(unit) -> None:
+            _left_out_wiff(verifier.NOT_NAMED_BY_DECLARATION)(unit)
+            unit.manifest.pop("encoding_fallback")
+            for row in unit.manifest["input_lineage"]["rows"]:
+                row.pop("encoding_fallback", None)
+        report = _gate(run_the_wiff)
+        check = _check(report, "INP-1")
+        self.assertEqual(verifier.FAIL, check.status)
+
+
 class ASwitchedSplitPart(unittest.TestCase):
     def _part(self, temporary: str, *, record: bool = True):
         root = Path(temporary)

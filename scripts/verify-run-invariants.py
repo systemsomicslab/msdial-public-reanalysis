@@ -2826,7 +2826,8 @@ def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
 # archive's members of no admitted file's stem (2026-10-08, second round, answer 1), in a declared unit each member
 # no declaration names (not_named_by_the_catalog_declaration, second round, answer 3), and an unattributed member of
 # a stem two sample rows share (stem_of_several_sample_rows). INP-1 holds the run to that record
-# (_unattributed_choice_problems, blocks_run): no member the record leaves out reaches the run, and a converted
+# (_unattributed_choice_problems, blocks_run): no member the record leaves out reaches the run (save a .wiff that a
+# switch which holds runs in place of its .wiff2, left out only as undeclared: V7, 2026-11-02), and a converted
 # unattributed input is the conversion of the mzXML it names. PAIR-1 holds the record itself (record_only):
 # converted lists every converted member, and each left-out entry gives a reason. Which one of a sample's
 # encodings runs is the one encoding rule's (below), never left_out's.
@@ -3155,6 +3156,11 @@ def _unattributed_choice_problems(provenance: dict, csv_rows: "list[dict] | None
     - a converted unattributed input is not the conversion of the mzXML its name_pairing names (member_name is the
       basename of its conversion's source_path, an mzXML).
 
+    A .wiff that a switch which holds runs in place of its .wiff2 (WIFF_FALLBACK_RULE, _wiff_fallback) is no left-out
+    member reaching the run where the record leaves it out only because no declaration names it: the declaration names
+    its .wiff2, and the switch has held it to the same sample (its stem, its folder, its own header). Any other reason
+    still refuses it.
+
     Which one of a sample's encodings runs is the one encoding rule's, held by _encoding_run_problems."""
     left_out = unattributed.left_out
     if not unattributed and not left_out:
@@ -3167,8 +3173,12 @@ def _unattributed_choice_problems(provenance: dict, csv_rows: "list[dict] | None
     out_of = {}
     for item in left_out:
         out_of.setdefault(item["path"].casefold(), item)
+    switched_in = _wiff_fallback(provenance).sources()
+    run_as_switched = [member for row, member, _source in inputs if member.casefold() in out_of
+                       and _path_key(row["path"]) in switched_in
+                       and out_of[member.casefold()].get("reason") == NOT_NAMED_BY_DECLARATION]
     reached = [f"{member} ({out_of[member.casefold()].get('reason') or 'no reason recorded'})"
-               for _row, member, _source in inputs if member.casefold() in out_of]
+               for _row, member, _source in inputs if member.casefold() in out_of and member not in run_as_switched]
     if reached:
         problems.append(f"{len(reached)} input(s) are archive members that {UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} "
                         f"leaves out, and they reach the run all the same: {'; '.join(reached[:5])}")
@@ -3189,6 +3199,8 @@ def _unattributed_choice_problems(provenance: dict, csv_rows: "list[dict] | None
                 "converted_unattributed_inputs": sum(1 for row, _m, source in inputs if source and _is_unattributed(row))}
     if left_out:
         evidence[UNATTRIBUTED_LEFT_OUT] = _left_out_summary(left_out)
+    if run_as_switched:
+        evidence["left_out_run_in_place_of_wiff2"] = run_as_switched[:20]
     return problems, evidence
 
 
