@@ -586,6 +586,27 @@ campaign, a verified build of a pinned pair). PKH-1 FAILs a threshold that only
 a diagnostic marked superseded by the switch, or one whose representative file
 is no current input, produced.
 
+The user's decision of 2026-11-04 adds a second rule,
+`wiff_first_for_dda_2026_11_04` (Interactive 0.5.58). The verification campaigns
+V6, V7 and V8 ran MPST000048 three times. Its multi-file .wiff2 production run
+hung on both polarities every time, and the same samples then ran from their
+.wiff in 11 to 18 minutes.
+
+Under the campaign policy's `wiff_first_for_dda`, on by default and stated in the
+plan's summary, the runner asks for the same switch once, before a unit's first
+metadata preparation, with no failed job. Interactive's conditions and record are
+the fallback's, and a DIA, SWATH or AIF unit is still never switched. The ask is a
+`wiff_first` attempt, and a switch is a `wiff_first_for_dda` event.
+
+A unit Interactive does not switch runs on its .wiff2, where the fallback still
+answers a failure. So does a unit whose pinned Interactive takes no rule: the port
+answers `unsupported` rather than calling the first rule without a failed job. A
+unit switched under either rule is never switched again.
+
+The gate holds a record under the second rule to everything above except the
+failure: it must name no failed job, and each .wiff's lineage row must name the
+same rule.
+
 ## Running a campaign unattended
 
 Launch `scripts/campaign-runner.py run` for an unattended campaign through Task

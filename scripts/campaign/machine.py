@@ -139,6 +139,18 @@ switched unit to metadata_prepared or prepared - a retry, an interruption, a Con
 inputs were switched after its metadata was last prepared goes back to preflighted first (_stale_after_wiff_fallback), so
 no Console starts on a CSV, threshold or run bundle of the .wiff2. The unit record and the Catalog's run records read the
 switch from the unit manifest, with its boundary-4 crossing.
+
+.WIFF FIRST FOR DDA (the user's decision of 2026-11-04; Interactive 0.5.58). The verification campaigns V6, V7 and V8
+hung on MPST000048's multi-file .wiff2 production run on both polarities every time; the .wiff ran in minutes. Under
+the campaign policy's wiff_first_for_dda (on by default), a unit or split part about to have its metadata prepared for
+the first time, whose input candidates name a .wiff2 and which records no switch, is switched before anything reads its
+input list (Runner._wiff_first): the same tool under policy.WIFF_FIRST_RULE, with no failed job and the pinned
+extractor. Interactive decides as for the fallback - DDA only, every .wiff2 with its .wiff and that .wiff's .wiff.scan,
+each .wiff's own header one DDA sample in the unit's polarity - and refuses otherwise. It is asked once per unit, an
+attempt of its own (wiff_first, never counted), and a switch is said in a wiff_first_for_dda event. A refusal, an
+Interactive without the rule (before 0.5.58) and an error leave the unit on its .wiff2, where the fallback above still
+answers a failure; a unit switched under either rule is never switched again. A switch whose reply was lost is found
+in the unit manifest and adopted.
 """
 
 from __future__ import annotations
@@ -248,6 +260,10 @@ SHARED_DOWNLOAD_NOT_RELEASED = "shared_download_not_released"
 # (ok where Interactive switched, blocked where it refused or lacks the tool; never counted).
 WIFF_FALLBACK = "wiff2_to_wiff_fallback"
 WIFF_FALLBACK_STEP = "wiff_fallback"
+# A unit's switch to its .wiff before its first metadata preparation (the user's decision of 2026-11-04,
+# policy.WIFF_FIRST_RULE): its event, and the attempt step the one ask for it is recorded as (never counted).
+WIFF_FIRST = "wiff_first_for_dda"
+WIFF_FIRST_STEP = "wiff_first"
 
 
 @dataclass
@@ -1948,8 +1964,10 @@ class Runner:
         return raw, str(result.get("detail") or result.get("reason") or "not discarded"), None
 
     def _state_preflighted(self, unit: dict[str, Any]) -> bool:
-        """The analysis CSV and the reviewed metadata, with the approved Class applied (boundary 3)."""
+        """The analysis CSV and the reviewed metadata, with the approved Class applied (boundary 3). A DDA unit
+        deposited as both .wiff2 and .wiff is first switched to its .wiff (_wiff_first), once."""
         self._require("3")
+        self._wiff_first(unit)
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_metadata", self.stamp(), tool="msdial_prepare_repository_reanalysis")
         result = self.ports.interactive.prepare_metadata(manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit))
         if result.get("ok") is False or not result.get("prepared"):
@@ -2225,6 +2243,58 @@ class Runner:
             "job_id": job_id, "step": step, "switched": True, WIFF_FALLBACK: summary}))
         self._event(WIFF_FALLBACK, {**summary, "step": step}, unit["unit_key"])
         return record
+
+    def _wiff_first(self, unit: dict[str, Any]) -> dict[str, Any] | None:
+        """Before the unit's metadata is prepared, Interactive's switch of its inputs from their .wiff2 to the .wiff
+        beside them under policy.WIFF_FIRST_RULE (the user's decision of 2026-11-04): the record the switch wrote, or
+        None where the unit stays on its inputs.
+
+        Asked once per unit (any WIFF_FIRST_STEP attempt), and only where the campaign policy has wiff_first_for_dda,
+        the unit's input candidates name a .wiff2, its manifest records no switch under either rule, and boundary 4 is
+        live. Interactive decides the rest, as for the fallback, and refuses otherwise; a refusal, an Interactive
+        without the rule, and an error leave the unit on its .wiff2. A switch whose reply was lost is read from the
+        unit manifest and adopted."""
+        if not self.policy.wiff_first_for_dda or self._wiff_first_attempted(unit["unit_key"]):
+            return None
+        manifest = self._manifest(unit) or {}
+        if manifest.get(policy.WIFF_FALLBACK_FIELD) is not None or not policy.analyses_wiff2(manifest):
+            return None
+        if not self._live("4"):
+            return None
+        switch = getattr(self.ports.interactive, "switch_to_wiff", None)
+        attempt = self.ledger.open_attempt(unit["unit_key"], WIFF_FIRST_STEP, self.stamp(),
+                                           tool="msdial_switch_repository_unit_to_wiff",
+                                           arguments={"rule": policy.WIFF_FIRST_RULE})
+        if switch is None:
+            result: dict[str, Any] = {"ok": False, "reason": "unsupported",
+                                      "detail": "Interactive has no msdial_switch_repository_unit_to_wiff (0.5.55)."}
+        else:
+            try:
+                result = dict(switch(manifest_path=unit["manifest_path"], failed_job_ids=[],
+                                     authorization_path=self._authorization(unit),
+                                     extractor_path=str((self.pins.get("extractor") or {}).get("path") or ""),
+                                     rule=policy.WIFF_FIRST_RULE) or {})
+            except Exception as error:  # noqa: BLE001 - a switch that raises is no switch; the unit runs on its .wiff2
+                result = {"ok": False, "reason": "exception", "error_type": type(error).__name__, "detail": str(error)}
+        record = policy.wiff_fallback_record({policy.WIFF_FALLBACK_FIELD: result.get(policy.WIFF_FALLBACK_FIELD)})
+        if not (result.get("ok") is not False and result.get("switched") is True
+                and record.get("rule") == policy.WIFF_FIRST_RULE):
+            # Read again: a switch that was made and whose reply was lost is on record in the manifest.
+            again = policy.wiff_fallback_record(self._manifest(unit))
+            if again.get("rule") != policy.WIFF_FIRST_RULE:
+                self.ledger.close_attempt(attempt, "blocked", self.stamp(), detail=self.redact({
+                    "rule": policy.WIFF_FIRST_RULE, "switched": False, "reason": result.get("reason"),
+                    "detail": result.get("detail")}))
+                return None
+            record = again
+        summary = policy.wiff_fallback_summary(record)
+        self.ledger.close_attempt(attempt, "ok", self.stamp(), detail=self.redact({"switched": True, WIFF_FIRST: summary}))
+        self._event(WIFF_FIRST, summary, unit["unit_key"])
+        return record
+
+    def _wiff_first_attempted(self, unit_key: str) -> bool:
+        """Whether the ledger records the one ask for the unit's switch before its metadata (WIFF_FIRST_STEP)."""
+        return any(item["step"] == WIFF_FIRST_STEP for item in self.ledger.attempts(unit_key))
 
     def _wiff_fallback_attempted(self, unit_key: str) -> bool:
         """Whether the ledger already records the unit's switch (a WIFF_FALLBACK_STEP attempt that switched)."""

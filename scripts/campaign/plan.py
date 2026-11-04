@@ -2509,6 +2509,13 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
                      "method is excluded, and a file named so is kept out by Interactive's lease; a file name counts "
                      "only where the unit's instrument could fragment so, an instrument's model name is no evidence, "
                      "absence of evidence means run, and no vendor header records the method")
+    if (manifest.get("policy") or {}).get("wiff_first_for_dda") is True:
+        lines.append("  .wiff first for DDA (user decision, 2026-11-04): a DDA unit or part whose every .wiff2 has its "
+                     ".wiff with that .wiff's .wiff.scan beside it runs on the .wiff from the start (Interactive 0.5.58, "
+                     f"{policy.WIFF_FIRST_RULE}), once each .wiff's own header reads one DDA sample in its polarity; a "
+                     "DIA, SWATH or AIF unit (ZT Scan DIA can only be analysed from the .wiff2), and any unit "
+                     "Interactive does not switch, runs on its .wiff2, where a failed Console job is still answered by "
+                     f"the switch after failure ({policy.WIFF_FALLBACK_RULE})")
     partly = [unit for unit in manifest.get("units") or [] if (unit.get("fragmentation_reading") or {}).get("named_files")]
     if partly:
         lines.append(f"  {len(partly)} planned unit(s) run without some files whose names name another fragmentation "
