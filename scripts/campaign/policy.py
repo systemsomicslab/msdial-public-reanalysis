@@ -357,6 +357,10 @@ class CampaignPolicy:
     # and would end so again on every retry. With the fallback, the unit's next attempts run without the
     # correction, and its record and status say so; without it, the unit is retried and ends as any failure.
     automatic_rt_correction_fallback: bool = True
+    # A DDA unit or part deposited as both .wiff2 and .wiff runs on the .wiff from the start (the user's decision of
+    # 2026-11-04, WIFF_FIRST_RULE): the runner asks Interactive to switch it before its first metadata preparation,
+    # once (machine.Runner._wiff_first). Off, a unit runs on its .wiff2 until a Console job fails on it.
+    wiff_first_for_dda: bool = True
     runner_lock_stale_seconds: float = 600.0
     heartbeat_seconds: float = 30.0
     disk: DiskPolicy = field(default_factory=DiskPolicy)
@@ -404,7 +408,7 @@ class CampaignPolicy:
         anchors = self.automatic_rt_correction_maximum_anchors
         if isinstance(anchors, bool) or not isinstance(anchors, int) or anchors < AUTOMATIC_RT_MINIMUM_ANCHORS:
             raise ValueError(f"automatic_rt_correction_maximum_anchors is a whole number of at least {AUTOMATIC_RT_MINIMUM_ANCHORS}.")
-        for name in ("automatic_rt_correction", "automatic_rt_correction_fallback"):
+        for name in ("automatic_rt_correction", "automatic_rt_correction_fallback", "wiff_first_for_dda"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} is true or false.")
         if "before_production" not in self.gate_points:
@@ -658,6 +662,14 @@ def console_start_exclusion(result: Any) -> dict[str, Any] | None:
 # (machine.Runner._wiff_fallback) and resumes the unit at its metadata preparation, so the analysis CSV, the
 # diagnostic's threshold and the run bundle are made again on the files that run.
 WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
+# THE SECOND RULE (the user's decision of 2026-11-04; Interactive 0.5.58, WIFF_FIRST_RULE). The verification campaigns
+# V6, V7 and V8 ran MPST000048 three times, and its multi-file .wiff2 production run hung on both polarities every
+# time, while the same samples ran from their .wiff in 11 to 18 minutes. Under CampaignPolicy.wiff_first_for_dda the
+# runner asks for the same switch before a unit's first metadata preparation (machine.Runner._wiff_first), answering
+# no failure: same DDA conditions, same record, its rule WIFF_FIRST_RULE and its failed_jobs empty. A unit Interactive
+# does not switch so runs on its .wiff2, and WIFF_FALLBACK_RULE still answers a failure there.
+WIFF_FIRST_RULE = "wiff_first_for_dda_2026_11_04"
+WIFF_RULES = (WIFF_FALLBACK_RULE, WIFF_FIRST_RULE)
 WIFF_FALLBACK_FIELD = "encoding_fallback"
 # The entry point Interactive records the switch's boundary-4 crossing under.
 WIFF_FALLBACK_ENTRY_POINT = "msdial_switch_repository_unit_to_wiff"
@@ -669,9 +681,9 @@ WIFF_FALLBACK_RESUME_STATE = "preflighted"
 
 
 def wiff_fallback_record(manifest: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The unit manifest's encoding_fallback under WIFF_FALLBACK_RULE, or {}."""
+    """The unit manifest's encoding_fallback under either rule (WIFF_RULES), or {}."""
     record = (manifest or {}).get(WIFF_FALLBACK_FIELD)
-    return dict(record) if isinstance(record, Mapping) and record.get("rule") == WIFF_FALLBACK_RULE else {}
+    return dict(record) if isinstance(record, Mapping) and record.get("rule") in WIFF_RULES else {}
 
 
 def analyses_wiff2(manifest: Mapping[str, Any] | None) -> bool:

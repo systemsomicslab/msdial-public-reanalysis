@@ -26,6 +26,13 @@ from campaign import machine, policy  # noqa: E402
 
 
 class WiffFallbackTests(machine_tests.Base):
+    """The fallback after a failure, with the campaign policy's wiff_first_for_dda off: every unit starts on its
+    .wiff2 (WiffFirstTests below has it on, the default since 2026-11-04)."""
+
+    def world(self, units=("u1",), **options) -> fakes.World:
+        options.setdefault("policy_values", {"wiff_first_for_dda": False})
+        return super().world(units, **options)
+
     def _calls(self, world: fakes.World, name: str) -> list[dict]:
         return [arguments for called, arguments in world.interactive.calls if called == name]
 
@@ -234,6 +241,133 @@ class WiffFallbackTests(machine_tests.Base):
         self.assertTrue(runner._wiff_fallback(unit, job_id=job, step="run", outcome="timeout"))
         self.assertEqual(1, len(book.events(machine.WIFF_FALLBACK)))
         self.assertEqual(1, len(self._switch_attempts(book, "u1")))
+
+
+class WiffFirstTests(machine_tests.Base):
+    """The user's decision of 2026-11-04 (policy.WIFF_FIRST_RULE): V6, V7 and V8 hung on MPST000048's multi-file .wiff2
+    production run on both polarities every time, and the .wiff ran in minutes, so a DDA unit deposited as both runs on
+    its .wiff from the start. The runner asks once, before the unit's first metadata preparation."""
+
+    def _calls(self, world: fakes.World, name: str) -> list[dict]:
+        return [arguments for called, arguments in world.interactive.calls if called == name]
+
+    def _console_kinds(self, world: fakes.World, unit: str) -> list[str]:
+        return [kind for key, kind in world.interactive.console_starts if key == unit]
+
+    def _asks(self, book, unit: str, step: str = machine.WIFF_FIRST_STEP) -> list[dict]:
+        return [row for row in book.attempts(unit) if row["step"] == step]
+
+    def test_a_dda_unit_runs_on_its_wiff_from_its_first_preparation(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, runs=["ok"])
+        book = self.finish(world)
+        unit = book.unit("u1")
+
+        self.assertEqual(("done", 0), (unit["state"], unit["failures"]))
+        (asked,) = self._calls(world, "switch_to_wiff")
+        self.assertEqual(([], policy.WIFF_FIRST_RULE), (asked["failed_job_ids"], asked["rule"]))
+        (prepared,) = self._calls(world, "prepare_metadata")
+        self.assertTrue(all(item.endswith(".wiff") for item in prepared["input_candidates"]),
+                        "nothing reads the .wiff2 input list")
+        self.assertEqual(["diagnostic", "run"], self._console_kinds(world, "u1"))
+        (first,) = self._asks(book, "u1")
+        self.assertEqual(("ok", 0), (first["outcome"], first["counted"]))
+        self.assertEqual(policy.WIFF_FIRST_RULE, json.loads(first["detail_json"])[machine.WIFF_FIRST]["rule"])
+        self.assertEqual(1, len(book.events(machine.WIFF_FIRST)))
+        self.assertEqual([], self._asks(book, "u1", machine.WIFF_FALLBACK_STEP))
+        manifest = world.interactive.store.read(unit["manifest_path"])
+        self.assertEqual((policy.WIFF_FIRST_RULE, []),
+                         (manifest["encoding_fallback"]["rule"], manifest["encoding_fallback"]["failed_jobs"]))
+        record = json.loads((Path(unit["workspace"]) / "campaign-record.json").read_text(encoding="utf-8"))
+        self.assertEqual(policy.WIFF_FIRST_RULE, record["encoding_fallback"]["rule"])
+        self.assertEqual(policy.WIFF_FIRST_RULE,
+                         world.catalog.runs[f"u1:{unit['run_job_id']}"]["provenance"][machine.WIFF_FALLBACK]["rule"])
+
+    def test_a_failure_on_the_wiff_is_retried_on_the_wiff_and_never_switched_again(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, runs=["timeout", "ok"])
+        book = self.finish(world)
+
+        self.assertEqual(("done", 1), (book.unit("u1")["state"], book.unit("u1")["failures"]))
+        self.assertEqual(1, len(self._calls(world, "switch_to_wiff")), "the fallback is not asked for a switched unit")
+        self.assertEqual(["diagnostic", "run", "run"], self._console_kinds(world, "u1"))
+
+    def test_a_dia_unit_stays_on_its_wiff2(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, acquisition="SWATH", runs=["ok"])
+        book = self.finish(world)
+
+        self.assertEqual("done", book.unit("u1")["state"])
+        (asked,) = self._asks(book, "u1")
+        self.assertEqual(("blocked", 0, "not_dda"),
+                         (asked["outcome"], asked["counted"], json.loads(asked["detail_json"])["reason"]))
+        (prepared,) = self._calls(world, "prepare_metadata")
+        self.assertTrue(all(item.endswith(".wiff2") for item in prepared["input_candidates"]))
+        self.assertFalse(book.events(machine.WIFF_FIRST))
+
+    def test_an_interactive_without_the_rule_runs_on_the_wiff2_and_the_fallback_still_answers(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, runs=["timeout", "ok"])
+        world.interactive.wiff_first_supported = False
+        book = self.finish(world)
+
+        self.assertEqual(("done", 1), (book.unit("u1")["state"], book.unit("u1")["failures"]))
+        (first,) = self._asks(book, "u1")
+        self.assertEqual(("blocked", "unsupported"), (first["outcome"], json.loads(first["detail_json"])["reason"]))
+        (fallback,) = self._asks(book, "u1", machine.WIFF_FALLBACK_STEP)
+        self.assertEqual("ok", fallback["outcome"])
+        manifest = world.interactive.store.read(book.unit("u1")["manifest_path"])
+        self.assertEqual(policy.WIFF_FALLBACK_RULE, manifest["encoding_fallback"]["rule"])
+        self.assertFalse(book.events("contract_held"), "a missing rule holds nothing")
+
+    def test_each_split_part_is_switched_and_the_parent_never(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, disposition="split", split_modes=("dda-pos", "dda-neg"))
+        world.scripts["u1-dda-pos"] = fakes.UnitScript(wiff2=True, runs=["ok"])
+        world.scripts["u1-dda-neg"] = fakes.UnitScript(wiff2=True, runs=["ok"])
+        world.interactive.split_release_supported = True
+        book = self.finish(world)
+
+        for key in ("u1-dda-pos", "u1-dda-neg"):
+            part = book.unit(key)
+            self.assertEqual(("done", 0), (part["state"], part["failures"]))
+            self.assertEqual(policy.WIFF_FIRST_RULE,
+                             world.interactive.store.read(part["manifest_path"])["encoding_fallback"]["rule"])
+            self.assertEqual(["diagnostic", "run"], self._console_kinds(world, key))
+        self.assertFalse(world.interactive.store.read(book.unit("u1")["manifest_path"]).get("encoding_fallback"))
+        self.assertEqual([], self._asks(book, "u1"))
+        parent = book.unit("u1")
+        self.assertEqual(("split_done", "released"), (parent["state"], parent["raw_disposition"]))
+
+    def test_a_switch_whose_reply_was_lost_is_adopted_and_asked_no_more(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, runs=["ok"])
+        world.interactive.lose_switch_reply = True
+        book = self.finish(world)
+
+        (first,) = self._asks(book, "u1")
+        self.assertEqual("ok", first["outcome"])
+        (prepared,) = self._calls(world, "prepare_metadata")
+        self.assertTrue(all(item.endswith(".wiff") for item in prepared["input_candidates"]))
+        self.assertIsNone(world.runner(book)._wiff_first(book.unit("u1")), "asked once per unit")
+        self.assertEqual(1, len(self._asks(book, "u1")))
+
+    def test_a_unit_of_no_wiff2_is_not_asked(self) -> None:
+        world = self.world()
+        world.scripts["u1"] = fakes.UnitScript(runs=["ok"])
+        book = self.finish(world)
+        self.assertEqual([], self._calls(world, "switch_to_wiff"))
+        self.assertEqual([], self._asks(book, "u1"))
+
+    def test_the_policy_is_on_by_default_and_off_asks_nothing_before_a_failure(self) -> None:
+        self.assertTrue(policy.CampaignPolicy().wiff_first_for_dda)
+        with self.assertRaises(ValueError):
+            policy.CampaignPolicy.from_dict({"wiff_first_for_dda": "yes"})
+        world = self.world(policy_values={"wiff_first_for_dda": False})
+        world.scripts["u1"] = fakes.UnitScript(wiff2=True, runs=["ok"])
+        book = self.finish(world)
+        self.assertEqual([], self._calls(world, "switch_to_wiff"))
+        self.assertEqual([], self._asks(book, "u1"))
 
 
 if __name__ == "__main__":

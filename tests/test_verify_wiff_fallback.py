@@ -498,5 +498,76 @@ class ASwitchedSplitPart(unittest.TestCase):
         self.assertIn("differ from the parent's record of it", check.detail)
 
 
+
+def _wiff_first(unit) -> None:
+    """The switch as Interactive 0.5.58 writes it under its second rule (the user's decision of 2026-11-04): before
+    the unit's first Console job, so no run attempt and no failed job, its rule on the record and on every row."""
+    first = "wiff_first_for_dda_2026_11_04"
+    unit.manifest["run_attempts"] = []
+    unit.manifest["encoding_fallback"].update(rule=first, failed_jobs=[])
+    for row in unit.manifest["input_lineage"]["rows"]:
+        if isinstance(row.get("encoding_fallback"), dict):
+            row["encoding_fallback"]["rule"] = first
+
+
+class AWiffRunFromTheStart(unittest.TestCase):
+    """The second rule (2026-11-04): V6, V7 and V8 hung on MPST000048's multi-file .wiff2 production run on both
+    polarities every time, and its .wiff ran in minutes, so a DDA unit deposited as both runs on its .wiff from the
+    start. Its record is held to everything the fallback's is, except a failure: it names none, and may name none."""
+
+    def test_the_wiff_run_from_the_start_passes_and_says_so(self) -> None:
+        report = _gate(_wiff_first)
+        check = _check(report, "INP-1")
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+        self.assertIn(verifier.WIFF_FIRST_RULE, check.detail)
+        self.assertIn("from the start", check.detail)
+        for check_id in ("CLS-2", "SUM-1", "CNT-1"):
+            self.assertEqual(verifier.PASS, _check(report, check_id).status, (check_id, _check(report, check_id).detail))
+
+    def test_as_v8_left_it_out_as_undeclared_it_runs(self) -> None:
+        def undeclared(unit) -> None:
+            _wiff_first(unit)
+            _left_out_wiff(verifier.NOT_NAMED_BY_DECLARATION)(unit)
+
+        check = _check(_gate(undeclared), "INP-1")
+        self.assertEqual(verifier.PASS, check.status, check.detail)
+
+    def test_a_record_under_it_that_does_not_hold_accepts_nothing(self) -> None:
+        def with_failed_job(unit) -> None:
+            _wiff_first(unit)
+            unit.manifest["encoding_fallback"]["failed_jobs"] = [{"job_id": "rn1", "kind": "run"}]
+
+        def row_of_the_other_rule(unit) -> None:
+            _wiff_first(unit)
+            unit.manifest["input_lineage"]["rows"][0]["encoding_fallback"]["rule"] = RULE
+
+        def dia(unit) -> None:
+            _wiff_first(unit)
+            unit.manifest["project"]["acquisition_mode"] = "SWATH"
+
+        def header_not_dda(unit) -> None:
+            _wiff_first(unit)
+            unit.manifest["encoding_fallback"]["wiff_headers"][0].update(header_console_acquisition_type="SWATH")
+
+        cases = {
+            "which answers none": with_failed_job, "does not say it runs in place of": row_of_the_other_rule,
+            "the unit is not DDA": dia, "Console acquisition type, not DDA": header_not_dda,
+        }
+        for said, change in cases.items():
+            with self.subTest(said):
+                check = _check(_gate(change), "INP-1")
+                self.assertEqual(verifier.FAIL, check.status)
+                self.assertIn("manifest.encoding_fallback does not hold", check.detail)
+                self.assertIn(said, check.detail)
+
+    def test_the_fallback_rule_still_needs_its_failed_job(self) -> None:
+        def no_job(unit) -> None:
+            unit.manifest["encoding_fallback"]["failed_jobs"] = []
+
+        check = _check(_gate(no_job), "INP-1")
+        self.assertEqual(verifier.FAIL, check.status)
+        self.assertIn("it names no failed Console job", check.detail)
+
+
 if __name__ == "__main__":
     unittest.main()

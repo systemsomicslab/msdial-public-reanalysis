@@ -233,6 +233,9 @@ class FakeInteractive:
         # Interactive 0.5.55's switch from .wiff2 to .wiff (2026-10-31): whether it has the tool, and whether the reply
         # to a switch it made is lost on the way back.
         self.wiff_fallback_supported = True
+        # Interactive 0.5.58's second rule (wiff_first_for_dda, 2026-11-04): false plays an Interactive whose tool takes
+        # no rule, which the port answers unsupported for.
+        self.wiff_first_supported = True
         self.lose_switch_reply = False
         # The extractor each switch was given to read the .wiff headers with.
         self.switch_extractors: list[str] = []
@@ -658,13 +661,22 @@ class FakeInteractive:
         return {"prepared": True, "input_path": str(csv), "preview": preview}
 
     def switch_to_wiff(self, *, manifest_path: str, failed_job_ids: list[str], authorization_path: str,
-                       extractor_path: str = "") -> dict[str, Any]:
+                       extractor_path: str = "", rule: str = "") -> dict[str, Any]:
         """Interactive 0.5.55's msdial_switch_repository_unit_to_wiff (2026-10-31), as far as the runner meets it: a DDA
         unit whose .wiff2 inputs each have a .wiff with its .wiff.scan is switched once, the record in the manifest;
-        anything else is refused with its reason. wiff_fallback_supported false plays an Interactive without the tool."""
-        self.calls.append(("switch_to_wiff", {"manifest_path": manifest_path, "failed_job_ids": list(failed_job_ids)}))
+        anything else is refused with its reason. wiff_fallback_supported false plays an Interactive without the tool.
+        ``rule`` policy.WIFF_FIRST_RULE (0.5.58) switches with no failed job, and refuses failed jobs; the default rule
+        refuses a call that names none."""
+        rule = rule or policy.WIFF_FALLBACK_RULE
+        self.calls.append(("switch_to_wiff", {"manifest_path": manifest_path, "failed_job_ids": list(failed_job_ids),
+                                              "rule": rule}))
         if not self.wiff_fallback_supported:
             return {"ok": False, "reason": "unsupported", "detail": "Interactive has no tool msdial_switch_repository_unit_to_wiff."}
+        if rule == policy.WIFF_FIRST_RULE and not self.wiff_first_supported:
+            return {"ok": False, "reason": "unsupported", "detail": "msdial_switch_repository_unit_to_wiff takes no rule."}
+        if (rule == policy.WIFF_FIRST_RULE) == bool(failed_job_ids):
+            return {"ok": False, "switched": False, "reason": "rule_mismatch" if failed_job_ids else "no_console_failure",
+                    "detail": "refused"}
         manifest = self.store.read(manifest_path) or {}
         script = self.world.scripts.setdefault(self._unit_of_manifest(manifest_path), UnitScript())
 
@@ -697,7 +709,7 @@ class FakeInteractive:
                     "validated_at": self._stamp()}
         self.switch_extractors.append(extractor_path)
         record = {
-            "schema": "msdial-encoding-fallback.v1", "rule": policy.WIFF_FALLBACK_RULE, "switched_at": self._stamp(),
+            "schema": "msdial-encoding-fallback.v1", "rule": rule, "switched_at": self._stamp(),
             "acquisition_mode": "DDA", "swaps": swaps, "input_candidates_before": list(manifest["input_candidates"]),
             "failed_jobs": [{"job_id": job, "kind": (attempts.get(job) or {}).get("kind"), "failure": "exit_code",
                              "reason": None, "exit_code": (attempts.get(job) or {}).get("exit_code")}

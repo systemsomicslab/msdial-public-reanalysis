@@ -4308,7 +4308,15 @@ def _encoding_unused_paths(provenance: dict) -> list[str]:
 # .wiff2's record kept as the decision record (_per_file_records: ACQ-1, and the polarity reading, where the header
 # replaces a .wiff2's file-name inference), the .wiff2 is accounted for, and the rule's choice that used it is met by its
 # .wiff. A record that does not hold accepts nothing, and INP-1 names why.
+#
+# THE SECOND RULE (the user's decision of 2026-11-04; Interactive 0.5.58, WIFF_FIRST_RULE). V6, V7 and V8 hung on the
+# multi-file .wiff2 production run of MPST000048 on both polarities every time, and the same samples ran from their
+# .wiff in minutes, so a DDA unit deposited as both runs on its .wiff from the start. Its record is the fallback's,
+# held to everything above, except that it answers no failure: it names WIFF_FIRST_RULE and no failed job, and a
+# record under it that names one does not hold. Each .wiff's lineage row names the record's own rule.
 WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
+WIFF_FIRST_RULE = "wiff_first_for_dda_2026_11_04"
+WIFF_RULES = (WIFF_FALLBACK_RULE, WIFF_FIRST_RULE)
 WIFF_FALLBACK_FIELD = "encoding_fallback"
 # How a run attempt the switch answers ended (Interactive's record_run_end): stopped for time, an error, or a non-zero
 # exit; a cancel, a Console that never started and a missing .wiff.scan are no reader's failure.
@@ -4341,6 +4349,7 @@ class _WiffFallback:
     swaps: list = field(default_factory=list)
     failed_jobs: list = field(default_factory=list)
     headers: dict = field(default_factory=dict)  # {key of a .wiff: its header as read at the switch}
+    rule: str = ""
 
     @property
     def holds(self) -> bool:
@@ -4353,6 +4362,9 @@ class _WiffFallback:
     def sentence(self) -> str:
         if not self.holds:
             return ""
+        if self.rule == WIFF_FIRST_RULE:
+            return (f"{len(self.swaps)} .wiff2 input(s) run as the .wiff beside them from the start under "
+                    f"{WIFF_FIRST_RULE}, a DDA unit's, each .wiff with its .wiff.scan, the swaps exactly what changed")
         jobs = ", ".join(f"{item.get('job_id')} ({item.get('failure') or item.get('reason')})" for item in self.failed_jobs)
         return (f"{len(self.swaps)} .wiff2 input(s) run as the .wiff beside them under {WIFF_FALLBACK_RULE}, after the "
                 f"Console job(s) {jobs} failed on them, each .wiff with its .wiff.scan, the swaps exactly what changed")
@@ -4360,7 +4372,7 @@ class _WiffFallback:
     def evidence(self) -> dict:
         if not self.present:
             return {}
-        return {"rule": WIFF_FALLBACK_RULE, "holds": self.holds, "problems": self.problems[:10],
+        return {"rule": self.rule, "holds": self.holds, "problems": self.problems[:10],
                 "failed_jobs": [str(item.get("job_id") or "") for item in self.failed_jobs],
                 "swaps": [{"from": Path(str(source)).name, "to": Path(str(to)).name} for source, to in self.swaps[:20]]}
 
@@ -4376,16 +4388,21 @@ def _wiff_fallback(provenance: dict | None) -> _WiffFallback:
     if not isinstance(record, dict):
         problems.append(f"manifest.{WIFF_FALLBACK_FIELD} is no object")
         return result
-    if record.get("rule") != WIFF_FALLBACK_RULE:
-        problems.append(f"it names the rule {record.get('rule')!r}, not {WIFF_FALLBACK_RULE}")
-    # The failed Console job(s), as the unit's own run_attempts record how each ended.
+    rule = str(record.get("rule") or "")
+    result.rule = rule
+    if rule not in WIFF_RULES:
+        problems.append(f"it names the rule {record.get('rule')!r}, not {' or '.join(WIFF_RULES)}")
+    # The failed Console job(s), as the unit's own run_attempts record how each ended; none under WIFF_FIRST_RULE.
     attempts = {str(item.get("job_id") or ""): item for item in provenance.get("run_attempts") or []
                 if isinstance(item, dict) and str(item.get("job_id") or "")}
     jobs = [item for item in record.get("failed_jobs") or [] if isinstance(item, dict)]
     result.failed_jobs = jobs
-    if not jobs:
+    if rule == WIFF_FIRST_RULE:
+        if record.get("failed_jobs"):
+            problems.append(f"it names failed Console jobs under {WIFF_FIRST_RULE}, which answers none")
+    elif not jobs:
         problems.append("it names no failed Console job")
-    for item in jobs:
+    for item in jobs if rule != WIFF_FIRST_RULE else []:
         job = str(item.get("job_id") or "")
         attempt = attempts.get(job)
         if attempt is None:
@@ -4493,7 +4510,7 @@ def _wiff_fallback(provenance: dict | None) -> _WiffFallback:
     switched = {_path_key(to) for _source, to in swaps}
     for source, to in swaps:
         fallback = (rows.get(_path_key(to)) or {}).get(WIFF_FALLBACK_FIELD)
-        if not (isinstance(fallback, dict) and fallback.get("rule") == WIFF_FALLBACK_RULE
+        if not (isinstance(fallback, dict) and fallback.get("rule") == rule
                 and _path_key(fallback.get("in_place_of") or "") == _path_key(source)):
             problems.append(f"the lineage row of {Path(to.replace(chr(92), '/')).name} does not say it runs in place of "
                             f"{Path(source.replace(chr(92), '/')).name}")
@@ -4579,7 +4596,8 @@ def _wiff_fallback_problems(provenance: dict) -> list[str]:
         return []
     return [f"manifest.{WIFF_FALLBACK_FIELD} does not hold ({'; '.join(fallback.problems[:5])}), so the .wiff it "
             f"names run in place of their .wiff2 on no rule ({WIFF_FALLBACK_RULE} switches a DDA unit whose Console "
-            "job failed, every .wiff2 for its .wiff with its .wiff.scan, once, on record)"]
+            f"job failed, and {WIFF_FIRST_RULE} one from the start, every .wiff2 for its .wiff with its .wiff.scan, "
+            "once, on record)"]
 
 
 def _encoding_conversion_problems(provenance: dict, records: "list | None") -> "tuple[list[str], list[str]]":
