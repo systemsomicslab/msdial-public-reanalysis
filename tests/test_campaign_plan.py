@@ -205,7 +205,9 @@ class PlanTests(unittest.TestCase):
             "uH": "mzdata_only", "uM": "no_download_object",
         })
         planned = [unit["unit_id"] for unit in manifest["units"]]
-        self.assertEqual(sorted(planned), ["uA", "uB", "uC"])
+        self.assertEqual(planned, ["uA", "uB", "uC"],
+                         "uB and uC's group holds an object of unknown size: it runs after uA's 6 GB, though its "
+                         "known part is 2 GB")
         self.assertEqual(manifest["totals"]["selected_units"], 9, "untargeted, GC-MS, an unknown ion mode and Unknown acquisition are not selected")
         self.assertEqual(abs(planned.index("uB") - planned.index("uC")), 1, "a download group's units run one after another")
         units = {unit["unit_id"]: unit for unit in manifest["units"]}
@@ -2524,6 +2526,26 @@ class InSilicoTierContractTests(unittest.TestCase):
                 self.assertEqual([(row["library"], row["suggestions"], row["use_rt_scoring"]) for row in predicted],
                                  [("SyntheticPredictedPos.msp", False, False)])
                 self.assertEqual(plan.annotation_problems({"annotation": {"by_ion_mode": {"Positive": item}}}), [])
+
+
+class GroupOrderTests(unittest.TestCase):
+    def test_groups_of_unknown_size_run_after_every_group_of_known_size(self) -> None:
+        def group(group_id: str, lower_bound: int, objects: int, unknown: int = 0, without_url: int = 0) -> dict:
+            return {"group_id": group_id, "distinct_bytes_lower_bound": lower_bound, "object_count": objects,
+                    "unknown_size_objects": unknown, "files_without_url": without_url}
+
+        groups = [
+            group("metabolights-many", 0, 1911, unknown=1911),
+            group("metabolights-few", 0, 24, unknown=24),
+            group("archive-928GB", 928 * GB, 1),
+            group("workbench-small", 2 * GB, 40),
+            group("partly-known", 1 * GB, 30, unknown=1),
+            group("no-url", 0, 10, without_url=2),
+        ]
+        ordered = [item["group_id"] for item in sorted(groups, key=plan._group_rank)]
+        self.assertEqual(ordered, ["workbench-small", "archive-928GB", "no-url", "metabolights-few", "partly-known",
+                                   "metabolights-many"],
+                         "known sizes smallest first; then unknown sizes by object count, never ranked as 0 bytes")
 
 
 if __name__ == "__main__":

@@ -2120,10 +2120,7 @@ def build_manifest(
             continue
         included.append((unit, planned))
     groups = {item["group_id"]: item for item in download["groups"]}
-    group_order = sorted(
-        {planned["group_id"] for _unit, planned in included},
-        key=lambda group: (groups[group]["distinct_bytes_lower_bound"], group),
-    )
+    group_order = sorted({planned["group_id"] for _unit, planned in included}, key=lambda group: _group_rank(groups[group]))
     rank = {group: index for index, group in enumerate(group_order)}
     included.sort(key=lambda pair: (rank[pair[1]["group_id"]], pair[0]["repository"], pair[0]["accession"], pair[0]["unit_id"]))
     units = []
@@ -2271,6 +2268,21 @@ def _exclusion(unit: Mapping[str, Any], reasons: list[str], detail: str = "") ->
     if detail:
         record["detail"] = detail
     return record
+
+
+def _group_rank(group: Mapping[str, Any]) -> tuple[bool, int, int, int, str]:
+    """Where a download group runs: smallest first, and a group with an object of unknown size after every
+    group whose size is known.
+
+    An object the repository listed without a size counts 0 in distinct_bytes_lower_bound, so ranking by
+    that bound alone put such a group first whatever its size. Stage 3 (2026-11-05) began with the 21
+    MetaboLights units of unknown size, 17,082 objects fetched at about 0.6 MB/s, ahead of 692 units of
+    known size. Among themselves those groups go by object count, the only measure of their size there is.
+    """
+    unknown = bool(group.get("unknown_size_objects") or group.get("files_without_url"))
+    lower_bound = int(group.get("distinct_bytes_lower_bound") or 0)
+    objects = int(group.get("object_count") or 0)
+    return unknown, objects if unknown else lower_bound, lower_bound, objects, str(group["group_id"])
 
 
 def _totals(
