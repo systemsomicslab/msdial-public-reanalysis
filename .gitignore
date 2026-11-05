@@ -5,6 +5,7 @@ feedback/*
 reports/*
 __pycache__/
 *.py[cod]
+.venv-ms2/
 
 # The cross-repository master prompt is canonical in the private repository
 # systemsomicslab/msdial-family-dev-context. It records licensed SDK install locations and private
