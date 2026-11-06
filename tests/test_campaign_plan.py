@@ -195,6 +195,54 @@ class PlanTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"SystemDrive": "Q:", "USERPROFILE": "", "TEMP": "", "TMP": ""}):
             self.assertEqual(self.manifest("declared")["workspace_root_cautions"], [])
 
+    def add_archive_unit(self, unit: str, accession: str, samples: int, size: int, role: str = "shared_raw_archive") -> None:
+        """A Workbench unit whose one download is the study's zip, `size` bytes for `samples` samples (as ST001312's
+        10 samples share ST001312.zip, 18 kB of method texts), or with role "raw" one listed raw file of that size."""
+        connection = sqlite3.connect(self.database)
+        with connection:
+            study = f"study-{accession}"
+            connection.execute("INSERT INTO study(study_id, repository, accession, source_hash) "
+                               "VALUES (?, 'metabolomics_workbench', ?, 'h')", (study, accession))
+            connection.execute(
+                "INSERT INTO analysis_unit(unit_id, study_id, source_subrecord_id, separation, acquisition_mode, ion_mode, "
+                "ion_mobility, instrument, signature, target_omics) "
+                "VALUES (?, ?, ?, 'LC-MS', 'DDA', 'Negative', 'Unknown', 'ABI Sciex 5600 TripleTOF', ?, 'Metabolomics')",
+                (unit, study, unit, unit))
+            for index in range(samples):
+                connection.execute("INSERT INTO sample(sample_pk, unit_id, sample_id, raw_file) VALUES (?, ?, ?, ?)",
+                                   (f"pk-{unit}-{index}", unit, f"{unit}-S{index}", f"{unit}-S{index}"))
+            name = f"{accession}.zip" if role != "raw" else f"{accession}.mzML"
+            connection.execute(
+                "INSERT INTO raw_file(file_id, unit_id, path, role, size_bytes, download_url, sample_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, '')",
+                (f"f-{unit}", unit, name, role, size, f"https://www.metabolomicsworkbench.org/studydownload/{name}"))
+        connection.close()
+
+    def test_a_unit_of_archives_too_small_for_its_raw_data_is_excluded(self) -> None:
+        """Stage 3b (2026-11-06) began with 12 Workbench units whose only download was a study's methods or
+        supplementary tables (ST001312.zip, 18,227 bytes for 10 samples), each failing in Interactive after the
+        download with no MS-DIAL input in it."""
+        self.add_archive_unit("uS", "ST001312", 10, 18_227)
+        self.add_archive_unit("uT", "ST000020", 10, 10 * plan.ARCHIVE_FLOOR_BYTES_PER_SAMPLE)
+        self.add_archive_unit("uU", "ST000021", 10, 18_227, role="raw")
+        manifest = self.manifest("declared")
+        excluded = {item["unit_id"]: item for item in manifest["exclusions"]}
+        self.assertEqual(excluded["uS"]["reason"], "archive_too_small_for_raw_data")
+        self.assertEqual(excluded["uS"]["detail"],
+                         "18,227 bytes in 1 archive for 10 samples, 1,822 per sample: under the floor of 50,000, "
+                         "no LC-MS/MS run fits in it")
+        planned = [unit["unit_id"] for unit in manifest["units"]]
+        self.assertIn("uT", planned, "an archive at the floor is planned")
+        self.assertIn("uU", planned, "a listed raw file is read by its header in Interactive, whatever its size")
+        self.assertIn("uB", planned, "an archive of unknown size is no evidence of anything")
+        self.assertEqual(manifest["totals"]["excluded_by_reason"]["archive_too_small_for_raw_data"], 1)
+        self.assertEqual(manifest["selection"]["archive_floor_bytes_per_sample"], 50_000)
+        self.assertIn("archive_too_small_for_raw_data", manifest["selection"]["exclusion_reasons"])
+        summary = plan.summary_text(manifest, "sha256:" + "0" * 64)
+        self.assertIn("    excluded archive_too_small_for_raw_data: 1", summary)
+        self.assertIn("holding under 50,000 bytes for each of its samples is excluded as archive_too_small_for_raw_data",
+                      summary)
+
     def test_the_declared_pool_and_its_exclusions(self) -> None:
         before = hashlib.sha256(self.database.read_bytes()).hexdigest()
         manifest = self.manifest("declared")
@@ -2526,6 +2574,24 @@ class InSilicoTierContractTests(unittest.TestCase):
                 self.assertEqual([(row["library"], row["suggestions"], row["use_rt_scoring"]) for row in predicted],
                                  [("SyntheticPredictedPos.msp", False, False)])
                 self.assertEqual(plan.annotation_problems({"annotation": {"by_ion_mode": {"Positive": item}}}), [])
+
+
+class ArchiveTooSmallTests(unittest.TestCase):
+    def test_only_archives_of_known_size_under_the_floor_are_judged(self) -> None:
+        def planned(known: int, objects: int = 1, size_known: bool = True, unknown: int = 0) -> dict:
+            return {"known_bytes": known, "object_count": objects, "size_known": size_known,
+                    "unknown_size_objects": unknown}
+
+        floor = plan.ARCHIVE_FLOOR_BYTES_PER_SAMPLE
+        self.assertTrue(plan.archive_too_small(planned(1_153_433), {"archive"}, 38), "ST003178's supplementary tables")
+        self.assertTrue(plan.archive_too_small(planned(10 * floor - 1, objects=2), {"archive", "bundle"}, 10))
+        self.assertEqual(plan.archive_too_small(planned(10 * floor), {"archive"}, 10), "", "at the floor")
+        self.assertEqual(plan.archive_too_small(planned(18_227), {"archive", "file"}, 10), "", "a listed file beside it")
+        self.assertEqual(plan.archive_too_small(planned(18_227), {"file"}, 10), "")
+        self.assertEqual(plan.archive_too_small(planned(18_227, size_known=False, unknown=1), {"archive"}, 10), "",
+                         "a size the repository did not give")
+        self.assertEqual(plan.archive_too_small(planned(18_227), {"archive"}, 0), "", "no sample to divide by")
+        self.assertIn("2 archives", plan.archive_too_small(planned(18_227, objects=2), {"archive"}, 10))
 
 
 class GroupOrderTests(unittest.TestCase):

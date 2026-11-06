@@ -67,6 +67,14 @@ listed with its reason:
 - mzdata_only: every analysis file is mzData, which MS-DIAL cannot read and nothing here converts
   (mzXML is converted by Interactive and runs);
 - no_download_object: files are listed, but none carries a URL;
+- archive_too_small_for_raw_data: every object the unit downloads is an archive, every size is known, and together
+  they hold under ARCHIVE_FLOOR_BYTES_PER_SAMPLE (50 kB) for each of its samples, which no LC-MS/MS run fits in.
+  Workbench lists a study's methods or supplementary tables as its only download for some studies: ST001312.zip is
+  18 kB of method texts and a PDF for 10 samples, ST003178_Supplemental_Tables.zip one spreadsheet for 38. Stage 3b
+  (2026-11-06) downloaded 12 such units first, smallest first, and each failed in Interactive with no MS-DIAL input
+  in what it fetched. In the declared pool the largest of them holds 30 kB per sample and the smallest archive with
+  raw data 1.35 MB. The acquisition-unknown pool has no such gap, so the floor sits low: an archive kept that holds
+  no raw data costs one small download and a failure, one left out that does would cost the unit;
 - class_undecided: the Catalog neither proposed a Class nor recorded an abstention;
 - not_in_pool (a pilot only): a named unit that neither pool's rules select.
 
@@ -147,7 +155,7 @@ SELECTION_RULES = {
 SELECTION_RULES[PILOT] = "the analysis units named with --units, each held to the rules of the pool it is in"
 EXCLUSION_REASONS = (
     "no_files", "ion_mobility", "fragmentation_not_cid_hcd", "preexisting_workspace", "campaign_workspace",
-    "mzdata_only", "no_download_object", "class_undecided",
+    "mzdata_only", "no_download_object", "archive_too_small_for_raw_data", "class_undecided",
 )
 PILOT_EXCLUSION_REASONS = ("not_in_pool",) + EXCLUSION_REASONS
 # What an accession-level workspace of an earlier run keeps in the accession folder itself (Interactive's
@@ -171,6 +179,10 @@ DETECT = object()
 MZDATA_SUFFIXES = (".mzdata", ".mzdata.xml")
 ANALYSIS_ROLES = ("raw", "converted")
 ARCHIVE_KINDS = frozenset({"archive", "bundle"})
+# A unit that downloads only archives holding less than this for each of its samples is left out: no LC-MS/MS run
+# fits in it (archive_too_small, 2026-11-06).
+ARCHIVE_TOO_SMALL = "archive_too_small_for_raw_data"
+ARCHIVE_FLOOR_BYTES_PER_SAMPLE = 50_000
 # A drive path, a UNC path or a file:// URI: none belongs in a manifest a person approves and Interactive
 # copies into every unit's provenance.
 _ABSOLUTE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|\\\\[^\\\s]|file://", re.IGNORECASE)
@@ -2118,6 +2130,11 @@ def build_manifest(
         if planned is None or not planned["object_count"]:
             excluded.append(_exclusion(unit, ["no_download_object"]))
             continue
+        too_small = archive_too_small(planned, kinds.get(unit["unit_id"], set()),
+                                      int(decisions[unit["unit_id"]].get("assignment_count") or 0))
+        if too_small:
+            excluded.append(_exclusion(unit, [ARCHIVE_TOO_SMALL], detail=too_small))
+            continue
         included.append((unit, planned))
     groups = {item["group_id"]: item for item in download["groups"]}
     group_order = sorted({planned["group_id"] for _unit, planned in included}, key=lambda group: _group_rank(groups[group]))
@@ -2204,6 +2221,8 @@ def build_manifest(
             "ion_mobility_evidence": "fallback" if evidence is None else "catalog",
             # CID/HCD only (2026-10-29): the rule a unit's fragmentation reading was made under.
             "fragmentation_rule": CID_HCD_ONLY_RULE,
+            # The bytes per sample under which a unit of archives alone is left out (2026-11-06).
+            "archive_floor_bytes_per_sample": ARCHIVE_FLOOR_BYTES_PER_SAMPLE,
             **({"units": requested, "pools": {name: SELECTION_RULES[name] for name in POOLS}} if pool == PILOT else {}),
         },
         "policy": campaign_policy.as_dict(),
@@ -2258,6 +2277,27 @@ def _cid_hcd_interactive_problem(pins: Mapping[str, Any], units: Iterable[Mappin
             "name, header or sample row names a fragmentation method other than CID/HCD and whose split returns each "
             "part's polarity" + (f" ({len(named)} planned unit(s) have such files: {', '.join(named[:5])}"
                                  f"{' ...' if len(named) > 5 else ''})" if named else "") + ". Pin a later Interactive.")
+
+
+def archive_too_small(planned: Mapping[str, Any], kinds: Iterable[str], samples: int) -> str:
+    """Why a unit is left out as archives too small to hold its raw data, or "" when it is not.
+
+    `planned` is the unit's entry in the Catalog's download_plan, `kinds` the kinds of the objects it downloads and
+    `samples` the samples its Class assigns. Only a unit that downloads nothing but archives, every one of known size,
+    is judged: a listed raw file is read by its header in Interactive, and a size the repository did not give is no
+    evidence of anything."""
+    kinds = set(kinds)
+    if samples <= 0 or not kinds or not kinds <= ARCHIVE_KINDS:
+        return ""
+    if not planned.get("size_known") or planned.get("unknown_size_objects"):
+        return ""
+    known = int(planned.get("known_bytes") or 0)
+    if known >= samples * ARCHIVE_FLOOR_BYTES_PER_SAMPLE:
+        return ""
+    objects = int(planned.get("object_count") or 0)
+    return (f"{known:,} bytes in {objects} archive{'s' if objects != 1 else ''} for {samples} samples, "
+            f"{known // samples:,} per sample: under the floor of {ARCHIVE_FLOOR_BYTES_PER_SAMPLE:,}, no LC-MS/MS run "
+            "fits in it")
 
 
 def _exclusion(unit: Mapping[str, Any], reasons: list[str], detail: str = "") -> dict[str, Any]:
@@ -2515,6 +2555,11 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
         lines.append("  ion mobility read from " + (
             "the Catalog's ion_mobility_evidence" if evidence == "catalog"
             else "the unit's instrument, its rows' instrument fields and its inputs' container formats (no Catalog helper)"))
+    floor = (manifest.get("selection") or {}).get("archive_floor_bytes_per_sample")
+    if floor:
+        lines.append(f"  a unit that downloads only archives, all of known size, holding under {int(floor):,} bytes for "
+                     "each of its samples is excluded as archive_too_small_for_raw_data: no LC-MS/MS run fits in it "
+                     "(a study's methods or supplementary tables, 2026-11-06)")
     if (manifest.get("selection") or {}).get("fragmentation_rule"):
         lines.append("  CID/HCD only (user decision, 2026-10-29): every reference spectrum is CID/HCD-derived, so a unit "
                      "whose own record, every sample row or every analysis file name names another fragmentation "
