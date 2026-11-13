@@ -1,0 +1,20 @@
+# mncal mass-shift rules, version 1 (WS7 Design §6). Public. A rule fits a signed delta = prec_query - prec_neighbour
+# as +mass or -mass; n*CH2 for n <= 10 is generated from the CH2 row. Sums of two rules are also tried.
+label	delta_formula	mono_mass	category
+CH2	CH2	14.01565	homologation
+C2H4	C2H4	28.03130	homologation
+O	O	15.99491	oxidation
+H2	H2	2.01565	reduction
+H2O	H2O	18.01056	hydration
+CO2	CO2	43.98983	decarboxylation
+C6H8O6	C6H8O6	176.03209	glucuronidation
+SO3	SO3	79.95682	sulfation
+HPO3	HPO3	79.96633	phosphorylation
+C2H2O	C2H2O	42.01057	acetylation
+C6H10O5	C6H10O5	162.05282	hexose
+C6H10O4	C6H10O4	146.05791	deoxyhexose
+C5H8O4	C5H8O4	132.04226	pentose
+C2H3NO	C2H3NO	57.02146	glycine
+C2H5NO2S	C2H5NO2S	107.00410	taurine
+C10H15N3O6S	C10H15N3O6S	305.06816	glutathione
+C3H2O3	C3H2O3	86.00039	malonyl
