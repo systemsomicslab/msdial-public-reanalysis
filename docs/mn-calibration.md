@@ -72,7 +72,7 @@ stratified by the run's modified-cosine matched count and is scored only on pair
 
 - Tanimoto: `rdkit.morgan2_2048.tanimoto@<rdkit>`, every scored pair.
 - MCES: `myopic_mces@<ver>;threshold=10;solver=COIN_CMD`, on a simple random sample per stratum (ion mode x
-  dprec bin x Tanimoto bin), n_h = min(N_h, 500) below Tanimoto 0.6 and min(N_h, 5000) from 0.6, chosen by a
+  dprec bin x Tanimoto bin), n_h = min(N_h, 500) below Tanimoto 0.6 and min(N_h, 2000) from 0.6 (the spec takes these bins whole; at VS20 scale that is about 80k pairs per mode, so they are capped), chosen by a
   seed-fixed pair hash (bottom-k); HT weight N_h / n_h.
 - Class: same ClassyFire direct parent.
 - Analog definitions: MCES <= 3 (primary), <= 2, <= 5; Tanimoto >= 0.7; same direct parent.

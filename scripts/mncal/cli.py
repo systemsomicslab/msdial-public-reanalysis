@@ -407,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--seed", type=int, default=20261113)
     p.add_argument("--mces-k-low", type=int, default=500)
-    p.add_argument("--mces-k-high", type=int, default=5000)
+    p.add_argument("--mces-k-high", type=int, default=2000)
     p.add_argument("--mces-whole-from", type=int, default=3, help="Tanimoto bin index from which bins are taken whole (capped)")
     p.add_argument("--max-units", type=int)
     p.add_argument("--min-free-ram-gb", type=float, default=64.0)
