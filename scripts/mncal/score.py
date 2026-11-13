@@ -29,7 +29,9 @@ from . import pairs as P
 
 KEEP_SCORE = 0.3
 KEEP_TANIMOTO = 0.4
-CHUNK = 256
+ARTEFACT_BASES = ("msdial.moddot.legacy",)
+ARTEFACT_SAMPLE = 0.01
+CHUNK = 64
 
 _STATE: dict = {}
 
@@ -81,15 +83,26 @@ def _group(adduct: str) -> dict:
                 for pk in peaks]
     X, Z = P.token_matrices(prec, mz_lists)
     prepared = {k.short: [k.prepare(p, pk) for p, pk in zip(prec, peaks)] for k in _STATE["kernels"]}
-    fp_float = None
+    def codes(values) -> np.ndarray:
+        """Integer codes per value; None/NaN -> -1 (keeps per-pair arrays numeric and small)."""
+        index: dict = {}
+        out = np.full(len(values), -1, np.int32)
+        for i, v in enumerate(values):
+            if v is None or (isinstance(v, float) and v != v):
+                continue
+            out[i] = index.setdefault(v, len(index))
+        return out
+
+    ce = g["ce_bin"].to_numpy(object)
     data = {
         "reps": g, "bidx": bidx, "prec": prec, "X": X, "Z": Z, "prepared": prepared,
         "keys": P.rep_keys(list(g["rep_id"])),
-        "parent": blocks["direct_parent"].to_numpy(object)[bidx],
+        "parent": codes(list(blocks["direct_parent"].to_numpy(object)[bidx])),
         "lipid": blocks["is_lipid"].to_numpy(np.int8)[bidx],
         "struct_ok": blocks["structure_ok"].to_numpy(bool)[bidx],
-        "inst": g["instrument_class"].to_numpy(object), "ce": g["ce_bin"].to_numpy(object),
-        "fp_float": fp_float,
+        "inst": codes(list(g["instrument_class"])),
+        "ce": np.where(ce == "CE_UNKNOWN", -1, codes(list(ce))).astype(np.int32),
+        "rep_id": g["rep_id"].to_numpy(object), "block": g["block"].to_numpy(object),
     }
     _STATE["groups"][adduct] = data
     return data
@@ -148,25 +161,31 @@ def run_unit(adduct: str, start: int, end: int, out_dir: str) -> dict:
     hi = int(np.searchsorted(prec, prec[end - 1] + P.MAX_DPREC, side="right"))
     cols = np.arange(start + 1, hi)
     rows = slice(start, end)
-    ub = P.prefilter_upper_bound(g["X"], g["Z"], rows, cols) if cols.size else np.zeros((end - start, 0))
-    ai, bj = np.nonzero(np.ones((end - start, cols.size), bool))
-    a = ai + start
-    b = cols[bj]
-    mask = (b > a) & (np.abs(prec[b] - prec[a]) <= P.MAX_DPREC) & (g["bidx"][a] != g["bidx"][b])
-    a, b, ub = a[mask], b[mask], ub[ai[mask], bj[mask]]
+    ub_full = P.prefilter_upper_bound(g["X"], g["Z"], rows, cols) if cols.size else np.zeros((end - start, 0))
+    # Partners of anchor a are a+1 .. hi_a (precursor-sorted), so the pair list is built from ranges;
+    # no (rows x cols) index grid and no per-pair object arrays are materialised.
+    hi_each = np.searchsorted(prec, prec[start:end] + P.MAX_DPREC, side="right")
+    lengths = np.maximum(hi_each - (np.arange(start, end) + 1), 0)
+    a = np.repeat(np.arange(start, end, dtype=np.int32), lengths)
+    offsets = np.arange(lengths.sum(), dtype=np.int64) - np.repeat(np.cumsum(lengths) - lengths, lengths)
+    b = (a.astype(np.int64) + 1 + offsets).astype(np.int32)
+    del offsets
+    mask = g["bidx"][a] != g["bidx"][b]
+    a, b = a[mask], b[mask]
+    col_idx = b - (start + 1)
+    ub = ub_full[a - start, col_idx]
     struct = g["struct_ok"][a] & g["struct_ok"][b]
     delta = prec[b] - prec[a]
     dbin = P.dprec_bin_index(delta)
     tan_full = _tanimoto(g["bidx"][start:end], g["bidx"][cols]) if cols.size else np.zeros((end - start, 0))
-    tan = tan_full[a - start, np.searchsorted(cols, b)]
-    tan = np.where(struct, tan, np.nan)
+    tan = np.where(struct, tan_full[a - start, col_idx], np.nan)
+    del ub_full, tan_full, col_idx
     pa, pb = g["parent"][a], g["parent"][b]
-    known = np.array([x is not None and y is not None for x, y in zip(pa, pb)], bool)
-    same_parent = np.where(known, (pa == pb).astype(np.int8), np.int8(-1)).astype(np.int8)
+    same_parent = np.where((pa >= 0) & (pb >= 0), (pa == pb).astype(np.int8), np.int8(-1)).astype(np.int8)
     lipid_pair = (g["lipid"][a] + g["lipid"][b]).astype(np.int8)
-    inst_same = (g["inst"][a] == g["inst"][b])
+    inst_same = g["inst"][a] == g["inst"][b]
     ce_a, ce_b = g["ce"][a], g["ce"][b]
-    ce_pair = np.where((ce_a == "CE_UNKNOWN") | (ce_b == "CE_UNKNOWN"), 2, np.where(ce_a == ce_b, 0, 1))
+    ce_pair = np.where((ce_a < 0) | (ce_b < 0), 2, np.where(ce_a == ce_b, 0, 1))
     passed = ub >= 2
     scores, matched = {}, {}
     # Kernels that report matched peaks run on every prefilter pass. A kernel that reports none
@@ -186,17 +205,30 @@ def run_unit(adduct: str, start: int, end: int, out_dir: str) -> dict:
         scores[kernel.short], matched[kernel.short] = s, m
     scores = {k.short: scores[k.short] for k in _STATE["kernels"]}
     matched = {k.short: matched[k.short] for k in _STATE["kernels"]}
+    # Keep rule: any non-artefact kernel >= 0.3, Tanimoto >= 0.4 or the same direct parent (every positive
+    # under every truth is kept). msdial.moddot.legacy scores >= 0.3 on about half of all pairs (the
+    # near-1 artefact), so pairs kept only because of it are a seed-fixed Poisson sample with
+    # probability ARTEFACT_SAMPLE and weight 1/ARTEFACT_SAMPLE (w_keep), which keeps its cutoffs unbiased.
     any_high = np.zeros(a.shape[0], bool)
-    for s in scores.values():
-        any_high |= np.nan_to_num(s, nan=0.0) >= KEEP_SCORE
-    keep = any_high | (np.nan_to_num(tan, nan=0.0) >= KEEP_TANIMOTO) | (same_parent == 1)
+    artefact_high = np.zeros(a.shape[0], bool)
+    for kernel in _STATE["kernels"]:
+        high = np.nan_to_num(scores[kernel.short], nan=0.0) >= KEEP_SCORE
+        if kernel.identity.startswith(ARTEFACT_BASES):
+            artefact_high |= high
+        else:
+            any_high |= high
+    keep_main = any_high | (np.nan_to_num(tan, nan=0.0) >= KEEP_TANIMOTO) | (same_parent == 1)
+    u_artefact = P.pair_uniform(g["keys"][a], g["keys"][b], _STATE["seed"] + 1)
+    sampled = artefact_high & ~keep_main & (u_artefact < ARTEFACT_SAMPLE)
+    keep = keep_main | sampled
+    w_keep = np.where(sampled, 1.0 / ARTEFACT_SAMPLE, 1.0)
 
     import pandas as pd
 
+    # Numeric columns for every pair; identifiers are attached only to the rows written out.
     frame = pd.DataFrame({
-        "a": g["reps"]["rep_id"].to_numpy(object)[a], "b": g["reps"]["rep_id"].to_numpy(object)[b],
-        "block_a": g["reps"]["block"].to_numpy(object)[a], "block_b": g["reps"]["block"].to_numpy(object)[b],
-        "adduct": adduct, "delta_mz": delta, "dbin": dbin, "prefilter_ub": ub.astype(np.int32),
+        "ia": a, "ib": b,
+        "delta_mz": delta, "dbin": dbin, "prefilter_ub": ub.astype(np.int32),
         "prefilter_pass": passed, "structure_ok": struct, "tanimoto": tan, "same_parent": same_parent,
         "lipid_pair": lipid_pair, "homologue": P.homologue_flag(delta, same_parent),
         "inst_same": inst_same, "ce_pair": ce_pair.astype(np.int8),
@@ -204,15 +236,27 @@ def run_unit(adduct: str, start: int, end: int, out_dir: str) -> dict:
     for short in scores:
         frame[f"s_{short}"] = scores[short]
         frame[f"m_{short}"] = matched[short]
+    frame["w_keep"] = w_keep
     frame["u"] = P.pair_uniform(g["keys"][a], g["keys"][b], _STATE["seed"])
     frame["tbin"] = np.where(struct, P.tanimoto_bin_index(np.nan_to_num(tan)), -1).astype(np.int8)
+    def with_ids(rows):
+        rows = rows.copy()
+        ia, ib = rows.pop("ia").to_numpy(), rows.pop("ib").to_numpy()
+        rows.insert(0, "a", g["rep_id"][ia])
+        rows.insert(1, "b", g["rep_id"][ib])
+        rows.insert(2, "block_a", g["block"][ia])
+        rows.insert(3, "block_b", g["block"][ib])
+        rows.insert(4, "adduct", adduct)
+        return rows
+
     out.mkdir(parents=True, exist_ok=True)
-    frame[keep].to_parquet(out / f"{name}.kept.parquet", index=False)
+    with_ids(frame[keep]).to_parquet(out / f"{name}.kept.parquet", index=False)
     k_low, k_high, whole_from = _STATE["mces_k"]
     sub = frame[struct]
     cand = pd.concat([P.bottom_k(sub[sub["tbin"] < whole_from], ["dbin", "tbin"], k_low),
                       P.bottom_k(sub[sub["tbin"] >= whole_from], ["dbin", "tbin"], k_high)])
-    cand.to_parquet(out / f"{name}.mces.parquet", index=False)
+    del sub
+    with_ids(cand).to_parquet(out / f"{name}.mces.parquet", index=False)
     hist = {}
     drop = ~keep & struct
     t_idx = np.clip((np.nan_to_num(tan[drop]) * 100).astype(int), 0, 100)

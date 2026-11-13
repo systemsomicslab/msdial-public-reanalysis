@@ -197,12 +197,33 @@ def cmd_score_pairs(args) -> int:
                      "score_convention": k.score_convention, "reports_matches": k.reports_matches,
                      "parity": k.parity} for k in kernels],
         "workers": args.workers, "seed": args.seed, "priority": "BelowNormal",
-        "keep_rule": {"any_score_ge": SC.KEEP_SCORE, "tanimoto_ge": SC.KEEP_TANIMOTO, "same_parent": True},
+        "keep_rule": {"any_score_ge": SC.KEEP_SCORE, "tanimoto_ge": SC.KEEP_TANIMOTO, "same_parent": True,
+                      "artefact_kernels_excluded_from_score_rule": list(SC.ARTEFACT_BASES),
+                      "artefact_only_pairs_poisson_sample": SC.ARTEFACT_SAMPLE},
         "mces_sampling": {"k_low": args.mces_k_low, "k_high": args.mces_k_high,
                           "whole_from_tanimoto_bin": args.mces_whole_from},
         "max_units": args.max_units, "summary": summary,
     })
     return 0
+
+
+def _load_kept(pairs_dir: Path):
+    """All kept shards of a mode. Block identifiers become categoricals over one shared category set (the
+    mode's blocks table), which keeps the frame a fraction of its object-string size."""
+    import pandas as pd
+
+    blocks = pd.read_parquet(pairs_dir.parents[1] / f"blocks_{pairs_dir.name}.parquet", columns=["block"])
+    categories = pd.Index(blocks["block"].astype(str))
+    frames = []
+    for f in sorted(pairs_dir.glob("*.kept.parquet")):
+        frame = pd.read_parquet(f).drop(columns=["a", "b"], errors="ignore")
+        for col in ("block_a", "block_b"):
+            frame[col] = pd.Categorical(frame[col].astype(str), categories=categories)
+        frame["adduct"] = frame["adduct"].astype(str)
+        frames.append(frame)
+    kept = pd.concat(frames, ignore_index=True)
+    kept["adduct"] = kept["adduct"].astype("category")
+    return kept
 
 
 def _unit_records(pairs_dir: Path) -> list[dict]:
@@ -228,9 +249,19 @@ def cmd_structure_truth(args) -> int:
         sample = T.merge_sample(pairs_dir, records, sp["k_low"], sp["k_high"], sp["whole_from_tanimoto_bin"])
         blocks = pd.read_parquet(data / f"blocks_{mode}.parquet")
         smiles = dict(zip(blocks["block"], blocks["smiles_std"]))
+        known = None
+        if args.reuse_mces:
+            dirs, prev_smiles = [], []
+            for other in args.reuse_mces:
+                other_data = _data_dir(Path(other))
+                if (other_data / "mces" / mode).is_dir() and (other_data / f"blocks_{mode}.parquet").exists():
+                    ob = pd.read_parquet(other_data / f"blocks_{mode}.parquet")
+                    dirs.append(other_data / "mces" / mode)
+                    prev_smiles.append(dict(zip(ob["block"], ob["smiles_std"])))
+            known = T.load_previous(dirs, smiles, prev_smiles)
         t0 = time.time()
         mces = T.compute_mces(sample, smiles, data / "mces" / mode, workers=args.workers,
-                              tmp_dir=data / "_tmp" / mode, limit=args.limit)
+                              tmp_dir=data / "_tmp" / mode, limit=args.limit, known=known)
         wall = time.time() - t0
         joined = T.attach_mces(sample, mces) if not mces.empty else sample.assign(mces=float("nan"), mces_mode=-1)
         joined.to_parquet(data / f"mces_sample_{mode}.parquet", index=False)
@@ -243,7 +274,13 @@ def cmd_structure_truth(args) -> int:
                          "errors": int(mces["mces_error"].notna().sum()) if len(mces) else 0,
                          "strata": {f"{int(d)}|{int(t)}": {"N_h": int(r.N_h), "n_h": int(r.n_h)}
                                     for (d, t), r in strata.iterrows()},
-                         "limit": args.limit}
+                         "limit": args.limit,
+                         "reused_block_pairs": mces.attrs.get("reused_pairs", 0),
+                         "reused_from": [Path(o).name for o in (args.reuse_mces or [])]}
+        if mces.attrs.get("reused_pairs", 0):
+            new = mces[~mces.get("mces_reused", False)] if "mces_reused" in mces else mces
+            summary[mode]["pairs_per_second"] = round(len(new) / wall, 3) if wall > 0 and len(new) else None
+            summary[mode]["median_seconds_per_pair"] = float(mces["mces_seconds"].median())
         if mces.attrs.get("chunks_computed_now", 0) == 0 and mode in previous:
             # Nothing new was computed: keep the throughput measured when the work was done.
             for key in ("wall_seconds", "pairs_per_second"):
@@ -272,7 +309,7 @@ def cmd_calibrate(args) -> int:
     tables, sanity, counts = [], {}, {}
     for mode in args.modes:
         pairs_dir = data / "pairs" / mode
-        kept = pd.concat([pd.read_parquet(f) for f in sorted(pairs_dir.glob("*.kept.parquet"))], ignore_index=True)
+        kept = _load_kept(pairs_dir)
         sample_path = data / f"mces_sample_{mode}.parquet"
         sample = pd.read_parquet(sample_path) if sample_path.exists() else kept.iloc[0:0].assign(
             mces=np.nan, mces_mode=-1, ht_weight=np.nan)
@@ -351,8 +388,7 @@ def _curves(run: Path, data: Path, kernels: list[dict], modes: list[str], ref_sh
     out = run / "curves"
     out.mkdir(exist_ok=True)
     for mode in modes:
-        kept = pd.concat([pd.read_parquet(f) for f in sorted((data / "pairs" / mode).glob("*.kept.parquet"))],
-                         ignore_index=True)
+        kept = _load_kept(data / "pairs" / mode)
         sample_path = data / f"mces_sample_{mode}.parquet"
         sample = pd.read_parquet(sample_path) if sample_path.exists() else kept.iloc[0:0]
         for truth in ("mces3", "tanimoto07", "same_parent"):
@@ -437,6 +473,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--modes", nargs="+", default=["pos", "neg"])
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--limit", type=int, help="compute only the first N block pairs (throughput pilot)")
+    p.add_argument("--reuse-mces", action="append", help="earlier run directory whose MCES results are reused "
+                   "for block pairs with unchanged standard SMILES")
     p.set_defaults(func=cmd_structure_truth)
 
     p = sub.add_parser("calibrate", help="Cutoff table, curves, sanity numbers")

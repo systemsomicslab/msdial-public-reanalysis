@@ -41,12 +41,18 @@ def truth_population(kind: str, kept: pd.DataFrame, sample: pd.DataFrame) -> tup
         frame = sample[sample["mces"].notna() & (sample["mces_mode"] >= 0)]
         y = (frame["mces"].to_numpy() <= k).astype(float)
         return frame, y, frame["ht_weight"].to_numpy(float)
+    def keep_weight(frame):
+        # 1 for pairs kept by the main rule; 1/pi for pairs kept only by the moddot-artefact Poisson
+        # sample. Those never are positives and score < 0.3 under every other kernel, so the weight
+        # changes nothing for the other kernels' cells.
+        return frame["w_keep"].to_numpy(float) if "w_keep" in frame else np.ones(len(frame))
+
     if kind == "tanimoto07":
         frame = kept[kept["structure_ok"]]
-        return frame, (frame["tanimoto"].to_numpy() >= 0.7).astype(float), np.ones(len(frame))
+        return frame, (frame["tanimoto"].to_numpy() >= 0.7).astype(float), keep_weight(frame)
     if kind == "same_parent":
         frame = kept[kept["same_parent"] >= 0]
-        return frame, (frame["same_parent"].to_numpy() == 1).astype(float), np.ones(len(frame))
+        return frame, (frame["same_parent"].to_numpy() == 1).astype(float), keep_weight(frame)
     raise ValueError(kind)
 
 

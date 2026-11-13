@@ -28,7 +28,7 @@ set PYTHONPATH=scripts;<catalog pin>\src
 | 1 | `build-reps` | Eligible records (InChIKey block, SMILES, adduct in [M+H]+, [M+Na]+, [M+NH4]+, [M-H]-, [M+FA-H]-, [M+CH3COO]-, >= 3 peaks after the primary prep); one representative per (block, adduct, instrument class), most peaks >= 1% of base, ties to the lowest record ordinal. Per block: modal SMILES, RDKit largest fragment + uncharger, Morgan-2 2048-bit fingerprint, ClassyFire direct parent (MS-FINDER `.icd` by full key, then first block, then the MSP ONTOLOGY; source recorded), lipid flag (`lipid_direct_parents_v1.tsv`). |
 | 2 | `check-kernels` | Primary identity round-trip through WS2's `canonical_kernel_id`, equality with WS3's reported string, `similarity-fixtures/` parity (abs 1e-9). |
 | 3 | `score-pairs` | Pair universe U (same ion mode and adduct, different block, abs(dprec) <= 400 Da, all instrument combinations); prefilter; kernels; Tanimoto; class and lipid relations. Chunked, resumable, <= 16 workers at BelowNormal priority. |
-| 4 | `structure-truth` | myopic MCES (threshold 10) on a stratified simple random sample. |
+| 4 | `structure-truth` | myopic MCES (threshold 10) on a stratified simple random sample. `--reuse-mces <run>` reuses an earlier run's results for block pairs whose standard SMILES are unchanged (the sample depends only on representatives, seed and caps, never on kernels). |
 | 5 | `calibrate` | `cutoff_table.tsv`, curves, sanity numbers; `table_sha256` in `run.json`. |
 | 6 | `report` | `report.md` from `run.json` and the table. |
 | - | `guard` | VS21 leak scanner (strict, or `--allow-neighbour-identity` for WS7). |
@@ -54,7 +54,7 @@ Scores are stored in each identity's native convention; cosines are never square
 | Current MS-DIAL MN default | `msdial.bonanza.v1?prep=mn&prep.above=0.05&prep.abs=0&prep.frame=1&prep.maxmz=10000&prep.minmz=0&prep.pow=0.5&prep.precwin=0&prep.rel=1&prep.scale=100&prep.topk=0&prep.topkwin=50&tol=0.025` |
 | Near-1 artefact, documented | `msdial.moddot.legacy?` + the same parameters as Bonanza |
 | Non-shift baseline | `entropy.li2021?bin=0.05&prep=none&weighting=none` |
-| Sensitivity only | the primary with `prep.pow=0.5`; with `prep.above=0.02&...&tol=0.02`; with `assign=optimal` (Python only); WS2's GNPS-like K4 prep (`prep.topk=6`, Python only) |
+| Sensitivity only | the primary with `prep.pow=0.5` (full run; the author asked for it); with `prep.above=0.02&...&tol=0.02`; with `assign=optimal` (Python only); WS2's GNPS-like K4, `gnps.modified_cosine?assign=greedy&ipow=1&mzpow=0&prep=mn&prep.above=0.05&prep.abs=0&prep.frame=0&prep.maxmz=10000&prep.minmz=0&prep.pow=0.5&prep.precwin=17&prep.rel=1&prep.scale=100&prep.topk=6&prep.topkwin=50&tol=0.025` (Python only). The last three and the matchms reference run on a 10% block subsample. |
 | External reference (run records and `cutoff_table.tsv` only, never `spectrum_similarity.method`) | `matchms.modified_cosine?above=0.025&class=ModifiedCosineGreedy&ipow=1&mzpow=0&norm=max&precwin=17&rel=1&tol=0.025&version=0.34.0` |
 
 The matchms reference applies, in this order: drop peaks below 1% of base, drop peaks above precursor +
@@ -83,7 +83,10 @@ stratified by the run's modified-cosine matched count and is scored only on pair
   n(s >= t) >= 30, and the dyadic cluster-bootstrap lower bound (Poisson(1) multiplier per block, product
   over the two blocks, B = 1000, fixed seed) also >= p; otherwise "not estimable". For exhaustive truth the
   grid starts at 0.30, because pair shards keep every pair with any score >= 0.3, Tanimoto >= 0.4 or the same
-  direct parent (all positives), and the rest only as score x Tanimoto histograms.
+  direct parent (all positives), and the rest only as score x Tanimoto histograms. The score rule
+  ignores `msdial.moddot.legacy`, which scores >= 0.3 on about half of all pairs (its near-1 artefact);
+  pairs kept only because of it form a seed-fixed 1% Poisson sample with weight 100 (`w_keep`), so its
+  cutoffs stay unbiased and every other kernel's cells are unchanged.
 - The benchmark id of a cutoff is `mn-calibration/<run-id>` plus `table_sha256` from `run.json`.
 
 ### cutoff_table.tsv

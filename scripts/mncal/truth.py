@@ -80,22 +80,52 @@ def _mces_chunk(rows: list[tuple[str, str]], out_path: str) -> str:
     return out_path
 
 
+def load_previous(dirs: list[Path], smiles: dict[str, str], previous_smiles: list[dict[str, str]]) -> pd.DataFrame:
+    """MCES results of earlier runs, kept only for block pairs whose standard SMILES are unchanged."""
+    frames = []
+    for d, prev in zip(dirs, previous_smiles):
+        for f in sorted(Path(d).glob("*.parquet")):
+            m = pd.read_parquet(f)
+            m = m[m["mces_error"].isna()]
+            same = [smiles.get(x) is not None and smiles.get(x) == prev.get(x) and
+                    smiles.get(y) is not None and smiles.get(y) == prev.get(y)
+                    for x, y in zip(m["block_a"], m["block_b"])]
+            frames.append(m[np.asarray(same, bool)])
+    if not frames:
+        return pd.DataFrame(columns=["block_a", "block_b", "mces", "mces_mode", "mces_seconds", "mces_error"])
+    out = pd.concat(frames, ignore_index=True)
+    return out.drop_duplicates(["block_a", "block_b"])
+
+
 def compute_mces(sample: pd.DataFrame, block_smiles_std: dict[str, str], out_dir: Path, *, workers: int,
-                 tmp_dir: Path, chunk: int = 50, limit: int | None = None, progress=print) -> pd.DataFrame:
+                 tmp_dir: Path, chunk: int = 50, limit: int | None = None, known: pd.DataFrame | None = None,
+                 progress=print) -> pd.DataFrame:
     from .common import MAX_WORKERS
 
     out_dir.mkdir(parents=True, exist_ok=True)
     pairs = sample[["block_a", "block_b"]].drop_duplicates()
     pairs = pairs.assign(lo=np.minimum(pairs.block_a, pairs.block_b), hi=np.maximum(pairs.block_a, pairs.block_b))
-    pairs = pairs[["lo", "hi"]].drop_duplicates().sort_values(["lo", "hi"]).to_numpy().tolist()
+    pairs = pairs[["lo", "hi"]].drop_duplicates().sort_values(["lo", "hi"])
+    reused = pd.DataFrame()
+    if known is not None and not known.empty:
+        key = set(zip(known["block_a"], known["block_b"]))
+        hit = np.array([(lo, hi) in key for lo, hi in zip(pairs["lo"], pairs["hi"])], bool)
+        wanted = set(map(tuple, pairs[hit].to_numpy().tolist()))
+        reused = known[[k in wanted for k in zip(known["block_a"], known["block_b"])]]
+        pairs = pairs[~hit]
+    pairs = pairs.to_numpy().tolist()
     if limit is not None:
         pairs = pairs[:limit]
     chunks = [pairs[i:i + chunk] for i in range(0, len(pairs), chunk)]
     needed = {b for p in pairs for b in p}
     smiles = {b: block_smiles_std[b] for b in needed}
     workers = max(1, min(workers, MAX_WORKERS))
-    # The chunk size is in the name, so a resume with another chunk size never reads a stale chunk.
-    paths = [str(out_dir / f"mces_c{chunk}_{i:06d}.parquet") for i in range(len(chunks))]
+    # A chunk is named by the hash of its own pair list, so a resume with another chunk size or another
+    # reused set never reads a stale chunk.
+    import hashlib
+
+    paths = [str(out_dir / ("mces_" + hashlib.sha256("\n".join(f"{x}\t{y}" for x, y in c).encode()).hexdigest()[:16]
+                            + ".parquet")) for c in chunks]
     todo = [(c, p) for c, p in zip(chunks, paths) if not Path(p).exists()]
     t0 = time.time()
     if todo:
@@ -106,8 +136,13 @@ def compute_mces(sample: pd.DataFrame, block_smiles_std: dict[str, str], out_dir
                 if (i + 1) % 10 == 0 or i + 1 == len(futures):
                     progress(f"mces {i + 1}/{len(futures)} chunks, {time.time() - t0:.0f}s")
     frames = [pd.read_parquet(p) for p in paths if Path(p).exists()]
+    if not reused.empty:
+        frames.append(reused.assign(mces_reused=True))
     out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if "mces_reused" in out:
+        out["mces_reused"] = out["mces_reused"].fillna(False).astype(bool)
     out.attrs["chunks_computed_now"] = len(todo)
+    out.attrs["reused_pairs"] = int(len(reused))
     return out
 
 

@@ -40,6 +40,11 @@ ENTROPY = "entropy.li2021?bin=0.05&prep=none&weighting=none"
 SENS_POW05 = PRIMARY.replace("prep.pow=1&", "prep.pow=0.5&")
 SENS_TOL002 = PRIMARY.replace("prep.above=0.025", "prep.above=0.02").replace("tol=0.025", "tol=0.02")
 SENS_OPTIMAL = PRIMARY.replace("assign=greedy", "assign=optimal")
+# WS2's "GNPS-like" K4 (similarity_mn_tools.smoke_ids()[3] at catalog 99d3e1a): MN defaults with frame=0,
+# precwin=17, topk=6. Python only (topk), so it can never carry a cutoff for C# (O3).
+SENS_K4 = ("gnps.modified_cosine?assign=greedy&ipow=1&mzpow=0&prep=mn&prep.above=0.05&prep.abs=0&prep.frame=0"
+           "&prep.maxmz=10000&prep.minmz=0&prep.pow=0.5&prep.precwin=17&prep.rel=1&prep.scale=100&prep.topk=6"
+           "&prep.topkwin=50&tol=0.025")
 
 
 def matchms_identity() -> str:
@@ -230,8 +235,10 @@ def ws2_kernel(identity: str, short: str) -> Kernel:
 
 # ---------------------------------------------------------------- registry
 def default_kernels(names: list[str] | None = None) -> list[Kernel]:
-    """Week-1 set without WS2: matchms reference + interim entropy. With WS2 in the pin: its kernels."""
-    names = names or (["primary", "bonanza", "moddot", "entropy", "matchms"] if ws2_available()
+    """Without WS2 in the pin: matchms reference + entropy. With WS2: the full-run set (primary, the two
+    MS-DIAL legacy kernels, the prep.pow=0.5 sensitivity the author asked for, entropy). The other
+    sensitivity variants and the matchms reference are run on a block subsample (Design §3)."""
+    names = names or (["primary", "bonanza", "moddot", "pow05", "entropy"] if ws2_available()
                       else ["matchms", "entropy"])
     table = {
         "primary": lambda: ws2_kernel(PRIMARY, "primary"),
@@ -240,6 +247,7 @@ def default_kernels(names: list[str] | None = None) -> list[Kernel]:
         "pow05": lambda: ws2_kernel(SENS_POW05, "pow05"),
         "tol002": lambda: ws2_kernel(SENS_TOL002, "tol002"),
         "optimal": lambda: ws2_kernel(SENS_OPTIMAL, "optimal"),
+        "k4": lambda: ws2_kernel(SENS_K4, "k4"),
         "entropy": entropy_port_kernel,
         "entropy_reference": interim_entropy_kernel,
         "matchms": matchms_kernel,
