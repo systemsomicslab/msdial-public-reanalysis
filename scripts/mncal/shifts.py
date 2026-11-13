@@ -66,7 +66,8 @@ def load_rules(path: str | Path = RULES_FILE) -> list[Rule]:
 
 
 def rules_sha256(path: str | Path = RULES_FILE) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    """sha256 of the rules text with LF line ends, so a CRLF checkout gives the same digest."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _signed(rules: list[Rule]):

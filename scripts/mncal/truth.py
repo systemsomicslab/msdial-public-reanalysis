@@ -81,7 +81,7 @@ def _mces_chunk(rows: list[tuple[str, str]], out_path: str) -> str:
 
 
 def compute_mces(sample: pd.DataFrame, block_smiles_std: dict[str, str], out_dir: Path, *, workers: int,
-                 tmp_dir: Path, chunk: int = 200, limit: int | None = None, progress=print) -> pd.DataFrame:
+                 tmp_dir: Path, chunk: int = 50, limit: int | None = None, progress=print) -> pd.DataFrame:
     from .common import MAX_WORKERS
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -94,7 +94,8 @@ def compute_mces(sample: pd.DataFrame, block_smiles_std: dict[str, str], out_dir
     needed = {b for p in pairs for b in p}
     smiles = {b: block_smiles_std[b] for b in needed}
     workers = max(1, min(workers, MAX_WORKERS))
-    paths = [str(out_dir / f"mces_{i:06d}.parquet") for i in range(len(chunks))]
+    # The chunk size is in the name, so a resume with another chunk size never reads a stale chunk.
+    paths = [str(out_dir / f"mces_c{chunk}_{i:06d}.parquet") for i in range(len(chunks))]
     todo = [(c, p) for c, p in zip(chunks, paths) if not Path(p).exists()]
     t0 = time.time()
     if todo:

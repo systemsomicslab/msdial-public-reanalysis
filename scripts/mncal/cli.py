@@ -110,7 +110,7 @@ def cmd_build_reps(args) -> int:
     _update_run(run, "build-reps", {
         "libraries": libraries, "selection": selection, "block_fraction": args.block_fraction, "seed": args.seed,
         "icd": icd_info, "tanimoto_identity": tanimoto_identity(),
-        "lipid_map": {"file": LIPID_MAP_FILE.name, "sha256": C.sha256_file(LIPID_MAP_FILE)
+        "lipid_map": {"file": LIPID_MAP_FILE.name, "sha256": C.sha256_text_file(LIPID_MAP_FILE)
                       if LIPID_MAP_FILE.exists() else None},
         "eligibility": {"adducts": sorted(L.ALL_ADDUCTS), "min_peaks_after_prep": L.MIN_PEAKS,
                         "prep": L.ELIGIBILITY_PREP},

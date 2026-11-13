@@ -26,6 +26,11 @@ def sha256_file(path: str | Path, chunk: int = 1 << 22) -> str:
     return digest.hexdigest()
 
 
+def sha256_text_file(path: str | Path) -> str:
+    """sha256 of a committed text file with LF line ends (stable across CRLF checkouts)."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def md5_file(path: str | Path, chunk: int = 1 << 22) -> str:
     digest = hashlib.md5()
     with open(path, "rb") as handle:
