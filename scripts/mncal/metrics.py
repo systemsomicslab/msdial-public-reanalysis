@@ -89,18 +89,24 @@ def isotonic_curve(score: np.ndarray, y: np.ndarray, w: np.ndarray, bins: int = 
     return (np.arange(bins) + 0.5) / bins, fitted, wsum
 
 
-def class_balance_weights(classes_a: np.ndarray, classes_b: np.ndarray) -> np.ndarray:
-    """Weights that give every direct-parent class the same total weight over the given pairs.
+def class_balance_weights(classes_a: np.ndarray, classes_b: np.ndarray,
+                          base: np.ndarray | None = None) -> np.ndarray:
+    """Multipliers that give every direct-parent class the same total weight over the given pairs.
 
-    A pair counts once for each endpoint's class with half weight, so w = (1/n_a + 1/n_b) / 2 where n_c is
-    the number of endpoint incidences of class c among the pairs. Unknown classes form their own class.
+    A pair counts for each endpoint's class with half weight: multiplier = (1/n_a + 1/n_b) / 2, where n_c is
+    the (base-weighted) number of endpoint incidences of class c among the pairs. With base weights w the
+    pair's final weight is w * multiplier, and each class then totals 1 (half from each endpoint).
+    Unknown classes form their own class.
     """
     a = np.asarray(classes_a, dtype=object)
     b = np.asarray(classes_b, dtype=object)
-    labels, inv = np.unique(np.concatenate([a, b]).astype(str), return_inverse=True)
-    counts = np.bincount(inv, minlength=labels.shape[0]).astype(float)
     n = a.shape[0]
-    return 0.5 * (1.0 / counts[inv[:n]] + 1.0 / counts[inv[n:]])
+    base = np.ones(n) if base is None else np.asarray(base, float)
+    labels, inv = np.unique(np.concatenate([a, b]).astype(str), return_inverse=True)
+    counts = np.bincount(inv, weights=np.concatenate([base, base]), minlength=labels.shape[0])
+    with np.errstate(divide="ignore"):
+        inv_counts = np.where(counts > 0, 1.0 / counts, 0.0)
+    return 0.5 * (inv_counts[inv[:n]] + inv_counts[inv[n:]])
 
 
 def curve(score: np.ndarray, y: np.ndarray, w: np.ndarray, grid: np.ndarray = GRID,
@@ -114,7 +120,8 @@ def curve(score: np.ndarray, y: np.ndarray, w: np.ndarray, grid: np.ndarray = GR
     out = {k: np.full(grid.shape[0], np.nan) for k in ("precision", "low", "high", "recall", "n_eff")}
     out["n_above"] = np.zeros(grid.shape[0], np.int64)
     if classes is not None:
-        wpos = class_balance_weights(classes[0][y > 0], classes[1][y > 0]) * w[y > 0]
+        pos_mask = y > 0
+        wpos = class_balance_weights(classes[0][pos_mask], classes[1][pos_mask], w[pos_mask]) * w[pos_mask]
         denom = float(np.sum(wpos))
     else:
         denom = float(np.sum(w * y))
@@ -147,14 +154,12 @@ def curve(score: np.ndarray, y: np.ndarray, w: np.ndarray, grid: np.ndarray = GR
             continue
         wa = w[above]
         if classes is not None:
-            wa = wa * class_balance_weights(classes[0][above], classes[1][above])
+            wa = wa * class_balance_weights(classes[0][above], classes[1][above], w[above])
         p, low, high = weighted_wilson(y[above], wa)
         out["precision"][i], out["low"][i], out["high"][i] = p, low, high
         out["n_eff"][i] = kish_n(wa)
         if classes is not None:
-            pos = above & (y > 0)
-            num = float(np.sum(class_balance_weights(classes[0][y > 0], classes[1][y > 0])
-                               [pos[y > 0]] * w[pos]))
+            num = float(np.sum(wpos[above[pos_mask]]))
         else:
             num = float(np.sum(w[above] * y[above]))
         out["recall"][i] = num / denom if denom > 0 else np.nan
@@ -175,29 +180,42 @@ def bootstrap_at(score, y, w, t, cluster_a, cluster_b, *, classes=None, B: int =
     rel = above | pos
     ia, ib, y_r, w_r, above_r, pos_r = ia[rel], ib[rel], y[rel], w[rel], above[rel], pos[rel]
     if classes is not None:
-        ca, cb = np.asarray(classes[0], object)[rel], np.asarray(classes[1], object)[rel]
+        cl, cinv = np.unique(np.concatenate([np.asarray(classes[0], str)[rel], np.asarray(classes[1], str)[rel]]),
+                             return_inverse=True)
+        n_rel = ia.shape[0]
+        cia, cib = cinv[:n_rel], cinv[n_rel:]
     precision, recall = np.empty(B), np.empty(B)
-    for r in range(B):
-        mult = rng.poisson(1.0, labels.shape[0]).astype(float)
-        m = mult[ia] * mult[ib] * w_r
+    step = 32                                   # replicates per vectorised batch (memory ~ step x pairs)
+    for r0 in range(0, B, step):
+        nb = min(step, B - r0)
+        mult = rng.poisson(1.0, (nb, labels.shape[0])).astype(np.float64)
+        m = mult[:, ia] * mult[:, ib] * w_r                  # (nb, n_rel)
         if classes is not None:
-            sel = above_r & (m > 0)
-            wa = np.zeros_like(m)
-            if sel.any():
-                wa[sel] = m[sel] * class_balance_weights(ca[sel], cb[sel])
-            selp = pos_r & (m > 0)
-            wp = np.zeros_like(m)
-            if selp.any():
-                wp[selp] = m[selp] * class_balance_weights(ca[selp], cb[selp])
-            den_p = wa.sum()
-            precision[r] = (wa * y_r).sum() / den_p if den_p > 0 else np.nan
-            den_r = wp.sum()
-            recall[r] = wp[above_r].sum() / den_r if den_r > 0 else np.nan
+            # Class-balanced weights inside each replicate: n_c = weighted endpoint incidences of class c
+            # among the pairs of the set (above t for precision, positives for recall).
+            def balanced(mask):
+                mm = m * mask
+                n_c = np.zeros((nb, cl.shape[0]))
+                for k in range(nb):
+                    n_c[k] = np.bincount(cia, weights=mm[k], minlength=cl.shape[0]) + \
+                        np.bincount(cib, weights=mm[k], minlength=cl.shape[0])
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    inv = np.where(n_c > 0, 1.0 / n_c, 0.0)
+                return mm * 0.5 * (inv[:, cia] + inv[:, cib])
+            wa = balanced(above_r)
+            wp = balanced(pos_r)
+            den_p = wa.sum(axis=1)
+            den_r = wp.sum(axis=1)
+            num_p = (wa * y_r).sum(axis=1)
+            num_r = (wp * above_r).sum(axis=1)
         else:
-            den_p = m[above_r].sum()
-            precision[r] = (m[above_r] * y_r[above_r]).sum() / den_p if den_p > 0 else np.nan
-            den_r = (m * y_r).sum()
-            recall[r] = (m[above_r & pos_r]).sum() / den_r if den_r > 0 else np.nan
+            den_p = (m * above_r).sum(axis=1)
+            num_p = (m * (above_r * y_r)).sum(axis=1)
+            den_r = (m * y_r).sum(axis=1)
+            num_r = (m * (above_r & pos_r)).sum(axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            precision[r0:r0 + nb] = np.where(den_p > 0, num_p / den_p, np.nan)
+            recall[r0:r0 + nb] = np.where(den_r > 0, num_r / den_r, np.nan)
 
     def pct(x):
         x = x[np.isfinite(x)]
