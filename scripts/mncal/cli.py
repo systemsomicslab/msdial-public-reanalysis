@@ -159,8 +159,7 @@ def cmd_score_pairs(args) -> int:
         print(f"free RAM {free:.0f} GB < {args.min_free_ram_gb} GB; not starting (C8)", file=sys.stderr)
         return 3
     kernels = K.default_kernels(args.kernels)
-    C.below_normal_priority()
-    summary = {}
+    summary = dict(_run_json(run).get("steps", {}).get("score-pairs", {}).get("summary", {}))
     for mode in args.modes:
         t0 = time.time()
         out = data / "pairs" / mode
@@ -200,8 +199,10 @@ def cmd_structure_truth(args) -> int:
 
     run = Path(args.run)
     data = _data_dir(run)
-    sp = _run_json(run)["steps"]["score-pairs"]["mces_sampling"]
-    summary = {}
+    record = _run_json(run)
+    sp = record["steps"]["score-pairs"]["mces_sampling"]
+    previous = record["steps"].get("structure-truth", {}).get("summary", {})
+    summary = dict(previous)             # one invocation per mode must not drop the other mode's record
     for mode in args.modes:
         pairs_dir = data / "pairs" / mode
         records = _unit_records(pairs_dir)
@@ -224,6 +225,10 @@ def cmd_structure_truth(args) -> int:
                          "strata": {f"{int(d)}|{int(t)}": {"N_h": int(r.N_h), "n_h": int(r.n_h)}
                                     for (d, t), r in strata.iterrows()},
                          "limit": args.limit}
+        if mces.attrs.get("chunks_computed_now", 0) == 0 and mode in previous:
+            # Nothing new was computed: keep the throughput measured when the work was done.
+            for key in ("wall_seconds", "pairs_per_second"):
+                summary[mode][key] = previous[mode].get(key)
         print(f"{mode}: {json.dumps({k: v for k, v in summary[mode].items() if k != 'strata'})}")
     _update_run(run, "structure-truth", {"mces_identity": mces_identity(), "workers": args.workers,
                                          "summary": summary})

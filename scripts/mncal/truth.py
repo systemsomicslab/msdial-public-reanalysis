@@ -106,7 +106,9 @@ def compute_mces(sample: pd.DataFrame, block_smiles_std: dict[str, str], out_dir
                 if (i + 1) % 10 == 0 or i + 1 == len(futures):
                     progress(f"mces {i + 1}/{len(futures)} chunks, {time.time() - t0:.0f}s")
     frames = [pd.read_parquet(p) for p in paths if Path(p).exists()]
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    out.attrs["chunks_computed_now"] = len(todo)
+    return out
 
 
 def attach_mces(sample: pd.DataFrame, mces: pd.DataFrame) -> pd.DataFrame:
