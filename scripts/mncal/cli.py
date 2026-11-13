@@ -25,8 +25,27 @@ def _run_json(run: Path) -> dict:
     return C.read_json(path) if path.exists() else {}
 
 
+def _suppress_small(obj):
+    """Private runs: every count 1..9 under a count-like key becomes "<10" (guard: aggregate-only)."""
+    from .guard import COUNT_KEY
+
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(v, int) and not isinstance(v, bool) and 1 <= v < 10 and COUNT_KEY.match(str(k)):
+                out[k] = "<10"
+            else:
+                out[k] = _suppress_small(v)
+        return out
+    if isinstance(obj, list):
+        return [_suppress_small(v) for v in obj]
+    return obj
+
+
 def _update_run(run: Path, section: str, payload: dict) -> None:
     record = _run_json(run)
+    if record.get("private"):
+        payload = _suppress_small(payload)
     record.setdefault("run_id", run.name)
     record.setdefault("benchmark_id", f"mn-calibration/{run.name}")
     record["code"] = C.code_commit()
