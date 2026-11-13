@@ -442,4 +442,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command != "guard":
+        C.below_normal_priority()          # C8: every heavy step runs at BelowNormal, workers included
     return int(args.func(args) or 0)
