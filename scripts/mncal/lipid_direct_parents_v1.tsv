@@ -1,0 +1,104 @@
+# mncal lipid flag by ClassyFire direct parent, version 1. DRAFT by the MN-calibration channel (2026-11-13),
+# pending the author's confirmation (spec R3). Scope: the LIPID MAPS categories a lipidomics run annotates
+# (fatty acyls, glycerolipids, glycerophospholipids, sphingolipids, saccharolipids, sterol esters). Prenol
+# lipids (terpenoids), free sterols, steroids and bile acids are NOT flagged, although ClassyFire places
+# several of them under "Lipids and lipid-like molecules": the flag is for the lipidomics homologue bias, not
+# for ClassyFire's superclass. Names not listed are 0. Rows with is_lipid 0 document deliberate exclusions.
+direct_parent	is_lipid	lipid_category	note
+Long-chain fatty acids	1	FA
+Medium-chain fatty acids	1	FA
+Very long-chain fatty acids	1	FA
+Straight chain fatty acids	1	FA
+Branched fatty acids	1	FA
+Methyl-branched fatty acids	1	FA
+Hydroxy fatty acids	1	FA
+Epoxy fatty acids	1	FA
+Halogenated fatty acids	1	FA
+Heterocyclic fatty acids	1	FA
+Furanoid fatty acids	1	FA
+Thia fatty acids	1	FA
+Lineolic acids and derivatives	1	FA	ClassyFire spelling
+Fatty acid esters	1	FA
+Fatty acid methyl esters	1	FA
+Fatty alcohols	1	FA
+Long-chain fatty alcohols	1	FA
+Fatty alcohol esters	1	FA
+Wax monoesters	1	FA
+Fatty amides	1	FA
+N-acylethanolamines	1	FA
+Acyl carnitines	1	FA
+Acyl CoAs	1	FA
+Long-chain fatty acyl CoAs	1	FA
+3-oxo-acyl CoAs	1	FA
+(R)-3-hydroxyacyl CoAs	1	FA
+Acyl cholines	1	FA
+Prostaglandins and related compounds	1	FA	eicosanoids
+Leukotrienes	1	FA	eicosanoids
+Hydroperoxyeicosatetraenoic acids	1	FA	eicosanoids
+Fatty acyl glycosides of mono- and disaccharides	1	FA
+Triacylglycerols	1	GL
+1,2-diacylglycerols	1	GL
+1,3-diacylglycerols	1	GL
+1-monoacylglycerols	1	GL
+2-monoacylglycerols	1	GL
+Monoalkylglycerols	1	GL
+Glycosylmonoacylglycerols	1	GL
+Glycosyldiacylglycerols	1	GL
+1,2-diacyl-3-O-beta-D-galactosyl-sn-glycerols	1	GL
+Glycosylglycerols	1	GL
+Phosphatidylcholines	1	GP
+Phosphatidylethanolamines	1	GP
+Phosphatidylinositols	1	GP
+Phosphatidylserines	1	GP
+Phosphatidylglycerols	1	GP
+1-phosphatidyl-1D-myo-inositols	1	GP
+1,2-diacylglycerol-3-phosphates	1	GP
+1-acylglycerol-3-phosphates	1	GP
+1-acyl-sn-glycero-3-phosphocholines	1	GP
+2-acyl-sn-glycero-3-phosphocholines	1	GP
+1-acyl-sn-glycero-3-phosphoethanolamines	1	GP
+2-acyl-sn-glycero-3-phosphoethanolamines	1	GP
+1-acyl-glycerol-3-phosphoserines	1	GP
+1-acyl-sn-glycerol-3-phosphoinositols	1	GP
+2-acyl-sn-glycerol-3-phosphoinositols	1	GP
+1-alkyl,2-acylglycero-3-phosphocholines	1	GP
+1-alkyl,2-acylglycerophosphoethanolamines	1	GP
+1-alkyl,2-acylglycerophosphoinositols	1	GP
+1-alkyl,2-acetylglycero-3-phosphocholines	1	GP
+1-acyl,2-alkylglycero-3-phosphocholines	1	GP
+1-(1Z-alkenyl),2-acylglycerophosphoethanolamines	1	GP	plasmalogens
+1-(1Z-alkenyl),2-acyl-glycerophosphocholines	1	GP	plasmalogens
+1-(1Z-alkenyl),2-acylglycerophosphoinositols	1	GP	plasmalogens
+1-(1Z-alkenyl)-glycero-3-phosphocholines	1	GP
+Monoalkylglycerophosphocholines	1	GP
+Glycerophosphocholines	1	GP
+Glycerophosphoethanolamines	1	GP
+Glycerophospholipids	1	GP
+Diacylglycosylglycerophospholipids	1	GP
+Cardiolipins	1	GP
+Ceramides	1	SP
+Long-chain ceramides	1	SP
+Phytoceramides	1	SP
+Glycosyl-N-acylsphingosines	1	SP
+Glycosphingolipids	1	SP
+Phosphosphingolipids	1	SP
+Sphingomyelins	1	SP
+Sphingosylphosphorylcholines	1	SP
+Saccharolipids	1	SL
+Acyltrehaloses	1	SL
+Sophorolipids	1	SL
+Rhamnolipids	1	SL
+Cholesteryl esters	1	ST	sterol esters only
+Cholesterols and derivatives	0	ST	free sterols excluded
+Ergosterols and derivatives	0	ST	free sterols excluded
+Dihydroxy bile acids, alcohols and derivatives	0	ST	bile acids excluded
+Trihydroxy bile acids, alcohols and derivatives	0	ST	bile acids excluded
+Glycinated bile acids and derivatives	0	ST	bile acids excluded
+Taurinated bile acids and derivatives	0	ST	bile acids excluded
+Triterpenoids	0	PR	prenol lipids excluded
+Triterpene saponins	0	PR	prenol lipids excluded
+Diterpenoids	0	PR	prenol lipids excluded
+Sesquiterpenoids	0	PR	prenol lipids excluded
+Retinoids	0	PR	prenol lipids excluded
+N-acyl-alpha amino acids	0		ClassyFire amino-acid class; mostly peptide-like library entries
+N-acyl amines	0		heterogeneous
