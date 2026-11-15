@@ -110,8 +110,10 @@ def write_run_report(run: Path) -> Path:
                 p_txt = _fmt(row["target_precision"], 1)
                 kernel = short_of.get(row["kernel_identity"]) or row["kernel_identity"].split("?")[0]
                 if row["estimable"] != "1":
+                    reason = row.get("not_estimable_reason") or ""
+                    label = "not estimable" + (f" ({reason})" if reason and reason != "target_not_reached" else "")
                     lines.append(f"| {kernel} | {row['ion_mode']} | {row['truth_definition']} | "
-                                 f"{row['bias_view']} | {p_txt} | not estimable | – | – | – |")
+                                 f"{row['bias_view']} | {p_txt} | {label} | – | – | – |")
                     continue
                 lines.append(
                     f"| {kernel} | {row['ion_mode']} | {row['truth_definition']} | {row['bias_view']} | {p_txt} | "

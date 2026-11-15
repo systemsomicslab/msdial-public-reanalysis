@@ -36,7 +36,15 @@ COLUMNS = ["kernel_identity", "implementation", "library", "ion_mode", "adduct",
            "precision_ci_low", "precision_ci_high", "recall", "recall_ci_low", "recall_ci_high",
            "n_pairs_above", "n_analog_total", "estimable",
            # trailing columns (not in the spec's list; consumers read the columns above by name)
-           "wilson_low", "n_eff_above", "bootstrap_b", "population"]
+           "wilson_low", "n_eff_above", "bootstrap_b", "population",
+           "not_estimable_reason", "class_pairs_min", "class_pairs_median"]
+# class_balanced cells of the MCES-sample truths are never estimable (WS0, 2026-11-16): the ~38k sampled pairs
+# spread over thousands of direct-parent classes, so a class rests on one to three sampled pairs and no
+# resampling interval is honest (the point fell outside its BC interval, or the interval collapsed). Their rows
+# carry the reason and the per-class sampled pair counts, and no estimate.
+SPARSE_SAMPLE_TRUTHS = ("mces2", "mces3", "mces5", "mces3_homologue")
+REASON_SPARSE = "class_balanced_sparse_sample"
+REASON_TARGET = "target_not_reached"
 
 
 def truth_population(kind: str, kept: pd.DataFrame, sample: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray,
@@ -91,6 +99,35 @@ def block_codes(col_a, col_b) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return np.searchsorted(labels, la)[ca], np.searchsorted(labels, lb)[cb], labels
 
 
+def class_pair_counts(classes_a: np.ndarray, classes_b: np.ndarray) -> np.ndarray:
+    """Sampled pairs per class present: a pair counts once for each distinct class of its two endpoints."""
+    ca, cb = np.asarray(classes_a), np.asarray(classes_b)
+    if ca.size == 0:
+        return np.zeros(0, np.int64)
+    both = np.concatenate([ca, cb[cb != ca]])
+    return np.unique(both, return_counts=True)[1]
+
+
+def sparse_rows(classes: tuple[np.ndarray, np.ndarray], *, kernel: dict, truth: str, bias: str, base: dict,
+                min_matched: int, B: int, suppress_small: bool, n_pairs: int) -> list[dict]:
+    """Rows of a class_balanced MCES-sample cell: not estimable, with the reason and the per-class counts."""
+    counts = class_pair_counts(*classes)
+    cmin = int(counts.min()) if counts.size else None
+    cmed = float(np.median(counts)) if counts.size else None
+    rows = []
+    for p in TARGETS:
+        rows.append(dict(base, kernel_identity=kernel["identity"], implementation=kernel["implementation"],
+                         min_matched=min_matched, truth_definition=truth, bias_view=bias, target_precision=p,
+                         threshold=None, precision=None, precision_ci_low=None, precision_ci_high=None,
+                         recall=None, recall_ci_low=None, recall_ci_high=None, n_pairs_above=None,
+                         n_analog_total=None, estimable=0, wilson_low=None, n_eff_above=None, bootstrap_b=B,
+                         population=_fmt_count(n_pairs, suppress_small), not_estimable_reason=REASON_SPARSE,
+                         class_pairs_min=_fmt_count(cmin, suppress_small) if cmin is not None else None,
+                         class_pairs_median=("<10" if suppress_small and cmed is not None and 1 <= cmed < 10
+                                             else cmed)))
+    return rows
+
+
 def cell_rows(score: np.ndarray, bins: np.ndarray, y: np.ndarray, w: np.ndarray,
               blocks: tuple[np.ndarray, np.ndarray], classes: tuple[np.ndarray, np.ndarray] | None, *,
               kernel: dict, truth: str, bias: str, base: dict, min_matched: int, B: int, seed: int,
@@ -129,7 +166,7 @@ def cell_rows(score: np.ndarray, bins: np.ndarray, y: np.ndarray, w: np.ndarray,
         if idx is None:
             row.update(threshold=None, precision=None, precision_ci_low=None, precision_ci_high=None,
                        recall=None, recall_ci_low=None, recall_ci_high=None, n_pairs_above=None, estimable=0,
-                       wilson_low=None, n_eff_above=None)
+                       wilson_low=None, n_eff_above=None, not_estimable_reason=REASON_TARGET)
         else:
             row.update(threshold=float(M.GRID[idx]), precision=float(c["precision"][idx]),
                        precision_ci_low=float(boot["precision_low"][idx]),
@@ -187,6 +224,11 @@ def build_table(kept: pd.DataFrame, sample: pd.DataFrame, kernels: list[dict], *
                         sel = floor & not_lipid_pair if bias == "no_lipid_lipid" else floor
                         idx = np.flatnonzero(sel)
                         classes = (pa[idx], pb[idx]) if bias == "class_balanced" else None
+                        if bias == "class_balanced" and truth in SPARSE_SAMPLE_TRUTHS:
+                            rows.extend(sparse_rows(classes, kernel=kernel, truth=truth, bias=bias, base=base,
+                                                    min_matched=min_matched, B=B, suppress_small=suppress_small,
+                                                    n_pairs=len(idx)))
+                            continue
                         rows.extend(cell_rows(score[idx], bins[idx], y[idx], w[idx], (ba[idx], bb[idx]), classes,
                                               kernel=kernel, truth=truth, bias=bias, base=base,
                                               min_matched=min_matched, B=B, seed=seed,
@@ -203,10 +245,15 @@ def build_table(kept: pd.DataFrame, sample: pd.DataFrame, kernels: list[dict], *
 
 def canonical_tsv(table: pd.DataFrame) -> str:
     """Deterministic TSV text: fixed column order, sorted rows, floats at 6 decimals, empty for None."""
-    def fmt(v):
+    counts = {"n_pairs_above", "n_analog_total", "population", "class_pairs_min", "bootstrap_b", "estimable",
+              "min_matched"}
+
+    def fmt(v, col=""):
         if v is None or (isinstance(v, float) and not math.isfinite(v)):
             return ""
         if isinstance(v, float):
+            if col in counts and v.is_integer():
+                return str(int(v))                # counts stay integers when None elsewhere made the column float
             return f"{v:.6f}"
         return str(v)
 
@@ -216,7 +263,7 @@ def canonical_tsv(table: pd.DataFrame) -> str:
     t = t.sort_values(keys, kind="mergesort")
     lines = ["\t".join(COLUMNS)]
     for rec in t.to_dict("records"):
-        lines.append("\t".join(fmt(rec[c]) for c in COLUMNS))
+        lines.append("\t".join(fmt(rec[c], c) for c in COLUMNS))
     return "\n".join(lines) + "\n"
 
 

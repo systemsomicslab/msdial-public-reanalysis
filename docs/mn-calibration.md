@@ -108,7 +108,16 @@ stratified by the run's modified-cosine matched count and is scored only on pair
   - with z0 = 0 this is the plain 2.5/97.5 percentile used before;
   - `run.json` records `interval_method` (`bc_percentile`), and a partial rerun refuses a table computed with
     another method.
-  In the class-balanced
+- The class-balanced view of the MCES-sample truths (mces2, mces3, mces5, mces3_homologue) is never
+  estimable (WS0, 2026-11-16).
+  - Its rows carry `not_estimable_reason = class_balanced_sparse_sample` and the minimum and median sampled
+    pairs per direct-parent class (`class_pairs_min`, `class_pairs_median`).
+  - They carry no estimate or interval.
+  - Why: about 38k sampled pairs spread over thousands of classes, so a class rests on one to three sampled
+    pairs. The VS20 point estimates fell outside their BC intervals, or the intervals collapsed.
+  - Every other non-estimable row has the reason `target_not_reached`.
+  - The exhaustive truths in the class-balanced view are unaffected.
+- In the class-balanced
   view a replicate averages over the observed class set (the classes present above t for precision, the
   classes with a positive for recall); a class whose blocks all drew a zero multiplier keeps its observed
   ratio instead of dropping out (since ce59877; before it, single-block classes left about 37% of
@@ -133,7 +142,7 @@ stratified by the run's modified-cosine matched count and is scored only on pair
 Columns: kernel_identity, implementation, library, ion_mode, adduct, dprec_bin, min_matched,
 instrument_pair, truth_definition, bias_view, target_precision, threshold, precision, precision_ci_low,
 precision_ci_high, recall, recall_ci_low, recall_ci_high, n_pairs_above, n_analog_total, estimable, then the
-trailing wilson_low, n_eff_above, bootstrap_b, population. `min_matched = k` is a floor (>= k matched
+trailing wilson_low, n_eff_above, bootstrap_b, population, not_estimable_reason, class_pairs_min, class_pairs_median. `min_matched = k` is a floor (>= k matched
 peaks). Rows pooled over adducts or instrument pairs carry `all`. In a private run, counts 1-9 are written
 `<10`.
 

@@ -554,10 +554,34 @@ class CalibrateEquivalenceTests(unittest.TestCase):
         ref = self.REF_CAL.build_table(kept, sample, kernels, **args)
         self.assertGreater(int((ref["estimable"] == 1).sum()), 20)
         # class_balanced rows changed on purpose (fixed class set per replicate); every other row is unchanged
-        keep = lambda t: t[t["bias_view"] != "class_balanced"].reset_index(drop=True)
-        self.assertEqual(self.CAL.canonical_tsv(keep(new)), self.REF_CAL.canonical_tsv(keep(ref)))
+        # new trailing columns (not_estimable_reason, class_pairs_*) are dropped for the comparison
+        keep = lambda t: t[t["bias_view"] != "class_balanced"][self.REF_CAL.COLUMNS].reset_index(drop=True)
+        ref_kept = keep(ref)
+        # sparse rows hold None, which turns integer count columns to float in the full frame; compare values
+        self.assertEqual(self.REF_CAL.canonical_tsv(keep(new).astype(ref_kept.dtypes.to_dict())),
+                         self.REF_CAL.canonical_tsv(ref_kept))
         self.assertEqual(int((new["bias_view"] == "class_balanced").sum()),
                          int((ref["bias_view"] == "class_balanced").sum()))
+        sparse = new[(new["bias_view"] == "class_balanced") & new["truth_definition"].str.startswith("mces")]
+        self.assertGreater(len(sparse), 0)
+        self.assertTrue((sparse["estimable"] == 0).all())
+        self.assertTrue((sparse["not_estimable_reason"] == "class_balanced_sparse_sample").all())
+        for col in ("threshold", "precision", "precision_ci_low", "recall", "n_analog_total"):
+            self.assertTrue(sparse[col].isna().all(), col)
+        self.assertTrue((sparse["class_pairs_min"].astype(float) >= 1).all())
+        exhaustive_cb = new[(new["bias_view"] == "class_balanced") & ~new["truth_definition"].str.startswith("mces")]
+        self.assertGreater(int((exhaustive_cb["estimable"] == 1).sum()), 0)
+        self.assertFalse((new["not_estimable_reason"] == "class_balanced_sparse_sample")
+                         [new["bias_view"] != "class_balanced"].any())
+        unreached = new[(new["estimable"] == 0) & (new["not_estimable_reason"] != "class_balanced_sparse_sample")]
+        self.assertTrue((unreached["not_estimable_reason"] == "target_not_reached").all())
+
+    def test_class_pair_counts(self):
+        import numpy as np
+
+        counts = self.CAL.class_pair_counts(np.array([0, 0, 1, 2]), np.array([0, 1, 1, 0]))
+        # class 0: pairs 0, 1, 3; class 1: pairs 1, 2; class 2: pair 3
+        self.assertEqual(sorted(counts.tolist()), [1, 2, 3])
 
 
 @unittest.skipUnless(D5, "D5 env only")
