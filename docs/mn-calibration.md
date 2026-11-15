@@ -81,7 +81,11 @@ stratified by the run's modified-cosine matched count and is scored only on pair
   counting half for each endpoint's class).
 - t*(p): the smallest t on the 0.01 grid with Wilson lower 95% bound (at the Kish effective size) >= p and
   n(s >= t) >= 30, and the dyadic cluster-bootstrap lower bound (Poisson(1) multiplier per block, product
-  over the two blocks, B = 1000, fixed seed) also >= p; otherwise "not estimable". For exhaustive truth the
+  over the two blocks, B = 1000, fixed seed) also >= p; otherwise "not estimable". In the class-balanced
+  view a replicate averages over the observed class set (the classes present above t for precision, the
+  classes with a positive for recall); a class whose blocks all drew a zero multiplier keeps its observed
+  ratio instead of dropping out (since ce59877; before it, single-block classes left about 37% of
+  replicates and the recall interval could exclude the point estimate). For exhaustive truth the
   grid starts at 0.30, because pair shards keep every pair with any score >= 0.3, Tanimoto >= 0.4 or the same
   direct parent (all positives), and the rest only as score x Tanimoto histograms. The score rule
   ignores `msdial.moddot.legacy`, which scores >= 0.3 on about half of all pairs (its near-1 artefact);
@@ -92,7 +96,9 @@ stratified by the run's modified-cosine matched count and is scored only on pair
   view decomposes over per-bin class and class-pair sums. One bootstrap pass from the smallest candidate t
   gives the interval at every t above it, with the same replicate draws (per block, sorted label order,
   batches of 32) as a separate evaluation at each t. `tests/mncal_*_reference.py` freeze the earlier
-  per-threshold code, and the tests require the new path to reproduce its `cutoff_table.tsv` exactly.
+  per-threshold code, and the tests require the new path to reproduce its `cutoff_table.tsv` exactly
+  outside the class-balanced view. `calibrate --views class_balanced` recomputes one view and replaces its
+  rows, keeping the previous table as `cutoff_table.<sha12>.tsv` and a `view_reruns` entry in run.json.
 - The benchmark id of a cutoff is `mn-calibration/<run-id>` plus `table_sha256` from `run.json`.
 
 ### cutoff_table.tsv
