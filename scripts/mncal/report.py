@@ -27,6 +27,14 @@ def _fmt(x, digits: int = 3) -> str:
         return str(x)
 
 
+def _count(x) -> str:
+    """A pair count from the table: an integer with thousands separators, or the "<10" of a private run."""
+    try:
+        return f"{int(round(float(x))):,}"
+    except (TypeError, ValueError):
+        return str(x) if x not in (None, "") else "–"
+
+
 def write_run_report(run: Path) -> Path:
     record = C.read_json(run / "run.json")
     private = record.get("private", False)
@@ -35,8 +43,17 @@ def write_run_report(run: Path) -> Path:
              f"Benchmark id: `{record['benchmark_id']}`; cutoff table sha256: "
              f"`{steps.get('calibrate', {}).get('table_sha256', 'not computed')}`.", ""]
     code, pin, env = record.get("code", {}), record.get("catalog_pin", {}), record.get("environment", {})
+    step_codes = {name: s["code"]["commit"] for name, s in steps.items()
+                  if isinstance(s.get("code"), dict) and s["code"].get("commit")}
     lines += ["## Provenance", "",
-              f"- code commit `{code.get('commit')}`{' (dirty tree)' if code.get('dirty') else ''}",
+              f"- code commit `{code.get('commit')}`{' (dirty tree)' if code.get('dirty') else ''} "
+              "(the latest step's)"]
+    if step_codes:
+        lines.append("- per step: " + "; ".join(f"{name} `{commit[:7]}`" for name, commit in step_codes.items()))
+    if set(steps) - set(step_codes):
+        lines.append("- steps without a recorded commit (run.json written before per-step commits): "
+                     + ", ".join(sorted(set(steps) - set(step_codes))))
+    lines += [
               f"- catalog pin `{pin.get('name')}` at `{pin.get('commit')}`",
               f"- Python {env.get('python')}; " + ", ".join(f"{k} {v}" for k, v in env.get("packages", {}).items()),
               ""]
@@ -82,14 +99,16 @@ def write_run_report(run: Path) -> Path:
         lines += ["## Headline cutoffs", "",
                   "All pairs, all adducts and instrument pairs, all Δprec bins, ≥ 2 matched peaks, target "
                   "precision 0.8.", "",
+                  "Kernels are named by their run short name (see Kernels for the identity).", "",
                   "| kernel | mode | truth | view | t* | precision [95% CI] | recall [95% CI] | n above |",
                   "|---|---|---|---|---|---|---|---|"]
+        short_of = {k["identity"]: k.get("short") for k in sp.get("kernels", [])}
         with open(table, encoding="utf-8") as handle:
             for row in csv.DictReader(handle, delimiter="\t"):
                 if (row["adduct"], row["dprec_bin"], row["instrument_pair"], row["min_matched"],
                         row["target_precision"]) != ("all", "all", "all", "2", "0.800000"):
                     continue
-                kernel = row["kernel_identity"].split("?")[0]
+                kernel = short_of.get(row["kernel_identity"]) or row["kernel_identity"].split("?")[0]
                 if row["estimable"] != "1":
                     lines.append(f"| {kernel} | {row['ion_mode']} | {row['truth_definition']} | "
                                  f"{row['bias_view']} | not estimable | – | – | – |")
@@ -98,14 +117,14 @@ def write_run_report(run: Path) -> Path:
                     f"| {kernel} | {row['ion_mode']} | {row['truth_definition']} | {row['bias_view']} | "
                     f"{_fmt(row['threshold'], 2)} | {_fmt(row['precision'])} [{_fmt(row['precision_ci_low'])}, "
                     f"{_fmt(row['precision_ci_high'])}] | {_fmt(row['recall'])} [{_fmt(row['recall_ci_low'])}, "
-                    f"{_fmt(row['recall_ci_high'])}] | {row['n_pairs_above']} |")
+                    f"{_fmt(row['recall_ci_high'])}] | {_count(row['n_pairs_above'])} |")
         lines.append("")
         lines += ["## Sanity", ""]
         for mode, kernels in cal.get("sanity", {}).items():
             for short, s in kernels.items():
                 if isinstance(s, dict):
                     lines.append(f"- {mode} {short}: share ≥ 0.9 among ≥ 2 matched (all U) "
-                                 f"{_fmt(s.get('share_ge_0.9_among_ge2_matched_all'))}; median different-block "
+                                 f"{_fmt(s.get('share_ge_0.9_among_ge2_matched_all')) if s.get('n_ge2_matched_all') else 'n/a (kernel reports no matched count)'}; median different-block "
                                  f"(all U, 0.01 bin) {_fmt(s.get('median_different_block_all_U_bin'), 2)}; "
                                  f"median same-block control {_fmt(s.get('median_same_block_control'))}")
                 else:

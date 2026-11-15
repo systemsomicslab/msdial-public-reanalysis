@@ -48,10 +48,13 @@ def _update_run(run: Path, section: str, payload: dict) -> None:
         payload = _suppress_small(payload)
     record.setdefault("run_id", run.name)
     record.setdefault("benchmark_id", f"mn-calibration/{run.name}")
-    record["code"] = C.code_commit()
+    code = C.code_commit()
+    # The top-level code is the commit of the latest step; each step also keeps its own, because a run can
+    # be finished by a later commit (VS20 run vs20-20261113-c2ea815: calibrate at 173460a, the rest at c2ea815).
+    record["code"] = code
     record["catalog_pin"] = C.catalog_pin()
     record["environment"] = C.environment_record()
-    record.setdefault("steps", {})[section] = payload | {"finished_at": C.now_iso()}
+    record.setdefault("steps", {})[section] = payload | {"code": code, "finished_at": C.now_iso()}
     C.write_json(run / "run.json", record)
 
 
