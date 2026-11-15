@@ -152,25 +152,44 @@ class EvalSetTest(TriageCase):
         self.assertEqual(len(vt.schema_errors(bad, schema, schema)), 3)
 
 
+def keep_hilic_neg_by_folder(docs: dict) -> dict:
+    """ST002283 as the prototype got it wrong: AN003729 keeps the Human_Hilic_Neg folder as HILIC negative."""
+    hilic = docs["AN003729"]
+    kept_rows, left = [], []
+    for e in hilic["excluded_rows"]:
+        if e["reason"] == "duplicate_content":
+            kept_rows.append({"row_index": e["row_index"], "sample_id": e["sample_id"], "raw_file": e["raw_file"],
+                              "member_path": e["member_path"], "archive": "ST002283_AB_Human_Bone.zip", "role": "sample",
+                              "ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "DDA", "basis": "inferred",
+                              "evidence": [{"source": "folder_token", "field": "folder", "value": "Human_Hilic_Neg"}]})
+        else:
+            left.append(e)
+    hilic["rows"], hilic["excluded_rows"] = kept_rows, left
+    hilic["added_members"] = [{"member_path": f"AB_Human_Bone/Human_Hilic_Neg/{name}_Hilic_Neg.mzML", "archive": "ST002283_AB_Human_Bone.zip",
+                               "role": "qc", "ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "DDA", "basis": "inferred",
+                               "evidence": [{"source": "folder_token", "field": "folder", "value": "Human_Hilic_Neg"}]} for name in ("QC", "QC2", "QC3")]
+    hilic["status"], hilic["needs_person"], hilic["flags"] = "ready", [], []
+    return docs
+
+
+def move_row(docs: dict, raw_file: str, src: str, dst: str, **changes) -> dict:
+    """Move the kept row naming raw_file from unit src to unit dst (dst's row of the same name), as dst's row."""
+    row = next(r for r in docs[src]["rows"] if r["raw_file"] == raw_file)
+    docs[src]["rows"].remove(row)
+    target = next(e for e in docs[dst]["excluded_rows"] if e["raw_file"] == raw_file)
+    docs[dst]["excluded_rows"].remove(target)
+    docs[src]["excluded_rows"].append({"row_index": row["row_index"], "sample_id": row["sample_id"], "raw_file": raw_file,
+                                       "member_path": row["member_path"], "reason": "belongs_to_other_unit", "belongs_to_unit": dst,
+                                       "detail": "moved"})
+    docs[dst]["rows"].append(dict(copy.deepcopy(row), row_index=target["row_index"], **changes))
+    return docs
+
+
 class PrototypeFailureModeTest(TriageCase):
     def test_st002283_duplicate_content_settled_by_folder_name_is_an_error(self) -> None:
         """The prototype kept Human_Hilic_Neg for the HILIC-negative unit at medium confidence."""
-        docs = te.build_good("ST002283")
+        docs = keep_hilic_neg_by_folder(te.build_good("ST002283"))
         hilic = docs["AN003729"]
-        kept_rows, left = [], []
-        for e in hilic["excluded_rows"]:
-            if e["reason"] == "duplicate_content":
-                kept_rows.append({"row_index": e["row_index"], "sample_id": e["sample_id"], "raw_file": e["raw_file"],
-                                  "member_path": e["member_path"], "archive": "ST002283_AB_Human_Bone.zip", "role": "sample",
-                                  "ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "DDA", "basis": "inferred",
-                                  "evidence": [{"source": "folder_token", "field": "folder", "value": "Human_Hilic_Neg"}]})
-            else:
-                left.append(e)
-        hilic["rows"], hilic["excluded_rows"] = kept_rows, left
-        hilic["added_members"] = [{"member_path": f"AB_Human_Bone/Human_Hilic_Neg/{name}_Hilic_Neg.mzML", "archive": "ST002283_AB_Human_Bone.zip",
-                                   "role": "qc", "ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "DDA", "basis": "inferred",
-                                   "evidence": [{"source": "folder_token", "field": "folder", "value": "Human_Hilic_Neg"}]} for name in ("QC", "QC2", "QC3")]
-        hilic["status"], hilic["needs_person"], hilic["flags"] = "ready", [], []
         report, directory = self.run_validator("ST002283", docs)
         self.assertIn("T-DUP", self.checks(report, unit="AN003729"))
         self.assertEqual(report.unit_verdict("AN003729"), "error")
@@ -444,6 +463,133 @@ class ContractTest(TriageCase):
         code, text = run("ST003128", te.stage3b_style("ST003128"))
         self.assertEqual(code, 2)
         self.assertIn("ERROR", text)
+
+
+class FalsePassTest(TriageCase):
+    """Wrong triage files that passed before the review of PR #58, and the one right layout that held."""
+
+    def test_without_a_listing_shared_content_cannot_be_excluded_so_ready_holds(self) -> None:
+        docs = keep_hilic_neg_by_folder(te.build_good("ST002283"))
+        report, _ = self.run_validator("ST002283", docs, listing=False)
+        self.assertEqual(report.unit_verdict("AN003729"), "hold")
+        self.assertIn("T-DUP", self.checks(report, "hold", "AN003729"))
+        report, _ = self.run_validator("ST004606", te.build_good("ST004606"), listing=False)
+        self.assertEqual(report.verdict, "hold")
+        self.assertEqual(self.checks(report), set())
+        self.assertTrue(all(report.unit_verdict(u) == "hold" for u in report.units))
+
+    def test_without_a_catalog_nothing_passes(self) -> None:
+        docs = te.build_good("ST004606")
+        docs["AN007766"]["excluded_rows"] = docs["AN007766"]["excluded_rows"][:-20]
+        docs["AN007766"]["catalog_row_count"] -= 20
+        report, _ = self.run_validator("ST004606", docs, catalog=False)
+        self.assertEqual(report.verdict, "hold")
+        self.assertIn("T-COVER", self.checks(report, "hold", "AN007766"))
+
+    def test_a_row_without_member_path_is_the_same_file_as_the_member(self) -> None:
+        for listing in (True, False):
+            with self.subTest(listing=listing):
+                docs = te.build_good("ST004606")
+                neg = docs["AN007768"]
+                row = next(e for e in neg["excluded_rows"] if e["raw_file"] == "20250128_FK_1-1.mzML")
+                neg["excluded_rows"].remove(row)
+                kept = dict(copy.deepcopy(docs["AN007766"]["rows"][0]), row_index=row["row_index"], member_path=None, ion_mode="negative")
+                neg["rows"].append(kept)
+                report, _ = self.run_validator("ST004606", docs, listing=listing)
+                self.assertIn("T-UNIQ", self.checks(report))
+                # Declared on both units, by raw_file or by member path, the shared file is accepted.
+                for named in ("20250128_FK_1-1.mzML", "data/20250128_FK_1-1.mzML"):
+                    kept["ion_mode"] = "positive"
+                    docs["AN007768"]["shared_with"] = [{"unit_id": "AN007766", "member_paths": [named], "reason": "test"}]
+                    docs["AN007766"]["shared_with"] = [{"unit_id": "AN007768", "member_paths": ["data/20250128_FK_1-1.mzML"], "reason": "test"}]
+                    report, _ = self.run_validator("ST004606", docs, listing=listing)
+                    self.assertNotIn("T-UNIQ", self.checks(report), named)
+                    self.assertNotIn("T-SHARED", self.checks(report), named)
+
+    def test_a_kept_row_the_listing_cannot_resolve_is_refused_in_a_ready_unit(self) -> None:
+        docs = te.build_good("ST004606")
+        docs["AN007766"]["rows"][0]["member_path"] = None
+        report, _ = self.run_validator("ST004606", docs)
+        self.assertEqual(report.verdict, "pass")  # 20250128_FK_1-1.mzML names exactly one member
+        docs["AN007766"]["rows"][0]["raw_file"] = "nowhere.mzML"
+        report, _ = self.run_validator("ST004606", docs, catalog=False)
+        self.assertIn("T-MEMBER", self.checks(report, unit="AN007766"))
+
+    def test_a_single_polarity_unit_cannot_carry_the_other_polarity_in_a_child(self) -> None:
+        docs = te.build_good("ST004606")
+        for row in list(docs["AN007768"]["rows"]):
+            move_row(docs, row["raw_file"], "AN007768", "AN007766")
+        pos = docs["AN007766"]
+        pos["children"] = [
+            {"child_key": f"{ion[:3]}-aif", "ion_mode": ion, "acquisition_mode": "AIF",
+             "member_paths": [r["member_path"] for r in pos["rows"] if r["ion_mode"] == ion]}
+            for ion in ("positive", "negative")
+        ]
+        report, _ = self.run_validator("ST004606", docs)
+        self.assertEqual(report.unit_verdict("AN007766"), "error")
+        self.assertTrue(any(f.check == "T-POL" and "child" in f.message for f in report.findings if f.unit == "AN007766"))
+
+    def test_a_unit_that_runs_cannot_keep_mzxml(self) -> None:
+        docs = te.build_good("ST002747")
+        row = next(r for r in docs["AN004457"]["rows"] if r["raw_file"] == "Inf1_infected_NA_1__025")
+        row["member_path"] = row["member_path"][: -len(".raw")] + ".mzXML"
+        report, _ = self.run_validator("ST002747", docs)
+        self.assertIn("T-FORMAT", self.checks(report, unit="AN004457"))
+        docs["AN004457"]["status"] = "out_of_scope"
+        report, _ = self.run_validator("ST002747", docs)
+        self.assertNotIn("T-FORMAT", self.checks(report, unit="AN004457"))
+
+    def test_an_exclusion_reason_must_agree_with_the_listing(self) -> None:
+        docs = te.build_good("ST004606")
+        row = docs["AN007766"]["rows"].pop(0)
+        for d in docs.values():
+            d["excluded_rows"] = [e for e in d["excluded_rows"] if e["raw_file"] != row["raw_file"]]
+            d["excluded_rows"].append({"row_index": row["row_index"], "sample_id": row["sample_id"], "raw_file": row["raw_file"],
+                                       "member_path": None, "reason": "not_in_archive", "belongs_to_unit": None, "detail": "said absent"})
+        report, _ = self.run_validator("ST004606", docs)
+        self.assertEqual(report.verdict, "error")
+        self.assertTrue(all("T-EXCL" in self.checks(report, unit=u) for u in docs))
+        docs = te.build_good("ST004606")
+        e = docs["AN007767"]["excluded_rows"][0]
+        e["reason"], e["belongs_to_unit"] = "duplicate_content", None
+        report, _ = self.run_validator("ST004606", docs)
+        self.assertIn("T-EXCL", self.checks(report, unit="AN007767"))
+
+    def test_belongs_to_other_unit_is_checked_by_file_not_row_index(self) -> None:
+        docs = te.build_good("ST004606")
+        neg = docs["AN007768"]
+        # Give AN007768 a different row order: its kept row 56 and its excluded row 0 trade indexes.
+        kept = next(r for r in neg["rows"] if r["row_index"] == 56)
+        left = next(e for e in neg["excluded_rows"] if e["row_index"] == 0)
+        kept["row_index"], left["row_index"] = 0, 56
+        pos = docs["AN007766"]
+        row = pos["rows"].pop(0)  # 20250128_FK_1-1, row 0
+        pos["excluded_rows"].append({"row_index": 0, "sample_id": row["sample_id"], "raw_file": row["raw_file"], "member_path": row["member_path"],
+                                     "reason": "belongs_to_other_unit", "belongs_to_unit": "AN007768", "detail": "said to be AN007768's"})
+        report, _ = self.run_validator("ST004606", docs, catalog=False)
+        self.assertIn("T-EXCL", self.checks(report, "hold", "AN007766"))
+
+    def test_a_handoffs_folder_with_several_accessions(self) -> None:
+        handoffs = self.tmp / "handoffs"
+        all_docs = {}
+        for accession in ("ST004606", "ST003128"):
+            docs = te.build_good(accession)
+            catalog, _, _ = te.load(accession)
+            for unit in catalog["units"]:
+                d = handoffs / unit["unit_id"]
+                d.mkdir(parents=True)
+                raw = json.dumps({"accession": accession, "analysis_unit_id": unit["unit_id"], "technical_settings": unit["declared"]}).encode("utf-8")
+                (d / "handoff.json").write_bytes(raw)
+                (d / "samples.json").write_text(json.dumps(unit["rows"]), encoding="utf-8")
+                docs[unit["unit_id"]]["catalog_handoff_sha256"] = hashlib.sha256(raw).hexdigest()
+            all_docs[accession] = docs
+        _, _, listing = te.load("ST004606")
+        report = vt.validate(te.write(all_docs["ST004606"], self.tmp / "triage" / "ST004606"), vt.read_catalog(handoffs), vt.read_listing(listing))
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+        # A unit of the same accession with no triage file still holds.
+        del all_docs["ST004606"]["AN007769"]
+        report = vt.validate(te.write(all_docs["ST004606"], self.tmp / "triage" / "ST004606-short"), vt.read_catalog(handoffs), vt.read_listing(listing))
+        self.assertEqual({f.unit for f in report.findings if f.check == "T-SET"}, {"AN007769"})
 
 
 if __name__ == "__main__":

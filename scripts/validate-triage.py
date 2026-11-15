@@ -11,18 +11,28 @@ files of one accession as a set and returns pass, hold or error.
         [--ground-truth <ground_truth.json>]         score the assignment against a known answer (eval)
         [--json]
 
-The triage directory holds one <unit_id>.json per unit. --catalog takes either the campaign's handoffs
-directory (<unit_id>/handoff.json and samples.json, as msdial_catalog_reanalysis_handoff writes them) or a
-catalog.json with {"units": [{"unit_id", "declared", "rows": [{"sample_id", "raw_file"}]}]}, the shape the
-eval fixtures use. An archive listing is the archive-members TSV the download store keeps, or any TSV with
-path, size and crc32 columns; it may be read remotely from the zip central directory before download.
+The triage directory holds one <unit_id>.json per unit, all of one accession (in a campaign,
+<campaign dir>/triage/<accession>/). --catalog takes either the campaign's handoffs directory
+(<unit_id>/handoff.json and samples.json, as msdial_catalog_reanalysis_handoff writes them; it may span many
+accessions, and only the units of the triaged accession are checked) or a catalog.json with
+{"accession", "units": [{"unit_id", "declared", "rows": [{"sample_id", "raw_file"}]}]}, the shape the eval
+fixtures use. An archive listing is the archive-members TSV the download store keeps, or any TSV with path,
+size and crc32 columns; it may be read remotely from the zip central directory before download.
+
+A check that cannot run is not passed: without --catalog every unit holds (rows not checked against the
+handoff), and without --archive-listing every unit holds (byte-identical content not ruled out).
+
+A kept row may name its file by member_path or only by raw_file. Both resolve to one key (the listing, or
+without one the member paths the triage files name, by exact name, then stem), so the same file is the
+same file in every check.
 
 Levels:
 - error: the triage file breaks the contract (schema, coverage, a file in two units, byte-identical content
-  settled by name, polarity or chromatography that disagrees with its unit, an unflagged MS1-only or mixed
-  acquisition, ...). The triage must be redone; nothing may be planned from it.
+  settled by name, polarity or chromatography that disagrees with its unit or child, an unflagged MS1-only or
+  mixed acquisition, a kept mzXML or mzData file, an exclusion reason the listing contradicts, ...). The
+  triage must be redone; nothing may be planned from it.
 - hold: the file is valid but something waits for a person: a unit that needs a person, abstained or is out
-  of scope, flagged shared content, a member nobody accounted for.
+  of scope, flagged shared content, a member nobody accounted for, a check that could not run.
 - pass: every unit is ready and nothing waits.
 
 Exit status: 0 pass, 1 hold, 2 error. The script reads only; it writes nothing.
@@ -260,6 +270,7 @@ class CatalogUnit:
     rows: list[dict[str, Any]]
     declared: dict[str, Any]
     handoff_sha256: str | None
+    accession: str | None = None
 
 
 def read_catalog(path: Path) -> dict[str, CatalogUnit]:
@@ -277,6 +288,7 @@ def read_catalog(path: Path) -> dict[str, CatalogUnit]:
                 rows=rows,
                 declared={k: ts.get(k) for k in ("chromatography", "ion_mode", "acquisition_mode")},
                 handoff_sha256=hashlib.sha256(raw).hexdigest(),
+                accession=data.get("accession"),
             )
         return units
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -286,6 +298,7 @@ def read_catalog(path: Path) -> dict[str, CatalogUnit]:
             rows=unit["rows"],
             declared=unit.get("declared") or {},
             handoff_sha256=unit.get("handoff_sha256"),
+            accession=unit.get("accession") or data.get("accession"),
         )
     return units
 
@@ -339,6 +352,55 @@ def token_chromatography(path: str) -> str | None:
 # --------------------------------------------------------------------------------------- the checks
 
 
+CONVERSION_EXTENSIONS = (".mzxml", ".mzdata")
+
+
+def _key_stem(key: str) -> str:
+    return key[4:] if key.startswith("raw:") else stem(key).casefold()
+
+
+class Resolver:
+    """Gives every file one key, whether a triage names it by member path or only by the row's raw_file.
+
+    The index is the archive listing when there is one, and otherwise every member path the triage files
+    name. A name resolves to a member by its exact file name, then by its stem, then by its stem among
+    members that need no conversion; anything else stays "raw:<stem>" (unresolved).
+    """
+
+    def __init__(self, members: Iterable[str]):
+        self.members: set[str] = set()
+        self.by_name: dict[str, set[str]] = defaultdict(set)
+        self.by_stem: dict[str, set[str]] = defaultdict(set)
+        for path in members:
+            if not is_raw_like(path):
+                continue
+            key = member_key(path)
+            self.members.add(key)
+            self.by_name[basename(key)].add(key)
+            self.by_stem[stem(key).casefold()].add(key)
+
+    def hits(self, name: str) -> set[str]:
+        """Every indexed member the name could mean: same file name, or failing that, same stem."""
+        return set(self.by_name.get(basename(name).casefold(), ())) or set(self.by_stem.get(stem(name).casefold(), ()))
+
+    def resolve(self, name: str) -> str | None:
+        found = self.by_name.get(basename(name).casefold(), set())
+        if len(found) == 1:
+            return next(iter(found))
+        found = self.by_stem.get(stem(name).casefold(), set())
+        if len(found) > 1:
+            found = {k for k in found if not k.endswith(CONVERSION_EXTENSIONS)}
+        return next(iter(found)) if len(found) == 1 else None
+
+    def key(self, path: str) -> tuple[str, bool]:
+        """(key, resolved) for a member path or a bare file name."""
+        mk = member_key(path)
+        if mk in self.members or "/" in _norm_path(path):
+            return mk, True
+        found = self.resolve(path)
+        return (found, True) if found else ("raw:" + stem(path).casefold(), False)
+
+
 @dataclass
 class Kept:
     """One file a unit keeps: a Catalog row or an added member."""
@@ -348,16 +410,43 @@ class Kept:
     path: str  # member path, or the row's raw_file when the member is unknown
     item: dict[str, Any]
     is_row: bool
+    resolved: bool = True  # False: a row with no member_path whose raw_file names no single member
+
+    @property
+    def stem(self) -> str:
+        return _key_stem(self.key)
 
 
-def _kept(unit: str, triage: dict[str, Any]) -> list[Kept]:
+def _kept(unit: str, triage: dict[str, Any], resolver: Resolver) -> list[Kept]:
     out = []
     for row in triage.get("rows", []):
-        path = row.get("member_path") or row.get("raw_file") or ""
-        out.append(Kept(unit, member_key(path) if row.get("member_path") else "raw:" + stem(path).casefold(), path, row, True))
+        if row.get("member_path"):
+            out.append(Kept(unit, member_key(row["member_path"]), row["member_path"], row, True))
+        else:
+            key, resolved = resolver.key(row.get("raw_file") or "")
+            out.append(Kept(unit, key, row.get("raw_file") or "", row, True, resolved))
     for member in triage.get("added_members", []):
         out.append(Kept(unit, member_key(member["member_path"]), member["member_path"], member, False))
     return out
+
+
+def same_file(kept: Kept, path: str, resolver: Resolver) -> bool:
+    """Does path (a member path or a bare file name) name the file kept is? Unresolved names match by stem."""
+    key, resolved = resolver.key(path)
+    if key == kept.key:
+        return True
+    return (not resolved or not kept.resolved) and _key_stem(key) == kept.stem
+
+
+def _triage_member_paths(triages: dict[str, dict[str, Any]]) -> list[str]:
+    paths = []
+    for t in triages.values():
+        for item in [*t.get("rows", []), *t.get("excluded_rows", []), *t.get("added_members", []), *t.get("excluded_members", [])]:
+            if item.get("member_path"):
+                paths.append(item["member_path"])
+        for child in t.get("children", []):
+            paths += child["member_paths"]
+    return paths
 
 
 def _cleared(triage: dict[str, Any], code: str) -> bool:
@@ -413,16 +502,27 @@ def validate(
     by_key: dict[str, ListedMember] = {}
     for m in listed:
         by_key.setdefault(member_key(m.path), m)
+    resolver = Resolver(m.path for m in listed) if listed else Resolver(_triage_member_paths(triages))
+
+    if catalog is not None:
+        # A campaign's handoffs directory spans many accessions; only this accession's units count here.
+        catalog = {u: cu for u, cu in catalog.items() if u in triages or (cu.accession is not None and cu.accession == report.accession)}
 
     for unit, triage in triages.items():
-        _check_unit(report, unit, triage, triages, catalog, by_key if listed else None)
+        _check_unit(report, unit, triage, triages, catalog, by_key if listed else None, resolver)
 
-    _check_cross_unit(report, triages, listed)
+    _check_cross_unit(report, triages, listed, resolver)
     if catalog is not None:
         missing = sorted(set(catalog) - set(triages))
         if missing and report.accession is not None:
             for unit in missing:
                 report.add("hold", "T-SET", unit, f"Catalog unit {unit} has no triage file")
+    # Checks that could not run hold every unit: what was not checked is not passed.
+    for unit in triages:
+        if catalog is None:
+            report.add("hold", "T-COVER", unit, "no Catalog was given (--catalog): the rows were not checked against the handoff")
+        if not listed:
+            report.add("hold", "T-DUP", unit, "no archive listing was given (--archive-listing): byte-identical content and members no unit accounts for cannot be ruled out; a person decides whether to go on without one")
     return report
 
 
@@ -433,12 +533,13 @@ def _check_unit(
     triages: dict[str, dict[str, Any]],
     catalog: dict[str, CatalogUnit] | None,
     listed: dict[str, ListedMember] | None,
+    resolver: Resolver,
 ) -> None:
     status = t["status"]
     flags = _flag_codes(t)
     ut = t["unit_technical"]
     unit_ion, unit_chrom, unit_acq = ut["ion_mode"], ut["chromatography"], ut["acquisition_mode"]
-    kept = _kept(unit, t)
+    kept = _kept(unit, t, resolver)
 
     # T-COVER: every Catalog row kept or excluded, once.
     count = t["catalog_row_count"]
@@ -461,6 +562,8 @@ def _check_unit(
         cu = catalog.get(unit)
         if cu is None:
             report.add("error", "T-COVER", unit, f"the Catalog has no unit {unit}")
+        elif cu.accession is not None and cu.accession != t["accession"]:
+            report.add("error", "T-COVER", unit, f"the Catalog puts unit {unit} in {cu.accession}, the triage in {t['accession']}")
         else:
             if cu.handoff_sha256 and cu.handoff_sha256 != t["catalog_handoff_sha256"]:
                 report.add("error", "T-HANDOFF", unit, "catalog_handoff_sha256 does not match the Catalog handoff; triage again from the current handoff")
@@ -490,8 +593,12 @@ def _check_unit(
                 report.add("error", "T-EXCL", unit, f"row {item['row_index']} is excluded as belonging to this same unit")
             elif target not in triages:
                 report.add("hold", "T-EXCL", unit, f"row {item['row_index']} is said to belong to {target}, which has no triage file here")
-            elif not any(r["row_index"] == item["row_index"] or r["sample_id"] == item["sample_id"] for r in triages[target]["rows"]):
-                report.add("hold", "T-EXCL", unit, f"row {item['row_index']} ({item['sample_id']}) is said to belong to {target}, but {target} does not keep it")
+            else:
+                # Row indexes belong to each unit's own handoff, so the target is checked by file, not by index.
+                path = item.get("member_path") or item["raw_file"]
+                theirs = _kept(target, triages[target], resolver)
+                if not any((k.is_row and k.item["sample_id"] == item["sample_id"] and k.item["raw_file"] == item["raw_file"]) or same_file(k, path, resolver) for k in theirs):
+                    report.add("hold", "T-EXCL", unit, f"row {item['row_index']} ({item['sample_id']}, {item['raw_file']}) is said to belong to {target}, but {target} does not keep that file")
 
     # T-STATUS
     if status == "needs_person" and not t["needs_person"]:
@@ -521,28 +628,40 @@ def _check_unit(
 
     # Children partition the kept files, one polarity each.
     child_of: dict[str, dict[str, Any]] = {}
+    child_paths: dict[str, str] = {}
     for child in t.get("children", []):
+        if unit_ion in ("positive", "negative") and child["ion_mode"] != unit_ion:
+            report.add("error", "T-POL", unit, f"child {child['child_key']} is {child['ion_mode']}, the unit is {unit_ion}; only a unit of both polarities has children of two")
         for p in child["member_paths"]:
-            k = member_key(p)
+            k = resolver.key(p)[0]
             if k in child_of:
                 report.add("error", "T-CHILD", unit, f"{p} is in children {child_of[k]['child_key']} and {child['child_key']}")
             child_of[k] = child
-    if t.get("children"):
-        kept_keys = {member_key(k.path) for k in kept}
-        for k in kept:
-            if member_key(k.path) not in child_of:
-                report.add("error", "T-CHILD", unit, f"{k.path} is kept but in no child")
-        for k in child_of:
-            if k not in kept_keys:
-                report.add("error", "T-CHILD", unit, f"child member {k} is not kept by the unit")
+            child_paths[k] = p
 
-    # Per file: polarity, chromatography, acquisition, evidence, tokens, headers.
+    def child_for(k: Kept) -> dict[str, Any] | None:
+        if k.key in child_of:
+            return child_of[k.key]
+        hits = [child_of[c] for c, p in child_paths.items() if same_file(k, p, resolver)]
+        return hits[0] if len(hits) == 1 else None
+
+    if t.get("children"):
+        for k in kept:
+            if child_for(k) is None:
+                report.add("error", "T-CHILD", unit, f"{k.path} is kept but in no child")
+        for c, p in child_paths.items():
+            if not any(k.key == c or same_file(k, p, resolver) for k in kept):
+                report.add("error", "T-CHILD", unit, f"child member {p} is not kept by the unit")
+
+    # Per file: polarity, chromatography, acquisition, format, evidence, tokens, headers.
     acqs: set[str] = set()
     for k in kept:
         item = k.item
         label = k.path
         ion = item["ion_mode"]
-        child = child_of.get(member_key(k.path))
+        child = child_for(k)
+        if status != "out_of_scope" and any(x.casefold().endswith(CONVERSION_EXTENSIONS) for x in (k.path, k.key)):
+            report.add("error", "T-FORMAT", unit, f"{label} is mzXML or mzData, which MS-DIAL does not read; exclude it as requires_conversion (a reviewed conversion to mzML is a separate step)")
         expected_ion = child["ion_mode"] if child else unit_ion
         if ion == "switching" and "polarity_switching" not in flags:
             report.add("error", "T-POL", unit, f"{label} is polarity switching without a polarity_switching flag")
@@ -593,6 +712,9 @@ def _check_unit(
 
         if listed is not None and item.get("member_path") and member_key(item["member_path"]) not in listed:
             report.add("error", "T-MEMBER", unit, f"{item['member_path']} is not in the archive listing")
+        if listed is not None and not k.resolved:
+            report.add("error" if status == "ready" else "hold", "T-MEMBER", unit,
+                       f"row {item['row_index']} ({label}) is kept with no member_path, and its name resolves to no single listed member; resolve it or exclude it")
 
     if "MS1" in acqs and "ms1_only" not in flags:
         report.add("error", "T-ACQ", unit, "MS1-only files are kept without an ms1_only flag")
@@ -609,11 +731,11 @@ def _check_unit(
         if other is None:
             report.add("error", "T-SHARED", unit, f"shared_with names {share['unit_id']}, which has no triage file here")
             continue
-        mine = {member_key(p) for p in share["member_paths"]}
+        mine = {resolver.key(p)[0] for p in share["member_paths"]}
         theirs = set()
         for s in other["shared_with"]:
             if s["unit_id"] == unit:
-                theirs |= {member_key(p) for p in s["member_paths"]}
+                theirs |= {resolver.key(p)[0] for p in s["member_paths"]}
         if mine - theirs:
             report.add("error", "T-SHARED", unit, f"{len(mine - theirs)} path(s) shared with {share['unit_id']} are not declared back by it")
 
@@ -622,27 +744,49 @@ def _check_unit(
             report.add("error", "T-PERSON", unit, "a person answer must name the person")
 
 
-def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed: list[ListedMember]) -> None:
+def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed: list[ListedMember], resolver: Resolver) -> None:
     owners: dict[str, list[Kept]] = defaultdict(list)
     for unit, t in triages.items():
-        for k in _kept(unit, t):
+        for k in _kept(unit, t, resolver):
             owners[k.key].append(k)
 
-    def declared_share(a: str, b: str, key: str) -> bool:
+    # One group per file: a row the index could not resolve ("raw:<stem>") is the same file as any kept
+    # member of that stem, so a file named by member path in one unit and by raw_file in another is one file.
+    group_of = {key: key for key in owners}
+
+    def find(key: str) -> str:
+        while group_of[key] != key:
+            group_of[key] = group_of[group_of[key]]
+            key = group_of[key]
+        return key
+
+    by_stem: dict[str, list[str]] = defaultdict(list)
+    for key in owners:
+        by_stem[_key_stem(key)].append(key)
+    for key in owners:
+        if key.startswith("raw:"):
+            for other in by_stem[_key_stem(key)]:
+                group_of[find(other)] = find(key)
+    files: dict[str, list[Kept]] = defaultdict(list)
+    for key, holders in owners.items():
+        files[find(key)] += holders
+
+    def declared_share(a: str, b: str, holders: list[Kept]) -> bool:
         def has(x: str, y: str) -> bool:
-            return any(s["unit_id"] == y and key in {member_key(p) for p in s["member_paths"]} for s in triages[x]["shared_with"])
+            mine = [h for h in holders if h.unit == x]
+            return any(s["unit_id"] == y and any(same_file(h, p, resolver) for h in mine for p in s["member_paths"]) for s in triages[x]["shared_with"])
 
         return has(a, b) and has(b, a)
 
     # T-UNIQ: no file kept by two units unless both declare it. One finding per pair of units.
     undeclared: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for key, holders in owners.items():
+    for holders in files.values():
         units = sorted({h.unit for h in holders})
         if len(holders) > len(units):
             report.add("error", "T-UNIQ", units[0], f"{holders[0].path} is kept twice by the same unit")
         for i, a in enumerate(units):
             for b in units[i + 1 :]:
-                if not declared_share(a, b, key):
+                if not declared_share(a, b, holders):
                     undeclared[(a, b)].append(holders[0].path)
     for (a, b), paths in sorted(undeclared.items()):
         report.add("error", "T-UNIQ", a, f"{len(paths)} file(s) kept by both {a} and {b} without shared_with on both (first: {sorted(paths)[0]})")
@@ -650,7 +794,7 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
     # Identical kept file sets (the stage3b failure) are named once, on top of the per-file errors.
     sets: dict[frozenset[str], list[str]] = defaultdict(list)
     for unit, t in triages.items():
-        keys = frozenset(k.key for k in _kept(unit, t))
+        keys = frozenset(find(k.key) for k in _kept(unit, t, resolver))
         if keys:
             sets[keys].append(unit)
     for keys, units in sets.items():
@@ -705,6 +849,20 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
                 report.add("hold", "T-DUP", unit, f"byte-identical content shared with files {where} (first: {holders[0].path}); flagged, waiting for a person")
             else:
                 report.add("error", "T-DUP", unit, f"{holders[0].path} is byte-identical (CRC32 and size) to a file {where}; shared content is never settled by name: flag shared_content and send the unit to a person")
+
+    # T-EXCL against the listing: an exclusion reason the listing contradicts drops a file silently.
+    for unit, t in triages.items():
+        for item in t["excluded_rows"] + t.get("excluded_members", []):
+            name = item.get("member_path") or item.get("raw_file") or ""
+            what = f"row {item['row_index']} ({name})" if "row_index" in item else name
+            if item["reason"] == "not_in_archive":
+                there = {member_key(item["member_path"])} & resolver.members if item.get("member_path") else resolver.hits(name)
+                if there:
+                    report.add("error", "T-EXCL", unit, f"{what} is excluded as not_in_archive, but the listing has {sorted(there)[0]}")
+            elif item["reason"] == "duplicate_content":
+                key = member_key(item["member_path"]) if item.get("member_path") else resolver.resolve(name)
+                if key is None or key not in twins:
+                    report.add("error", "T-EXCL", unit, f"{what} is excluded as duplicate_content, but the listing shows no byte-identical twin (CRC32 and size) for it")
 
     # Raw-looking members that no unit kept or excluded. A row without a member path accounts for the
     # member of the same name, or of the same stem when the row's raw_file carries no extension.

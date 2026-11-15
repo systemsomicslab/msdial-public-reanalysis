@@ -23,7 +23,7 @@ The triage is stage A of the campaign design:
 
 | Stage | Who | What |
 |---|---|---|
-| A | agent + this skill | `triage/<unit_id>.json` per unit (msdial-unit-triage.v1) |
+| A | agent + this skill | `triage/<accession>/<unit_id>.json` per unit (msdial-unit-triage.v1) |
 | B | `scripts/validate-triage.py` | pass / hold / error for the accession |
 | C | person | answers the `needs_person` questions and B's holds |
 | D | plan | manifest carries the triage path and sha256; the person approves its digest |
@@ -41,9 +41,10 @@ as decided, accepted or confirmed.
   central directory by HTTP Range requests, a few hundred KB per archive at most, with a generic
   User-Agent and no personal details, through a tool built for it. Until that tool exists, use an
   archive-members TSV that is already on disk (and say it was written after an earlier download), or go
-  without a listing. Never download an archive to list it.
-- **Write only triage files**, into the triage directory you were given (in a campaign:
-  `<campaign dir>\triage\`). Never edit a Catalog handoff, a manifest or a ledger.
+  without a listing. Never download an archive to list it. Without a listing the validator holds every
+  unit, because byte-identical content cannot be ruled out; going on without one is a person's decision.
+- **Write only triage files**, into the triage directory you were given, one directory per accession (in a
+  campaign: `<campaign dir>\triage\<accession>\`). Never edit a Catalog handoff, a manifest or a ledger.
 - Use an existing Catalog handoff (the campaign's `handoffs\<unit_id>\`). If a unit has none, ask before
   calling `msdial_catalog_reanalysis_handoff`.
 - Private MSP or LBM2 libraries play no part in triage. Never name their paths in a triage file.
@@ -87,7 +88,10 @@ basis.
    `reason` and a `detail`). A row that belongs to another unit says which (`belongs_to_other_unit`,
    `belongs_to_unit`). Resolve each kept row to its archive member (`member_path`). Match the exact name
    first, then the stem; record name drift (ST002283: row `D4_TS_E_Lip_Pos` is member
-   `D4_TS_E__LipPos.mzML`) with the evidence that ties them.
+   `D4_TS_E__LipPos.mzML`) with the evidence that ties them. With a listing, a kept row of a ready unit
+   whose name resolves to no single member is an error. `not_in_archive` is for a row the listing really
+   lacks, and `duplicate_content` for a member with a CRC32-and-size twin; the validator checks both
+   against the listing.
 5. **Members no row names** (pooled QC, blanks) go into `added_members` only when the folder and the name
    tie them to exactly one unit.
 6. **Account for every raw-looking member** of the listing: kept by some unit, or in some unit's
@@ -133,7 +137,8 @@ basis.
    a Catalog declaration (`name_token_disputed`) and to a unit whose files contradict its declared
    settings (`declared_technical_disputed`).
 5. **One polarity per run.** A unit whose files are of both polarities can be `ready` only with `children`,
-   one per polarity and acquisition mode, that partition its kept files.
+   one per polarity and acquisition mode, that partition its kept files. A unit declared positive or
+   negative never keeps files of the other polarity, in a child or otherwise.
 6. **No file in two units** unless the study really shares it (one blank serving two arms). Then both
    units declare it in `shared_with`.
 7. **The Catalog can be wrong.** It does not ingest `MS_mode`, it truncates `Ratio` at ';', some of its
@@ -157,24 +162,30 @@ basis.
 ## Validator
 
 ```text
-<python> scripts/validate-triage.py <triage dir>
+<python> scripts/validate-triage.py <campaign dir>\triage\<accession>
     --catalog <campaign handoffs dir>          (or a catalog.json in the eval-fixture shape)
-    --archive-listing <archive-members.tsv>    (repeat per archive; omit when there is none)
+    --archive-listing <archive-members.tsv>    (repeat per archive)
     [--json] [--ground-truth <ground_truth.json>]
 ```
 
-Use an absolute interpreter path on this machine, never a bare `python`. Exit status: 0 pass, 1 hold,
-2 error. It checks:
+The handoffs directory may hold many accessions; only the triaged accession's units are checked, and one
+of them with no triage file holds. Use an absolute interpreter path on this machine, never a bare
+`python`. Exit status: 0 pass, 1 hold, 2 error. A check that cannot run is not passed: without `--catalog`,
+or without `--archive-listing`, every unit holds. It checks:
 
 - the schema (`schemas/msdial-unit-triage.v1.json`), one accession per directory, files named by unit;
 - that every Catalog row is kept or excluded exactly once, matches the handoff row for row, and that the
   handoff sha256 is the one triaged;
 - that no file is in two units without `shared_with` on both, and names every set of units that keep an
-  identical file set (the stage3b failure);
+  identical file set (the stage3b failure). A row named only by `raw_file` is the same file as the member
+  it names;
 - CRC32-and-size twins: a kept file with a byte-identical twin anywhere in the listing is an error unless
   `shared_content` is flagged and the unit waits for a person;
+- that `not_in_archive` and `duplicate_content` exclusions agree with the listing, and that a
+  `belongs_to_other_unit` row is kept by that unit (by file, not row index);
 - polarity and chromatography of every kept file against its unit, child, declared settings and name
-  tokens, and raw-header evidence against the row;
+  tokens, children's polarity against the unit's, and raw-header evidence against the row;
+- that no unit outside `out_of_scope` keeps mzXML or mzData;
 - that MS1-only, targeted, mixed-acquisition and polarity-switching files are flagged, that `ready` has no
   open question or unanswered blocking flag, and that nothing ready rests on size or timestamp alone;
 - members that exist in the listing but that no unit kept or excluded (hold).

@@ -115,12 +115,14 @@ rows and archive members each analysis unit of an accession keeps.
 A triage writes one `msdial-unit-triage.v1` file per unit
 (`schemas/msdial-unit-triage.v1.json`); everything in it is a model inference
 until a person approves the plan that carries it.
-`scripts/validate-triage.py <triage dir> --catalog <handoffs dir>
+`scripts/validate-triage.py <triage dir for one accession> --catalog <handoffs dir>
 --archive-listing <archive-members.tsv>` checks one accession's files as a set
 and returns pass (0), hold (1, questions for a person) or error (2, redo the
 triage): every Catalog row kept or excluded with a reason, no file in two units
 unless both declare it, byte-identical content (CRC32 and size) never settled by
 name, and polarity, chromatography and acquisition consistent with the unit.
+Without `--catalog` or `--archive-listing` it never passes: a check that cannot
+run holds every unit.
 The eval set, eight accessions with a ground truth established from raw headers,
 is in `tests/fixtures/triage-eval/`. The validator reads only.
 
