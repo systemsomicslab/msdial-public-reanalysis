@@ -28,6 +28,9 @@ TRUTHS = ("mces3", "mces2", "mces5", "mces3_homologue", "tanimoto07", "same_pare
 BIAS_VIEWS = ("all", "no_lipid_lipid", "class_balanced")
 TARGETS = (0.5, 0.7, 0.8, 0.9)
 EXHAUSTIVE_MIN_T = 0.30
+# Bootstrap interval of every cell: bias-corrected percentile (metrics.bc_interval), since 2026-11-16 (WS0);
+# "percentile" reproduces the earlier plain 2.5/97.5 percentiles.
+INTERVAL_METHOD = "bc_percentile"
 COLUMNS = ["kernel_identity", "implementation", "library", "ion_mode", "adduct", "dprec_bin", "min_matched",
            "instrument_pair", "truth_definition", "bias_view", "target_precision", "threshold", "precision",
            "precision_ci_low", "precision_ci_high", "recall", "recall_ci_low", "recall_ci_high",
@@ -91,7 +94,7 @@ def block_codes(col_a, col_b) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 def cell_rows(score: np.ndarray, bins: np.ndarray, y: np.ndarray, w: np.ndarray,
               blocks: tuple[np.ndarray, np.ndarray], classes: tuple[np.ndarray, np.ndarray] | None, *,
               kernel: dict, truth: str, bias: str, base: dict, min_matched: int, B: int, seed: int,
-              suppress_small: bool) -> list[dict]:
+              suppress_small: bool, interval: str = "bc") -> list[dict]:
     """Rows of one cell (already restricted to its pairs, matched floor and bias view) for every target.
 
     The cutoff rule per target is unchanged: the smallest grid t with Wilson lower >= p and n >= 30, moved up
@@ -109,7 +112,7 @@ def cell_rows(score: np.ndarray, bins: np.ndarray, y: np.ndarray, w: np.ndarray,
     boot = None
     if found:
         boot = M.bootstrap_curve(score, y, w, min(found), blocks[0], blocks[1], classes=classes, B=B, seed=seed,
-                                 bins=bins)
+                                 bins=bins, interval=interval)
     rows = []
     for p in TARGETS:
         row = dict(base, kernel_identity=kernel["identity"], implementation=kernel["implementation"],
@@ -142,7 +145,7 @@ def build_table(kept: pd.DataFrame, sample: pd.DataFrame, kernels: list[dict], *
                 parent_of: dict[str, str | None], ref_matched_short: str, B: int = 1000, seed: int = 0,
                 suppress_small: bool = False, adducts: bool = True, instrument: bool = True,
                 views: tuple[str, ...] = BIAS_VIEWS, truths: tuple[str, ...] = TRUTHS,
-                progress=print) -> pd.DataFrame:
+                interval: str = "bc", progress=print) -> pd.DataFrame:
     import time
 
     rows: list[dict] = []
@@ -187,7 +190,7 @@ def build_table(kept: pd.DataFrame, sample: pd.DataFrame, kernels: list[dict], *
                         rows.extend(cell_rows(score[idx], bins[idx], y[idx], w[idx], (ba[idx], bb[idx]), classes,
                                               kernel=kernel, truth=truth, bias=bias, base=base,
                                               min_matched=min_matched, B=B, seed=seed,
-                                              suppress_small=suppress_small))
+                                              suppress_small=suppress_small, interval=interval))
             progress(f"calibrate {ion_mode} {truth} {kernel['short']}: {len(rows)} rows, "
                      f"{len(frame)} pairs, {time.time() - t_kernel:.0f}s")
         progress(f"calibrate {ion_mode} {truth}: done in {time.time() - t_truth:.0f}s")

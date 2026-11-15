@@ -403,6 +403,12 @@ def cmd_calibrate(args) -> int:
     table = pd.concat(tables, ignore_index=True)
     text = CAL.canonical_tsv(table)
     out = run / "cutoff_table.tsv"
+    previous = None
+    if out.exists():
+        old_text = out.read_text(encoding="utf-8")
+        previous = C.sha256_text(old_text)
+        if old_text != text:
+            (run / f"cutoff_table.{previous[:12]}.tsv").write_text(old_text, encoding="utf-8", newline="\n")
     out.write_text(text, encoding="utf-8", newline="\n")
     digest = C.sha256_text(text)
     if "primary" in {k["short"] for k in kernels} and "matchms" in {k["short"] for k in kernels}:
@@ -417,6 +423,7 @@ def cmd_calibrate(args) -> int:
     _update_run(run, "calibrate", {"table": out.name, "table_sha256": digest, "rows": int(len(table)),
                                    "estimable_rows": int((table["estimable"] == 1).sum()),
                                    "bootstrap_b": args.bootstrap, "seed": args.seed,
+                                   "interval_method": CAL.INTERVAL_METHOD, "previous_table_sha256": previous,
                                    "priority_class": C.priority_class(),
                                    "matched_reference_for_non_matching_kernels": ref_short,
                                    "sanity": sanity, "stratum_counts": counts})
@@ -442,6 +449,10 @@ def _calibrate_views(args, run: Path, data: Path, record: dict, kernels: list[di
     out = run / "cutoff_table.tsv"
     if not out.exists():
         raise SystemExit("calibrate --views needs an existing cutoff_table.tsv; run the full calibrate first")
+    method = record["steps"]["calibrate"].get("interval_method", "percentile")
+    if method != CAL.INTERVAL_METHOD:
+        raise SystemExit(f"the table's intervals are {method!r} and this code computes {CAL.INTERVAL_METHOD!r}; "
+                         "a method change needs the full calibrate, not a partial rerun")
     old_text = out.read_text(encoding="utf-8")
     old_digest = C.sha256_text(old_text)
     old = pd.read_csv(out, sep="\t", dtype=str, keep_default_na=False)

@@ -100,7 +100,15 @@ stratified by the run's modified-cosine matched count and is scored only on pair
   counting half for each endpoint's class).
 - t*(p): the smallest t on the 0.01 grid with Wilson lower 95% bound (at the Kish effective size) >= p and
   n(s >= t) >= 30, and the dyadic cluster-bootstrap lower bound (Poisson(1) multiplier per block, product
-  over the two blocks, B = 1000, fixed seed) also >= p; otherwise "not estimable". In the class-balanced
+  over the two blocks, B = 1000, fixed seed) also >= p; otherwise "not estimable". Bootstrap intervals are
+  bias-corrected percentile intervals (BC, no acceleration term) in every view and truth since 2026-11-16 (WS0):
+  - z0 = Phi^-1(share of replicates below the point estimate, ties counting half, clipped to
+    [0.5/B, 1 - 0.5/B]);
+  - the bounds are the replicate quantiles at Phi(2 z0 -/+ 1.96);
+  - with z0 = 0 this is the plain 2.5/97.5 percentile used before;
+  - `run.json` records `interval_method` (`bc_percentile`), and a partial rerun refuses a table computed with
+    another method.
+  In the class-balanced
   view a replicate averages over the observed class set (the classes present above t for precision, the
   classes with a positive for recall); a class whose blocks all drew a zero multiplier keeps its observed
   ratio instead of dropping out (since ce59877; before it, single-block classes left about 37% of

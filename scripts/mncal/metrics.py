@@ -224,11 +224,63 @@ def _cluster_index(cluster_a, cluster_b) -> tuple[np.ndarray, np.ndarray, int]:
     return inv[:a.shape[0]], inv[a.shape[0]:], labels.shape[0]
 
 
+def _quantile_cols(reps: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Per-column quantile q[g] of the finite values of reps[:, g], numpy's default linear interpolation."""
+    G = reps.shape[1]
+    out = np.full(G, np.nan)
+    srt = np.sort(reps, axis=0)                                   # NaN sorts last
+    n = np.isfinite(reps).sum(axis=0)
+    ok = (n > 0) & np.isfinite(q)
+    if not ok.any():
+        return out
+    cols = np.flatnonzero(ok)
+    h = q[cols] * (n[cols] - 1)
+    lo = np.floor(h).astype(np.int64)
+    hi = np.minimum(lo + 1, n[cols] - 1)
+    frac = h - lo
+    a, b = srt[lo, cols], srt[hi, cols]
+    out[cols] = a + (b - a) * frac
+    return out
+
+
+def bc_interval(reps: np.ndarray, theta: np.ndarray, level: float = 0.95) -> tuple[np.ndarray, np.ndarray]:
+    """Bias-corrected (BC) percentile interval per column (Efron 1981; no acceleration term).
+
+    z0 = Phi^-1(share of finite replicates below the point estimate, ties counting half), clipped to
+    [0.5/n, 1 - 0.5/n] so that it stays finite; the bounds are the replicate quantiles at
+    Phi(2 z0 -/+ z_(1-alpha/2)). With z0 = 0 this is the plain percentile interval. A column whose point
+    estimate is not finite falls back to the plain percentile interval.
+    """
+    from scipy.special import ndtr, ndtri
+
+    reps = np.asarray(reps, float)
+    theta = np.asarray(theta, float)
+    alpha = (1.0 - level) / 2.0
+    finite = np.isfinite(reps)
+    n = finite.sum(axis=0)
+    tol = 1e-12 * np.maximum(1.0, np.abs(np.nan_to_num(theta)))
+    with np.errstate(invalid="ignore"):
+        below = (finite & (reps < theta - tol)).sum(axis=0)
+        ties = (finite & (np.abs(reps - theta) <= tol)).sum(axis=0)
+    share = np.where(n > 0, (below + 0.5 * ties) / np.maximum(n, 1), 0.5)
+    share = np.clip(share, 0.5 / np.maximum(n, 1), 1.0 - 0.5 / np.maximum(n, 1))
+    z0 = np.where(np.isfinite(theta) & (n > 0), ndtri(share), 0.0)
+    q_lo = ndtr(2.0 * z0 + ndtri(alpha))
+    q_hi = ndtr(2.0 * z0 + ndtri(1.0 - alpha))
+    q_lo = np.where(z0 == 0.0, alpha, q_lo)                      # exactly the plain percentile when z0 = 0
+    q_hi = np.where(z0 == 0.0, 1.0 - alpha, q_hi)
+    return _quantile_cols(reps, q_lo), _quantile_cols(reps, q_hi)
+
+
 def bootstrap_curve(score, y, w, i0: int, cluster_a, cluster_b, *, classes=None, B: int = 1000, seed: int = 0,
-                    grid: np.ndarray = GRID, bins: np.ndarray | None = None) -> dict[str, np.ndarray]:
+                    grid: np.ndarray = GRID, bins: np.ndarray | None = None,
+                    interval: str = "bc") -> dict[str, np.ndarray]:
     """Dyadic cluster bootstrap of (precision, recall) at every grid index >= i0, in one pass.
 
-    Returns 2.5/97.5 percentile arrays (NaN below i0). A replicate draws one Poisson(1) multiplier per
+    Returns 95% interval arrays (NaN below i0): bias-corrected percentile (`interval="bc"`, the default since
+    2026-11-16, see bc_interval) or plain 2.5/97.5 percentiles (`"percentile"`, the method before).
+    The point estimate BC centres on is the multiplier-1 evaluation of the same formulas, which equals
+    curve()'s estimate. A replicate draws one Poisson(1) multiplier per
     cluster present in the population, in sorted label order and batches of 32, so for any t = grid[i],
     i >= i0, the interval equals a replicate-by-replicate evaluation at t alone with the same seed.
     Only pairs above grid[i0] or positive enter the sums; the others are zero for every i >= i0.
@@ -277,6 +329,19 @@ def bootstrap_curve(score, y, w, i0: int, cluster_a, cluster_b, *, classes=None,
     starts = np.flatnonzero(np.r_[True, key_sorted[1:] != key_sorted[:-1]]) if key_sorted.size else np.zeros(0, int)
     keys = key_sorted[starts]
     ia_s, ib_s, w_s, y_s = ia[pair_of], ib[pair_of], w_r[pair_of], y_r[pair_of]
+    if interval not in ("bc", "percentile"):
+        raise ValueError(f"interval={interval!r}")
+    theta_p = np.full(G, np.nan)
+    theta_r = np.full(G, np.nan)
+    if classes is None and n_rel:
+        flat0 = np.zeros(nb)
+        flat0y = np.zeros(nb)
+        flat0[keys] = np.add.reduceat(w_s, starts)
+        flat0y[keys] = np.add.reduceat(w_s * y_s, starts)
+        N0p, Y0p = _suffix(flat0), _suffix(flat0y)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            theta_p[i0:] = np.where(N0p[sl] > 0, Y0p[sl] / N0p[sl], np.nan)
+            theta_r[i0:] = np.where(Y0p[0] > 0, Y0p[sl] / Y0p[0], np.nan)
     if classes is not None and n_rel:
         # observed per-class sums (multiplier 1): the fixed class sets and the ratios an absent class keeps
         flat0_m = np.zeros(nb * C)
@@ -294,6 +359,8 @@ def bootstrap_curve(score, y, w, i0: int, cluster_a, cluster_b, *, classes=None,
             pos0 = P0 > 0
             kp0 = float(pos0.sum())
             ratio0_r = np.where(pos0[None, :], Y0[sl] / np.where(pos0, P0, 1.0)[None, :], 0.0)
+            theta_p[i0:] = np.where(k0 > 0, ratio0_p.sum(axis=1) / np.maximum(k0, 1.0), np.nan)
+            theta_r[i0:] = ratio0_r.sum(axis=1) / kp0 if kp0 > 0 else np.nan
     step = 32
     for r0 in range(0, B, step):
         nbat = min(step, B - r0)
@@ -331,20 +398,25 @@ def bootstrap_curve(score, y, w, i0: int, cluster_a, cluster_b, *, classes=None,
     out = {}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)          # all-NaN columns stay NaN
-        out["precision_low"], out["precision_high"] = np.nanpercentile(precision, [2.5, 97.5], axis=0)
-        out["recall_low"], out["recall_high"] = np.nanpercentile(recall, [2.5, 97.5], axis=0)
+        if interval == "bc":
+            out["precision_low"], out["precision_high"] = bc_interval(precision, theta_p)
+            out["recall_low"], out["recall_high"] = bc_interval(recall, theta_r)
+        else:
+            out["precision_low"], out["precision_high"] = np.nanpercentile(precision, [2.5, 97.5], axis=0)
+            out["recall_low"], out["recall_high"] = np.nanpercentile(recall, [2.5, 97.5], axis=0)
     for key in out:
         out[key][:i0] = np.nan
     return out
 
 
 def bootstrap_at(score, y, w, t, cluster_a, cluster_b, *, classes=None, B: int = 1000, seed: int = 0,
-                 grid: np.ndarray = GRID):
+                 grid: np.ndarray = GRID, interval: str = "bc"):
     """Dyadic cluster bootstrap of (precision, recall) at grid threshold t; returns 2.5/97.5 percentiles."""
     i = int(np.argmin(np.abs(grid - t)))
     if abs(float(grid[i]) - float(t)) > 1e-9:
         raise ValueError(f"t={t} is not a grid point")
-    c = bootstrap_curve(score, y, w, i, cluster_a, cluster_b, classes=classes, B=B, seed=seed, grid=grid)
+    c = bootstrap_curve(score, y, w, i, cluster_a, cluster_b, classes=classes, B=B, seed=seed, grid=grid,
+                        interval=interval)
     return ((float(c["precision_low"][i]), float(c["precision_high"][i])),
             (float(c["recall_low"][i]), float(c["recall_high"][i])))
 

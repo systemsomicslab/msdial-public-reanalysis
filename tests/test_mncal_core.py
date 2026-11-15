@@ -500,7 +500,7 @@ class CalibrateEquivalenceTests(unittest.TestCase):
         # ClassBalancedBootstrapTests).
         for classes in (None,):
             i0 = 40
-            new = self.M.bootstrap_curve(s, y, w, i0, ba, bb, classes=classes, B=70, seed=3)
+            new = self.M.bootstrap_curve(s, y, w, i0, ba, bb, classes=classes, B=70, seed=3, interval="percentile")
             for i in (40, 41, 55, 70, 90, 100):
                 (plo, phi), (rlo, rhi) = self.REF_M.bootstrap_at(s, y, w, float(self.M.GRID[i]), ba, bb,
                                                                  classes=classes, B=70, seed=3)
@@ -550,7 +550,7 @@ class CalibrateEquivalenceTests(unittest.TestCase):
                    {"short": "k2", "identity": "test.k2", "implementation": "t", "reports_matches": False}]
         args = dict(library="SYN", ion_mode="Positive", parent_of=parent_of, ref_matched_short="k1", B=60, seed=0,
                     progress=lambda *_: None)
-        new = self.CAL.build_table(kept, sample, kernels, **args)
+        new = self.CAL.build_table(kept, sample, kernels, interval="percentile", **args)
         ref = self.REF_CAL.build_table(kept, sample, kernels, **args)
         self.assertGreater(int((ref["estimable"] == 1).sum()), 20)
         # class_balanced rows changed on purpose (fixed class set per replicate); every other row is unchanged
@@ -615,7 +615,7 @@ class ClassBalancedBootstrapTests(unittest.TestCase):
         s, y, w, ba, bb, pa, pb = CalibrateEquivalenceTests._population(8, n=600, blocks=90, classes=30)
         i = 60
         t = float(self.M.GRID[i])
-        new = self.M.bootstrap_curve(s, y, w, 50, ba, bb, classes=(pa, pb), B=64, seed=2)
+        new = self.M.bootstrap_curve(s, y, w, 50, ba, bb, classes=(pa, pb), B=64, seed=2, interval="percentile")
         (plo, phi), (rlo, rhi) = self._brute(self.M, s, y, w, t, ba, bb, pa, pb, B=64, seed=2)
         for got, want in ((new["precision_low"][i], plo), (new["precision_high"][i], phi),
                           (new["recall_low"][i], rlo), (new["recall_high"][i], rhi)):
@@ -653,10 +653,80 @@ class ClassBalancedBootstrapTests(unittest.TestCase):
         point = self.M.curve(s, y, w, classes=(pa, pb))["recall"][i]
         (_, _), (old_lo, old_hi) = self.REF_M.bootstrap_at(s, y, w, float(self.M.GRID[i]), ba, bb,
                                                             classes=(pa, pb), B=200, seed=0)
-        new = self.M.bootstrap_curve(s, y, w, i, ba, bb, classes=(pa, pb), B=200, seed=0)
+        new = self.M.bootstrap_curve(s, y, w, i, ba, bb, classes=(pa, pb), B=200, seed=0, interval="percentile")
         self.assertLess(point, old_lo)                          # the defect, reproduced on the frozen code
         self.assertLessEqual(new["recall_low"][i], point)
         self.assertGreaterEqual(new["recall_high"][i], point)
+
+
+@unittest.skipUnless(D5, "D5 env only")
+class BcIntervalTests(unittest.TestCase):
+    """Bias-corrected percentile intervals (2026-11-16, WS0's decision for every view and truth)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.M = _import("mncal.metrics")
+
+    def test_reduces_to_the_plain_percentile_when_the_point_is_the_median(self):
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        base = rng.normal(size=(200, 5))
+        reps = np.concatenate([np.zeros((1, 5)), base, -base], axis=0)   # symmetric about 0, 0 itself once
+        theta = np.zeros(5)
+        lo, hi = self.M.bc_interval(reps, theta)
+        plo, phi = np.nanpercentile(reps, [2.5, 97.5], axis=0)
+        np.testing.assert_allclose(lo, plo, atol=1e-12)
+        np.testing.assert_allclose(hi, phi, atol=1e-12)
+
+    def test_matches_the_definition(self):
+        import numpy as np
+        from scipy.stats import norm
+
+        rng = np.random.default_rng(1)
+        reps = rng.gamma(2.0, 1.0, size=(500, 4))
+        reps[rng.random(reps.shape) < 0.05] = np.nan
+        theta = np.array([1.2, 2.0, 2.9, np.nan])
+        lo, hi = self.M.bc_interval(reps, theta)
+        for g in range(3):
+            col = reps[:, g][np.isfinite(reps[:, g])]
+            n = col.size
+            share = np.clip((np.sum(col < theta[g]) + 0.5 * np.sum(col == theta[g])) / n, 0.5 / n, 1 - 0.5 / n)
+            z0 = norm.ppf(share)
+            want = np.quantile(col, [norm.cdf(2 * z0 - 1.959963984540054), norm.cdf(2 * z0 + 1.959963984540054)])
+            self.assertAlmostEqual(lo[g], want[0], places=10)
+            self.assertAlmostEqual(hi[g], want[1], places=10)
+        plo, phi = np.nanpercentile(reps[:, 3], [2.5, 97.5])     # no point estimate: plain percentile
+        self.assertAlmostEqual(lo[3], plo, places=12)
+        self.assertAlmostEqual(hi[3], phi, places=12)
+
+    def test_small_class_ratio_estimator_point_inside_bc_but_not_plain(self):
+        """30 classes of 4 blocks with 4 positive pairs each, plus one negative pair of weight 5 to a block of
+        its own: the negative vanishes from a replicate whenever that block draws 0, so each class ratio is
+        skewed upwards. The point lies below the plain percentile interval and inside the BC interval."""
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        rows = []
+        for c in range(30):
+            blocks = [f"C{c:02d}_{j}" for j in range(4)]
+            for _ in range(4):
+                a, b = rng.choice(blocks, 2, replace=False)
+                rows.append((a, b, 1.0, 1.0, c))
+            rows.append((rng.choice(blocks), f"H{c:02d}_0", 0.0, 5.0, c))
+        ba = np.array([r[0] for r in rows])
+        bb = np.array([r[1] for r in rows])
+        y = np.array([r[2] for r in rows])
+        w = np.array([r[3] for r in rows])
+        cls = np.array([f"class{r[4]:02d}" for r in rows])
+        s = np.full(len(rows), 0.95)
+        i = int(np.argmin(np.abs(self.M.GRID - 0.9)))
+        point = self.M.curve(s, y, w, classes=(cls, cls))["precision"][i]
+        plain = self.M.bootstrap_curve(s, y, w, i, ba, bb, classes=(cls, cls), B=400, seed=0, interval="percentile")
+        bc = self.M.bootstrap_curve(s, y, w, i, ba, bb, classes=(cls, cls), B=400, seed=0, interval="bc")
+        self.assertLess(point, plain["precision_low"][i])
+        self.assertLessEqual(bc["precision_low"][i], point)
+        self.assertGreaterEqual(bc["precision_high"][i], point)
 
 
 @unittest.skipUnless(D5, "D5 env only")
