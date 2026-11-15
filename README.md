@@ -638,7 +638,9 @@ has no execution time limit (a task made with `schtasks /SC` alone is stopped
 after 72 hours), runs one instance, restarts on failure, and starts again every
 hour, so a runner that ended comes back. It runs the runner with `pythonw.exe`,
 which runs itself again in a console with no window, and writes the runner's
-output to the campaign's `logs\runner.log`.
+output to the campaign's `logs\runner.log`. Never launch the runner through a
+visible console window either (a WMI `cmd /c`, say): an empty console looks
+like debris, and on 2026-11-13 closing such windows stopped the stage3b runner.
 
 The runner starts the Interactive backend through WMI (`Win32_Process.Create`):
 a broker (`scripts/campaign/backend_launch.py`) starts the backend and exits. The
@@ -768,6 +770,24 @@ One started for another root, for none, or whose root cannot be read is refused,
 naming both roots (`run` exits with code 3; a campaign paused for its backend
 stays paused): a backend left running for a campaign on the archive root would
 otherwise take the new campaign's jobs into the old campaign's job registry.
+
+The plan orders the download groups smallest first, and puts a group with any
+object of unknown size after every group of known size (gate #55): Stage 3
+(2026-11-05) had opened with 21 MetaboLights units of unknown size, fetched at
+about 0.6 MB/s, ahead of every Workbench unit. A unit whose downloads are all
+archives of known size that together hold under 50 kB per sample is excluded at
+plan time as `archive_too_small_for_raw_data` (gate #56): some Workbench
+studies list only their methods or supplementary tables as the download.
+
+Input coverage is not yet checked. A unit can end done, its raw data deleted,
+with only part of its declared samples admitted: in stage3b the
+leading-identifier pairing admitted only blanks for some units (ST002512
+negative ran 5 blank files of 110 samples). The user's decision of 2026-11-15:
+the campaign finishes, a coverage gate (admitted analysis rows against declared
+rows; Interactive 0.5.67, branch `fix/attribution-coverage-gate`) is added, and
+the units admitted only in part, with the name-mismatch failures whose files
+exist, run again in a follow-up campaign. `CLAUDE.md` states the rule as
+pending.
 
 ## Codex pre-audit
 

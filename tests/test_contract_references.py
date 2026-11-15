@@ -33,12 +33,12 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
+# The laboratory lipidomics skill moved to MS-DIAL Interactive (#41 here, msdial-interactive-app#74).
 DOCUMENTS = (
     "CLAUDE.md",
     "README.md",
     "AGENTS.md",
     ".claude/skills/msdial-repository-batch/SKILL.md",
-    ".claude/skills/msdial-lipidomics-workflow/SKILL.md",
 )
 _CONTRACT = "CLAUDE.md"
 _BATCH_SKILL = ".claude/skills/msdial-repository-batch/SKILL.md"
@@ -58,6 +58,9 @@ _LINE_REFERENCE = re.compile(r":\d+(?:-\d+)?$")
 PENDING: dict[str, str] = {}
 # Named on purpose and kept out of the repository by .gitignore: audit outputs under feedback/ are local by default.
 LOCAL_ONLY = frozenset({"feedback/codex-pre-audit-2026-09-02.md"})
+# Named on purpose as another repository's or as gone from this one: README.md names Interactive's setup script, and
+# the lipidomics skill's old place here, which moved to MS-DIAL Interactive (#41 here).
+ELSEWHERE = frozenset({"scripts/setup_claude.py", ".claude/skills/msdial-lipidomics-workflow"})
 
 # A gate check id: letters, a hyphen and one digit (SUM-1, CONV-1). Tokens of that shape that are not checks are
 # listed here.
@@ -66,9 +69,8 @@ _NOT_CHECKS = frozenset({"UTF-8"})
 # Checks the documents name that a pull request not yet merged brings, with the list the contract gives them and the
 # pull request. The test fails once the gate runs the check, so that the entry is removed and the check placed in its
 # bullet rather than left pending.
-PENDING_CHECKS: dict[str, tuple[str, str]] = {
-    "LIB-2": ("blocks_run", "gate truthful-libraries (feat/truthful-libraries-shared-downloads-root)"),
-}
+# LIB-2 left it when gate #42 merged (2026-10-28).
+PENDING_CHECKS: dict[str, tuple[str, str]] = {}
 _GATE_RULE_SECTION = "## Gate verdicts in a campaign"
 _SCOPE_SECTION = "## Supported production scope"
 _EVIDENCE_SECTION = "## Evidence and decisions"
@@ -78,11 +80,13 @@ _RETENTION_SECTION = "## Raw-data retention"
 _STORAGE_SECTION = "## Local storage"
 _MERGES_SECTION = "## Merges"
 _PENDING_SECTION = "## Pending pull requests"
+_BATCH_SECTION = "## Batch behavior"
 _GATE_LISTS = ("blocks_run", "record_only")
 # The lists as the user gave them on 2026-10-02, with PAIR-1 placed on 2026-10-06 and decided by the user on 2026-10-08
-# (answer 1). A later decision changes this test as well as the trial manifest.
+# (answer 1), and LIB-2 placed with the run-stopping checks by gate #42, which the user merged on 2026-10-28. A later
+# decision changes this test as well as the trial manifest.
 _DECIDED_NOW = {
-    "blocks_run": {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1"},
+    "blocks_run": {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1", "LIB-2"},
     "record_only": {"CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1", "PRE-1", "PAIR-1"},
 }
 # The paragraph of the gate rule that names the before-production checks the user placed in neither list.
@@ -142,9 +146,25 @@ _DECIDED_CASES = {
     "declared inputs partly openable": (_SCOPE_SECTION, "- **A unit whose declared inputs are only partly", (
         "is excluded whole", "`declared_inputs_unsupported_format`", "not retried",
     )),
-    # 2026-10-24, D4.
+    # 2026-10-29, replacing D4 of 2026-10-24.
     "declared Both polarity": (_SCOPE_SECTION, "- **Declared \"Both\" polarity.**", (
-        "outside the campaign's pools for now", "later stage", "after polarity splitting has been validated",
+        "is in the pools", "splits the unit into single-polarity parts", "`polarity_switching`",
+        "`polarity_unresolved`", "the rest of the unit runs",
+    )),
+    # 2026-10-29.
+    "CID/HCD only": (_SCOPE_SECTION, "- **CID/HCD only.**", (
+        "only metadata decides it", "`fragmentation_not_cid_hcd`", "an mzML's activation terms count too",
+        "are no such evidence", "Absence of evidence means run",
+    )),
+    # 2026-10-31 and 2026-11-04.
+    "SCIEX .wiff and .wiff2": (_SCOPE_SECTION, "- **SCIEX .wiff and .wiff2.**", (
+        "A DDA unit runs from its .wiff from the start", "`wiff_first_for_dda`", "is switched once to the .wiff",
+        "DIA, SWATH and AIF units stay on the .wiff2", "`vendor_companion_missing`",
+    )),
+    # 2026-11-15, pending the Interactive coverage gate.
+    "input coverage": (_SCOPE_SECTION, "- **Input coverage.**", (
+        "**[pending: Interactive coverage gate]**", "admitted analysis rows are checked against the sample rows",
+        "never marked done", "run again in a follow-up campaign",
     )),
 }
 # The rules decided from 2026-09-20 to 2026-10-27 that the contract states, each as phrases its section must hold.
@@ -165,9 +185,19 @@ _RULES = {
         "built from the latest MsdialWorkbench master",
         "local RawDataHandler pin on a local-only branch that is never pushed", "The Console is pinned by sha256",
         "the campaign runs it from a frozen worktree at that commit",
-        "Any commit to this repository during a campaign is a pin change and pauses it",
-        "this contract merges before a production plan is made",
+        "A change to that worktree during a campaign is a pin change and pauses it",
+        "a commit to this repository elsewhere does not reach a running campaign",
         "no crawl starts unless the user asks",
+    )),
+    # 2026-11-06 (gate #55 and #56) and 2026-11-14.
+    "plan order": (_BATCH_SECTION, (
+        "a group with any object of unknown size runs after every group of known size",
+        "under 50 kB per sample is excluded at plan time (`archive_too_small_for_raw_data`)",
+    )),
+    "launch": (_BATCH_SECTION, (
+        "launched through Task Scheduler", "`scripts/campaign-runner.py schedule-command`",
+        "The user registers the task", "Never launch a campaign from a Claude session",
+        "never through a visible console window",
     )),
     "raw-data retention": (_RETENTION_SECTION, (
         "The retention policy is never implied",
@@ -179,7 +209,8 @@ _RULES = {
     )),
     "local storage": (_STORAGE_SECTION, (
         "The workspace root is chosen per campaign and passed explicitly",
-        "F:\\MSDIAL_Public_Reanalysis\\analysis      MB-POST production (dedicated HDD)",
+        "F:\\MSDIAL_Public_Reanalysis\\analysis      MB-POST and Pool A production (dedicated HDD)",
+        "The runner assumes no root",
         "D:\\13_MSDIAL_Public_Reanalysis\\analysis   archive of the pilots and preflights",
         "Any other root needs the user's explicit confirmation",
         "never go to C:, a user profile, a temporary folder or a code checkout",
@@ -193,11 +224,13 @@ _RULES = {
         "0.5/0.5/0.5", "at least 3 matched peaks", "never receive the lipid RT check's \"Confirmed\" tag",
         "An accepted match of a lower tier outranks a higher tier's precursor-only suggestion",
         "by their Evidence source (`InSilico`)", "GLACIER is never redistributed",
+        "It applies to every campaign unit", "gate LIB-3 holds how the in-silico matches are reported",
     )),
     "the LBM2 and its cutoffs": (_ANNOTATION_SECTION, (
         "The campaign LBM2 is the one the campaign profile names",
         "`Msp20261013094720_NCDK-TUAT-LC25_no-unknown-db.lbm2`",
         "`Msp20250303164224_NCDK-TUAT-LC25_converted_dev.lbm2`", "Its cutoffs are 0.1/0.1/0.1",
+        "Interactive loads the LBM2 the answers name and records it",
     )),
     "target omics": (_ANNOTATION_SECTION, (
         "Every campaign unit is an MS-DIAL Lipidomics project",
@@ -231,25 +264,31 @@ _RULES = {
 }
 # The pull requests the contract marks as pending, by the label its marks use, and what the Pending pull requests
 # section must name for each.
+# Interactive #80 and #81 (the in-silico tier), MsdialWorkbench #850 (predicted-MSP semantics) and gate #42 (truthful
+# libraries) merged on 2026-10-27 and 2026-10-28, and left this list.
 _PENDING_PRS = {
-    "interactive #80": ("**Interactive #80** (0.5.47)",),
-    "interactive in-silico tier": ("**Interactive in-silico tier** (0.5.48", "`feat/insilico-tier`"),
-    "ms-dial predicted-msp semantics": ("**MS-DIAL predicted-MSP semantics**", "`feat/predicted-msp-semantics`"),
-    "gate truthful-libraries": ("**Gate truthful-libraries**", "`feat/truthful-libraries-shared-downloads-root`"),
+    "interactive coverage gate": ("**Interactive coverage gate** (0.5.67", "`fix/attribution-coverage-gate`"),
 }
 _PENDING_MARK = re.compile(r"\*\*\[pending: ([^\]]+)\]\*\*")
 # What the contract stated before 2026-10-27 and no longer states: the mandatory D: root, the deletion of the loaded-
 # library copy, merges left to Claude, the Console and pull-request heads of 2026-10-09, and the history of the
 # question rounds, which the trial manifest keeps.
+# Since 2026-11-15 also: declared-Both units kept out of the pools, LIB-2 as pending, merged runner code defaulting to
+# the D: root, and the contract merging before any production plan.
 _WITHDRAWN = (
     "Use this mandatory default repository reanalysis root", "deletes the loaded-library copy",
     "left the merging of the campaign's pull requests", "RawDataHandler 1.3.9776.346", "1681e9a", "e9e5ca9",
     "both open", "second-round answer", "The extra question", "Open for the user", "option A, \"",
+    "outside the campaign's pools for now", "LIB-2 joins `blocks_run`", "still defaults to the D: root",
+    "this contract merges before a production plan is made",
+    "Any commit to this repository during a campaign is a pin change",
 )
 # Private locations no document may carry: the laboratory NAS and the local library folders. Library file names are
-# allowed; their locations are not.
+# allowed; their locations are not. The placeholder shares README.md gives as examples of a refused root
+# (\\server\share, \\localhost\C$) name no machine.
 _PRIVATE_LOCATIONS = re.compile(
-    r"sysbionas|\\\\[A-Za-z0-9_.-]+\\|libraries[\\/]msp|lbm_versions|Library[\\/]MSP|RawDataHandler-local-feed",
+    r"sysbionas|\\\\(?!(?:server|localhost)\\)[A-Za-z0-9_.-]+\\|libraries[\\/]msp|lbm_versions|Library[\\/]MSP"
+    r"|RawDataHandler-local-feed",
     re.IGNORECASE)
 # The decisions from 2026-10-11 to 2026-10-27 the trial manifest records as the user's, each by what it must say.
 _DECISIONS_SINCE_2026_10_11 = {
@@ -260,6 +299,16 @@ _DECISIONS_SINCE_2026_10_11 = {
     "2026-10-25": ("0.01 Da", "0.05 Da", "0.5/0.5/0.5", "at least 3 matched peaks",
                    "F:\\MSDIAL_Public_Reanalysis\\analysis"),
     "2026-10-27": ("the user merges the pull requests", "before the production plan"),
+}
+# The decisions from 2026-10-28 to 2026-11-15 the trial manifest records as the user's, each by what it must say.
+_DECISIONS_SINCE_2026_10_28 = {
+    "2026-10-28": ("gate #42", "LIB-2 (blocks_run)"),
+    "2026-10-29": ("今回CID/HCDのみでOKです", "メタデータから読み取れた場合のみ", "はい、含めましょう",
+                   "per-file header-polarity split", "GLACIER tier applies to every unit"),
+    "2026-10-31": (".wiff2", "only DDA units switch"),
+    "2026-11-04": ("DDAは最初から.wiffで走らせる方針で実装してください",),
+    "2026-11-06": ("gate #55", "archive_too_small_for_raw_data"),
+    "2026-11-15": ("一度すべて終わってから、再度実行する案で良いと思います。", "coverage gate", "#28も直してください。"),
 }
 # The user's own words for the decisions of 2026-10-06 to 2026-10-08, which the trial manifest records.
 _WORDS_2026_10_06_TO_08 = {
@@ -523,7 +572,8 @@ class ContractReferencesTests(unittest.TestCase):
         missing = {}
         for document in DOCUMENTS:
             for name in _named_paths(_read(document)):
-                if name not in PENDING and name not in LOCAL_ONLY and not _exists_exactly(_ROOT, name):
+                if (name not in PENDING and name not in LOCAL_ONLY and name not in ELSEWHERE
+                        and not _exists_exactly(_ROOT, name)):
                     missing.setdefault(document, []).append(name)
         self.assertEqual({}, missing)
 
@@ -585,6 +635,8 @@ class ContractReferencesTests(unittest.TestCase):
             with self.subTest(planted=planted):
                 self.assertTrue(_PRIVATE_LOCATIONS.search(f"see {planted} here"))
         self.assertIsNone(_PRIVATE_LOCATIONS.search("`MSMS-Private-pos-VS21.msp` and F:\\MSDIAL_Public_Reanalysis\\analysis"))
+        self.assertIsNone(_PRIVATE_LOCATIONS.search("a root such as \\\\server\\share or \\\\localhost\\C$\\x is refused"))
+        self.assertTrue(_PRIVATE_LOCATIONS.search("see \\\\servernas\\share\\x.msp"))
 
 
 class ContractGateChecksTests(unittest.TestCase):
@@ -639,11 +691,11 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertEqual(gate[name], lists[name], "the contract's list is the gate's RUN_POLICY's")
                 self.assertEqual(_DECIDED_NOW[name], lists[name])
 
-    def test_the_latest_list_decision_is_the_users_of_2026_10_08(self) -> None:
+    def test_the_latest_list_decision_is_the_users_of_2026_10_28(self) -> None:
         entry = _latest_list_decision(_trial_decisions())
-        self.assertEqual("2026-10-08", entry["at"])
+        self.assertEqual("2026-10-28", entry["at"])
         self.assertTrue(str(entry["by"]).startswith("user"))
-        self.assertIn("Answer 1", str(entry["decision"]))
+        self.assertIn("gate #42", str(entry["decision"]))
         self.assertEqual(set(self.stages["before-production"]), set().union(*_DECIDED_NOW.values()))
 
     def test_the_runner_holds_the_same_blocks_run_list(self) -> None:
@@ -803,11 +855,7 @@ class ContractRulesTests(unittest.TestCase):
     def test_the_rules_that_rest_on_unmerged_code_are_marked_pending(self) -> None:
         """Each rule the merged code does not yet carry is marked where it is stated, with the pull request it waits on."""
         expectations = {
-            _STORAGE_SECTION: ("gate truthful-libraries",),
-            _ANNOTATION_SECTION: ("interactive #80", "interactive in-silico tier", "ms-dial predicted-msp semantics",
-                                  "gate truthful-libraries"),
-            _RETENTION_SECTION: ("gate truthful-libraries",),
-            _GATE_RULE_SECTION: ("gate truthful-libraries",),
+            _SCOPE_SECTION: ("interactive coverage gate",),
         }
         for heading, labels in expectations.items():
             marked = set(_pending_labels(_section(self.contract, heading)))
@@ -846,7 +894,8 @@ class ContractRulesTests(unittest.TestCase):
         readme = _flat(_read("README.md"))
         for text, phrases in ((skill, ("F:\\MSDIAL_Public_Reanalysis\\analysis", "archive of the pilots and preflights",
                                        "`scripts/campaign-runner.py approve`", "with no per-unit confirmation",
-                                       "`_library_copies`")),
+                                       "`_library_copies`", "`scripts/campaign-runner.py schedule-command`",
+                                       "never through a visible console window")),
                               (readme, ("F:\\MSDIAL_Public_Reanalysis\\analysis",
                                         "Inside a campaign there are no per-unit confirmations",
                                         "`scripts/campaign-runner.py approve`"))):
@@ -937,6 +986,20 @@ class TrialDecisionsTests(unittest.TestCase):
                 with self.subTest(day=day, phrase=phrase):
                     self.assertIn(phrase, str(entries[0]["decision"]))
 
+    def test_the_decisions_since_2026_10_28_are_recorded_in_order(self) -> None:
+        decisions = _trial_decisions()
+        for day, phrases in _DECISIONS_SINCE_2026_10_28.items():
+            entries = [entry for entry in decisions
+                       if entry["at"] == day and str(entry.get("by", "")).startswith("user")]
+            with self.subTest(day=day):
+                self.assertEqual(1, len(entries))
+            for phrase in phrases:
+                with self.subTest(day=day, phrase=phrase):
+                    self.assertIn(phrase, str(entries[0]["decision"]))
+        launch = [entry for entry in decisions if entry["at"] == "2026-11-14"]
+        self.assertEqual(1, len(launch))
+        self.assertIn("never through a visible console window", launch[0]["decision"])
+
     def test_the_rules_replaced_since_are_marked_where_they_were_recorded(self) -> None:
         marks = {
             "Before production, in the campaign: a FAIL stops a unit's MS-DIAL run only for": "Replaced on 2026-10-02",
@@ -945,6 +1008,8 @@ class TrialDecisionsTests(unittest.TestCase):
             "An AIF file whose collision-energy target list is empty": "Replaced on 2026-10-08 by the user's answer 3",
             "Raw data, in the campaign:": "Replaced in part on 2026-10-11",
             "Libraries for the campaign:": "The LBM2 was replaced on 2026-10-14",
+            "Before MB-POST production:": "The declared-Both part of D4 was replaced on 2026-10-29",
+            "Governance, as recommended (D10 to D12):": "Corrected on 2026-11-15",
         }
         decisions = _trial_decisions()
         for opening, mark in marks.items():

@@ -68,16 +68,16 @@ The workspace root is chosen per campaign and passed explicitly: as
 from the project directory.
 
 ```text
-F:\MSDIAL_Public_Reanalysis\analysis      MB-POST production (dedicated HDD)
+F:\MSDIAL_Public_Reanalysis\analysis      MB-POST and Pool A production (dedicated HDD)
 D:\13_MSDIAL_Public_Reanalysis\analysis   archive of the pilots and preflights
 ```
 
 Any other root needs the user's explicit confirmation. Raw data and MS-DIAL
 outputs never go to C:, a user profile, a temporary folder or a code checkout.
-**[pending: gate truthful-libraries]** The runner takes the root per campaign,
-refuses a relative, network or in-checkout root and a backend serving another
-root, and the plan summary names the root; merged runner code still defaults to
-the D: root.
+The runner assumes no root: with neither `--workspace-root` nor
+`MSDIAL_REPOSITORY_WORKSPACE_ROOT` it refuses. It refuses a relative, network
+or in-checkout root and a backend started for another root, and the plan
+summary names the root.
 
 Interactive creates `<workspace_root>\<repository>\<accession>\<analysis_unit_id>\raw`,
 `provenance` and `output`. These directories under a root are not analysis
@@ -106,9 +106,33 @@ units and are never run as one:
   Interactive can analyze some of these modes outside this campaign; that
   broader capability does not expand this scope.
 - **Declared "Both" polarity.** A unit whose repository declares both
-  polarities is outside the campaign's pools for now. Such units come in a
-  later stage, after polarity splitting has been validated on one of them,
-  each with its Class decision.
+  polarities is in the pools. Interactive reads each file's polarity from its
+  raw header and splits the unit into single-polarity parts, each run like any
+  other unit. A file whose scans switch polarity inside the one file is
+  excluded (`polarity_switching`), one whose header gives no polarity as
+  `polarity_unresolved`, and the rest of the unit runs.
+- **CID/HCD only.** Every reference spectrum is CID/HCD-derived, so only
+  CID/HCD data run, and only metadata decides it. The plan excludes a unit as
+  `fragmentation_not_cid_hcd` where its own evidence names another method
+  (EAD, OAD, ECD, ETD, EThcD, EID, UVPD and the like); an mzML's activation
+  terms count too. Study-level text and an instrument's model name are no such
+  evidence. Where only some files or sample rows name another method, those
+  files are kept out and the rest runs. Absence of evidence means run.
+- **SCIEX .wiff and .wiff2.** A DDA unit runs from its .wiff from the start
+  (`wiff_first_for_dda`, on by default), where every .wiff2 has its .wiff and
+  .wiff.scan. A DDA unit still on its .wiff2 whose diagnostic or production
+  run fails or times out is switched once to the .wiff, with an attempt left.
+  DIA, SWATH and AIF units stay on the .wiff2. Each switch is recorded, and
+  INP-1, SPL-1 and ACQ-1 hold it to its record. A .wiff without its .wiff.scan
+  is excluded (`vendor_companion_missing`) and not retried.
+- **Input coverage.** **[pending: Interactive coverage gate]** A unit's
+  admitted analysis rows are checked against the sample rows its repository
+  declares before it runs. A unit admitted only in part (only its blanks,
+  through the leading-identifier pairing, for example) is stopped with its
+  reason, never marked done. Until the gate lands, the done units of a campaign
+  are audited for coverage after it ends, and the units admitted only in part,
+  with the name-mismatch failures whose files exist, run again in a follow-up
+  campaign.
 - **Acquisition, header first (rule B2).** Each file's acquisition is read from
   its raw header with the raw-metadata extractor the campaign pins, and the
   header decides over the repository's declaration, which is only the
@@ -266,21 +290,21 @@ exclusion as one.
    0.01 Da, MS2 tolerance 0.05 Da, weighted, simple and reverse dot product
    cutoffs 0.5/0.5/0.5 and at least 3 matched peaks. Its matches never receive
    the lipid RT check's "Confirmed" tag. Its label is "In-silico MSP
-   (GLACIER)", and each run loads only its own polarity's file.
-   **[pending: Interactive in-silico tier; MS-DIAL predicted-MSP semantics]**
+   (GLACIER)", and each run loads only its own polarity's file. It applies to
+   every campaign unit.
 
 An accepted match of a lower tier outranks a higher tier's precursor-only
 suggestion. Broad candidates are not equivalent to strict matches. In-silico
 matches stay distinguishable from acquired ones by their Evidence source
 (`InSilico`) in every export; an accepted in-silico match may be a feature's
-reported name only where no LBM2 or acquired-MSP match is accepted.
+reported name only where no LBM2 or acquired-MSP match is accepted. After the
+run, gate LIB-3 holds how the in-silico matches are reported.
 
 **LBM2.** The campaign LBM2 is the one the campaign profile names. Since
 2026-10-14 that is `Msp20261013094720_NCDK-TUAT-LC25_no-unknown-db.lbm2`,
 which replaced the official
 `Msp20250303164224_NCDK-TUAT-LC25_converted_dev.lbm2`. Its cutoffs are
-0.1/0.1/0.1. **[pending: Interactive #80]** Merged Interactive loads its
-catalog's official LBM2 in the tiered profile whatever the profile names.
+0.1/0.1/0.1. Interactive loads the LBM2 the answers name and records it.
 
 **Target omics.** Every campaign unit is an MS-DIAL Lipidomics project, and
 every MSP annotator row pins its own target omics, Metabolomics. This is a
@@ -288,13 +312,13 @@ campaign setting; the repository's own omics field is kept as source evidence.
 
 **Lipid RT check.** Its settings are written into each run's method, never left
 to the Console's defaults, and the run records its setting and its review
-file. **[pending: Interactive in-silico tier]**
+file.
 
 **Records state what ran, not what was pinned.** The run records, the campaign
 record and the Catalog row name the libraries the run loaded, with role, kind
 and sha256, beside the libraries the approval names. Gate LIB-2, a `blocks_run`
 check, stops a run whose libraries, LBM cutoffs or annotator rows differ from
-the approval. **[pending: gate truthful-libraries; Interactive #80]**
+the approval.
 
 **Private resources.** The VS21 MSP pair and the GLACIER files are private:
 they may be used locally but are never copied into bundles, logs, repositories
@@ -351,15 +375,17 @@ sha256), each library (by file name and sha256), and the Interactive, Catalog
 and gate commits. A change to any pin pauses the campaign until a new approval
 is recorded.
 
-- **The production Console** is built from the latest MsdialWorkbench master,
-  after the predicted-MSP semantics change merges, with a local RawDataHandler
-  pin on a local-only branch that is never pushed. The RawDataHandler build is
-  local and unpublished. The Console is pinned by sha256.
+- **The production Console** is built from the latest MsdialWorkbench master
+  with the RawDataHandler package the laboratory released. Only where a fix the
+  campaign needs is not yet released does it take a local RawDataHandler pin
+  on a local-only branch that is never pushed, whose build is never published.
+  The Console is pinned by sha256.
 - **The raw-metadata extractor** is the build of msrawdataworkbench 5f60446.
 - **The gate** is pinned by this repository's commit and a clean tree, and the
-  campaign runs it from a frozen worktree at that commit. Any commit to this
-  repository during a campaign is a pin change and pauses it, so this contract
-  merges before a production plan is made.
+  campaign runs it from a frozen worktree at that commit. A change to that
+  worktree during a campaign is a pin change and pauses it; a commit to this
+  repository elsewhere does not reach a running campaign, and the next plan
+  pins it.
 - **The Catalog** is planned on as last crawled (2026-09-21 and 2026-09-22);
   no crawl starts unless the user asks.
 
@@ -394,9 +420,8 @@ once in `_library_copies`; a container it cannot move holds the deletion. A
 failed unit's mzTab-M and whatever else its run left in `output` are kept as
 failure artifacts. An object in the download store goes once no unit still
 claims it, and the runner claims each shared object for every sibling unit
-before the first one downloads, so one archive is fetched once
-**[pending: gate truthful-libraries]**. A split parent's raw tree goes once
-every part has ended.
+before the first one downloads, so one archive is fetched once. A split
+parent's raw tree goes once every part has ended.
 
 **Fallback, awaiting the user's approval.** With an Interactive that lacks the
 approval-taking discard, the runner may call the discard with `confirmed=true`
@@ -410,13 +435,11 @@ with the reason in the failure record.
 The runner runs the gate at each of its points and keeps every report. No
 verdict holds the raw-data deletion. At `before-production`:
 
-- `blocks_run`: ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1. A
-  FAIL in one of them stops the run, and the unit is a failed unit: retried
-  twice, then its raw data are deleted.
+- `blocks_run`: ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2, CONV-1 and
+  LIB-2. A FAIL in one of them stops the run, and the unit is a failed unit:
+  retried twice, then its raw data are deleted.
 - `record_only`: CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1, PAIR-1 and PRE-1. A
   FAIL is recorded with the unit, and the unit runs. PRE-1 never FAILs.
-
-**[pending: gate truthful-libraries]** LIB-2 joins `blocks_run`.
 
 The gate states each check's list as its `run_policy`, and the runner holds
 the `blocks_run` list itself, whatever a report states. It reads failures from
@@ -475,6 +498,18 @@ execute the Mixed parent. Preflight every generated child independently and
 proceed only with children whose DDA or DIA/AIF/SWATH mode is resolved and
 accepted.
 
+**Plan order.** A campaign's download groups run smallest first, and a group
+with any object of unknown size runs after every group of known size. A unit
+whose downloads are all archives of known size that together hold under 50 kB
+per sample is excluded at plan time (`archive_too_small_for_raw_data`).
+
+**Launch.** An unattended campaign is launched through Task Scheduler, from
+the task definition `scripts/campaign-runner.py schedule-command` prints:
+`pythonw`, no window, no execution time limit, one instance, restarted every
+hour. The user registers the task. Never launch a campaign from a Claude
+session, whose app ends what it started when it updates, and never through a
+visible console window, which looks like debris and gets closed.
+
 ## Required outputs
 
 For every attempted analysis unit retain a machine-readable run manifest,
@@ -493,23 +528,12 @@ wording.
 
 ## Pending pull requests
 
-Decided rules that rest on code not merged on 2026-10-27:
+Decided rules that rest on code not merged on 2026-11-15:
 
-- **Interactive #80** (0.5.47): the tiered profile loads the LBM2 the answers
-  name and records the one that ran.
-- **Interactive in-silico tier** (0.5.48, branch `feat/insilico-tier`, built
-  on #80; not yet opened as a pull request): the GLACIER tier, library kinds
-  in every record, the lipid RT check written and recorded, target omics
-  pinned per annotator row.
-- **MS-DIAL predicted-MSP semantics** (MsdialWorkbench branch
-  `feat/predicted-msp-semantics`; not yet opened): an MSP annotator that
-  withholds suggestions, mzTab-M evidence rows for accepted in-silico matches,
-  and in-silico lipid matches kept out of the lipid RT check. The production
-  Console is built after it merges.
-- **Gate truthful-libraries** (this repository, branch
-  `feat/truthful-libraries-shared-downloads-root`; not yet opened): records of
-  the libraries that ran, LIB-2, shared-download claims for sibling units, and
-  the workspace root per campaign.
+- **Interactive coverage gate** (0.5.67, branch
+  `fix/attribution-coverage-gate`; not yet opened as a pull request): the
+  check of a unit's admitted analysis rows against its declared sample rows,
+  and the name-pairing fixes the follow-up campaign needs.
 
 ## Feedback to Codex
 

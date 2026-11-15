@@ -59,7 +59,9 @@ For a repository range:
    energies, ion mobility from unit-level evidence, vendor folders and
    archives, mzXML conversion in a campaign, the copies inside one per-sample
    archive, the exclusion of a unit whose declared inputs are only partly
-   openable, declared-"Both" units kept for a later stage, and the user's one
+   openable, declared-"Both" units split by each file's header polarity,
+   CID/HCD data only, a SCIEX DDA unit run from its .wiff, the input-coverage
+   rule (pending the Interactive coverage gate), and the user's one
    encoding rule of 2026-10-09: of one sample's readable encodings exactly
    one runs, vendor before mzML before mzXML, and every file not used is
    recorded (`manifest.encoding_choices`). Interactive's plan still excludes a
@@ -99,8 +101,7 @@ For a repository range:
    that several units list is fetched once, into the accession's download
    store `_dl`, with each unit reading its own tree of it, and the runner
    claims it for every sibling unit so that one unit's cleanup does not
-   collect it (`CLAUDE.md`, Raw-data retention; pending the gate's
-   truthful-libraries change).
+   collect it (`CLAUDE.md`, Raw-data retention).
    When raw-header preflight reports `Mixed`, the unit holds more than one
    acquisition mode and cannot run as one. Preview `msdial_split_repository_unit`
    with `confirmed=false`, show the parts, and split only on an explicit
@@ -146,8 +147,7 @@ For a repository range:
    `before-production` gate (see below) against it and stop the unit on a
    refusal. In a campaign (`CLAUDE.md`, Gate verdicts in a campaign), a FAIL
    stops it only in a `blocks_run` check (ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1,
-   ID-1, PRE-2 and CONV-1; LIB-2 joins them once the gate's truthful-libraries
-   change merges), and so does one of them left `not_evaluable` where
+   ID-1, PRE-2, CONV-1 and LIB-2), and so does one of them left `not_evaluable` where
    it is required: the unit is then a failed unit, retried and its raw data
    deleted as the campaign's rule for one says. A FAIL in a `record_only` check
    (CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1, PAIR-1 and PRE-1, which never
@@ -302,6 +302,22 @@ campaign runner, `scripts/campaign-runner.py`, as `CLAUDE.md`, MCP
 responsibilities, describes it. The runner never records a reading
 (boundary 6), and it decides no eligibility: it acts on the unit's
 `campaign_disposition`, which only Interactive's `classify_preflight` writes.
+
+Launch an unattended campaign through Task Scheduler, from the task definition
+`scripts/campaign-runner.py schedule-command` prints (`pythonw`, no window, no
+execution time limit, one instance, restarted every hour); the user registers
+it (`CLAUDE.md`, Batch behavior). Never launch the runner from a Claude
+session, and never through a visible console window: an empty console looks
+like debris, and closing one on 2026-11-13 stopped a running campaign. A
+detached job that must run otherwise starts hidden, or at least with a console
+title that names it, and the user is told which windows belong to it.
+
+Until the Interactive coverage gate lands, a unit can end done with only part
+of its declared samples admitted (only its blanks, through the
+leading-identifier pairing). Report each done unit's admitted analysis rows
+against its declared sample rows, and list the units admitted only in part
+for the follow-up campaign (`CLAUDE.md`, Supported production scope, Input
+coverage).
 
 Outside a campaign, an unattended run may not widen `maximum_gb` to clear a
 size blocker. In a campaign there is no per-unit size limit (the user's

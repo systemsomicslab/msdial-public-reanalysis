@@ -1245,7 +1245,7 @@
       "at": "2026-10-14",
       "by": "user, relayed through the campaign workflow",
       "decision": "The campaign LBM2 is Msp20261013094720_NCDK-TUAT-LC25_no-unknown-db.lbm2, in which the unannotated spectra are removed so that every entry has a defined molecule. It replaces the official Msp20250303164224_NCDK-TUAT-LC25_converted_dev.lbm2. The LBM cutoffs are 0.1/0.1/0.1.",
-      "result": "The campaign profile and approvals named it from the MB-POST preflight of 2026-10-14. Review on 2026-10-23 found that no unit ran it: Interactive's tiered profile loaded its catalog's official LBM2 whatever the answers named, and the runner recorded the pins, not what ran. Interactive #80 (0.5.47, open) and the gate's truthful-libraries change (LIB-2, records of what ran) fix both."
+      "result": "The campaign profile and approvals named it from the MB-POST preflight of 2026-10-14. Review on 2026-10-23 found that no unit ran it: Interactive's tiered profile loaded its catalog's official LBM2 whatever the answers named, and the runner recorded the pins, not what ran. Interactive #80 (0.5.47) and the gate's truthful-libraries change (LIB-2, records of what ran) fix both; the user merged #80 on 2026-10-27 and the gate change (gate #42) on 2026-10-28."
     },
     {
       "at": "2026-10-15",
@@ -1257,19 +1257,62 @@
       "at": "2026-10-24",
       "by": "user, relayed through the campaign workflow",
       "decision": "Before MB-POST production: the approved no-unknown-db LBM2 is the campaign's (D1); the 15 preflight units that ended done are run again (D2); production writes to a dedicated HDD installed as F: (D3); the scope is left to Claude (D4: \u4e00\u756a\u9069\u5207\u3060\u3068\u8003\u3048\u3089\u308c\u308b\u3053\u3068\u3092\u3057\u3066\u304f\u3060\u3055\u3044), and declared-Both-polarity units come in a later stage, after polarity splitting is validated (Claude's judgement under D4, which the user accepted); the production Console is built from the latest MS-DIAL master (D5); every unit is a Lipidomics project and additionally loads the MSPs (D7); the LBM cutoffs 0.1/0.1/0.1 are final (D8); the two skip patterns stay skips (D9). A fourth annotation tier joins: an in-silico MS/MS MSP made by GLACIER for every compound registered in MS-FINDER. GLACIER is a non-public NIST20-trained build shared by the coleygroup/ms-pred authors; the library is private and never redistributed.",
-      "result": "Interactive #80 (0.5.47, the LBM2 the answers name), the Interactive in-silico tier (0.5.48), the MS-DIAL predicted-MSP semantics change and the gate's truthful-libraries change implement it; none is merged on 2026-10-27."
+      "result": "Interactive #80 (0.5.47, the LBM2 the answers name), the Interactive in-silico tier (#81, 0.5.48) and the MS-DIAL predicted-MSP semantics change (MsdialWorkbench #850) were merged by the user on 2026-10-27, and the gate's truthful-libraries change (gate #42) on 2026-10-28. The declared-Both part of D4 was replaced on 2026-10-29: Both units are in the pools, split by each file's header polarity (the entry of that date)."
     },
     {
       "at": "2026-10-25",
       "by": "user, relayed through the campaign workflow",
       "decision": "The GLACIER tier, as recommended: an accepted GLACIER match may be the reported name where no LBM2 or acquired-MSP match is accepted; GLACIER offers no suggestions; it is searched without RT with MS1 tolerance 0.01 Da, MS2 tolerance 0.05 Da, dot-product cutoffs 0.5/0.5/0.5 and at least 3 matched peaks; its label is In-silico MSP (GLACIER), accepted in-silico matches get mzTab-M evidence rows, and the Evidence source, not the VS1.0 tag, tells them from acquired matches; the lipid RT check is written explicitly, and GLACIER lipid matches never get Confirmed. The files are final, with the negative-mode precursor +1.008 artefact removed into a derived file. The Console is built from the latest master with the local RawDataHandler pin, after the MS-DIAL change merges. The production root is F:\\MSDIAL_Public_Reanalysis\\analysis, and D:\\13_MSDIAL_Public_Reanalysis\\analysis stays the archive of the pilots and preflights.",
-      "result": "Implemented in the Interactive in-silico tier (0.5.48), the MS-DIAL predicted-MSP semantics change and the gate's truthful-libraries change, none merged on 2026-10-27."
+      "result": "Implemented in the Interactive in-silico tier (#81, 0.5.48) and the MS-DIAL predicted-MSP semantics change (MsdialWorkbench #850), merged by the user on 2026-10-27, the gate's truthful-libraries change (gate #42, 2026-10-28) and gate #43 (LIB-3, 2026-10-28). The Console part was replaced in practice on 2026-11-05: the Pool A Console is plain MS-DIAL master with the RawDataHandler package the laboratory released, which already carries the fix the local pin brought."
     },
     {
       "at": "2026-10-27",
       "by": "user, relayed through the campaign workflow",
       "decision": "Governance, as recommended (D10 to D12): the contract amendment is brought up to date and shortened into a statement of the rules in force for the user to approve; the user merges the pull requests, and Claude opens and pushes the branches; the contract merges before the production plan, since any commit to this repository during a campaign pauses it.",
-      "result": "This amendment (docs/campaign-contract-amendment)."
+      "result": "This amendment (docs/campaign-contract-amendment). Corrected on 2026-11-15 from the runner's code: the gate pin is the checkout the runner runs from (scripts/campaign/ports.py GATE_ROOT), and a campaign runs from a frozen worktree, so a commit to this repository elsewhere does not pause a running campaign; only a change to that worktree does. MB-POST and Pool A were planned before this contract merged."
+    },
+    {
+      "at": "2026-10-28",
+      "by": "user, by merging gate #42",
+      "decision": "The user merged gate #42 (truthful libraries, shared downloads, a workspace root per campaign), which places LIB-2 with the checks that stop a campaign unit's run, as the decision of 2026-10-24 (D1) and the contract's pending mark said. A FAIL stops the run for ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2, CONV-1 and LIB-2 (blocks_run). A FAIL is recorded and the unit runs for CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1, PRE-1 and PAIR-1 (record_only).",
+      "result": "Gate #42 merged on 2026-10-28 (JST); RUN_POLICY and the runner's BLOCKS_RUN_CHECKS carry LIB-2. Gate #43 (LIB-3, after the run) followed the same day."
+    },
+    {
+      "at": "2026-10-29",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "CID/HCD only: \u4eca\u56deCID/HCD\u306e\u307f\u3067OK\u3067\u3059. Every reference spectrum is CID/HCD-derived, so data fragmented otherwise (OAD, EAD, ECD, ETD, EID, UVPD, EThcD) are skipped, but only where the metadata says so: \u30e1\u30bf\u30c7\u30fc\u30bf\u304b\u3089\u8aad\u307f\u53d6\u308c\u305f\u5834\u5408\u306e\u307f. Raw-header activation counts too: \u306f\u3044\u3001\u542b\u3081\u307e\u3057\u3087\u3046. Declared-Both units are admitted with a per-file header-polarity split, and a file that switches polarity inside one file is excluded (the user's OK on the remaining MB-POST units). D-B settled: the GLACIER tier applies to every unit under the current policy (in-silico names, code 450), with no split by pool.",
+      "result": "Gate #45 (Both units in the pools, CID/HCD only) and gate #47 (.wiff without .wiff.scan excluded at its Console start; file-name polarity held in ACQ-1), merged by the user on 2026-10-29, with the matching Interactive releases. This replaces the declared-Both part of the 2026-10-24 decision."
+    },
+    {
+      "at": "2026-10-31",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "SCIEX: where a run fails on the .wiff2 and the same samples' .wiff exists, the unit switches to the .wiff. ZT Scan DIA data can only be analysed from the .wiff2, so only DDA units switch.",
+      "result": "Interactive 0.5.55 (msdial_switch_repository_unit_to_wiff, rule wiff2_to_wiff_after_console_failure_2026_10_31) and gate #50 and #51, merged by the user on 2026-10-31."
+    },
+    {
+      "at": "2026-11-04",
+      "by": "user, relayed through the campaign workflow",
+      "decision": "After the verification campaigns V6, V7 and V8, whose multi-file .wiff2 production run of MPST000048 hung every time while the .wiff ran in 11 to 18 minutes: DDA\u306f\u6700\u521d\u304b\u3089.wiff\u3067\u8d70\u3089\u305b\u308b\u65b9\u91dd\u3067\u5b9f\u88c5\u3057\u3066\u304f\u3060\u3055\u3044. A DDA unit runs from its .wiff from the start; DIA, SWATH and AIF stay on the .wiff2.",
+      "result": "Interactive 0.5.58 (rule wiff_first_for_dda_2026_11_04) and gate #54 (campaign policy wiff_first_for_dda, on by default), merged by the user on 2026-11-04."
+    },
+    {
+      "at": "2026-11-06",
+      "by": "user, by merging gate #55 and #56 and replanning Stage 3",
+      "decision": "The plan runs a download group with any object of unknown size after every group of known size (gate #55): Stage 3 had opened with 21 MetaboLights units of unknown size. A unit whose downloads are all archives of known size that together hold under 50 kB per sample is excluded at plan time as archive_too_small_for_raw_data (gate #56): Stage 3b had downloaded 12 such Workbench units first, and each failed with no MS-DIAL input.",
+      "result": "The user stopped and revoked Stage 3 and approved stage3b-poola-20261106, replanned from it on gate 1744b14 (#55); #56 merged the same day for later plans."
+    },
+    {
+      "at": "2026-11-14",
+      "by": "agent",
+      "state": "rule in force, from the runner's own rule of 2026-10-06 and the loss of 2026-11-13",
+      "decision": "An unattended campaign is launched through Task Scheduler from the task definition campaign-runner.py schedule-command prints (pythonw, no window, no execution time limit, one instance, restarted every hour), and the author registers it. It is never launched from a Claude session, and never through a visible console window: on 2026-11-13 the author closed such empty windows as debris, which stopped the WS5 batch and the stage3b runner relaunched on 2026-11-12 through WMI cmd /c.",
+      "result": "The stage3b task definition is _campaigns\\stage3b-poola-20261106\\schedule-task.xml, with --prefetch 1."
+    },
+    {
+      "at": "2026-11-15",
+      "by": "user",
+      "decision": "A coverage defect found in stage3b: some units were marked done, and their raw data deleted, although the leading-identifier pairing admitted only a few of their files (ST002512 negative ran 5 blank files of 110 samples; ST002510 and ST004800 ran blanks only). The user: \u30ad\u30e3\u30f3\u30da\u30fc\u30f3\u306e\u9593\u9055\u3044\u306f\u5927\u304d\u3044\u3067\u3059\u306d\u3002\u4e00\u5ea6\u3059\u3079\u3066\u7d42\u308f\u3063\u3066\u304b\u3089\u3001\u518d\u5ea6\u5b9f\u884c\u3059\u308b\u6848\u3067\u826f\u3044\u3068\u601d\u3044\u307e\u3059\u3002\u751f\u30c7\u30fc\u30bf\u306e\u98df\u3044\u9055\u3044\u306f\u3001\u3082\u3057\u30d5\u30a1\u30a4\u30eb\u304c\u5b58\u5728\u3057\u3066\u3044\u308b\u306e\u3067\u3042\u308c\u3070\u3001\u5b9f\u65bd\u3057\u305f\u3044\u3067\u3059\u306d\u3002 So stage3b finishes; afterwards a coverage gate (admitted analysis rows against declared rows) is added, and the low-coverage done units and the name-mismatch failures whose files exist are run again in a follow-up campaign on a new Interactive pin. The same day the user asked for this contract to be brought to the rules in force so that it can be merged: #28\u3082\u76f4\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+      "result": "Pending: Interactive 0.5.67 (branch fix/attribution-coverage-gate) adds the coverage gate and the name-pairing fixes. The contract states the coverage rule, marked pending."
     }
   ]
 }
