@@ -15,9 +15,10 @@ locations and private MSP library paths.
 
 This file states the rules in force. The history of each decision, with the
 user's words, is in `trials/2026-09-20-ten-unit-trial-manifest.json`
-(`decisions`). A rule marked pending, in bold brackets naming the pull request,
-is decided but rests on code that has not merged yet; Pending pull requests, at
-the end, lists them. Until it merges, the merged code does what the mark says.
+(`decisions`). A rule marked pending, in bold brackets, is decided but rests
+on a change that has not merged yet. The mark names that change, and Pending
+pull requests, at the end, lists it with its branch. The rule's own text says
+what happens until it lands.
 
 ## Mission
 
@@ -72,7 +73,10 @@ F:\MSDIAL_Public_Reanalysis\analysis      MB-POST and Pool A production (dedicat
 D:\13_MSDIAL_Public_Reanalysis\analysis   archive of the pilots and preflights
 ```
 
-Any other root needs the user's explicit confirmation. Raw data and MS-DIAL
+Any other root needs the user's explicit confirmation. Every root, these two
+included, is confirmed with the first download (boundary 1) or stated in the
+campaign approval. Outside a campaign, ask for the root; never assume either
+one. Raw data and MS-DIAL
 outputs never go to C:, a user profile, a temporary folder or a code checkout.
 The runner assumes no root: with neither `--workspace-root` nor
 `MSDIAL_REPOSITORY_WORKSPACE_ROOT` it refuses. It refuses a relative, network
@@ -110,14 +114,22 @@ units and are never run as one:
   raw header and splits the unit into single-polarity parts, each run like any
   other unit. A file whose scans switch polarity inside the one file is
   excluded (`polarity_switching`), one whose header gives no polarity as
-  `polarity_unresolved`, and the rest of the unit runs.
+  `polarity_unresolved`, and the rest of the unit runs. The exception: where
+  the pinned extractor cannot read the header (every ZenoTOF .wiff2) in a unit
+  that declares no single polarity, one polarity token of the file name
+  decides, on record (`polarity_inferences`), and ACQ-1 holds the row to it.
 - **CID/HCD only.** Every reference spectrum is CID/HCD-derived, so only
   CID/HCD data run, and only metadata decides it. The plan excludes a unit as
   `fragmentation_not_cid_hcd` where its own evidence names another method
-  (EAD, OAD, ECD, ETD, EThcD, EID, UVPD and the like); an mzML's activation
-  terms count too. Study-level text and an instrument's model name are no such
-  evidence. Where only some files or sample rows name another method, those
-  files are kept out and the rest runs. Absence of evidence means run.
+  (EAD, OAD, ECD, ETD, EThcD, EID, UVPD and the like): its label, its unit
+  evidence, every row's stated method, or every file name, where the unit's
+  instrument could fragment that way. Study-level text and an instrument's
+  model name are no such evidence, and a row that names a method only inside
+  a name is recorded but keeps nothing out. Where only some files or stating
+  rows name another method, Interactive's lease keeps those files out, as it
+  does an input whose mzML activation terms name another method (an mzML's
+  activation terms count too), and the rest runs. Absence of evidence means
+  run.
 - **SCIEX .wiff and .wiff2.** A DDA unit runs from its .wiff from the start
   (`wiff_first_for_dda`, on by default), where every .wiff2 has its .wiff and
   .wiff.scan. A DDA unit still on its .wiff2 whose diagnostic or production
@@ -125,14 +137,19 @@ units and are never run as one:
   DIA, SWATH and AIF units stay on the .wiff2. Each switch is recorded, and
   INP-1, SPL-1 and ACQ-1 hold it to its record. A .wiff without its .wiff.scan
   is excluded (`vendor_companion_missing`) and not retried.
-- **Input coverage.** **[pending: Interactive coverage gate]** A unit's
-  admitted analysis rows are checked against the sample rows its repository
-  declares before it runs. A unit admitted only in part (only its blanks,
-  through the leading-identifier pairing, for example) is stopped with its
-  reason, never marked done. Until the gate lands, the done units of a campaign
-  are audited for coverage after it ends, and the units admitted only in part,
-  with the name-mismatch failures whose files exist, run again in a follow-up
-  campaign.
+- **Input coverage.** **[pending: Interactive coverage gate; runner replan of done units]**
+  A unit's admitted analysis rows are checked against the sample rows its
+  repository declares before it runs. A unit whose admitted rows fall below
+  the coverage the gate requires (for example, only its blanks, through the
+  leading-identifier pairing) is stopped with its reason, never marked done.
+  The threshold is not yet decided by the user: the branch proposes half of
+  the analytical rows of the unit's polarity, with at least one biological
+  sample. Until the gate lands, merged Interactive checks no coverage, so a
+  unit admitted in part can end done with its raw data deleted. The done units
+  of a campaign are then audited for coverage after it ends, and the units
+  admitted below coverage, with the name-mismatch failures whose files exist,
+  run again in a follow-up campaign. The merged runner does not plan a done
+  unit again, so that campaign waits for the runner change listed below.
 - **Acquisition, header first (rule B2).** Each file's acquisition is read from
   its raw header with the raw-metadata extractor the campaign pins, and the
   header decides over the repository's declaration, which is only the
@@ -320,7 +337,8 @@ and sha256, beside the libraries the approval names. Gate LIB-2, a `blocks_run`
 check, stops a run whose libraries, LBM cutoffs or annotator rows differ from
 the approval.
 
-**Private resources.** The VS21 MSP pair and the GLACIER files are private:
+**Private resources.** Private VS20/VS21 MSP files, the campaign's VS21 pair
+among them, and the GLACIER files are private:
 they may be used locally but are never copied into bundles, logs, repositories
 or shared reports, and GLACIER is never redistributed. Their locations are
 never written into code, tests, logs or shared artifacts: name a library by
@@ -372,8 +390,9 @@ manifest, pilot approval or authorization record is that go, and the runner's
 
 **Pins.** A campaign pins the Console and the raw-metadata extractor (by
 sha256), each library (by file name and sha256), and the Interactive, Catalog
-and gate commits. A change to any pin pauses the campaign until a new approval
-is recorded.
+and gate commits. A change to any pin pauses the campaign. The pause lifts
+when the pinned identity is restored; a change that is kept needs a new plan
+and approval.
 
 - **The production Console** is built from the latest MsdialWorkbench master
   with the RawDataHandler package the laboratory released. Only where a fix the
@@ -505,8 +524,9 @@ per sample is excluded at plan time (`archive_too_small_for_raw_data`).
 
 **Launch.** An unattended campaign is launched through Task Scheduler, from
 the task definition `scripts/campaign-runner.py schedule-command` prints:
-`pythonw`, no window, no execution time limit, one instance, restarted every
-hour. The user registers the task. Never launch a campaign from a Claude
+`pythonw`, no window, no execution time limit, one instance, restarted on
+failure and started again every hour if it has ended. The user registers the
+task. Never launch a campaign from a Claude
 session, whose app ends what it started when it updates, and never through a
 visible console window, which looks like debris and gets closed.
 
@@ -534,6 +554,10 @@ Decided rules that rest on code not merged on 2026-11-15:
   `fix/attribution-coverage-gate`; not yet opened as a pull request): the
   check of a unit's admitted analysis rows against its declared sample rows,
   and the name-pairing fixes the follow-up campaign needs.
+- **Runner replan of done units** (not yet written): a runner and plan change
+  that lets the follow-up campaign plan named done units again and supersede
+  their Catalog runs. Today `done` and `split_done` are never planned again,
+  even with `--replan-from`.
 
 ## Feedback to Codex
 

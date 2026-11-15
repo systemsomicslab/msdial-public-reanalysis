@@ -305,17 +305,19 @@ responsibilities, describes it. The runner never records a reading
 
 Launch an unattended campaign through Task Scheduler, from the task definition
 `scripts/campaign-runner.py schedule-command` prints (`pythonw`, no window, no
-execution time limit, one instance, restarted every hour); the user registers
+execution time limit, one instance, restarted on failure and started again
+every hour if it has ended); the user registers
 it (`CLAUDE.md`, Batch behavior). Never launch the runner from a Claude
 session, and never through a visible console window: an empty console looks
-like debris, and closing one on 2026-11-13 stopped a running campaign. A
-detached job that must run otherwise starts hidden, or at least with a console
-title that names it, and the user is told which windows belong to it.
+like debris, and closing one on 2026-11-13 stopped a running campaign.
+Another detached job, never a campaign, such as a batch outside the runner,
+starts hidden, or at least with a console title that names it, and the user is
+told which windows belong to it.
 
 Until the Interactive coverage gate lands, a unit can end done with only part
 of its declared samples admitted (only its blanks, through the
 leading-identifier pairing). Report each done unit's admitted analysis rows
-against its declared sample rows, and list the units admitted only in part
+against its declared sample rows, and list the units admitted below coverage
 for the follow-up campaign (`CLAUDE.md`, Supported production scope, Input
 coverage).
 

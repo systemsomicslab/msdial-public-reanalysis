@@ -1269,11 +1269,11 @@
       "at": "2026-10-27",
       "by": "user, relayed through the campaign workflow",
       "decision": "Governance, as recommended (D10 to D12): the contract amendment is brought up to date and shortened into a statement of the rules in force for the user to approve; the user merges the pull requests, and Claude opens and pushes the branches; the contract merges before the production plan, since any commit to this repository during a campaign pauses it.",
-      "result": "This amendment (docs/campaign-contract-amendment). Corrected on 2026-11-15 from the runner's code: the gate pin is the checkout the runner runs from (scripts/campaign/ports.py GATE_ROOT), and a campaign runs from a frozen worktree, so a commit to this repository elsewhere does not pause a running campaign; only a change to that worktree does. MB-POST and Pool A were planned before this contract merged."
+      "result": "This amendment (docs/campaign-contract-amendment). The D12 premise held when it was taken: the gate pin is the checkout the runner runs from (scripts/campaign/ports.py GATE_ROOT), so a commit to the main checkout paused the pilots run from it. Proposed for withdrawal on 2026-11-15 (agent), awaiting the user's confirmation in the review of this amendment: since 2026-10-14 campaigns run from a frozen worktree, so a commit to this repository elsewhere does not pause a running campaign; only a change to that worktree does. MB-POST and Pool A were planned before this contract merged."
     },
     {
       "at": "2026-10-28",
-      "by": "user, by merging gate #42",
+      "by": "agent, following D1 of 2026-10-24; the user accepted it by merging gate #42, and confirms it in words in the review of this amendment",
       "decision": "The user merged gate #42 (truthful libraries, shared downloads, a workspace root per campaign), which places LIB-2 with the checks that stop a campaign unit's run, as the decision of 2026-10-24 (D1) and the contract's pending mark said. A FAIL stops the run for ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2, CONV-1 and LIB-2 (blocks_run). A FAIL is recorded and the unit runs for CLS-1, CLS-2, CLS-3, ORD-1, PKH-1, SPL-1, PRE-1 and PAIR-1 (record_only).",
       "result": "Gate #42 merged on 2026-10-28 (JST); RUN_POLICY and the runner's BLOCKS_RUN_CHECKS carry LIB-2. Gate #43 (LIB-3, after the run) followed the same day."
     },
@@ -1305,7 +1305,7 @@
       "at": "2026-11-14",
       "by": "agent",
       "state": "rule in force, from the runner's own rule of 2026-10-06 and the loss of 2026-11-13",
-      "decision": "An unattended campaign is launched through Task Scheduler from the task definition campaign-runner.py schedule-command prints (pythonw, no window, no execution time limit, one instance, restarted every hour), and the author registers it. It is never launched from a Claude session, and never through a visible console window: on 2026-11-13 the author closed such empty windows as debris, which stopped the WS5 batch and the stage3b runner relaunched on 2026-11-12 through WMI cmd /c.",
+      "decision": "An unattended campaign is launched through Task Scheduler from the task definition campaign-runner.py schedule-command prints (pythonw, no window, no execution time limit, one instance, restarted on failure and started again every hour if it has ended), and the author registers it. It is never launched from a Claude session, and never through a visible console window: on 2026-11-13 the author closed such empty windows as debris, which stopped the WS5 batch and the stage3b runner relaunched on 2026-11-12 through WMI cmd /c.",
       "result": "The stage3b task definition is _campaigns\\stage3b-poola-20261106\\schedule-task.xml, with --prefetch 1."
     },
     {

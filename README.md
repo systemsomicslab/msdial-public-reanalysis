@@ -785,9 +785,12 @@ leading-identifier pairing admitted only blanks for some units (ST002512
 negative ran 5 blank files of 110 samples). The user's decision of 2026-11-15:
 the campaign finishes, a coverage gate (admitted analysis rows against declared
 rows; Interactive 0.5.67, branch `fix/attribution-coverage-gate`) is added, and
-the units admitted only in part, with the name-mismatch failures whose files
-exist, run again in a follow-up campaign. `CLAUDE.md` states the rule as
-pending.
+the units admitted below the coverage it requires, with the name-mismatch
+failures whose files exist, run again in a follow-up campaign. The threshold
+is not yet decided by the user; the branch proposes half of the analytical rows
+of the unit's polarity, with at least one biological sample. The follow-up
+campaign also needs a runner change: the plan never takes up a `done` unit
+again, even with `--replan-from`. `CLAUDE.md` states the rule as pending.
 
 ## Codex pre-audit
 

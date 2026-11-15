@@ -83,8 +83,9 @@ _PENDING_SECTION = "## Pending pull requests"
 _BATCH_SECTION = "## Batch behavior"
 _GATE_LISTS = ("blocks_run", "record_only")
 # The lists as the user gave them on 2026-10-02, with PAIR-1 placed on 2026-10-06 and decided by the user on 2026-10-08
-# (answer 1), and LIB-2 placed with the run-stopping checks by gate #42, which the user merged on 2026-10-28. A later
-# decision changes this test as well as the trial manifest.
+# (answer 1), and LIB-2 placed with the run-stopping checks by gate #42, following D1 of 2026-10-24, which the user
+# merged on 2026-10-28 and confirms in words in the review of the amendment. A later decision changes this test as well
+# as the trial manifest.
 _DECIDED_NOW = {
     "blocks_run": {"ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1", "LIB-2"},
     "record_only": {"CLS-1", "CLS-2", "CLS-3", "ORD-1", "PKH-1", "SPL-1", "PRE-1", "PAIR-1"},
@@ -149,7 +150,8 @@ _DECIDED_CASES = {
     # 2026-10-29, replacing D4 of 2026-10-24.
     "declared Both polarity": (_SCOPE_SECTION, "- **Declared \"Both\" polarity.**", (
         "is in the pools", "splits the unit into single-polarity parts", "`polarity_switching`",
-        "`polarity_unresolved`", "the rest of the unit runs",
+        "`polarity_unresolved`", "the rest of the unit runs", "every ZenoTOF .wiff2", "`polarity_inferences`",
+        "ACQ-1 holds the row to it",
     )),
     # 2026-10-29.
     "CID/HCD only": (_SCOPE_SECTION, "- **CID/HCD only.**", (
@@ -163,8 +165,10 @@ _DECIDED_CASES = {
     )),
     # 2026-11-15, pending the Interactive coverage gate.
     "input coverage": (_SCOPE_SECTION, "- **Input coverage.**", (
-        "**[pending: Interactive coverage gate]**", "admitted analysis rows are checked against the sample rows",
-        "never marked done", "run again in a follow-up campaign",
+        "**[pending: Interactive coverage gate; runner replan of done units]**",
+        "admitted analysis rows are checked against the sample rows", "never marked done",
+        "The threshold is not yet decided by the user", "merged Interactive checks no coverage",
+        "run again in a follow-up campaign", "The merged runner does not plan a done unit again",
     )),
 }
 # The rules decided from 2026-09-20 to 2026-10-27 that the contract states, each as phrases its section must hold.
@@ -181,7 +185,8 @@ _RULES = {
         "本番開始前には私がGoサインを出すので、聞いてください。", "is never started on a real campaign without it",
     )),
     "pins": (_BOUNDARIES_SECTION, (
-        "A change to any pin pauses the campaign",
+        "A change to any pin pauses the campaign", "The pause lifts when the pinned identity is restored",
+        "a change that is kept needs a new plan and approval",
         "built from the latest MsdialWorkbench master",
         "local RawDataHandler pin on a local-only branch that is never pushed", "The Console is pinned by sha256",
         "the campaign runs it from a frozen worktree at that commit",
@@ -213,6 +218,8 @@ _RULES = {
         "The runner assumes no root",
         "D:\\13_MSDIAL_Public_Reanalysis\\analysis   archive of the pilots and preflights",
         "Any other root needs the user's explicit confirmation",
+        "is confirmed with the first download (boundary 1) or stated in the campaign approval",
+        "Outside a campaign, ask for the root; never assume either one",
         "never go to C:, a user profile, a temporary folder or a code checkout",
         "`_library_copies`, the library-copy store: one MS-DIAL loaded-library copy (`.dbs`) per library set",
     )),
@@ -268,6 +275,7 @@ _RULES = {
 # libraries) merged on 2026-10-27 and 2026-10-28, and left this list.
 _PENDING_PRS = {
     "interactive coverage gate": ("**Interactive coverage gate** (0.5.67", "`fix/attribution-coverage-gate`"),
+    "runner replan of done units": ("**Runner replan of done units** (not yet written)", "even with `--replan-from`"),
 }
 _PENDING_MARK = re.compile(r"\*\*\[pending: ([^\]]+)\]\*\*")
 # What the contract stated before 2026-10-27 and no longer states: the mandatory D: root, the deletion of the loaded-
@@ -283,11 +291,11 @@ _WITHDRAWN = (
     "this contract merges before a production plan is made",
     "Any commit to this repository during a campaign is a pin change",
 )
-# Private locations no document may carry: the laboratory NAS and the local library folders. Library file names are
+# Private locations no document may carry: any network share and the local library folders. Library file names are
 # allowed; their locations are not. The placeholder shares README.md gives as examples of a refused root
-# (\\server\share, \\localhost\C$) name no machine.
+# (\\server\share, \\localhost\C$) name no machine. No real host name is written here: this repository is public.
 _PRIVATE_LOCATIONS = re.compile(
-    r"sysbionas|\\\\(?!(?:server|localhost)\\)[A-Za-z0-9_.-]+\\|libraries[\\/]msp|lbm_versions|Library[\\/]MSP"
+    r"\\\\(?!(?:server|localhost)\\)[A-Za-z0-9_.-]+\\|libraries[\\/]msp|lbm_versions|Library[\\/]MSP"
     r"|RawDataHandler-local-feed",
     re.IGNORECASE)
 # The decisions from 2026-10-11 to 2026-10-27 the trial manifest records as the user's, each by what it must say.
@@ -300,9 +308,10 @@ _DECISIONS_SINCE_2026_10_11 = {
                    "F:\\MSDIAL_Public_Reanalysis\\analysis"),
     "2026-10-27": ("the user merges the pull requests", "before the production plan"),
 }
-# The decisions from 2026-10-28 to 2026-11-15 the trial manifest records as the user's, each by what it must say.
+# The decisions from 2026-10-29 to 2026-11-15 the trial manifest records as the user's, each by what it must say. The
+# LIB-2 placement of 2026-10-28 is the agent's, following D1, accepted by the user's merge of gate #42 (see
+# test_the_latest_list_decision_is_lib_2s_placement_of_2026_10_28).
 _DECISIONS_SINCE_2026_10_28 = {
-    "2026-10-28": ("gate #42", "LIB-2 (blocks_run)"),
     "2026-10-29": ("今回CID/HCDのみでOKです", "メタデータから読み取れた場合のみ", "はい、含めましょう",
                    "per-file header-polarity split", "GLACIER tier applies to every unit"),
     "2026-10-31": (".wiff2", "only DDA units switch"),
@@ -631,7 +640,7 @@ class ContractReferencesTests(unittest.TestCase):
             if hits:
                 found[document] = hits
         self.assertEqual({}, found)
-        for planted in ("\\\\sysbionas1\\share\\x.msp", "D:\\x\\libraries\\msp\\VS21.msp", "lbm_versions/a.lbm2"):
+        for planted in ("\\\\labnas9\\share\\x.msp", "D:\\x\\libraries\\msp\\VS21.msp", "lbm_versions/a.lbm2"):
             with self.subTest(planted=planted):
                 self.assertTrue(_PRIVATE_LOCATIONS.search(f"see {planted} here"))
         self.assertIsNone(_PRIVATE_LOCATIONS.search("`MSMS-Private-pos-VS21.msp` and F:\\MSDIAL_Public_Reanalysis\\analysis"))
@@ -691,11 +700,13 @@ class ContractGateChecksTests(unittest.TestCase):
                 self.assertEqual(gate[name], lists[name], "the contract's list is the gate's RUN_POLICY's")
                 self.assertEqual(_DECIDED_NOW[name], lists[name])
 
-    def test_the_latest_list_decision_is_the_users_of_2026_10_28(self) -> None:
+    def test_the_latest_list_decision_is_lib_2s_placement_of_2026_10_28(self) -> None:
         entry = _latest_list_decision(_trial_decisions())
         self.assertEqual("2026-10-28", entry["at"])
-        self.assertTrue(str(entry["by"]).startswith("user"))
+        self.assertIn("following D1 of 2026-10-24", str(entry["by"]))
+        self.assertIn("the user accepted it by merging gate #42", str(entry["by"]))
         self.assertIn("gate #42", str(entry["decision"]))
+        self.assertIn("LIB-2 (blocks_run)", str(entry["decision"]))
         self.assertEqual(set(self.stages["before-production"]), set().union(*_DECIDED_NOW.values()))
 
     def test_the_runner_holds_the_same_blocks_run_list(self) -> None:
@@ -855,7 +866,7 @@ class ContractRulesTests(unittest.TestCase):
     def test_the_rules_that_rest_on_unmerged_code_are_marked_pending(self) -> None:
         """Each rule the merged code does not yet carry is marked where it is stated, with the pull request it waits on."""
         expectations = {
-            _SCOPE_SECTION: ("interactive coverage gate",),
+            _SCOPE_SECTION: ("interactive coverage gate", "runner replan of done units"),
         }
         for heading, labels in expectations.items():
             marked = set(_pending_labels(_section(self.contract, heading)))
@@ -1009,7 +1020,7 @@ class TrialDecisionsTests(unittest.TestCase):
             "Raw data, in the campaign:": "Replaced in part on 2026-10-11",
             "Libraries for the campaign:": "The LBM2 was replaced on 2026-10-14",
             "Before MB-POST production:": "The declared-Both part of D4 was replaced on 2026-10-29",
-            "Governance, as recommended (D10 to D12):": "Corrected on 2026-11-15",
+            "Governance, as recommended (D10 to D12):": "Proposed for withdrawal on 2026-11-15 (agent)",
         }
         decisions = _trial_decisions()
         for opening, mark in marks.items():
