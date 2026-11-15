@@ -496,7 +496,9 @@ class CalibrateEquivalenceTests(unittest.TestCase):
         import numpy as np
 
         s, y, w, ba, bb, pa, pb = self._population(2, n=2500, blocks=250)
-        for classes in (None, (pa, pb)):
+        # The plain view only: the class-balanced view changed on purpose (fixed class set, see
+        # ClassBalancedBootstrapTests).
+        for classes in (None,):
             i0 = 40
             new = self.M.bootstrap_curve(s, y, w, i0, ba, bb, classes=classes, B=70, seed=3)
             for i in (40, 41, 55, 70, 90, 100):
@@ -551,7 +553,110 @@ class CalibrateEquivalenceTests(unittest.TestCase):
         new = self.CAL.build_table(kept, sample, kernels, **args)
         ref = self.REF_CAL.build_table(kept, sample, kernels, **args)
         self.assertGreater(int((ref["estimable"] == 1).sum()), 20)
-        self.assertEqual(self.CAL.canonical_tsv(new), self.REF_CAL.canonical_tsv(ref))
+        # class_balanced rows changed on purpose (fixed class set per replicate); every other row is unchanged
+        keep = lambda t: t[t["bias_view"] != "class_balanced"].reset_index(drop=True)
+        self.assertEqual(self.CAL.canonical_tsv(keep(new)), self.REF_CAL.canonical_tsv(keep(ref)))
+        self.assertEqual(int((new["bias_view"] == "class_balanced").sum()),
+                         int((ref["bias_view"] == "class_balanced").sum()))
+
+
+@unittest.skipUnless(D5, "D5 env only")
+class ClassBalancedBootstrapTests(unittest.TestCase):
+    """The class-balanced bootstrap keeps the observed class set in every replicate (2026-11-15)."""
+
+    @classmethod
+    def setUpClass(cls):
+        tests_dir = str(Path(__file__).resolve().parent)
+        if tests_dir not in sys.path:
+            sys.path.insert(0, tests_dir)
+        cls.M = _import("mncal.metrics")
+        import importlib
+
+        cls.REF_M = importlib.import_module("mncal_metrics_reference")
+
+    @staticmethod
+    def _brute(M, s, y, w, t, ba, bb, pa, pb, B, seed):
+        """Replicate by replicate, from the definition: the same Poisson draws as bootstrap_curve; per class
+        ratios above t; a class of the observed set that is absent from a replicate keeps its observed ratio."""
+        import numpy as np
+
+        labels, inv = np.unique(np.concatenate([ba, bb]), return_inverse=True)
+        ia, ib = inv[:len(ba)], inv[len(ba):]
+        above = np.nan_to_num(s, nan=-1.0) >= t - 1e-12
+        classes = sorted(set(pa) | set(pb))
+
+        def sums(weight):
+            n, yy, p = {}, {}, {}
+            for k in range(len(s)):
+                for c in (pa[k], pb[k]):
+                    if above[k]:
+                        n[c] = n.get(c, 0.0) + weight[k]
+                        yy[c] = yy.get(c, 0.0) + weight[k] * y[k]
+                    p[c] = p.get(c, 0.0) + weight[k] * y[k]
+            return n, yy, p
+
+        n0, y0, p0 = sums(w)
+        set_p = [c for c in classes if n0.get(c, 0) > 0]
+        set_r = [c for c in classes if p0.get(c, 0) > 0]
+        rng = np.random.default_rng(seed)
+        prec, rec = [], []
+        for r0 in range(0, B, 32):
+            mult = rng.poisson(1.0, (min(32, B - r0), labels.shape[0])).astype(float)
+            for m in mult:
+                n, yy, p = sums(m[ia] * m[ib] * w)
+                prec.append(np.mean([yy[c] / n[c] if n.get(c, 0) > 0 else y0[c] / n0[c] for c in set_p]))
+                rec.append(np.mean([yy.get(c, 0.0) / p[c] if p.get(c, 0) > 0 else y0.get(c, 0.0) / p0[c]
+                                    for c in set_r]))
+        return np.percentile(prec, [2.5, 97.5]), np.percentile(rec, [2.5, 97.5])
+
+    def test_matches_the_definition_replicate_by_replicate(self):
+        import numpy as np
+
+        s, y, w, ba, bb, pa, pb = CalibrateEquivalenceTests._population(8, n=600, blocks=90, classes=30)
+        i = 60
+        t = float(self.M.GRID[i])
+        new = self.M.bootstrap_curve(s, y, w, 50, ba, bb, classes=(pa, pb), B=64, seed=2)
+        (plo, phi), (rlo, rhi) = self._brute(self.M, s, y, w, t, ba, bb, pa, pb, B=64, seed=2)
+        for got, want in ((new["precision_low"][i], plo), (new["precision_high"][i], phi),
+                          (new["recall_low"][i], rlo), (new["recall_high"][i], rhi)):
+            self.assertAlmostEqual(float(got), float(want), places=9)
+
+    def test_single_block_classes_no_longer_drop_out(self):
+        """40 classes held by one block each, none with a positive above t, beside 10 large classes: the
+        dropped-class bootstrap put the point recall below its interval; the fixed class set contains it."""
+        import numpy as np
+
+        rng = np.random.default_rng(11)
+        big = [f"B{c:02d}_{j:02d}" for c in range(10) for j in range(12)]
+        small = [f"S{c:02d}" for c in range(40)]
+        cls = {b: b[:3] for b in big} | {b: b for b in small}
+        rows = []
+        for c in range(10):
+            members = [b for b in big if b.startswith(f"B{c:02d}")]
+            for _ in range(60):
+                a, b = rng.choice(members, 2, replace=False)
+                positive = rng.random() < 0.7
+                score = rng.choice([0.95, 0.2]) if positive else 0.1
+                rows.append((a, b, score, float(positive)))
+        for sb in small:
+            for _ in range(3):
+                partner = rng.choice(big)
+                rows.append((sb, partner, 0.2, 1.0))           # positives, all below t
+        ba = np.array([r[0] for r in rows])
+        bb = np.array([r[1] for r in rows])
+        s = np.array([r[2] for r in rows])
+        y = np.array([r[3] for r in rows])
+        w = np.ones(len(rows))
+        pa = np.array([cls[b] for b in ba])
+        pb = np.array([cls[b] for b in bb])
+        i = int(np.argmin(np.abs(self.M.GRID - 0.9)))
+        point = self.M.curve(s, y, w, classes=(pa, pb))["recall"][i]
+        (_, _), (old_lo, old_hi) = self.REF_M.bootstrap_at(s, y, w, float(self.M.GRID[i]), ba, bb,
+                                                            classes=(pa, pb), B=200, seed=0)
+        new = self.M.bootstrap_curve(s, y, w, i, ba, bb, classes=(pa, pb), B=200, seed=0)
+        self.assertLess(point, old_lo)                          # the defect, reproduced on the frozen code
+        self.assertLessEqual(new["recall_low"][i], point)
+        self.assertGreaterEqual(new["recall_high"][i], point)
 
 
 @unittest.skipUnless(D5, "D5 env only")

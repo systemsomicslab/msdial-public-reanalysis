@@ -309,6 +309,9 @@ def cmd_calibrate(args) -> int:
     if args.only_kernels:
         kernels = [k for k in kernels if k["short"] in args.only_kernels]
     ref_short = next((k["short"] for k in kernels if k["short"] in ("primary", "matchms")), kernels[0]["short"])
+    views = tuple(args.views) if args.views else CAL.BIAS_VIEWS
+    if set(views) != set(CAL.BIAS_VIEWS):
+        return _calibrate_views(args, run, data, record, kernels, ref_short, views)
     tables, sanity, counts = [], {}, {}
     for mode in args.modes:
         pairs_dir = data / "pairs" / mode
@@ -364,6 +367,69 @@ def cmd_calibrate(args) -> int:
                                    "matched_reference_for_non_matching_kernels": ref_short,
                                    "sanity": sanity, "stratum_counts": counts})
     print(f"cutoff_table.tsv rows={len(table)} sha256={digest}")
+    return 0
+
+
+def _calibrate_views(args, run: Path, data: Path, record: dict, kernels: list[dict], ref_short: str,
+                     views: tuple[str, ...]) -> int:
+    """Recompute only the given bias views and replace their rows in the existing cutoff table.
+
+    The previous table is kept beside it as cutoff_table.<first 12 hex of its sha256>.tsv. Sanity numbers,
+    curves and stratum counts do not depend on the bias view, so the calibrate step keeps them; the step gains
+    a `view_reruns` entry with the views, modes, code commit and both digests.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from . import calibrate as CAL
+
+    out = run / "cutoff_table.tsv"
+    if not out.exists():
+        raise SystemExit("calibrate --views needs an existing cutoff_table.tsv; run the full calibrate first")
+    old_text = out.read_text(encoding="utf-8")
+    old_digest = C.sha256_text(old_text)
+    old = pd.read_csv(out, sep="\t", dtype=str, keep_default_na=False)
+    ion = {"pos": "Positive", "neg": "Negative"}
+    identities = {k["identity"] for k in kernels}
+    drop = old["bias_view"].isin(views) & old["ion_mode"].isin([ion[m] for m in args.modes]) & \
+        old["kernel_identity"].isin(identities)
+    tables = []
+    for mode in args.modes:
+        kept = _load_kept(data / "pairs" / mode)
+        sample_path = data / f"mces_sample_{mode}.parquet"
+        sample = pd.read_parquet(sample_path) if sample_path.exists() else kept.iloc[0:0].assign(
+            mces=np.nan, mces_mode=-1, ht_weight=np.nan)
+        if "mces" not in sample:
+            sample = sample.assign(mces=np.nan, mces_mode=-1)
+        blocks = pd.read_parquet(data / f"blocks_{mode}.parquet")
+        parent_of = dict(zip(blocks["block"], blocks["direct_parent"]))
+        tables.append(CAL.build_table(kept, sample, kernels, library=record.get("library_label", "VS20"),
+                                      ion_mode=ion[mode], parent_of=parent_of, ref_matched_short=ref_short,
+                                      B=args.bootstrap, seed=args.seed, suppress_small=record.get("private", False),
+                                      views=views))
+    new_rows = pd.read_csv(__import__("io").StringIO(CAL.canonical_tsv(pd.concat(tables, ignore_index=True))),
+                           sep="\t", dtype=str, keep_default_na=False)
+    if len(new_rows) != int(drop.sum()):
+        raise SystemExit(f"view rerun produced {len(new_rows)} rows for {int(drop.sum())} replaced rows; table kept")
+    merged = pd.concat([old[~drop], new_rows], ignore_index=True)
+    keys = ["kernel_identity", "ion_mode", "adduct", "dprec_bin", "instrument_pair", "min_matched",
+            "truth_definition", "bias_view", "target_precision"]
+    merged = merged.sort_values(keys, kind="mergesort")
+    text = merged.to_csv(sep="\t", index=False, lineterminator="\n")
+    (run / f"cutoff_table.{old_digest[:12]}.tsv").write_text(old_text, encoding="utf-8", newline="\n")
+    out.write_text(text, encoding="utf-8", newline="\n")
+    digest = C.sha256_text(text)
+    step = dict(record["steps"]["calibrate"])
+    step.pop("finished_at", None)
+    step.pop("code", None)
+    reruns = list(step.get("view_reruns", []))
+    reruns.append({"views": list(views), "modes": list(args.modes), "code": C.code_commit(),
+                   "previous_table_sha256": old_digest, "table_sha256": digest, "rows_replaced": int(drop.sum()),
+                   "priority_class": C.priority_class(), "finished_at": C.now_iso()})
+    step.update({"table_sha256": digest, "rows": int(len(merged)),
+                 "estimable_rows": int((merged["estimable"] == "1").sum()), "view_reruns": reruns})
+    _update_run(run, "calibrate", step)
+    print(f"cutoff_table.tsv rows={len(merged)} replaced={int(drop.sum())} sha256={digest} (was {old_digest})")
     return 0
 
 
@@ -488,6 +554,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=20261113)
     p.add_argument("--only-kernels", nargs="*")
     p.add_argument("--curves", action="store_true")
+    p.add_argument("--views", nargs="+", choices=["all", "no_lipid_lipid", "class_balanced"],
+                   help="recompute only these bias views and replace their rows in the existing table")
     p.set_defaults(func=cmd_calibrate)
 
     p = sub.add_parser("report", help="Write <run>/report.md from run.json and the cutoff table")

@@ -133,7 +133,7 @@ def cell_rows(score: np.ndarray, bins: np.ndarray, y: np.ndarray, w: np.ndarray,
 def build_table(kept: pd.DataFrame, sample: pd.DataFrame, kernels: list[dict], *, library: str, ion_mode: str,
                 parent_of: dict[str, str | None], ref_matched_short: str, B: int = 1000, seed: int = 0,
                 suppress_small: bool = False, adducts: bool = True, instrument: bool = True,
-                progress=print) -> pd.DataFrame:
+                views: tuple[str, ...] = BIAS_VIEWS, progress=print) -> pd.DataFrame:
     import time
 
     rows: list[dict] = []
@@ -171,7 +171,7 @@ def build_table(kept: pd.DataFrame, sample: pd.DataFrame, kernels: list[dict], *
                         "instrument_pair": ipair}
                 for min_matched in P.MIN_MATCHED_FLOORS:
                     floor = mask & (matched >= min_matched)
-                    for bias in BIAS_VIEWS:
+                    for bias in views:
                         sel = floor & not_lipid_pair if bias == "no_lipid_lipid" else floor
                         idx = np.flatnonzero(sel)
                         classes = (pa[idx], pb[idx]) if bias == "class_balanced" else None

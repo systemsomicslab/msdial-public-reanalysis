@@ -232,6 +232,12 @@ def bootstrap_curve(score, y, w, i0: int, cluster_a, cluster_b, *, classes=None,
     cluster present in the population, in sorted label order and batches of 32, so for any t = grid[i],
     i >= i0, the interval equals a replicate-by-replicate evaluation at t alone with the same seed.
     Only pairs above grid[i0] or positive enter the sums; the others are zero for every i >= i0.
+
+    Class-balanced view: the class set is fixed per replicate. The point estimate averages a per-class ratio
+    over the K(t) classes present above t (precision) or over the K_P classes with a positive (recall). A
+    replicate averages over the same classes; a class whose blocks all drew a zero multiplier contributes its
+    observed ratio instead of dropping out. (Until 2026-11-15 such classes dropped out, so a class held by a
+    single block vanished from about 37% of replicates and the interval shifted away from the point estimate.)
     """
     import warnings
 
@@ -271,6 +277,23 @@ def bootstrap_curve(score, y, w, i0: int, cluster_a, cluster_b, *, classes=None,
     starts = np.flatnonzero(np.r_[True, key_sorted[1:] != key_sorted[:-1]]) if key_sorted.size else np.zeros(0, int)
     keys = key_sorted[starts]
     ia_s, ib_s, w_s, y_s = ia[pair_of], ib[pair_of], w_r[pair_of], y_r[pair_of]
+    if classes is not None and n_rel:
+        # observed per-class sums (multiplier 1): the fixed class sets and the ratios an absent class keeps
+        flat0_m = np.zeros(nb * C)
+        flat0_y = np.zeros(nb * C)
+        flat0_m[keys] = np.add.reduceat(w_s, starts)
+        flat0_y[keys] = np.add.reduceat(w_s * y_s, starts)
+        N0 = _suffix(flat0_m.reshape(nb, C), axis=0)
+        Y0 = _suffix(flat0_y.reshape(nb, C), axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            n0 = N0[sl]
+            present0 = n0 > 0                                    # (thresholds, classes)
+            k0 = present0.sum(axis=1).astype(float)
+            ratio0_p = np.where(present0, Y0[sl] / np.where(present0, n0, 1.0), 0.0)
+            P0 = Y0[0]
+            pos0 = P0 > 0
+            kp0 = float(pos0.sum())
+            ratio0_r = np.where(pos0[None, :], Y0[sl] / np.where(pos0, P0, 1.0)[None, :], 0.0)
     step = 32
     for r0 in range(0, B, step):
         nbat = min(step, B - r0)
@@ -287,17 +310,19 @@ def bootstrap_curve(score, y, w, i0: int, cluster_a, cluster_b, *, classes=None,
         with np.errstate(divide="ignore", invalid="ignore"):
             if classes is not None:
                 # precision(t) = sum_c Y_c(t) / n_c(t) / K(t); recall(t) = sum_c Y_c(t) / P_c / K_P, P_c over
-                # every positive (the halves cancel)
+                # every positive (the halves cancel). K(t) and K_P are the observed class sets; a class absent
+                # from the replicate keeps its observed ratio.
                 P = Y[:, 0, :]
                 invP = np.where(P > 0, 1.0 / P, 0.0)
-                kp = (P > 0).sum(axis=1).astype(float)
                 n = N[:, sl, :]
                 inv = np.where(n > 0, 1.0 / n, 0.0)
-                k = (n > 0).sum(axis=2).astype(float)
-                num_p = np.einsum("rgc,rgc->rg", Y[:, sl, :], inv)
-                precision[r0:r0 + nbat, i0:] = np.where(k > 0, num_p / k, np.nan)
-                num_r = np.einsum("rgc,rc->rg", Y[:, sl, :], invP)
-                recall[r0:r0 + nbat, i0:] = np.where(kp[:, None] > 0, num_r / kp[:, None], np.nan)
+                num_p = np.einsum("rgc,rgc->rg", Y[:, sl, :], inv) + \
+                    np.einsum("rgc,gc->rg", ((n <= 0) & present0[None]).astype(float), ratio0_p)
+                precision[r0:r0 + nbat, i0:] = np.where(k0[None, :] > 0, num_p / np.maximum(k0, 1.0)[None, :],
+                                                        np.nan)
+                num_r = np.einsum("rgc,rc->rg", Y[:, sl, :], invP) + \
+                    np.einsum("rc,gc->rg", ((P <= 0) & pos0[None]).astype(float), ratio0_r)
+                recall[r0:r0 + nbat, i0:] = num_r / kp0 if kp0 > 0 else np.nan
             else:
                 N, Y = N[:, :, 0], Y[:, :, 0]
                 den_r = Y[:, 0]
