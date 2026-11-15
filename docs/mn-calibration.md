@@ -87,6 +87,12 @@ stratified by the run's modified-cosine matched count and is scored only on pair
   ignores `msdial.moddot.legacy`, which scores >= 0.3 on about half of all pairs (its near-1 artefact);
   pairs kept only because of it form a seed-fixed 1% Poisson sample with weight 100 (`w_keep`), so its
   cutoffs stay unbiased and every other kernel's cells are unchanged.
+- Computation: each cell's curve and bootstrap take one pass over its pairs. A score's bin is the number of
+  grid thresholds it reaches, so every threshold's sums are suffix sums of per-bin sums; the class-balanced
+  view decomposes over per-bin class and class-pair sums. One bootstrap pass from the smallest candidate t
+  gives the interval at every t above it, with the same replicate draws (per block, sorted label order,
+  batches of 32) as a separate evaluation at each t. `tests/mncal_*_reference.py` freeze the earlier
+  per-threshold code, and the tests require the new path to reproduce its `cutoff_table.tsv` exactly.
 - The benchmark id of a cutoff is `mn-calibration/<run-id>` plus `table_sha256` from `run.json`.
 
 ### cutoff_table.tsv

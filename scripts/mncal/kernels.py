@@ -189,9 +189,9 @@ def entropy_port_score(a, b) -> float:
 def entropy_port_kernel() -> Kernel:
     return Kernel(ENTROPY, "mncal-numpy-port", "entropy_similarity", entropy_port_prepare,
                   lambda a, b: (entropy_port_score(a, b), 0), False,
-                  parity={"status": "pending",
-                          "reason": "WS2 similarity-fixtures not in the catalog pin; the port is tested "
-                                    "against the pin's similarity.entropy_similarity (|delta| <= 1e-9)"},
+                  parity={"status": "see fixture_parity",
+                          "reason": "checked against the WS2 similarity fixtures in check-kernels (fixture_parity) "
+                                    "and against the pin's similarity.entropy_similarity (|delta| <= 1e-9)"},
                   short="entropy")
 
 

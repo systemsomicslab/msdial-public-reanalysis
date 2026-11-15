@@ -127,10 +127,36 @@ def below_normal_priority() -> None:
             pass
         return
     import ctypes
+    from ctypes import wintypes
 
     BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
-    handle = ctypes.windll.kernel32.GetCurrentProcess()
-    ctypes.windll.kernel32.SetPriorityClass(handle, BELOW_NORMAL_PRIORITY_CLASS)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # The pseudo-handle is (HANDLE)-1. Without restype/argtypes ctypes truncates it to a 32-bit int, the call
+    # gets an invalid handle and fails silently, and the process stays at Normal (found 2026-11-15).
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.SetPriorityClass.restype = wintypes.BOOL
+    kernel32.GetPriorityClass.argtypes = (wintypes.HANDLE,)
+    kernel32.GetPriorityClass.restype = wintypes.DWORD
+    handle = kernel32.GetCurrentProcess()
+    if not kernel32.SetPriorityClass(handle, BELOW_NORMAL_PRIORITY_CLASS):
+        raise OSError(ctypes.get_last_error(), "SetPriorityClass(BELOW_NORMAL) failed")
+    if kernel32.GetPriorityClass(handle) != BELOW_NORMAL_PRIORITY_CLASS:
+        raise OSError("process priority is not BelowNormal after SetPriorityClass")
+
+
+def priority_class() -> int | None:
+    """The current Windows priority class (0x4000 = BelowNormal), None elsewhere."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetPriorityClass.argtypes = (wintypes.HANDLE,)
+    kernel32.GetPriorityClass.restype = wintypes.DWORD
+    return int(kernel32.GetPriorityClass(kernel32.GetCurrentProcess()))
 
 
 def free_ram_gb() -> float | None:

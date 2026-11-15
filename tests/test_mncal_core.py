@@ -441,6 +441,120 @@ class GuardTests(unittest.TestCase):
 
 
 @unittest.skipUnless(D5, "D5 env only")
+class CalibrateEquivalenceTests(unittest.TestCase):
+    """The one-pass calibrate path against the frozen per-threshold code it replaced (c2ea815)."""
+
+    @classmethod
+    def setUpClass(cls):
+        tests_dir = str(Path(__file__).resolve().parent)
+        if tests_dir not in sys.path:
+            sys.path.insert(0, tests_dir)
+        cls.M = _import("mncal.metrics")
+        cls.CAL = _import("mncal.calibrate")
+        import importlib
+
+        cls.REF_M = importlib.import_module("mncal_metrics_reference")
+        cls.REF_CAL = importlib.import_module("mncal_calibrate_reference")
+
+    @staticmethod
+    def _population(seed, n=4000, blocks=400, classes=12):
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        s = rng.random(n)
+        s[::7] = np.round(s[::7], 2)                         # scores exactly on grid points
+        s[::53] = np.nan
+        y = (rng.random(n) < np.nan_to_num(s, nan=0.2) ** 2).astype(float)
+        w = rng.choice([1.0, 1.0, 1.0, 3.5, 100.0], n)
+        a = rng.integers(0, blocks, n)
+        b = (a + 1 + rng.integers(0, blocks - 1, n)) % blocks
+        block_a = np.array([f"BLK{v:05d}" for v in a])
+        block_b = np.array([f"BLK{v:05d}" for v in b])
+        parent = np.array([f"class{v % classes}" if v % 17 else "unknown" for v in range(blocks)])
+        return s, y, w, block_a, block_b, parent[a], parent[b]
+
+    def _close(self, x, y, tol=1e-9):
+        import numpy as np
+
+        x, y = np.asarray(x, float), np.asarray(y, float)
+        self.assertEqual(x.shape, y.shape)
+        both_nan = np.isnan(x) & np.isnan(y)
+        self.assertTrue(np.all(both_nan | (np.abs(x - y) <= tol * np.maximum(1.0, np.abs(y)))),
+                        f"max diff {np.nanmax(np.abs(x - y))}")
+
+    def test_curve_matches_reference_plain_and_class_balanced(self):
+        for seed in (0, 1):
+            s, y, w, _, _, pa, pb = self._population(seed)
+            for classes in (None, (pa, pb)):
+                new = self.M.curve(s, y, w, classes=classes)
+                ref = self.REF_M.curve(s, y, w, classes=classes)
+                self.assertEqual(list(new["n_above"]), list(ref["n_above"]))
+                for key in ("precision", "low", "high", "recall", "n_eff"):
+                    self._close(new[key], ref[key])
+
+    def test_bootstrap_matches_reference_at_every_threshold_above_the_start(self):
+        import numpy as np
+
+        s, y, w, ba, bb, pa, pb = self._population(2, n=2500, blocks=250)
+        for classes in (None, (pa, pb)):
+            i0 = 40
+            new = self.M.bootstrap_curve(s, y, w, i0, ba, bb, classes=classes, B=70, seed=3)
+            for i in (40, 41, 55, 70, 90, 100):
+                (plo, phi), (rlo, rhi) = self.REF_M.bootstrap_at(s, y, w, float(self.M.GRID[i]), ba, bb,
+                                                                 classes=classes, B=70, seed=3)
+                self._close([new["precision_low"][i], new["precision_high"][i], new["recall_low"][i],
+                             new["recall_high"][i]], [plo, phi, rlo, rhi])
+            self.assertTrue(np.all(np.isnan(new["precision_low"][:i0])))
+
+    def test_integer_string_rank_codes_draw_the_same_replicates_as_strings(self):
+        s, y, w, ba, bb, pa, pb = self._population(4, n=2000, blocks=150)
+        ca, cb, _ = self.CAL.block_codes(ba, bb)
+        by_codes = self.M.bootstrap_curve(s, y, w, 30, ca, cb, classes=(pa, pb), B=40, seed=5)
+        by_strings = self.M.bootstrap_curve(s, y, w, 30, ba, bb, classes=(pa, pb), B=40, seed=5)
+        for key in by_codes:
+            self._close(by_codes[key], by_strings[key], tol=0)
+
+    def test_build_table_matches_reference(self):
+        import numpy as np
+        import pandas as pd
+
+        rng = np.random.default_rng(7)
+        n, blocks = 6000, 300
+        names = np.array([f"BLK{v:05d}" for v in range(blocks)])
+        a = rng.integers(0, blocks, n)
+        b = (a + 1 + rng.integers(0, blocks - 1, n)) % blocks
+        tan = rng.random(n)
+        s1 = np.clip(tan + rng.normal(0, 0.25, n), 0, 1)
+        s1[::9] = np.round(s1[::9], 2)
+        s2 = np.clip(tan + rng.normal(0, 0.35, n), 0, 1)
+        categories = pd.Index(names)
+        kept = pd.DataFrame({
+            "block_a": pd.Categorical(names[a], categories=categories),
+            "block_b": pd.Categorical(names[b], categories=categories),
+            "adduct": pd.Categorical(rng.choice(["[M+H]+", "[M+Na]+"], n)),
+            "dbin": rng.integers(0, 7, n), "inst_same": rng.random(n) < 0.6,
+            "lipid_pair": rng.integers(0, 3, n), "structure_ok": rng.random(n) < 0.97,
+            "tanimoto": tan, "same_parent": rng.integers(-1, 2, n),
+            "w_keep": np.where(rng.random(n) < 0.1, 100.0, 1.0),
+            "s_k1": s1, "m_k1": rng.integers(0, 12, n), "s_k2": s2, "m_k2": rng.integers(0, 12, n)})
+        sample = kept.sample(1500, random_state=1).reset_index(drop=True)
+        sample["block_a"] = sample["block_a"].astype(str)           # the MCES sample carries plain strings
+        sample["block_b"] = sample["block_b"].astype(str)
+        sample["mces"] = np.round((1 - sample["tanimoto"]) * 12, 0)
+        sample["mces_mode"] = 1
+        sample["ht_weight"] = rng.choice([1.0, 2.5, 40.0], len(sample))
+        parent_of = {nm: (None if i % 11 == 0 else f"class{i % 9}") for i, nm in enumerate(names)}
+        kernels = [{"short": "k1", "identity": "test.k1", "implementation": "t", "reports_matches": True},
+                   {"short": "k2", "identity": "test.k2", "implementation": "t", "reports_matches": False}]
+        args = dict(library="SYN", ion_mode="Positive", parent_of=parent_of, ref_matched_short="k1", B=60, seed=0,
+                    progress=lambda *_: None)
+        new = self.CAL.build_table(kept, sample, kernels, **args)
+        ref = self.REF_CAL.build_table(kept, sample, kernels, **args)
+        self.assertGreater(int((ref["estimable"] == 1).sum()), 20)
+        self.assertEqual(self.CAL.canonical_tsv(new), self.REF_CAL.canonical_tsv(ref))
+
+
+@unittest.skipUnless(D5, "D5 env only")
 class OverlayDdlTests(unittest.TestCase):
     EDGE = ["similarity_id", "query_spectrum_id", "reference_spectrum_id", "neighbour_name", "neighbour_inchikey",
             "neighbour_library_id", "ion_mode", "query_adduct", "adduct_assumed", "query_precursor_mz",

@@ -357,6 +357,7 @@ def cmd_calibrate(args) -> int:
     _update_run(run, "calibrate", {"table": out.name, "table_sha256": digest, "rows": int(len(table)),
                                    "estimable_rows": int((table["estimable"] == 1).sum()),
                                    "bootstrap_b": args.bootstrap, "seed": args.seed,
+                                   "priority_class": C.priority_class(),
                                    "matched_reference_for_non_matching_kernels": ref_short,
                                    "sanity": sanity, "stratum_counts": counts})
     print(f"cutoff_table.tsv rows={len(table)} sha256={digest}")
@@ -504,6 +505,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # job.log is a redirected file: without line buffering, progress lines sit in the buffer for hours
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     if args.command != "guard":
         C.below_normal_priority()          # C8: every heavy step runs at BelowNormal, workers included
     return int(args.func(args) or 0)
