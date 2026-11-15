@@ -1,0 +1,502 @@
+{
+ "accession": "ST004544",
+ "repository": "metabolomics_workbench",
+ "basis": "Ground truth from the 2026-11-15 prototype checker agents (raw-header preflight, mzML source paths, elution order, mwTab), recorded here as public accession, analysis and file names only.",
+ "checker_verdict_on_prototype_triage": "triage_partly_right",
+ "note": "Names carry no polarity or chromatography. Headers: odd suffixes positive with HILIC elution, even suffixes negative with RP elution; _1 to _4 are FullScan only, _5/_6 DDA. Before download the right triage abstains.",
+ "row_member_overrides": {},
+ "units": [
+  {
+   "unit_id": "AN007633",
+   "chromatography": "HILIC",
+   "ion_mode": "positive",
+   "acquisition_mode": "mixed",
+   "expected_status_pre_download": "abstained",
+   "expected_status_after_preflight": "needs_person",
+   "expected_needs_person": [
+    "no_signal"
+   ],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC1_2_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC1_2_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC1_2_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC2_2_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC2_2_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC2_2_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_11_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_11_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_11_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_12_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_12_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_12_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_13_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_13_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_13_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_14_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_14_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_14_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_15_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_15_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_15_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_17_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_17_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_17_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_18_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_18_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_18_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_8_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_8_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_8_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_9_1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_9_3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_9_5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN007634",
+   "chromatography": "RP",
+   "ion_mode": "negative",
+   "acquisition_mode": "mixed",
+   "expected_status_pre_download": "abstained",
+   "expected_status_after_preflight": "needs_person",
+   "expected_needs_person": [
+    "no_signal"
+   ],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC1_2_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC1_2_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC1_2_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC2_2_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC2_2_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "QC2_2_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_11_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_11_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_11_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_12_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_12_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_12_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_13_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_13_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_13_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_14_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_14_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_14_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_15_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_15_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_15_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_17_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_17_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_17_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_18_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_18_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_18_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_8_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_8_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_8_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_9_2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_9_4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004544_DCDRawdatafiles.zip",
+     "path": "Sample_9_6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    }
+   ]
+  }
+ ],
+ "excluded_members": [],
+ "unchecked_members": []
+}

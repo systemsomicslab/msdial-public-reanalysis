@@ -1,0 +1,1330 @@
+{
+ "accession": "ST002283",
+ "repository": "metabolomics_workbench",
+ "units": [
+  {
+   "unit_id": "AN003728",
+   "source_subrecord_id": "AN003728",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Positive",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "D1_TF_A_Hilic_Pos",
+     "raw_file": "D1_TF_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_A_Lip_Pos",
+     "raw_file": "D1_TF_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_B_Hilic_Pos",
+     "raw_file": "D1_TF_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_B_Lip_Pos",
+     "raw_file": "D1_TF_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_C_Hilic_Pos",
+     "raw_file": "D1_TF_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_C_Lip_Pos",
+     "raw_file": "D1_TF_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_D_Hilic_Pos",
+     "raw_file": "D1_TF_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_D_Lip_Pos",
+     "raw_file": "D1_TF_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_E_Hilic_Pos",
+     "raw_file": "D1_TF_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_E_Lip_Pos",
+     "raw_file": "D1_TF_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_A_Hilic_Pos",
+     "raw_file": "D1_TS_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_A_Lip_Pos",
+     "raw_file": "D1_TS_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_B_Hilic_Pos",
+     "raw_file": "D1_TS_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_B_Lip_Pos",
+     "raw_file": "D1_TS_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_C_Hilic_Pos",
+     "raw_file": "D1_TS_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_C_Lip_Pos",
+     "raw_file": "D1_TS_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_D_Hilic_Pos",
+     "raw_file": "D1_TS_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_D_Lip_Pos",
+     "raw_file": "D1_TS_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_E_Hilic_Pos",
+     "raw_file": "D1_TS_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_E_Lip_Pos",
+     "raw_file": "D1_TS_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_A_Hilic_Pos",
+     "raw_file": "D2_TF_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_A_Lip_Pos",
+     "raw_file": "D2_TF_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_B_Hilic_Pos",
+     "raw_file": "D2_TF_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_B_Lip_Pos",
+     "raw_file": "D2_TF_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_C_Hilic_Pos",
+     "raw_file": "D2_TF_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_C_Lip_Pos",
+     "raw_file": "D2_TF_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_D_Hilic_Pos",
+     "raw_file": "D2_TF_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_D_Lip_Pos",
+     "raw_file": "D2_TF_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_E_Hilic_Pos",
+     "raw_file": "D2_TF_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_E_Lip_Pos",
+     "raw_file": "D2_TF_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_A_Hilic_Pos",
+     "raw_file": "D2_TS_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_A_Lip_Pos",
+     "raw_file": "D2_TS_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_B_Hilic_Pos",
+     "raw_file": "D2_TS_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_B_Lip_Pos",
+     "raw_file": "D2_TS_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_C_Hilic_Pos",
+     "raw_file": "D2_TS_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_C_Lip_Pos",
+     "raw_file": "D2_TS_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_D_Hilic_Pos",
+     "raw_file": "D2_TS_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_D_Lip_Pos",
+     "raw_file": "D2_TS_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_E_Hilic_Pos",
+     "raw_file": "D2_TS_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_E_Lip_Pos",
+     "raw_file": "D2_TS_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_A_Hilic_Pos",
+     "raw_file": "D3_TF_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_A_Lip_Pos",
+     "raw_file": "D3_TF_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_B_Hilic_Pos",
+     "raw_file": "D3_TF_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_B_Lip_Pos",
+     "raw_file": "D3_TF_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_C_Hilic_Pos",
+     "raw_file": "D3_TF_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_C_Lip_Pos",
+     "raw_file": "D3_TF_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_D_Hilic_Pos",
+     "raw_file": "D3_TF_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_D_Lip_Pos",
+     "raw_file": "D3_TF_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_E_Hilic_Pos",
+     "raw_file": "D3_TF_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_E_Lip_Pos",
+     "raw_file": "D3_TF_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_A_Hilic_Pos",
+     "raw_file": "D3_TS_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_A_Lip_Pos",
+     "raw_file": "D3_TS_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_B_Hilic_Pos",
+     "raw_file": "D3_TS_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_B_Lip_Pos",
+     "raw_file": "D3_TS_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_C_Hilic_Pos",
+     "raw_file": "D3_TS_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_C_Lip_Pos",
+     "raw_file": "D3_TS_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_D_Hilic_Pos",
+     "raw_file": "D3_TS_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_D_Lip_Pos",
+     "raw_file": "D3_TS_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_E_Hilic_Pos",
+     "raw_file": "D3_TS_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_E_Lip_Pos",
+     "raw_file": "D3_TS_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_A_Hilic_Pos",
+     "raw_file": "D4_TF_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_A_Lip_Pos",
+     "raw_file": "D4_TF_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_B_Hilic_Pos",
+     "raw_file": "D4_TF_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_B_Lip_Pos",
+     "raw_file": "D4_TF_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_C_Hilic_Pos",
+     "raw_file": "D4_TF_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_C_Lip_Pos",
+     "raw_file": "D4_TF_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_D_Hilic_Pos",
+     "raw_file": "D4_TF_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_D_Lip_Pos",
+     "raw_file": "D4_TF_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_E_Hilic_Pos",
+     "raw_file": "D4_TF_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_E_Lip_Pos",
+     "raw_file": "D4_TF_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_A_Hilic_Pos",
+     "raw_file": "D4_TS_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_A_Lip_Pos",
+     "raw_file": "D4_TS_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_B_Hilic_Pos",
+     "raw_file": "D4_TS_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_B_Lip_Pos",
+     "raw_file": "D4_TS_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_C_Hilic_Pos",
+     "raw_file": "D4_TS_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_C_Lip_Pos",
+     "raw_file": "D4_TS_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_D_Hilic_Pos",
+     "raw_file": "D4_TS_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_D_Lip_Pos",
+     "raw_file": "D4_TS_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_E_Hilic_Pos",
+     "raw_file": "D4_TS_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_E_Lip_Pos",
+     "raw_file": "D4_TS_E_Lip_Pos.mzML"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN003729",
+   "source_subrecord_id": "AN003729",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Negative",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "D1_TF_A_Hilic_Neg",
+     "raw_file": "D1_TF_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_A_Lip_Neg",
+     "raw_file": "D1_TF_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_B_Hilic_Neg",
+     "raw_file": "D1_TF_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_B_Lip_Neg",
+     "raw_file": "D1_TF_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_C_Hilic_Neg",
+     "raw_file": "D1_TF_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_C_Lip_Neg",
+     "raw_file": "D1_TF_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_D_Hilic_Neg",
+     "raw_file": "D1_TF_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_D_Lip_Neg",
+     "raw_file": "D1_TF_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_E_Hilic_Neg",
+     "raw_file": "D1_TF_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_E_Lip_Neg",
+     "raw_file": "D1_TF_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_A_Hilic_Neg",
+     "raw_file": "D1_TS_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_A_Lip_Neg",
+     "raw_file": "D1_TS_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_B_Hilic_Neg",
+     "raw_file": "D1_TS_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_B_Lip_Neg",
+     "raw_file": "D1_TS_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_C_Hilic_Neg",
+     "raw_file": "D1_TS_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_C_Lip_Neg",
+     "raw_file": "D1_TS_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_D_Hilic_Neg",
+     "raw_file": "D1_TS_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_D_Lip_Neg",
+     "raw_file": "D1_TS_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_E_Hilic_Neg",
+     "raw_file": "D1_TS_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_E_Lip_Neg",
+     "raw_file": "D1_TS_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_A_Hilic_Neg",
+     "raw_file": "D2_TF_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_A_Lip_Neg",
+     "raw_file": "D2_TF_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_B_Hilic_Neg",
+     "raw_file": "D2_TF_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_B_Lip_Neg",
+     "raw_file": "D2_TF_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_C_Hilic_Neg",
+     "raw_file": "D2_TF_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_C_Lip_Neg",
+     "raw_file": "D2_TF_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_D_Hilic_Neg",
+     "raw_file": "D2_TF_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_D_Lip_Neg",
+     "raw_file": "D2_TF_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_E_Hilic_Neg",
+     "raw_file": "D2_TF_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_E_Lip_Neg",
+     "raw_file": "D2_TF_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_A_Hilic_Neg",
+     "raw_file": "D2_TS_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_A_Lip_Neg",
+     "raw_file": "D2_TS_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_B_Hilic_Neg",
+     "raw_file": "D2_TS_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_B_Lip_Neg",
+     "raw_file": "D2_TS_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_C_Hilic_Neg",
+     "raw_file": "D2_TS_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_C_Lip_Neg",
+     "raw_file": "D2_TS_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_D_Hilic_Neg",
+     "raw_file": "D2_TS_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_D_Lip_Neg",
+     "raw_file": "D2_TS_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_E_Hilic_Neg",
+     "raw_file": "D2_TS_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_E_Lip_Neg",
+     "raw_file": "D2_TS_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_A_Hilic_Neg",
+     "raw_file": "D3_TF_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_A_Lip_Neg",
+     "raw_file": "D3_TF_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_B_Hilic_Neg",
+     "raw_file": "D3_TF_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_B_Lip_Neg",
+     "raw_file": "D3_TF_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_C_Hilic_Neg",
+     "raw_file": "D3_TF_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_C_Lip_Neg",
+     "raw_file": "D3_TF_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_D_Hilic_Neg",
+     "raw_file": "D3_TF_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_D_Lip_Neg",
+     "raw_file": "D3_TF_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_E_Hilic_Neg",
+     "raw_file": "D3_TF_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_E_Lip_Neg",
+     "raw_file": "D3_TF_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_A_Hilic_Neg",
+     "raw_file": "D3_TS_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_A_Lip_Neg",
+     "raw_file": "D3_TS_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_B_Hilic_Neg",
+     "raw_file": "D3_TS_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_B_Lip_Neg",
+     "raw_file": "D3_TS_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_C_Hilic_Neg",
+     "raw_file": "D3_TS_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_C_Lip_Neg",
+     "raw_file": "D3_TS_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_D_Hilic_Neg",
+     "raw_file": "D3_TS_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_D_Lip_Neg",
+     "raw_file": "D3_TS_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_E_Hilic_Neg",
+     "raw_file": "D3_TS_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_E_Lip_Neg",
+     "raw_file": "D3_TS_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_A_Hilic_Neg",
+     "raw_file": "D4_TF_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_A_Lip_Neg",
+     "raw_file": "D4_TF_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_B_Hilic_Neg",
+     "raw_file": "D4_TF_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_B_Lip_Neg",
+     "raw_file": "D4_TF_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_C_Hilic_Neg",
+     "raw_file": "D4_TF_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_C_Lip_Neg",
+     "raw_file": "D4_TF_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_D_Hilic_Neg",
+     "raw_file": "D4_TF_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_D_Lip_Neg",
+     "raw_file": "D4_TF_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_E_Hilic_Neg",
+     "raw_file": "D4_TF_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_E_Lip_Neg",
+     "raw_file": "D4_TF_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_A_Hilic_Neg",
+     "raw_file": "D4_TS_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_A_Lip_Neg",
+     "raw_file": "D4_TS_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_B_Hilic_Neg",
+     "raw_file": "D4_TS_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_B_Lip_Neg",
+     "raw_file": "D4_TS_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_C_Hilic_Neg",
+     "raw_file": "D4_TS_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_C_Lip_Neg",
+     "raw_file": "D4_TS_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_D_Hilic_Neg",
+     "raw_file": "D4_TS_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_D_Lip_Neg",
+     "raw_file": "D4_TS_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_E_Hilic_Neg",
+     "raw_file": "D4_TS_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_E_Lip_Neg",
+     "raw_file": "D4_TS_E_Lip_Neg.mzML"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN003730",
+   "source_subrecord_id": "AN003730",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Positive",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "D1_TF_A_Hilic_Pos",
+     "raw_file": "D1_TF_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_A_Lip_Pos",
+     "raw_file": "D1_TF_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_B_Hilic_Pos",
+     "raw_file": "D1_TF_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_B_Lip_Pos",
+     "raw_file": "D1_TF_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_C_Hilic_Pos",
+     "raw_file": "D1_TF_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_C_Lip_Pos",
+     "raw_file": "D1_TF_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_D_Hilic_Pos",
+     "raw_file": "D1_TF_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_D_Lip_Pos",
+     "raw_file": "D1_TF_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_E_Hilic_Pos",
+     "raw_file": "D1_TF_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TF_E_Lip_Pos",
+     "raw_file": "D1_TF_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_A_Hilic_Pos",
+     "raw_file": "D1_TS_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_A_Lip_Pos",
+     "raw_file": "D1_TS_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_B_Hilic_Pos",
+     "raw_file": "D1_TS_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_B_Lip_Pos",
+     "raw_file": "D1_TS_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_C_Hilic_Pos",
+     "raw_file": "D1_TS_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_C_Lip_Pos",
+     "raw_file": "D1_TS_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_D_Hilic_Pos",
+     "raw_file": "D1_TS_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_D_Lip_Pos",
+     "raw_file": "D1_TS_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_E_Hilic_Pos",
+     "raw_file": "D1_TS_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D1_TS_E_Lip_Pos",
+     "raw_file": "D1_TS_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_A_Hilic_Pos",
+     "raw_file": "D2_TF_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_A_Lip_Pos",
+     "raw_file": "D2_TF_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_B_Hilic_Pos",
+     "raw_file": "D2_TF_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_B_Lip_Pos",
+     "raw_file": "D2_TF_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_C_Hilic_Pos",
+     "raw_file": "D2_TF_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_C_Lip_Pos",
+     "raw_file": "D2_TF_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_D_Hilic_Pos",
+     "raw_file": "D2_TF_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_D_Lip_Pos",
+     "raw_file": "D2_TF_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_E_Hilic_Pos",
+     "raw_file": "D2_TF_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TF_E_Lip_Pos",
+     "raw_file": "D2_TF_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_A_Hilic_Pos",
+     "raw_file": "D2_TS_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_A_Lip_Pos",
+     "raw_file": "D2_TS_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_B_Hilic_Pos",
+     "raw_file": "D2_TS_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_B_Lip_Pos",
+     "raw_file": "D2_TS_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_C_Hilic_Pos",
+     "raw_file": "D2_TS_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_C_Lip_Pos",
+     "raw_file": "D2_TS_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_D_Hilic_Pos",
+     "raw_file": "D2_TS_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_D_Lip_Pos",
+     "raw_file": "D2_TS_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_E_Hilic_Pos",
+     "raw_file": "D2_TS_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D2_TS_E_Lip_Pos",
+     "raw_file": "D2_TS_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_A_Hilic_Pos",
+     "raw_file": "D3_TF_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_A_Lip_Pos",
+     "raw_file": "D3_TF_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_B_Hilic_Pos",
+     "raw_file": "D3_TF_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_B_Lip_Pos",
+     "raw_file": "D3_TF_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_C_Hilic_Pos",
+     "raw_file": "D3_TF_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_C_Lip_Pos",
+     "raw_file": "D3_TF_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_D_Hilic_Pos",
+     "raw_file": "D3_TF_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_D_Lip_Pos",
+     "raw_file": "D3_TF_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_E_Hilic_Pos",
+     "raw_file": "D3_TF_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TF_E_Lip_Pos",
+     "raw_file": "D3_TF_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_A_Hilic_Pos",
+     "raw_file": "D3_TS_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_A_Lip_Pos",
+     "raw_file": "D3_TS_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_B_Hilic_Pos",
+     "raw_file": "D3_TS_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_B_Lip_Pos",
+     "raw_file": "D3_TS_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_C_Hilic_Pos",
+     "raw_file": "D3_TS_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_C_Lip_Pos",
+     "raw_file": "D3_TS_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_D_Hilic_Pos",
+     "raw_file": "D3_TS_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_D_Lip_Pos",
+     "raw_file": "D3_TS_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_E_Hilic_Pos",
+     "raw_file": "D3_TS_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D3_TS_E_Lip_Pos",
+     "raw_file": "D3_TS_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_A_Hilic_Pos",
+     "raw_file": "D4_TF_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_A_Lip_Pos",
+     "raw_file": "D4_TF_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_B_Hilic_Pos",
+     "raw_file": "D4_TF_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_B_Lip_Pos",
+     "raw_file": "D4_TF_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_C_Hilic_Pos",
+     "raw_file": "D4_TF_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_C_Lip_Pos",
+     "raw_file": "D4_TF_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_D_Hilic_Pos",
+     "raw_file": "D4_TF_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_D_Lip_Pos",
+     "raw_file": "D4_TF_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_E_Hilic_Pos",
+     "raw_file": "D4_TF_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TF_E_Lip_Pos",
+     "raw_file": "D4_TF_E_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_A_Hilic_Pos",
+     "raw_file": "D4_TS_A_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_A_Lip_Pos",
+     "raw_file": "D4_TS_A_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_B_Hilic_Pos",
+     "raw_file": "D4_TS_B_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_B_Lip_Pos",
+     "raw_file": "D4_TS_B_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_C_Hilic_Pos",
+     "raw_file": "D4_TS_C_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_C_Lip_Pos",
+     "raw_file": "D4_TS_C_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_D_Hilic_Pos",
+     "raw_file": "D4_TS_D_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_D_Lip_Pos",
+     "raw_file": "D4_TS_D_Lip_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_E_Hilic_Pos",
+     "raw_file": "D4_TS_E_Hilic_Pos.mzML"
+    },
+    {
+     "sample_id": "D4_TS_E_Lip_Pos",
+     "raw_file": "D4_TS_E_Lip_Pos.mzML"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN003731",
+   "source_subrecord_id": "AN003731",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Negative",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "D1_TF_A_Hilic_Neg",
+     "raw_file": "D1_TF_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_A_Lip_Neg",
+     "raw_file": "D1_TF_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_B_Hilic_Neg",
+     "raw_file": "D1_TF_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_B_Lip_Neg",
+     "raw_file": "D1_TF_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_C_Hilic_Neg",
+     "raw_file": "D1_TF_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_C_Lip_Neg",
+     "raw_file": "D1_TF_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_D_Hilic_Neg",
+     "raw_file": "D1_TF_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_D_Lip_Neg",
+     "raw_file": "D1_TF_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_E_Hilic_Neg",
+     "raw_file": "D1_TF_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TF_E_Lip_Neg",
+     "raw_file": "D1_TF_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_A_Hilic_Neg",
+     "raw_file": "D1_TS_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_A_Lip_Neg",
+     "raw_file": "D1_TS_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_B_Hilic_Neg",
+     "raw_file": "D1_TS_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_B_Lip_Neg",
+     "raw_file": "D1_TS_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_C_Hilic_Neg",
+     "raw_file": "D1_TS_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_C_Lip_Neg",
+     "raw_file": "D1_TS_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_D_Hilic_Neg",
+     "raw_file": "D1_TS_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_D_Lip_Neg",
+     "raw_file": "D1_TS_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_E_Hilic_Neg",
+     "raw_file": "D1_TS_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D1_TS_E_Lip_Neg",
+     "raw_file": "D1_TS_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_A_Hilic_Neg",
+     "raw_file": "D2_TF_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_A_Lip_Neg",
+     "raw_file": "D2_TF_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_B_Hilic_Neg",
+     "raw_file": "D2_TF_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_B_Lip_Neg",
+     "raw_file": "D2_TF_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_C_Hilic_Neg",
+     "raw_file": "D2_TF_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_C_Lip_Neg",
+     "raw_file": "D2_TF_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_D_Hilic_Neg",
+     "raw_file": "D2_TF_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_D_Lip_Neg",
+     "raw_file": "D2_TF_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_E_Hilic_Neg",
+     "raw_file": "D2_TF_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TF_E_Lip_Neg",
+     "raw_file": "D2_TF_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_A_Hilic_Neg",
+     "raw_file": "D2_TS_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_A_Lip_Neg",
+     "raw_file": "D2_TS_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_B_Hilic_Neg",
+     "raw_file": "D2_TS_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_B_Lip_Neg",
+     "raw_file": "D2_TS_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_C_Hilic_Neg",
+     "raw_file": "D2_TS_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_C_Lip_Neg",
+     "raw_file": "D2_TS_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_D_Hilic_Neg",
+     "raw_file": "D2_TS_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_D_Lip_Neg",
+     "raw_file": "D2_TS_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_E_Hilic_Neg",
+     "raw_file": "D2_TS_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D2_TS_E_Lip_Neg",
+     "raw_file": "D2_TS_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_A_Hilic_Neg",
+     "raw_file": "D3_TF_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_A_Lip_Neg",
+     "raw_file": "D3_TF_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_B_Hilic_Neg",
+     "raw_file": "D3_TF_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_B_Lip_Neg",
+     "raw_file": "D3_TF_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_C_Hilic_Neg",
+     "raw_file": "D3_TF_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_C_Lip_Neg",
+     "raw_file": "D3_TF_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_D_Hilic_Neg",
+     "raw_file": "D3_TF_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_D_Lip_Neg",
+     "raw_file": "D3_TF_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_E_Hilic_Neg",
+     "raw_file": "D3_TF_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TF_E_Lip_Neg",
+     "raw_file": "D3_TF_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_A_Hilic_Neg",
+     "raw_file": "D3_TS_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_A_Lip_Neg",
+     "raw_file": "D3_TS_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_B_Hilic_Neg",
+     "raw_file": "D3_TS_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_B_Lip_Neg",
+     "raw_file": "D3_TS_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_C_Hilic_Neg",
+     "raw_file": "D3_TS_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_C_Lip_Neg",
+     "raw_file": "D3_TS_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_D_Hilic_Neg",
+     "raw_file": "D3_TS_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_D_Lip_Neg",
+     "raw_file": "D3_TS_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_E_Hilic_Neg",
+     "raw_file": "D3_TS_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D3_TS_E_Lip_Neg",
+     "raw_file": "D3_TS_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_A_Hilic_Neg",
+     "raw_file": "D4_TF_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_A_Lip_Neg",
+     "raw_file": "D4_TF_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_B_Hilic_Neg",
+     "raw_file": "D4_TF_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_B_Lip_Neg",
+     "raw_file": "D4_TF_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_C_Hilic_Neg",
+     "raw_file": "D4_TF_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_C_Lip_Neg",
+     "raw_file": "D4_TF_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_D_Hilic_Neg",
+     "raw_file": "D4_TF_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_D_Lip_Neg",
+     "raw_file": "D4_TF_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_E_Hilic_Neg",
+     "raw_file": "D4_TF_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TF_E_Lip_Neg",
+     "raw_file": "D4_TF_E_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_A_Hilic_Neg",
+     "raw_file": "D4_TS_A_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_A_Lip_Neg",
+     "raw_file": "D4_TS_A_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_B_Hilic_Neg",
+     "raw_file": "D4_TS_B_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_B_Lip_Neg",
+     "raw_file": "D4_TS_B_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_C_Hilic_Neg",
+     "raw_file": "D4_TS_C_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_C_Lip_Neg",
+     "raw_file": "D4_TS_C_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_D_Hilic_Neg",
+     "raw_file": "D4_TS_D_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_D_Lip_Neg",
+     "raw_file": "D4_TS_D_Lip_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_E_Hilic_Neg",
+     "raw_file": "D4_TS_E_Hilic_Neg.mzML"
+    },
+    {
+     "sample_id": "D4_TS_E_Lip_Neg",
+     "raw_file": "D4_TS_E_Lip_Neg.mzML"
+    }
+   ]
+  }
+ ]
+}

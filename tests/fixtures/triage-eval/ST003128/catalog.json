@@ -1,0 +1,903 @@
+{
+ "accession": "ST003128",
+ "repository": "metabolomics_workbench",
+ "units": [
+  {
+   "unit_id": "AN005128",
+   "source_subrecord_id": "AN005128",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Both",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "SL_HetCD_1",
+     "raw_file": "SL_HetCD_1.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_2",
+     "raw_file": "SL_HetCD_2.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_3",
+     "raw_file": "SL_HetCD_3.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_4",
+     "raw_file": "SL_HetCD_4.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_5",
+     "raw_file": "SL_HetCD_5.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_6",
+     "raw_file": "SL_HetCD_6.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_1",
+     "raw_file": "SL_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_2",
+     "raw_file": "SL_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_3",
+     "raw_file": "SL_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_4",
+     "raw_file": "SL_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_5",
+     "raw_file": "SL_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_6",
+     "raw_file": "SL_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_1",
+     "raw_file": "SL_WTCD_1.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_2",
+     "raw_file": "SL_WTCD_2.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_3",
+     "raw_file": "SL_WTCD_3.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_4",
+     "raw_file": "SL_WTCD_4.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_5",
+     "raw_file": "SL_WTCD_5.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_6",
+     "raw_file": "SL_WTCD_6.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_1",
+     "raw_file": "SL_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_2",
+     "raw_file": "SL_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_3",
+     "raw_file": "SL_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_4",
+     "raw_file": "SL_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_5",
+     "raw_file": "SL_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_6",
+     "raw_file": "SL_WTHFD_6.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_1",
+     "raw_file": "SP_HetCD_1.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_2",
+     "raw_file": "SP_HetCD_2.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_3",
+     "raw_file": "SP_HetCD_3.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_4",
+     "raw_file": "SP_HetCD_4.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_5",
+     "raw_file": "SP_HetCD_5.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_6",
+     "raw_file": "SP_HetCD_6.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_1",
+     "raw_file": "SP_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_2",
+     "raw_file": "SP_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_3",
+     "raw_file": "SP_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_4",
+     "raw_file": "SP_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_5",
+     "raw_file": "SP_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_6",
+     "raw_file": "SP_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_1",
+     "raw_file": "SP_WTCD_1.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_2",
+     "raw_file": "SP_WTCD_2.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_3",
+     "raw_file": "SP_WTCD_3.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_4",
+     "raw_file": "SP_WTCD_4.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_5",
+     "raw_file": "SP_WTCD_5.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_6",
+     "raw_file": "SP_WTCD_6.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_1",
+     "raw_file": "SP_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_2",
+     "raw_file": "SP_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_3",
+     "raw_file": "SP_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_4",
+     "raw_file": "SP_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_5",
+     "raw_file": "SP_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_6",
+     "raw_file": "SP_WTHFD_6.raw"
+    },
+    {
+     "sample_id": "S_HetCD_1",
+     "raw_file": "S_HetCD_1.raw"
+    },
+    {
+     "sample_id": "S_HetCD_2",
+     "raw_file": "S_HetCD_2.raw"
+    },
+    {
+     "sample_id": "S_HetCD_3",
+     "raw_file": "S_HetCD_3.raw"
+    },
+    {
+     "sample_id": "S_HetCD_4",
+     "raw_file": "S_HetCD_4.raw"
+    },
+    {
+     "sample_id": "S_HetCD_5",
+     "raw_file": "S_HetCD_5.raw"
+    },
+    {
+     "sample_id": "S_HetCD_6",
+     "raw_file": "S_HetCD_6.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_1",
+     "raw_file": "S_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_2",
+     "raw_file": "S_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_3",
+     "raw_file": "S_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_4",
+     "raw_file": "S_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_5",
+     "raw_file": "S_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_6",
+     "raw_file": "S_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "S_WTCD_1",
+     "raw_file": "S_WTCD_1.raw"
+    },
+    {
+     "sample_id": "S_WTCD_2",
+     "raw_file": "S_WTCD_2.raw"
+    },
+    {
+     "sample_id": "S_WTCD_3",
+     "raw_file": "S_WTCD_3.raw"
+    },
+    {
+     "sample_id": "S_WTCD_4",
+     "raw_file": "S_WTCD_4.raw"
+    },
+    {
+     "sample_id": "S_WTCD_5",
+     "raw_file": "S_WTCD_5.raw"
+    },
+    {
+     "sample_id": "S_WTCD_6",
+     "raw_file": "S_WTCD_6.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_1",
+     "raw_file": "S_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_2",
+     "raw_file": "S_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_3",
+     "raw_file": "S_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_4",
+     "raw_file": "S_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_5",
+     "raw_file": "S_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_6",
+     "raw_file": "S_WTHFD_6.raw"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN005129",
+   "source_subrecord_id": "AN005129",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Negative",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "SL_HetCD_1",
+     "raw_file": "SL_HetCD_1.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_2",
+     "raw_file": "SL_HetCD_2.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_3",
+     "raw_file": "SL_HetCD_3.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_4",
+     "raw_file": "SL_HetCD_4.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_5",
+     "raw_file": "SL_HetCD_5.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_6",
+     "raw_file": "SL_HetCD_6.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_1",
+     "raw_file": "SL_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_2",
+     "raw_file": "SL_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_3",
+     "raw_file": "SL_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_4",
+     "raw_file": "SL_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_5",
+     "raw_file": "SL_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_6",
+     "raw_file": "SL_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_1",
+     "raw_file": "SL_WTCD_1.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_2",
+     "raw_file": "SL_WTCD_2.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_3",
+     "raw_file": "SL_WTCD_3.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_4",
+     "raw_file": "SL_WTCD_4.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_5",
+     "raw_file": "SL_WTCD_5.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_6",
+     "raw_file": "SL_WTCD_6.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_1",
+     "raw_file": "SL_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_2",
+     "raw_file": "SL_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_3",
+     "raw_file": "SL_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_4",
+     "raw_file": "SL_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_5",
+     "raw_file": "SL_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_6",
+     "raw_file": "SL_WTHFD_6.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_1",
+     "raw_file": "SP_HetCD_1.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_2",
+     "raw_file": "SP_HetCD_2.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_3",
+     "raw_file": "SP_HetCD_3.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_4",
+     "raw_file": "SP_HetCD_4.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_5",
+     "raw_file": "SP_HetCD_5.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_6",
+     "raw_file": "SP_HetCD_6.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_1",
+     "raw_file": "SP_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_2",
+     "raw_file": "SP_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_3",
+     "raw_file": "SP_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_4",
+     "raw_file": "SP_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_5",
+     "raw_file": "SP_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_6",
+     "raw_file": "SP_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_1",
+     "raw_file": "SP_WTCD_1.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_2",
+     "raw_file": "SP_WTCD_2.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_3",
+     "raw_file": "SP_WTCD_3.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_4",
+     "raw_file": "SP_WTCD_4.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_5",
+     "raw_file": "SP_WTCD_5.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_6",
+     "raw_file": "SP_WTCD_6.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_1",
+     "raw_file": "SP_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_2",
+     "raw_file": "SP_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_3",
+     "raw_file": "SP_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_4",
+     "raw_file": "SP_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_5",
+     "raw_file": "SP_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_6",
+     "raw_file": "SP_WTHFD_6.raw"
+    },
+    {
+     "sample_id": "S_HetCD_1",
+     "raw_file": "S_HetCD_1.raw"
+    },
+    {
+     "sample_id": "S_HetCD_2",
+     "raw_file": "S_HetCD_2.raw"
+    },
+    {
+     "sample_id": "S_HetCD_3",
+     "raw_file": "S_HetCD_3.raw"
+    },
+    {
+     "sample_id": "S_HetCD_4",
+     "raw_file": "S_HetCD_4.raw"
+    },
+    {
+     "sample_id": "S_HetCD_5",
+     "raw_file": "S_HetCD_5.raw"
+    },
+    {
+     "sample_id": "S_HetCD_6",
+     "raw_file": "S_HetCD_6.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_1",
+     "raw_file": "S_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_2",
+     "raw_file": "S_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_3",
+     "raw_file": "S_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_4",
+     "raw_file": "S_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_5",
+     "raw_file": "S_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_6",
+     "raw_file": "S_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "S_WTCD_1",
+     "raw_file": "S_WTCD_1.raw"
+    },
+    {
+     "sample_id": "S_WTCD_2",
+     "raw_file": "S_WTCD_2.raw"
+    },
+    {
+     "sample_id": "S_WTCD_3",
+     "raw_file": "S_WTCD_3.raw"
+    },
+    {
+     "sample_id": "S_WTCD_4",
+     "raw_file": "S_WTCD_4.raw"
+    },
+    {
+     "sample_id": "S_WTCD_5",
+     "raw_file": "S_WTCD_5.raw"
+    },
+    {
+     "sample_id": "S_WTCD_6",
+     "raw_file": "S_WTCD_6.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_1",
+     "raw_file": "S_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_2",
+     "raw_file": "S_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_3",
+     "raw_file": "S_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_4",
+     "raw_file": "S_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_5",
+     "raw_file": "S_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_6",
+     "raw_file": "S_WTHFD_6.raw"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN005130",
+   "source_subrecord_id": "AN005130",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Positive",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "SL_HetCD_1",
+     "raw_file": "SL_HetCD_1.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_2",
+     "raw_file": "SL_HetCD_2.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_3",
+     "raw_file": "SL_HetCD_3.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_4",
+     "raw_file": "SL_HetCD_4.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_5",
+     "raw_file": "SL_HetCD_5.raw"
+    },
+    {
+     "sample_id": "SL_HetCD_6",
+     "raw_file": "SL_HetCD_6.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_1",
+     "raw_file": "SL_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_2",
+     "raw_file": "SL_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_3",
+     "raw_file": "SL_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_4",
+     "raw_file": "SL_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_5",
+     "raw_file": "SL_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "SL_HetHFD_6",
+     "raw_file": "SL_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_1",
+     "raw_file": "SL_WTCD_1.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_2",
+     "raw_file": "SL_WTCD_2.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_3",
+     "raw_file": "SL_WTCD_3.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_4",
+     "raw_file": "SL_WTCD_4.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_5",
+     "raw_file": "SL_WTCD_5.raw"
+    },
+    {
+     "sample_id": "SL_WTCD_6",
+     "raw_file": "SL_WTCD_6.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_1",
+     "raw_file": "SL_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_2",
+     "raw_file": "SL_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_3",
+     "raw_file": "SL_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_4",
+     "raw_file": "SL_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_5",
+     "raw_file": "SL_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "SL_WTHFD_6",
+     "raw_file": "SL_WTHFD_6.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_1",
+     "raw_file": "SP_HetCD_1.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_2",
+     "raw_file": "SP_HetCD_2.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_3",
+     "raw_file": "SP_HetCD_3.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_4",
+     "raw_file": "SP_HetCD_4.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_5",
+     "raw_file": "SP_HetCD_5.raw"
+    },
+    {
+     "sample_id": "SP_HetCD_6",
+     "raw_file": "SP_HetCD_6.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_1",
+     "raw_file": "SP_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_2",
+     "raw_file": "SP_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_3",
+     "raw_file": "SP_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_4",
+     "raw_file": "SP_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_5",
+     "raw_file": "SP_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "SP_HetHFD_6",
+     "raw_file": "SP_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_1",
+     "raw_file": "SP_WTCD_1.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_2",
+     "raw_file": "SP_WTCD_2.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_3",
+     "raw_file": "SP_WTCD_3.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_4",
+     "raw_file": "SP_WTCD_4.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_5",
+     "raw_file": "SP_WTCD_5.raw"
+    },
+    {
+     "sample_id": "SP_WTCD_6",
+     "raw_file": "SP_WTCD_6.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_1",
+     "raw_file": "SP_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_2",
+     "raw_file": "SP_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_3",
+     "raw_file": "SP_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_4",
+     "raw_file": "SP_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_5",
+     "raw_file": "SP_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "SP_WTHFD_6",
+     "raw_file": "SP_WTHFD_6.raw"
+    },
+    {
+     "sample_id": "S_HetCD_1",
+     "raw_file": "S_HetCD_1.raw"
+    },
+    {
+     "sample_id": "S_HetCD_2",
+     "raw_file": "S_HetCD_2.raw"
+    },
+    {
+     "sample_id": "S_HetCD_3",
+     "raw_file": "S_HetCD_3.raw"
+    },
+    {
+     "sample_id": "S_HetCD_4",
+     "raw_file": "S_HetCD_4.raw"
+    },
+    {
+     "sample_id": "S_HetCD_5",
+     "raw_file": "S_HetCD_5.raw"
+    },
+    {
+     "sample_id": "S_HetCD_6",
+     "raw_file": "S_HetCD_6.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_1",
+     "raw_file": "S_HetHFD_1.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_2",
+     "raw_file": "S_HetHFD_2.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_3",
+     "raw_file": "S_HetHFD_3.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_4",
+     "raw_file": "S_HetHFD_4.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_5",
+     "raw_file": "S_HetHFD_5.raw"
+    },
+    {
+     "sample_id": "S_HetHFD_6",
+     "raw_file": "S_HetHFD_6.raw"
+    },
+    {
+     "sample_id": "S_WTCD_1",
+     "raw_file": "S_WTCD_1.raw"
+    },
+    {
+     "sample_id": "S_WTCD_2",
+     "raw_file": "S_WTCD_2.raw"
+    },
+    {
+     "sample_id": "S_WTCD_3",
+     "raw_file": "S_WTCD_3.raw"
+    },
+    {
+     "sample_id": "S_WTCD_4",
+     "raw_file": "S_WTCD_4.raw"
+    },
+    {
+     "sample_id": "S_WTCD_5",
+     "raw_file": "S_WTCD_5.raw"
+    },
+    {
+     "sample_id": "S_WTCD_6",
+     "raw_file": "S_WTCD_6.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_1",
+     "raw_file": "S_WTHFD_1.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_2",
+     "raw_file": "S_WTHFD_2.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_3",
+     "raw_file": "S_WTHFD_3.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_4",
+     "raw_file": "S_WTHFD_4.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_5",
+     "raw_file": "S_WTHFD_5.raw"
+    },
+    {
+     "sample_id": "S_WTHFD_6",
+     "raw_file": "S_WTHFD_6.raw"
+    }
+   ]
+  }
+ ]
+}

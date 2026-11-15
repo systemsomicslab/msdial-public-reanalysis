@@ -1,0 +1,818 @@
+{
+ "accession": "ST003964",
+ "repository": "metabolomics_workbench",
+ "units": [
+  {
+   "unit_id": "AN006515",
+   "source_subrecord_id": "AN006515",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Positive",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "strCT10x543WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT10x543WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT10x543WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT10x543WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT10x543WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT11x549WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT11x549WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT11x549WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT11x549WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT12x549WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT12x549WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT12x549WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT12x549WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT1x209WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT1x209WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT1x209WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT1x209WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT2x209WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT2x209WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT2x209WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT2x209WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT3x293WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT3x293WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT3x293WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT3x293WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT4x293WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT4x293WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT4x293WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT4x293WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT5x379WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT5x379WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT5x379WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT5x379WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT6x379WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT6x379WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT6x379WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT6x379WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT7x466WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT7x466WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT7x466WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT7x466WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT8x466WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT8x466WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT8x466WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT8x466WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT9x543WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT9x543WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT9x543WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT9x543WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN006516",
+   "source_subrecord_id": "AN006516",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Negative",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "strCT10x543WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT10x543WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT10x543WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT10x543WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT10x543WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT11x549WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT11x549WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT11x549WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT11x549WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT12x549WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT12x549WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT12x549WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT12x549WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT1x209WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT1x209WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT1x209WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT1x209WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT2x209WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT2x209WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT2x209WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT2x209WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT3x293WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT3x293WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT3x293WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT3x293WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT4x293WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT4x293WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT4x293WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT4x293WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT5x379WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT5x379WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT5x379WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT5x379WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT6x379WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT6x379WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT6x379WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT6x379WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT7x466WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT7x466WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT7x466WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT7x466WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT8x466WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT8x466WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT8x466WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT8x466WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT9x543WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT9x543WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT9x543WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT9x543WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN006517",
+   "source_subrecord_id": "AN006517",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Positive",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "strCT10x543WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT10x543WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT10x543WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT10x543WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT10x543WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT11x549WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT11x549WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT11x549WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT11x549WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT12x549WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT12x549WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT12x549WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT12x549WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT1x209WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT1x209WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT1x209WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT1x209WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT2x209WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT2x209WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT2x209WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT2x209WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT3x293WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT3x293WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT3x293WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT3x293WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT4x293WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT4x293WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT4x293WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT4x293WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT5x379WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT5x379WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT5x379WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT5x379WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT6x379WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT6x379WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT6x379WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT6x379WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT7x466WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT7x466WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT7x466WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT7x466WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT8x466WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT8x466WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT8x466WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT8x466WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT9x543WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT9x543WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT9x543WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT9x543WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN006518",
+   "source_subrecord_id": "AN006518",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Negative",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "strCT10x543WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT10x543WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT10x543WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT10x543WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT10x543WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT10x543WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT11x549WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT11x549WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT11x549WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT11x549W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT11x549WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT12x549WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT12x549WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT12x549WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT12x549WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT12x549WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT1x209WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT1x209WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT1x209WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT1x209W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT1x209WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT2x209WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT2x209WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT2x209WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT2x209WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT2x209WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT3x293WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT3x293WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT3x293WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT3x293W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT3x293WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT4x293WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT4x293WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT4x293WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT4x293WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT4x293WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT5x379WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT5x379WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT5x379WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT5x379W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT5x379WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT6x379WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT6x379WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT6x379WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT6x379WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT6x379WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT7x466WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT7x466WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT7x466WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT7x466W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT7x466WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT8x466WOxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT8x466WOxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_RPneg",
+     "raw_file": "160_0003_01B_R_strCT8x466WOxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT8x466WO_RPpos",
+     "raw_file": "160_0003_01B_R_strCT8x466WOxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_HILICneg",
+     "raw_file": "160_0003_01A_R_strCT9x543WxHILICneg_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_HILICpos",
+     "raw_file": "160_0003_01A_R_strCT9x543WxHILICpos_28JUN24_WAT_WAT_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_RPneg",
+     "raw_file": "160_0003_01B_R_strCT9x543WxRPneg_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    },
+    {
+     "sample_id": "strCT9x543W_RPpos",
+     "raw_file": "160_0003_01B_R_strCT9x543WxRPpos_02JUL24_CELL_HUM_LUM_0000_07AB_20MIN_KP_KP_01.raw"
+    }
+   ]
+  }
+ ]
+}

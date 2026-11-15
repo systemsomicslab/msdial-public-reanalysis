@@ -1,0 +1,855 @@
+{
+ "accession": "ST002747",
+ "repository": "metabolomics_workbench",
+ "basis": "Ground truth from the 2026-11-15 prototype checker agents (raw-header preflight, mzML source paths, elution order, mwTab), recorded here as public accession, analysis and file names only.",
+ "checker_verdict_on_prototype_triage": "triage_right",
+ "note": "Lipids/{Pos,Neg} are the C18 units, Metabolites/*_HILIC_*.raw the HILIC units; header CE, instrument slot and run length agree. All .mzXML are excluded (requires conversion; the copies under Metabolites are byte-identical to the Lipids mzXML).",
+ "row_member_overrides": {},
+ "units": [
+  {
+   "unit_id": "AN004454",
+   "chromatography": "HILIC",
+   "ion_mode": "positive",
+   "acquisition_mode": "DDA",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_1_Pos_QE2_HILIC_006.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_2_Pos_QE2_HILIC_018.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_3_Pos_QE2_HILIC_030.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf1_QE2_HILIC_022.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf2_QE2_HILIC_026.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf3_QE2_HILIC_016.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf4_QE2_HILIC_024.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf5_QE2_HILIC_012.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M1_QE2_HILIC_008.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M2_QE2_HILIC_010.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M3_QE2_HILIC_020.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M4_QE2_HILIC_028.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M5_QE2_HILIC_014.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN004455",
+   "chromatography": "HILIC",
+   "ion_mode": "negative",
+   "acquisition_mode": "DDA",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_1_Neg_QE2_HILIC_007.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_2_Neg_QE2_HILIC_019.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_3_Neg_QE2_HILIC_031.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf1_QE2_HILIC_023.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf2_QE2_HILIC_027.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf3_QE2_HILIC_017.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf4_QE2_HILIC_025.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf5_QE2_HILIC_013.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M1_QE2_HILIC_009.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M2_QE2_HILIC_011.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M3_QE2_HILIC_021.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M4_QE2_HILIC_029.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M5_QE2_HILIC_015.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN004456",
+   "chromatography": "RP",
+   "ion_mode": "positive",
+   "acquisition_mode": "DDA",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf1_infected_NA_1__024.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf2_infected_NA_2__020.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf3_infected_NA_3__026.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf4_infected_NA_4__022.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf5_infected_NA_5__014.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M1_uninfected_NA_1__016.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M2_uninfected_NA_2__008.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M3_uninfected_NA_3__010.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M4_uninfected_NA_4__028.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M5_uninfected_NA_5__012.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/VIAH002_BK_1_Pos_QE1_Lipids_006.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/VIAH002_BK_2_Pos_QE1_Lipids_018.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/VIAH002_BK_3_Pos_QE1_Lipids_030.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN004457",
+   "chromatography": "RP",
+   "ion_mode": "negative",
+   "acquisition_mode": "DDA",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf1_infected_NA_1__025.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf2_infected_NA_2__021.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf3_infected_NA_3__027.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf4_infected_NA_4__023.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf5_infected_NA_5__015.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M1_uninfected_NA_1__017.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M2_uninfected_NA_2__009.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M3_uninfected_NA_3__011.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M4_uninfected_NA_4__029.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M5_uninfected_NA_5__013.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/VIAH002_BK_1_Neg_QE1_Lipids_007.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/VIAH002_BK_2_Neg_QE1_Lipids_019.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002747_rawdata.zip",
+     "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/VIAH002_BK_3_Neg_QE1_Lipids_031.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    }
+   ]
+  }
+ ],
+ "excluded_members": [
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf1_infected_NA_1__025.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf2_infected_NA_2__021.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf3_infected_NA_3__027.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf4_infected_NA_4__023.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/Inf5_infected_NA_5__015.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M1_uninfected_NA_1__017.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M2_uninfected_NA_2__009.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M3_uninfected_NA_3__011.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M4_uninfected_NA_4__029.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/M5_uninfected_NA_5__013.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/VIAH002_BK_1_Neg_QE1_Lipids_007.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/VIAH002_BK_2_Neg_QE1_Lipids_019.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Neg/VIAH002_BK_3_Neg_QE1_Lipids_031.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf1_infected_NA_1__024.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf2_infected_NA_2__020.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf3_infected_NA_3__026.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf4_infected_NA_4__022.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/Inf5_infected_NA_5__014.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M1_uninfected_NA_1__016.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M2_uninfected_NA_2__008.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M3_uninfected_NA_3__010.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M4_uninfected_NA_4__028.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/M5_uninfected_NA_5__012.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/VIAH002_BK_1_Pos_QE1_Lipids_006.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/VIAH002_BK_2_Pos_QE1_Lipids_018.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Pos/VIAH002_BK_3_Pos_QE1_Lipids_030.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Untargeted_DDA_Lipids_Neg.meth",
+   "reason": "not_raw_data"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/Untargeted_DDA_Lipids_Pos.meth",
+   "reason": "not_raw_data"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/VIAH002L_Lipids_CombineSubmit_April2023_v2.xlsx",
+   "reason": "not_raw_data"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Lipids/VIAH002L_Lipids_CombineSubmit_April2023_v2_MetaboWB.xlsx",
+   "reason": "not_raw_data"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf1_infected_NA_1__024.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf1_infected_NA_1__025.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf2_infected_NA_2__020.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf2_infected_NA_2__021.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf3_infected_NA_3__026.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf3_infected_NA_3__027.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf4_infected_NA_4__022.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf4_infected_NA_4__023.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf5_infected_NA_5__014.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Inf5_infected_NA_5__015.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M1_uninfected_NA_1__016.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M1_uninfected_NA_1__017.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M2_uninfected_NA_2__008.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M2_uninfected_NA_2__009.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M3_uninfected_NA_3__010.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M3_uninfected_NA_3__011.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M4_uninfected_NA_4__028.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M4_uninfected_NA_4__029.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M5_uninfected_NA_5__012.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/M5_uninfected_NA_5__013.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Untargeted_DDA_HILIC_Neg.meth",
+   "reason": "not_raw_data"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/Untargeted_DDA_HILIC_Pos.meth",
+   "reason": "not_raw_data"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_1_Neg_QE2_HILIC_007.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_1_Pos_QE2_HILIC_006.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_2_Neg_QE2_HILIC_019.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_2_Pos_QE2_HILIC_018.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_3_Neg_QE2_HILIC_031.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_BK_3_Pos_QE2_HILIC_030.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf1_QE2_HILIC_023.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf2_QE2_HILIC_027.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf3_QE2_HILIC_017.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf4_QE2_HILIC_025.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_Inf5_QE2_HILIC_013.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M1_QE2_HILIC_009.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M2_QE2_HILIC_011.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M3_QE2_HILIC_021.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M4_QE2_HILIC_029.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Neg_M5_QE2_HILIC_015.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf1_QE2_HILIC_022.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf2_QE2_HILIC_026.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf3_QE2_HILIC_016.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf4_QE2_HILIC_024.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_Inf5_QE2_HILIC_012.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M1_QE2_HILIC_008.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M2_QE2_HILIC_010.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M3_QE2_HILIC_020.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M4_QE2_HILIC_028.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002H_Pos_M5_QE2_HILIC_014.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002_BK_1_Neg_QE1_Lipids_007.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002_BK_1_Pos_QE1_Lipids_006.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002_BK_2_Neg_QE1_Lipids_019.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002_BK_2_Pos_QE1_Lipids_018.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002_BK_3_Neg_QE1_Lipids_031.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH002_BK_3_Pos_QE1_Lipids_030.mzXML",
+   "reason": "requires_conversion"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH003H_CombineSubmit_April2023.xlsx",
+   "reason": "not_raw_data"
+  },
+  {
+   "archive": "ST002747_rawdata.zip",
+   "path": "VIAH002_003_WorkbenchUpload/Metabolites/VIAH003H_CombineSubmit_April2023_MetaboWB.xlsx",
+   "reason": "not_raw_data"
+  }
+ ],
+ "unchecked_members": []
+}

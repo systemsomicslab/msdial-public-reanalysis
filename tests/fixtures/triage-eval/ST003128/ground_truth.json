@@ -1,0 +1,923 @@
+{
+ "accession": "ST003128",
+ "repository": "metabolomics_workbench",
+ "basis": "Ground truth from the 2026-11-15 prototype checker agents (raw-header preflight, mzML source paths, elution order, mwTab), recorded here as public accession, analysis and file names only.",
+ "checker_verdict_on_prototype_triage": "triage_right",
+ "note": "Each analysis Samples line in mwTab names one prefix family: SP_ AN005128, S_ AN005129, SL_ AN005130. Headers: SP_ is polarity-switching full scan, S_ is negative full scan (both out of campaign scope); SL_ is positive DDA.",
+ "row_member_overrides": {},
+ "units": [
+  {
+   "unit_id": "AN005128",
+   "chromatography": "HILIC",
+   "ion_mode": "switching",
+   "acquisition_mode": "MS1",
+   "expected_status_pre_download": "needs_person",
+   "expected_status_after_preflight": "out_of_scope",
+   "expected_needs_person": [
+    "polarity_switching",
+    "scope_ms1_only"
+   ],
+   "expected_flags": [
+    "polarity_switching",
+    "ms1_only"
+   ],
+   "members": [
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetCD_1.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetCD_2.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetCD_3.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetCD_4.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetCD_5.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetCD_6.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetHFD_1.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetHFD_2.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetHFD_3.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetHFD_4.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetHFD_5.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_HetHFD_6.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTCD_1.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTCD_2.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTCD_3.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTCD_4.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTCD_5.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTCD_6.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTHFD_1.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTHFD_2.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTHFD_3.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTHFD_4.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTHFD_5.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SP_WTHFD_6.raw",
+     "ion_mode": "switching",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN005129",
+   "chromatography": "RP",
+   "ion_mode": "negative",
+   "acquisition_mode": "MS1",
+   "expected_status_pre_download": "needs_person",
+   "expected_status_after_preflight": "out_of_scope",
+   "expected_needs_person": [
+    "scope_ms1_only"
+   ],
+   "expected_flags": [
+    "ms1_only"
+   ],
+   "members": [
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetCD_1.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetCD_2.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetCD_3.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetCD_4.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetCD_5.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetCD_6.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetHFD_1.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetHFD_2.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetHFD_3.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetHFD_4.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetHFD_5.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_HetHFD_6.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTCD_1.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTCD_2.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTCD_3.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTCD_4.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTCD_5.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTCD_6.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTHFD_1.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTHFD_2.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTHFD_3.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTHFD_4.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTHFD_5.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "S_WTHFD_6.raw",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN005130",
+   "chromatography": "RP",
+   "ion_mode": "positive",
+   "acquisition_mode": "DDA",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetCD_1.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetCD_2.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetCD_3.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetCD_4.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetCD_5.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetCD_6.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetHFD_1.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetHFD_2.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetHFD_3.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetHFD_4.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetHFD_5.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_HetHFD_6.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTCD_1.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTCD_2.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTCD_3.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTCD_4.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTCD_5.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTCD_6.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTHFD_1.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTHFD_2.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTHFD_3.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTHFD_4.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTHFD_5.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST003128_D10_HFD_Serum.zip",
+     "path": "SL_WTHFD_6.raw",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    }
+   ]
+  }
+ ],
+ "excluded_members": [
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetCD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetCD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetCD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetCD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetCD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetCD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetHFD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetHFD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetHFD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetHFD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetHFD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_HetHFD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTCD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTCD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTCD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTCD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTCD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTCD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTHFD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTHFD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTHFD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTHFD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTHFD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SL_WTHFD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetCD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetCD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetCD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetCD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetCD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetCD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetHFD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetHFD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetHFD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetHFD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetHFD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_HetHFD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTCD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTCD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTCD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTCD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTCD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTCD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTHFD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTHFD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTHFD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTHFD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTHFD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._SP_WTHFD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetCD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetCD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetCD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetCD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetCD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetCD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetHFD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetHFD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetHFD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetHFD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetHFD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_HetHFD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTCD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTCD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTCD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTCD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTCD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTCD_6.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTHFD_1.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTHFD_2.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTHFD_3.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTHFD_4.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTHFD_5.raw",
+   "reason": "archive_metadata"
+  },
+  {
+   "archive": "ST003128_D10_HFD_Serum.zip",
+   "path": "__MACOSX/._S_WTHFD_6.raw",
+   "reason": "archive_metadata"
+  }
+ ],
+ "unchecked_members": []
+}

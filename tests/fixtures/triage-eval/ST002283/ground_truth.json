@@ -1,0 +1,1215 @@
+{
+ "accession": "ST002283",
+ "repository": "metabolomics_workbench",
+ "basis": "Ground truth from the 2026-11-15 prototype checker agents (raw-header preflight, mzML source paths, elution order, mwTab), recorded here as public accession, analysis and file names only.",
+ "checker_verdict_on_prototype_triage": "triage_partly_right",
+ "note": "Human_Hilic_Neg and Human_Lipid_Neg hold byte-identical non-blank files (same CRC32 and size); headers record Human_bone_Lipid_Neg as the source and the elution order is reversed phase, so AN003729 (HILIC negative) has no sample data in the deposit. D4_TS_E__LipPos.mzML is the member for Catalog row D4_TS_E_Lip_Pos (name drift). Blank_Hilic_Neg is unique and unchecked.",
+ "row_member_overrides": {
+  "D4_TS_E_Lip_Pos.mzML": "AB_Human_Bone/Human_Lipid_Pos/D4_TS_E__LipPos.mzML"
+ },
+ "units": [
+  {
+   "unit_id": "AN003728",
+   "chromatography": "HILIC",
+   "ion_mode": "positive",
+   "acquisition_mode": "DDA",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/Blank_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TF_A_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TF_B_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TF_C_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TF_D_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TF_E_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TS_A_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TS_B_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TS_C_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TS_D_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D1_TS_E_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TF_A_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TF_B_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TF_C_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TF_D_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TF_E_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TS_A_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TS_B_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TS_C_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TS_D_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D2_TS_E_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TF_A_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TF_B_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TF_C_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TF_D_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TF_E_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TS_A_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TS_B_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TS_C_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TS_D_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D3_TS_E_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TF_A_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TF_B_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TF_C_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TF_D_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TF_E_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TS_A_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TS_B_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TS_C_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TS_D_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/D4_TS_E_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/QC2_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/QC3_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Hilic_Pos/QC_Hilic_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN003729",
+   "chromatography": "HILIC",
+   "ion_mode": "negative",
+   "acquisition_mode": "unknown",
+   "expected_status_pre_download": "needs_person",
+   "expected_status_after_preflight": "out_of_scope",
+   "expected_needs_person": [
+    "shared_content"
+   ],
+   "expected_flags": [
+    "shared_content"
+   ],
+   "members": []
+  },
+  {
+   "unit_id": "AN003730",
+   "chromatography": "RP",
+   "ion_mode": "positive",
+   "acquisition_mode": "DDA",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/Blank_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TF_A_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TF_B_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TF_C_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TF_D_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TF_E_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TS_A_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TS_B_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TS_C_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TS_D_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D1_TS_E_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TF_A_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TF_B_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TF_C_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TF_D_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TF_E_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TS_A_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TS_B_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TS_C_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TS_D_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D2_TS_E_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TF_A_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TF_B_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TF_C_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TF_D_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TF_E_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TS_A_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TS_B_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TS_C_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TS_D_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D3_TS_E_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TF_A_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TF_B_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TF_C_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TF_D_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TF_E_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TS_A_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TS_B_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TS_C_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TS_D_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/D4_TS_E__LipPos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/QC2_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/QC3_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Pos/QC_Lip_Pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN003731",
+   "chromatography": "RP",
+   "ion_mode": "negative",
+   "acquisition_mode": "DDA",
+   "expected_status_pre_download": "needs_person",
+   "expected_status_after_preflight": "needs_person",
+   "expected_needs_person": [
+    "shared_content"
+   ],
+   "expected_flags": [
+    "shared_content"
+   ],
+   "members": [
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/Blank_Lipid_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "blank"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TF_A_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TF_B_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TF_C_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TF_D_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TF_E_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TS_A_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TS_B_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TS_C_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TS_D_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D1_TS_E_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TF_A_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TF_B_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TF_C_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TF_D_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TF_E_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TS_A_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TS_B_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TS_C_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TS_D_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D2_TS_E_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TF_A_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TF_B_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TF_C_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TF_D_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TF_E_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TS_A_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TS_B_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TS_C_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TS_D_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D3_TS_E_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TF_A_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TF_B_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TF_C_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TF_D_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TF_E_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TS_A_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TS_B_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TS_C_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TS_D_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/D4_TS_E_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/QC2_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/QC3_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002283_AB_Human_Bone.zip",
+     "path": "AB_Human_Bone/Human_Lipid_Neg/QC_Lip_Neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "qc"
+    }
+   ]
+  }
+ ],
+ "excluded_members": [
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TF_A_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TF_B_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TF_C_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TF_D_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TF_E_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TS_A_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TS_B_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TS_C_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TS_D_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D1_TS_E_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TF_A_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TF_B_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TF_C_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TF_D_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TF_E_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TS_A_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TS_B_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TS_C_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TS_D_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D2_TS_E_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TF_A_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TF_B_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TF_C_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TF_D_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TF_E_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TS_A_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TS_B_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TS_C_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TS_D_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D3_TS_E_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TF_A_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TF_B_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TF_C_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TF_D_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TF_E_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TS_A_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TS_B_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TS_C_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TS_D_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/D4_TS_E_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/QC2_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/QC3_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  },
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/QC_Hilic_Neg.mzML",
+   "reason": "duplicate_content"
+  }
+ ],
+ "unchecked_members": [
+  {
+   "archive": "ST002283_AB_Human_Bone.zip",
+   "path": "AB_Human_Bone/Human_Hilic_Neg/Blank_Hilic_Neg.mzML",
+   "note": "unique content, never header-checked; possibly a genuine HILIC blank"
+  }
+ ]
+}

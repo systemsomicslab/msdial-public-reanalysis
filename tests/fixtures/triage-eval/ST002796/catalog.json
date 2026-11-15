@@ -1,0 +1,2220 @@
+{
+ "accession": "ST002796",
+ "repository": "metabolomics_workbench",
+ "units": [
+  {
+   "unit_id": "AN004548",
+   "source_subrecord_id": "AN004548",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Both",
+    "acquisition_mode": "DIA"
+   },
+   "rows": [
+    {
+     "sample_id": "PLASMA01_C18neg",
+     "raw_file": "PLASMA01_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA01_C18pos",
+     "raw_file": "PLASMA01_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA01_HILICneg",
+     "raw_file": "PLASMA01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA01_HILICpos",
+     "raw_file": "PLASMA01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA02_C18neg",
+     "raw_file": "PLASMA02_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA02_C18pos",
+     "raw_file": "PLASMA02_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA02_HILICneg",
+     "raw_file": "PLASMA02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA02_HILICpos",
+     "raw_file": "PLASMA02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA03_C18neg",
+     "raw_file": "PLASMA03_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA03_C18pos",
+     "raw_file": "PLASMA03_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA03_HILICneg",
+     "raw_file": "PLASMA03_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA03_HILICpos",
+     "raw_file": "PLASMA03_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA05_C18neg",
+     "raw_file": "PLASMA05_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA05_C18pos",
+     "raw_file": "PLASMA05_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA05_HILICneg",
+     "raw_file": "PLASMA05_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA05_HILICpos",
+     "raw_file": "PLASMA05_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA06_C18neg",
+     "raw_file": "PLASMA06_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA06_C18pos",
+     "raw_file": "PLASMA06_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA06_HILICneg",
+     "raw_file": "PLASMA06_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA06_HILICpos",
+     "raw_file": "PLASMA06_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA07_C18neg",
+     "raw_file": "PLASMA07_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA07_C18pos",
+     "raw_file": "PLASMA07_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA07_HILICneg",
+     "raw_file": "PLASMA07_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA07_HILICpos",
+     "raw_file": "PLASMA07_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA08_C18neg",
+     "raw_file": "PLASMA08_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA08_C18pos",
+     "raw_file": "PLASMA08_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA08_HILICneg",
+     "raw_file": "PLASMA08_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA08_HILICpos",
+     "raw_file": "PLASMA08_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA09_C18neg",
+     "raw_file": "PLASMA09_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA09_C18pos",
+     "raw_file": "PLASMA09_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA09_HILICneg",
+     "raw_file": "PLASMA09_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA09_HILICpos",
+     "raw_file": "PLASMA09_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA10_C18neg",
+     "raw_file": "PLASMA10_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA10_C18pos",
+     "raw_file": "PLASMA10_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA10_HILICneg",
+     "raw_file": "PLASMA10_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA10_HILICpos",
+     "raw_file": "PLASMA10_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA11_C18neg",
+     "raw_file": "PLASMA11_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA11_C18pos",
+     "raw_file": "PLASMA11_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA11_HILICneg",
+     "raw_file": "PLASMA11_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA11_HILICpos",
+     "raw_file": "PLASMA11_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA12_C18neg",
+     "raw_file": "PLASMA12_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA12_C18pos",
+     "raw_file": "PLASMA12_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA12_HILICneg",
+     "raw_file": "PLASMA12_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA12_HILICpos",
+     "raw_file": "PLASMA12_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA13_C18neg",
+     "raw_file": "PLASMA13_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA13_C18pos",
+     "raw_file": "PLASMA13_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA13_HILICneg",
+     "raw_file": "PLASMA13_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA13_HILICpos",
+     "raw_file": "PLASMA13_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA14_C18neg",
+     "raw_file": "PLASMA14_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA14_C18pos",
+     "raw_file": "PLASMA14_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA14_HILICneg",
+     "raw_file": "PLASMA14_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA14_HILICpos",
+     "raw_file": "PLASMA14_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA15_C18neg",
+     "raw_file": "PLASMA15_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA15_C18pos",
+     "raw_file": "PLASMA15_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA15_HILICneg",
+     "raw_file": "PLASMA15_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA15_HILICpos",
+     "raw_file": "PLASMA15_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC1_C18neg",
+     "raw_file": "QC1_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC1_C18pos",
+     "raw_file": "QC1_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC1_HILICneg",
+     "raw_file": "QC1_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC1_HILICpos",
+     "raw_file": "QC1_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC2_C18neg",
+     "raw_file": "QC2_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC2_C18pos",
+     "raw_file": "QC2_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC2_HILICneg",
+     "raw_file": "QC2_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC2_HILICpos",
+     "raw_file": "QC2_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC3_C18neg",
+     "raw_file": "QC3_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC3_C18pos",
+     "raw_file": "QC3_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC3_HILICneg",
+     "raw_file": "QC3_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC3_HILICpos",
+     "raw_file": "QC3_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC4_C18neg",
+     "raw_file": "QC4_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC4_C18pos",
+     "raw_file": "QC4_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC4_HILICneg",
+     "raw_file": "QC4_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC4_HILICpos",
+     "raw_file": "QC4_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC5_C18neg",
+     "raw_file": "QC5_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC5_C18pos",
+     "raw_file": "QC5_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC5_HILICneg",
+     "raw_file": "QC5_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC5_HILICpos",
+     "raw_file": "QC5_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC6_C18neg",
+     "raw_file": "QC6_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC6_C18pos",
+     "raw_file": "QC6_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC6_HILICneg",
+     "raw_file": "QC6_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC6_HILICpos",
+     "raw_file": "QC6_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_01_C18neg",
+     "raw_file": "QCDDA_SCAN1_01_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_01_C18pos",
+     "raw_file": "QCDDA_SCAN1_01_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_01_HILICneg",
+     "raw_file": "QCDDA_SCAN1_01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_01_HILICpos",
+     "raw_file": "QCDDA_SCAN1_01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_02_C18neg",
+     "raw_file": "QCDDA_SCAN1_02_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_02_C18pos",
+     "raw_file": "QCDDA_SCAN1_02_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_02_HILICneg",
+     "raw_file": "QCDDA_SCAN1_02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_02_HILICpos",
+     "raw_file": "QCDDA_SCAN1_02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_01_C18neg",
+     "raw_file": "QCDDA_SCAN2_01_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_01_C18pos",
+     "raw_file": "QCDDA_SCAN2_01_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_01_HILICneg",
+     "raw_file": "QCDDA_SCAN2_01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_01_HILICpos",
+     "raw_file": "QCDDA_SCAN2_01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_02_C18neg",
+     "raw_file": "QCDDA_SCAN2_02_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_02_C18pos",
+     "raw_file": "QCDDA_SCAN2_02_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_02_HILICneg",
+     "raw_file": "QCDDA_SCAN2_02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_02_HILICpos",
+     "raw_file": "QCDDA_SCAN2_02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_01_C18neg",
+     "raw_file": "QCDDA_SCAN3_01_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_01_C18pos",
+     "raw_file": "QCDDA_SCAN3_01_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_01_HILICneg",
+     "raw_file": "QCDDA_SCAN3_01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_01_HILICpos",
+     "raw_file": "QCDDA_SCAN3_01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_02_C18neg",
+     "raw_file": "QCDDA_SCAN3_02_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_02_C18pos",
+     "raw_file": "QCDDA_SCAN3_02_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_02_HILICneg",
+     "raw_file": "QCDDA_SCAN3_02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_02_HILICpos",
+     "raw_file": "QCDDA_SCAN3_02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_01_C18neg",
+     "raw_file": "QCDIA_01_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_01_C18pos",
+     "raw_file": "QCDIA_01_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_01_HILICneg",
+     "raw_file": "QCDIA_01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_01_HILICpos",
+     "raw_file": "QCDIA_01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_02_C18neg",
+     "raw_file": "QCDIA_02_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_02_C18pos",
+     "raw_file": "QCDIA_02_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_02_HILICneg",
+     "raw_file": "QCDIA_02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_02_HILICpos",
+     "raw_file": "QCDIA_02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_03_C18neg",
+     "raw_file": "QCDIA_03_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_03_C18pos",
+     "raw_file": "QCDIA_03_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_03_HILICneg",
+     "raw_file": "QCDIA_03_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_03_HILICpos",
+     "raw_file": "QCDIA_03_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM01_C18neg",
+     "raw_file": "SERUM01_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM01_C18pos",
+     "raw_file": "SERUM01_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM01_HILICneg",
+     "raw_file": "SERUM01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM01_HILICpos",
+     "raw_file": "SERUM01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM02_C18neg",
+     "raw_file": "SERUM02_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM02_C18pos",
+     "raw_file": "SERUM02_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM02_HILICneg",
+     "raw_file": "SERUM02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM02_HILICpos",
+     "raw_file": "SERUM02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM03_C18neg",
+     "raw_file": "SERUM03_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM03_C18pos",
+     "raw_file": "SERUM03_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM03_HILICneg",
+     "raw_file": "SERUM03_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM03_HILICpos",
+     "raw_file": "SERUM03_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM04_C18neg",
+     "raw_file": "SERUM04_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM04_C18pos",
+     "raw_file": "SERUM04_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM04_HILICneg",
+     "raw_file": "SERUM04_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM04_HILICpos",
+     "raw_file": "SERUM04_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM05_C18neg",
+     "raw_file": "SERUM05_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM05_C18pos",
+     "raw_file": "SERUM05_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM05_HILICneg",
+     "raw_file": "SERUM05_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM05_HILICpos",
+     "raw_file": "SERUM05_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM06_C18neg",
+     "raw_file": "SERUM06_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM06_C18pos",
+     "raw_file": "SERUM06_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM06_HILICneg",
+     "raw_file": "SERUM06_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM06_HILICpos",
+     "raw_file": "SERUM06_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM07_C18neg",
+     "raw_file": "SERUM07_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM07_C18pos",
+     "raw_file": "SERUM07_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM07_HILICneg",
+     "raw_file": "SERUM07_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM07_HILICpos",
+     "raw_file": "SERUM07_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM08_C18neg",
+     "raw_file": "SERUM08_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM08_C18pos",
+     "raw_file": "SERUM08_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM08_HILICneg",
+     "raw_file": "SERUM08_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM08_HILICpos",
+     "raw_file": "SERUM08_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM09_C18neg",
+     "raw_file": "SERUM09_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM09_C18pos",
+     "raw_file": "SERUM09_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM09_HILICneg",
+     "raw_file": "SERUM09_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM09_HILICpos",
+     "raw_file": "SERUM09_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM10_C18neg",
+     "raw_file": "SERUM10_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM10_C18pos",
+     "raw_file": "SERUM10_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM10_HILICneg",
+     "raw_file": "SERUM10_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM10_HILICpos",
+     "raw_file": "SERUM10_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM11_C18neg",
+     "raw_file": "SERUM11_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM11_C18pos",
+     "raw_file": "SERUM11_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM11_HILICneg",
+     "raw_file": "SERUM11_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM11_HILICpos",
+     "raw_file": "SERUM11_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM12_C18neg",
+     "raw_file": "SERUM12_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM12_C18pos",
+     "raw_file": "SERUM12_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM12_HILICneg",
+     "raw_file": "SERUM12_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM12_HILICpos",
+     "raw_file": "SERUM12_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM13_C18neg",
+     "raw_file": "SERUM13_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM13_C18pos",
+     "raw_file": "SERUM13_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM13_HILICneg",
+     "raw_file": "SERUM13_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM13_HILICpos",
+     "raw_file": "SERUM13_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM14_C18neg",
+     "raw_file": "SERUM14_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM14_C18pos",
+     "raw_file": "SERUM14_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM14_HILICneg",
+     "raw_file": "SERUM14_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM14_HILICpos",
+     "raw_file": "SERUM14_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM15_C18neg",
+     "raw_file": "SERUM15_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM15_C18pos",
+     "raw_file": "SERUM15_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM15_HILICneg",
+     "raw_file": "SERUM15_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM15_HILICpos",
+     "raw_file": "SERUM15_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB01_C18neg",
+     "raw_file": "WB01_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB01_C18pos",
+     "raw_file": "WB01_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB01_HILICneg",
+     "raw_file": "WB01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB01_HILICpos",
+     "raw_file": "WB01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB02_C18neg",
+     "raw_file": "WB02_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB02_C18pos",
+     "raw_file": "WB02_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB02_HILICneg",
+     "raw_file": "WB02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB02_HILICpos",
+     "raw_file": "WB02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB03_C18neg",
+     "raw_file": "WB03_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB03_C18pos",
+     "raw_file": "WB03_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB03_HILICneg",
+     "raw_file": "WB03_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB03_HILICpos",
+     "raw_file": "WB03_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB04_C18neg",
+     "raw_file": "WB04_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB04_C18pos",
+     "raw_file": "WB04_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB04_HILICneg",
+     "raw_file": "WB04_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB04_HILICpos",
+     "raw_file": "WB04_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB05_C18neg",
+     "raw_file": "WB05_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB05_C18pos",
+     "raw_file": "WB05_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB05_HILICneg",
+     "raw_file": "WB05_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB05_HILICpos",
+     "raw_file": "WB05_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB06_C18neg",
+     "raw_file": "WB06_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB06_C18pos",
+     "raw_file": "WB06_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB06_HILICneg",
+     "raw_file": "WB06_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB06_HILICpos",
+     "raw_file": "WB06_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB07_C18neg",
+     "raw_file": "WB07_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB07_C18pos",
+     "raw_file": "WB07_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB07_HILICneg",
+     "raw_file": "WB07_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB07_HILICpos",
+     "raw_file": "WB07_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB08_C18neg",
+     "raw_file": "WB08_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB08_C18pos",
+     "raw_file": "WB08_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB08_HILICneg",
+     "raw_file": "WB08_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB08_HILICpos",
+     "raw_file": "WB08_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB09_C18neg",
+     "raw_file": "WB09_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB09_C18pos",
+     "raw_file": "WB09_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB09_HILICneg",
+     "raw_file": "WB09_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB09_HILICpos",
+     "raw_file": "WB09_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB10_C18neg",
+     "raw_file": "WB10_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB10_C18pos",
+     "raw_file": "WB10_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB10_HILICneg",
+     "raw_file": "WB10_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB10_HILICpos",
+     "raw_file": "WB10_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB11_C18neg",
+     "raw_file": "WB11_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB11_C18pos",
+     "raw_file": "WB11_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB11_HILICneg",
+     "raw_file": "WB11_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB11_HILICpos",
+     "raw_file": "WB11_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB12_C18neg",
+     "raw_file": "WB12_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB12_C18pos",
+     "raw_file": "WB12_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB12_HILICneg",
+     "raw_file": "WB12_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB12_HILICpos",
+     "raw_file": "WB12_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB13_C18neg",
+     "raw_file": "WB13_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB13_C18pos",
+     "raw_file": "WB13_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB13_HILICneg",
+     "raw_file": "WB13_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB13_HILICpos",
+     "raw_file": "WB13_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB14_C18neg",
+     "raw_file": "WB14_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB14_C18pos",
+     "raw_file": "WB14_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB14_HILICneg",
+     "raw_file": "WB14_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB14_HILICpos",
+     "raw_file": "WB14_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB15_C18neg",
+     "raw_file": "WB15_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB15_C18pos",
+     "raw_file": "WB15_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB15_HILICneg",
+     "raw_file": "WB15_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB15_HILICpos",
+     "raw_file": "WB15_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG01",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG01.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG02",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG02.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG03",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG03.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG04",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG04.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG11",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG11.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG12",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG12.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG13",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG13.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG14",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG14.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEGall",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEGall.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEGall2",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEGall2.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS01",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS01.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS02",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS02.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS03",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS03.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS11",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS11.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS12",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS12.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS13",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS13.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS21",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS21.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS22",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS22.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS23",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS23.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POSall",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POSall.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA01",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA01.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA02",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA02.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA03",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA03.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA11",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA11.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA12",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA12.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA13",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA13.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA_HERMES1",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA_HERMES1.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA_HERMES2",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA_HERMES2.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA01",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA01.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA02",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA02.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA03",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA03.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA04",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA04.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA11",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA11.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA12",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA12.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA13",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA13.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES1",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES1.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES2",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES2.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES3",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES3.mzML"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN004549",
+   "source_subrecord_id": "AN004549",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Both",
+    "acquisition_mode": "DIA"
+   },
+   "rows": [
+    {
+     "sample_id": "PLASMA01_C18neg",
+     "raw_file": "PLASMA01_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA01_C18pos",
+     "raw_file": "PLASMA01_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA01_HILICneg",
+     "raw_file": "PLASMA01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA01_HILICpos",
+     "raw_file": "PLASMA01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA02_C18neg",
+     "raw_file": "PLASMA02_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA02_C18pos",
+     "raw_file": "PLASMA02_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA02_HILICneg",
+     "raw_file": "PLASMA02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA02_HILICpos",
+     "raw_file": "PLASMA02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA03_C18neg",
+     "raw_file": "PLASMA03_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA03_C18pos",
+     "raw_file": "PLASMA03_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA03_HILICneg",
+     "raw_file": "PLASMA03_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA03_HILICpos",
+     "raw_file": "PLASMA03_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA05_C18neg",
+     "raw_file": "PLASMA05_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA05_C18pos",
+     "raw_file": "PLASMA05_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA05_HILICneg",
+     "raw_file": "PLASMA05_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA05_HILICpos",
+     "raw_file": "PLASMA05_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA06_C18neg",
+     "raw_file": "PLASMA06_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA06_C18pos",
+     "raw_file": "PLASMA06_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA06_HILICneg",
+     "raw_file": "PLASMA06_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA06_HILICpos",
+     "raw_file": "PLASMA06_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA07_C18neg",
+     "raw_file": "PLASMA07_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA07_C18pos",
+     "raw_file": "PLASMA07_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA07_HILICneg",
+     "raw_file": "PLASMA07_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA07_HILICpos",
+     "raw_file": "PLASMA07_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA08_C18neg",
+     "raw_file": "PLASMA08_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA08_C18pos",
+     "raw_file": "PLASMA08_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA08_HILICneg",
+     "raw_file": "PLASMA08_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA08_HILICpos",
+     "raw_file": "PLASMA08_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA09_C18neg",
+     "raw_file": "PLASMA09_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA09_C18pos",
+     "raw_file": "PLASMA09_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA09_HILICneg",
+     "raw_file": "PLASMA09_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA09_HILICpos",
+     "raw_file": "PLASMA09_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA10_C18neg",
+     "raw_file": "PLASMA10_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA10_C18pos",
+     "raw_file": "PLASMA10_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA10_HILICneg",
+     "raw_file": "PLASMA10_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA10_HILICpos",
+     "raw_file": "PLASMA10_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA11_C18neg",
+     "raw_file": "PLASMA11_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA11_C18pos",
+     "raw_file": "PLASMA11_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA11_HILICneg",
+     "raw_file": "PLASMA11_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA11_HILICpos",
+     "raw_file": "PLASMA11_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA12_C18neg",
+     "raw_file": "PLASMA12_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA12_C18pos",
+     "raw_file": "PLASMA12_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA12_HILICneg",
+     "raw_file": "PLASMA12_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA12_HILICpos",
+     "raw_file": "PLASMA12_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA13_C18neg",
+     "raw_file": "PLASMA13_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA13_C18pos",
+     "raw_file": "PLASMA13_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA13_HILICneg",
+     "raw_file": "PLASMA13_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA13_HILICpos",
+     "raw_file": "PLASMA13_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA14_C18neg",
+     "raw_file": "PLASMA14_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA14_C18pos",
+     "raw_file": "PLASMA14_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA14_HILICneg",
+     "raw_file": "PLASMA14_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA14_HILICpos",
+     "raw_file": "PLASMA14_HILICpos.mzML"
+    },
+    {
+     "sample_id": "PLASMA15_C18neg",
+     "raw_file": "PLASMA15_C18neg.mzML"
+    },
+    {
+     "sample_id": "PLASMA15_C18pos",
+     "raw_file": "PLASMA15_C18pos.mzML"
+    },
+    {
+     "sample_id": "PLASMA15_HILICneg",
+     "raw_file": "PLASMA15_HILICneg.mzML"
+    },
+    {
+     "sample_id": "PLASMA15_HILICpos",
+     "raw_file": "PLASMA15_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC1_C18neg",
+     "raw_file": "QC1_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC1_C18pos",
+     "raw_file": "QC1_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC1_HILICneg",
+     "raw_file": "QC1_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC1_HILICpos",
+     "raw_file": "QC1_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC2_C18neg",
+     "raw_file": "QC2_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC2_C18pos",
+     "raw_file": "QC2_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC2_HILICneg",
+     "raw_file": "QC2_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC2_HILICpos",
+     "raw_file": "QC2_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC3_C18neg",
+     "raw_file": "QC3_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC3_C18pos",
+     "raw_file": "QC3_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC3_HILICneg",
+     "raw_file": "QC3_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC3_HILICpos",
+     "raw_file": "QC3_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC4_C18neg",
+     "raw_file": "QC4_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC4_C18pos",
+     "raw_file": "QC4_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC4_HILICneg",
+     "raw_file": "QC4_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC4_HILICpos",
+     "raw_file": "QC4_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC5_C18neg",
+     "raw_file": "QC5_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC5_C18pos",
+     "raw_file": "QC5_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC5_HILICneg",
+     "raw_file": "QC5_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC5_HILICpos",
+     "raw_file": "QC5_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QC6_C18neg",
+     "raw_file": "QC6_C18neg.mzML"
+    },
+    {
+     "sample_id": "QC6_C18pos",
+     "raw_file": "QC6_C18pos.mzML"
+    },
+    {
+     "sample_id": "QC6_HILICneg",
+     "raw_file": "QC6_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QC6_HILICpos",
+     "raw_file": "QC6_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_01_C18neg",
+     "raw_file": "QCDDA_SCAN1_01_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_01_C18pos",
+     "raw_file": "QCDDA_SCAN1_01_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_01_HILICneg",
+     "raw_file": "QCDDA_SCAN1_01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_01_HILICpos",
+     "raw_file": "QCDDA_SCAN1_01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_02_C18neg",
+     "raw_file": "QCDDA_SCAN1_02_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_02_C18pos",
+     "raw_file": "QCDDA_SCAN1_02_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_02_HILICneg",
+     "raw_file": "QCDDA_SCAN1_02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN1_02_HILICpos",
+     "raw_file": "QCDDA_SCAN1_02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_01_C18neg",
+     "raw_file": "QCDDA_SCAN2_01_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_01_C18pos",
+     "raw_file": "QCDDA_SCAN2_01_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_01_HILICneg",
+     "raw_file": "QCDDA_SCAN2_01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_01_HILICpos",
+     "raw_file": "QCDDA_SCAN2_01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_02_C18neg",
+     "raw_file": "QCDDA_SCAN2_02_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_02_C18pos",
+     "raw_file": "QCDDA_SCAN2_02_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_02_HILICneg",
+     "raw_file": "QCDDA_SCAN2_02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN2_02_HILICpos",
+     "raw_file": "QCDDA_SCAN2_02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_01_C18neg",
+     "raw_file": "QCDDA_SCAN3_01_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_01_C18pos",
+     "raw_file": "QCDDA_SCAN3_01_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_01_HILICneg",
+     "raw_file": "QCDDA_SCAN3_01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_01_HILICpos",
+     "raw_file": "QCDDA_SCAN3_01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_02_C18neg",
+     "raw_file": "QCDDA_SCAN3_02_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_02_C18pos",
+     "raw_file": "QCDDA_SCAN3_02_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_02_HILICneg",
+     "raw_file": "QCDDA_SCAN3_02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDDA_SCAN3_02_HILICpos",
+     "raw_file": "QCDDA_SCAN3_02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_01_C18neg",
+     "raw_file": "QCDIA_01_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_01_C18pos",
+     "raw_file": "QCDIA_01_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_01_HILICneg",
+     "raw_file": "QCDIA_01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_01_HILICpos",
+     "raw_file": "QCDIA_01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_02_C18neg",
+     "raw_file": "QCDIA_02_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_02_C18pos",
+     "raw_file": "QCDIA_02_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_02_HILICneg",
+     "raw_file": "QCDIA_02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_02_HILICpos",
+     "raw_file": "QCDIA_02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_03_C18neg",
+     "raw_file": "QCDIA_03_C18neg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_03_C18pos",
+     "raw_file": "QCDIA_03_C18pos.mzML"
+    },
+    {
+     "sample_id": "QCDIA_03_HILICneg",
+     "raw_file": "QCDIA_03_HILICneg.mzML"
+    },
+    {
+     "sample_id": "QCDIA_03_HILICpos",
+     "raw_file": "QCDIA_03_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM01_C18neg",
+     "raw_file": "SERUM01_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM01_C18pos",
+     "raw_file": "SERUM01_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM01_HILICneg",
+     "raw_file": "SERUM01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM01_HILICpos",
+     "raw_file": "SERUM01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM02_C18neg",
+     "raw_file": "SERUM02_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM02_C18pos",
+     "raw_file": "SERUM02_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM02_HILICneg",
+     "raw_file": "SERUM02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM02_HILICpos",
+     "raw_file": "SERUM02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM03_C18neg",
+     "raw_file": "SERUM03_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM03_C18pos",
+     "raw_file": "SERUM03_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM03_HILICneg",
+     "raw_file": "SERUM03_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM03_HILICpos",
+     "raw_file": "SERUM03_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM04_C18neg",
+     "raw_file": "SERUM04_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM04_C18pos",
+     "raw_file": "SERUM04_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM04_HILICneg",
+     "raw_file": "SERUM04_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM04_HILICpos",
+     "raw_file": "SERUM04_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM05_C18neg",
+     "raw_file": "SERUM05_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM05_C18pos",
+     "raw_file": "SERUM05_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM05_HILICneg",
+     "raw_file": "SERUM05_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM05_HILICpos",
+     "raw_file": "SERUM05_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM06_C18neg",
+     "raw_file": "SERUM06_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM06_C18pos",
+     "raw_file": "SERUM06_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM06_HILICneg",
+     "raw_file": "SERUM06_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM06_HILICpos",
+     "raw_file": "SERUM06_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM07_C18neg",
+     "raw_file": "SERUM07_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM07_C18pos",
+     "raw_file": "SERUM07_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM07_HILICneg",
+     "raw_file": "SERUM07_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM07_HILICpos",
+     "raw_file": "SERUM07_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM08_C18neg",
+     "raw_file": "SERUM08_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM08_C18pos",
+     "raw_file": "SERUM08_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM08_HILICneg",
+     "raw_file": "SERUM08_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM08_HILICpos",
+     "raw_file": "SERUM08_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM09_C18neg",
+     "raw_file": "SERUM09_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM09_C18pos",
+     "raw_file": "SERUM09_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM09_HILICneg",
+     "raw_file": "SERUM09_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM09_HILICpos",
+     "raw_file": "SERUM09_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM10_C18neg",
+     "raw_file": "SERUM10_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM10_C18pos",
+     "raw_file": "SERUM10_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM10_HILICneg",
+     "raw_file": "SERUM10_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM10_HILICpos",
+     "raw_file": "SERUM10_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM11_C18neg",
+     "raw_file": "SERUM11_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM11_C18pos",
+     "raw_file": "SERUM11_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM11_HILICneg",
+     "raw_file": "SERUM11_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM11_HILICpos",
+     "raw_file": "SERUM11_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM12_C18neg",
+     "raw_file": "SERUM12_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM12_C18pos",
+     "raw_file": "SERUM12_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM12_HILICneg",
+     "raw_file": "SERUM12_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM12_HILICpos",
+     "raw_file": "SERUM12_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM13_C18neg",
+     "raw_file": "SERUM13_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM13_C18pos",
+     "raw_file": "SERUM13_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM13_HILICneg",
+     "raw_file": "SERUM13_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM13_HILICpos",
+     "raw_file": "SERUM13_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM14_C18neg",
+     "raw_file": "SERUM14_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM14_C18pos",
+     "raw_file": "SERUM14_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM14_HILICneg",
+     "raw_file": "SERUM14_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM14_HILICpos",
+     "raw_file": "SERUM14_HILICpos.mzML"
+    },
+    {
+     "sample_id": "SERUM15_C18neg",
+     "raw_file": "SERUM15_C18neg.mzML"
+    },
+    {
+     "sample_id": "SERUM15_C18pos",
+     "raw_file": "SERUM15_C18pos.mzML"
+    },
+    {
+     "sample_id": "SERUM15_HILICneg",
+     "raw_file": "SERUM15_HILICneg.mzML"
+    },
+    {
+     "sample_id": "SERUM15_HILICpos",
+     "raw_file": "SERUM15_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB01_C18neg",
+     "raw_file": "WB01_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB01_C18pos",
+     "raw_file": "WB01_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB01_HILICneg",
+     "raw_file": "WB01_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB01_HILICpos",
+     "raw_file": "WB01_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB02_C18neg",
+     "raw_file": "WB02_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB02_C18pos",
+     "raw_file": "WB02_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB02_HILICneg",
+     "raw_file": "WB02_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB02_HILICpos",
+     "raw_file": "WB02_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB03_C18neg",
+     "raw_file": "WB03_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB03_C18pos",
+     "raw_file": "WB03_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB03_HILICneg",
+     "raw_file": "WB03_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB03_HILICpos",
+     "raw_file": "WB03_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB04_C18neg",
+     "raw_file": "WB04_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB04_C18pos",
+     "raw_file": "WB04_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB04_HILICneg",
+     "raw_file": "WB04_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB04_HILICpos",
+     "raw_file": "WB04_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB05_C18neg",
+     "raw_file": "WB05_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB05_C18pos",
+     "raw_file": "WB05_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB05_HILICneg",
+     "raw_file": "WB05_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB05_HILICpos",
+     "raw_file": "WB05_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB06_C18neg",
+     "raw_file": "WB06_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB06_C18pos",
+     "raw_file": "WB06_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB06_HILICneg",
+     "raw_file": "WB06_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB06_HILICpos",
+     "raw_file": "WB06_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB07_C18neg",
+     "raw_file": "WB07_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB07_C18pos",
+     "raw_file": "WB07_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB07_HILICneg",
+     "raw_file": "WB07_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB07_HILICpos",
+     "raw_file": "WB07_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB08_C18neg",
+     "raw_file": "WB08_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB08_C18pos",
+     "raw_file": "WB08_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB08_HILICneg",
+     "raw_file": "WB08_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB08_HILICpos",
+     "raw_file": "WB08_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB09_C18neg",
+     "raw_file": "WB09_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB09_C18pos",
+     "raw_file": "WB09_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB09_HILICneg",
+     "raw_file": "WB09_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB09_HILICpos",
+     "raw_file": "WB09_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB10_C18neg",
+     "raw_file": "WB10_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB10_C18pos",
+     "raw_file": "WB10_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB10_HILICneg",
+     "raw_file": "WB10_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB10_HILICpos",
+     "raw_file": "WB10_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB11_C18neg",
+     "raw_file": "WB11_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB11_C18pos",
+     "raw_file": "WB11_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB11_HILICneg",
+     "raw_file": "WB11_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB11_HILICpos",
+     "raw_file": "WB11_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB12_C18neg",
+     "raw_file": "WB12_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB12_C18pos",
+     "raw_file": "WB12_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB12_HILICneg",
+     "raw_file": "WB12_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB12_HILICpos",
+     "raw_file": "WB12_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB13_C18neg",
+     "raw_file": "WB13_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB13_C18pos",
+     "raw_file": "WB13_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB13_HILICneg",
+     "raw_file": "WB13_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB13_HILICpos",
+     "raw_file": "WB13_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB14_C18neg",
+     "raw_file": "WB14_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB14_C18pos",
+     "raw_file": "WB14_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB14_HILICneg",
+     "raw_file": "WB14_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB14_HILICpos",
+     "raw_file": "WB14_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB15_C18neg",
+     "raw_file": "WB15_C18neg.mzML"
+    },
+    {
+     "sample_id": "WB15_C18pos",
+     "raw_file": "WB15_C18pos.mzML"
+    },
+    {
+     "sample_id": "WB15_HILICneg",
+     "raw_file": "WB15_HILICneg.mzML"
+    },
+    {
+     "sample_id": "WB15_HILICpos",
+     "raw_file": "WB15_HILICpos.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG01",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG01.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG02",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG02.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG03",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG03.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG04",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG04.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG11",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG11.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG12",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG12.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG13",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG13.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG14",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEG14.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEGall",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEGall.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_NEGall2",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_NEGall2.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS01",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS01.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS02",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS02.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS03",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS03.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS11",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS11.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS12",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS12.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS13",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS13.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS21",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS21.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS22",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS22.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POS23",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POS23.mzML"
+    },
+    {
+     "sample_id": "WB_SERUM_PLASMA_TargetedDDMSC18_POSall",
+     "raw_file": "WB_SERUM_PLASMA_TargetedDDMSC18_POSall.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA01",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA01.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA02",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA02.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA03",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA03.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA11",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA11.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA12",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA12.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA13",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA13.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA_HERMES1",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA_HERMES1.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICneg_targetedDDA_HERMES2",
+     "raw_file": "WB_Serum_Plasma_HILICneg_targetedDDA_HERMES2.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA01",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA01.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA02",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA02.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA03",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA03.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA04",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA04.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA11",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA11.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA12",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA12.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA13",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA13.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES1",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES1.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES2",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES2.mzML"
+    },
+    {
+     "sample_id": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES3",
+     "raw_file": "WB_Serum_Plasma_HILICpos_targetedDDA_HERMES3.mzML"
+    }
+   ]
+  }
+ ]
+}
