@@ -99,6 +99,58 @@ policy.AUTOMATIC_RT_BLANK_ANSWER: true (a Blank's model interpolated by analytic
 Interactive recorded with the analysis CSV is the raw headers' or the repository sample table's, false (a Blank
 keeps its measured RTs) for an order read from the file names or the listing, or none; the campaign record says
 which, and the prepare_run attempt keeps Interactive's plan warnings.
+
+WHAT RAN IS RECORDED, BESIDE WHAT WAS APPROVED (2026-10-24). A run's records - the Catalog's analysis_run and
+campaign-record.json - name the libraries the approval names (libraries_authorized, the pins) and the ones the run
+loaded (libraries_as_run): Interactive's finalisation of that run where it is the run's own, else the run manifest
+the run was prepared with (libraries_as_run_source says which). Where the two differ, a
+libraries_differ_from_authorization event says how. Until then both records named the pins alone, and so named the
+approved LBM2 for the preflight units that had loaded the official one. msdial_version is the pinned Console's
+version, as its build recorded it.
+
+A DOWNLOAD SEVERAL UNITS SHARE (2026-10-24). Interactive's lease fetches through the accession's download store,
+whose gc deletes an object, under the approval, once no live claim keeps it; only a pending claim, which a batch
+approval's pre-claim makes, keeps one for a unit that has not started. The runner made none, so with raw data deleted
+after each unit the first unit's cleanup let the store collect the object its siblings were next to fetch, and each
+fetched it again (MPST000012's four units fetched one 14.78 GB tar four times), while the plan's summary said each
+shared object was fetched once. Now, before any unit of a download group of more than one unit downloads, the runner
+claims the group's objects for every other unit of it that will still download (_claim_shared_downloads, through
+Interactive's pre_claim_downloads, with the Catalog's URLs). A unit that ends without validated outputs (excluded,
+skipped, failed, stopped) releases what it claimed and never read (_release_shared_claims), so the store collects an
+object no sibling still needs; a claim its lease materialized is released by Interactive's cleanup or discard, as
+before. The finished download's attempt records what the lease moved (download_transfer), and status adds it up
+(summary: downloads), so a shared object fetched again shows. A group of one unit is downloaded as before.
+
+A .WIFF IN PLACE OF ITS .WIFF2 (the user's decision of 2026-10-31; Interactive 0.5.55). The positive part of MB-POST
+MPST000048 hung three times out of three in the .wiff2 reader while its files were read in parallel. Where a Console
+job of a unit or split part - its diagnostic or its production run - fails or times out, the unit analyses a .wiff2 and
+it has an attempt left, the runner asks Interactive to switch its inputs to the .wiff beside them
+(Runner._wiff_fallback). Interactive switches a DDA unit only, once, and only where every .wiff2 has its .wiff with that
+.wiff's .wiff.scan, and records the switch in the unit manifest (encoding_fallback). Where it switched, the attempt
+that failed counts as every failed attempt does, and the unit's next attempt resumes at its metadata preparation
+(preflighted), not at the step that failed: the analysis CSV, the diagnostic and its threshold, and the run bundle
+are made again on the files that now run, and the remaining attempts run on the .wiff. The switch is an attempt of its
+own (wiff_fallback, never counted), a wiff2_to_wiff_fallback event, a part of the failed attempt's detail, and is
+named in the unit's campaign-record.json and in the provenance of every Catalog analysis_run recorded after it. Where
+Interactive refuses (a DIA unit, a .wiff without its .wiff.scan, a unit already switched) or has no such tool, the
+retry is exactly what it was. A switch whose reply was lost is found in the unit manifest and adopted. The runner sends
+the switch the pinned extractor, with which Interactive reads each .wiff's own header first. Whichever path brings a
+switched unit to metadata_prepared or prepared - a retry, an interruption, a Console job the backend lost - a unit whose
+inputs were switched after its metadata was last prepared goes back to preflighted first (_stale_after_wiff_fallback), so
+no Console starts on a CSV, threshold or run bundle of the .wiff2. The unit record and the Catalog's run records read the
+switch from the unit manifest, with its boundary-4 crossing.
+
+.WIFF FIRST FOR DDA (the user's decision of 2026-11-04; Interactive 0.5.58). The verification campaigns V6, V7 and V8
+hung on MPST000048's multi-file .wiff2 production run on both polarities every time; the .wiff ran in minutes. Under
+the campaign policy's wiff_first_for_dda (on by default), a unit or split part about to have its metadata prepared for
+the first time, whose input candidates name a .wiff2 and which records no switch, is switched before anything reads its
+input list (Runner._wiff_first): the same tool under policy.WIFF_FIRST_RULE, with no failed job and the pinned
+extractor. Interactive decides as for the fallback - DDA only, every .wiff2 with its .wiff and that .wiff's .wiff.scan,
+each .wiff's own header one DDA sample in the unit's polarity - and refuses otherwise. It is asked once per unit, an
+attempt of its own (wiff_first, never counted), and a switch is said in a wiff_first_for_dda event. A refusal, an
+Interactive without the rule (before 0.5.58) and an error leave the unit on its .wiff2, where the fallback above still
+answers a failure; a unit switched under either rule is never switched again. A switch whose reply was lost is found
+in the unit manifest and adopted.
 """
 
 from __future__ import annotations
@@ -135,6 +187,9 @@ JOB_COLUMN = {"downloading": "download_job_id", "diagnosing": "diagnostic_job_id
 CONSOLE_ENTRY_POINT = {"tuning": "peak_count_diagnostic", "run": "agent_run"}
 # Lease statuses that are not a finished download.
 UNFINISHED_LEASE = frozenset({"downloading", "download_failed", "discarded"})
+# A split part's statuses Interactive already counts as ended without validated output (_part_end); a part
+# ending in any other has its end recorded by its own discard (_end_part).
+PART_ENDED_STATUSES = frozenset({"skipped_by_preflight", "excluded_by_preflight", "discarded"})
 # A download job waiting for another unit's lease to fetch an object they share (plan item 15's store): it
 # moves no bytes of its own meanwhile, so it is neither stalled nor ended.
 WAITING_FOR_SHARED = "waiting_for_shared_download"
@@ -187,6 +242,28 @@ AIF_ENERGY_SETS_DIFFER_WARNING = (
     "MsdialWorkbench#825 processes each file with its own representative collision energy, so representative "
     "energies can differ between files. Its disposition's aif_multi_ce_run records the sets"
 )
+# Where a run record's libraries_as_run were read (Runner._libraries_as_run): Interactive's finalisation of the run,
+# or, before it, the run manifest the run was prepared with. And the event that says a run's libraries are not the
+# approved ones (library_differences).
+FINALISATION_LIBRARIES = "console_run_finalisation"
+PREPARED_LIBRARIES = "prepared_run_manifest"
+LIBRARIES_DIFFER = "libraries_differ_from_authorization"
+# The events of a download several units share (Runner._claim_shared_downloads, _release_shared_claims): the claims
+# made for the siblings before a unit of the group downloads, the claims a unit that ended released, and either one
+# that could not be made.
+SHARED_DOWNLOAD_CLAIMED = "shared_download_claimed"
+SHARED_DOWNLOAD_NOT_CLAIMED = "shared_download_not_claimed"
+SHARED_DOWNLOAD_RELEASED = "shared_download_released"
+SHARED_DOWNLOAD_NOT_RELEASED = "shared_download_not_released"
+# A unit's switch from its .wiff2 to the .wiff beside them after a Console job failed (the user's decision of
+# 2026-10-31, policy.WIFF_FALLBACK_RULE): the event that says it, and the attempt step each ask for it is recorded as
+# (ok where Interactive switched, blocked where it refused or lacks the tool; never counted).
+WIFF_FALLBACK = "wiff2_to_wiff_fallback"
+WIFF_FALLBACK_STEP = "wiff_fallback"
+# A unit's switch to its .wiff before its first metadata preparation (the user's decision of 2026-11-04,
+# policy.WIFF_FIRST_RULE): its event, and the attempt step the one ask for it is recorded as (never counted).
+WIFF_FIRST = "wiff_first_for_dda"
+WIFF_FIRST_STEP = "wiff_first"
 
 
 @dataclass
@@ -231,9 +308,80 @@ def _loads(text: str | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _failed_job_ids(record: Mapping[str, Any]) -> set[str]:
+    """The Console jobs whose failure a switch from .wiff2 to .wiff answered, as its record names them."""
+    return {str(item.get("job_id") or "") for item in record.get("failed_jobs") or [] if isinstance(item, Mapping)}
+
+
 def _flag(value: Any) -> bool | None:
     """A ledger 0/1 column as a record's true or false, and NULL as null."""
     return None if value is None else bool(value)
+
+
+def _read_object(path: Path) -> dict[str, Any]:
+    """A JSON object on disk, or {} where there is none or it cannot be read."""
+    try:
+        return _loads(path.read_text(encoding="utf-8-sig"))
+    except OSError:
+        return {}
+
+
+def _console_version(console: Mapping[str, Any]) -> str:
+    """The pinned Console's version for the Catalog's msdial_version: the version its pin records (its build's own
+    version output, ports.console_version), else the commit its build provenance names; "" where neither is known,
+    and where that build provenance does not describe the pinned bytes (provenance_matches not true, review 2): a
+    record left beside a rebuilt or replaced Console names another build."""
+    if console.get("provenance_matches") is not True:
+        return ""
+    version = str(console.get("version") or "").strip()
+    head = str(console.get("recorded_git_head") or "").strip()
+    return version or (f"commit {head}" if head else "")
+
+
+def as_run_libraries(entries: Iterable[Any]) -> list[dict[str, Any]]:
+    """Library records as a run record names them: file name and sha256, with the role (lbm, msp, text) and the
+    library kind (acquired, predicted) where the record gives them, and never a location."""
+    found = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("name") or entry.get("filename") or "").strip() or str(entry.get("path") or "").strip()
+        name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if not name:
+            continue
+        item = {"name": name, "sha256": str(entry.get("sha256") or "").strip().casefold()}
+        for key in ("role", "library_kind"):
+            if str(entry.get(key) or "").strip():
+                item[key] = str(entry[key]).strip()
+        found.append(item)
+    return sorted(found, key=lambda item: (item["name"].casefold(), item["sha256"]))
+
+
+def library_differences(
+    authorized: Iterable[Mapping[str, Any]], ran: Iterable[Mapping[str, Any]], ion_mode: str
+) -> dict[str, list[str]]:
+    """How the libraries a run loaded differ from the ones its approval names, by file name (compared without case):
+    loaded and not approved; loaded with another sha256 than approved, or with none recorded; and, where the
+    approval says which ion modes load each library (plan.library_pins), approved for the run's ion mode and not
+    loaded; and, where both state one, loaded as another library kind than approved (an in-silico MSP searched as
+    acquired, or the reverse; 2026-10-28). Each list is empty when the two agree."""
+    from .plan import library_kind  # as the Console reads a library kind; imported late, as plan.py imports from here
+
+    approved = {str(item["name"]).casefold(): item for item in authorized}
+    loaded = {str(item["name"]).casefold(): item for item in ran}
+    moded = any("ion_modes" in item for item in approved.values())
+    named = {key: item for key, item in loaded.items() if key in approved}
+    return {
+        "library_kind_differs": sorted(item["name"] for key, item in named.items()
+                                       if item.get("library_kind") and approved[key].get("library_kind")
+                                       and library_kind(item["library_kind"]) != library_kind(approved[key]["library_kind"])),
+        "not_authorized": sorted(item["name"] for key, item in loaded.items() if key not in approved),
+        "sha256_differs": sorted(item["name"] for key, item in named.items() if item.get("sha256")
+                                 and item["sha256"] != str(approved[key].get("sha256") or "").casefold()),
+        "sha256_unrecorded": sorted(item["name"] for item in named.values() if not item.get("sha256")),
+        "authorized_not_run": sorted(item["name"] for key, item in approved.items()
+                                     if moded and ion_mode in (item.get("ion_modes") or []) and key not in loaded),
+    }
 
 
 def _merge(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -318,6 +466,26 @@ def _downloads_next(unit: Mapping[str, Any]) -> bool:
     """Whether the unit's next call to a repository is its download: it holds no raw data yet."""
     state = unit["resume_state"] if unit["state"] in ledger_module.WAITING_STATES else unit["state"]
     return state in ("pending", "class_settled", "handoff_ready")
+
+
+def download_transfer(manifest: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What a unit's lease moved through the accession's download store, as its unit manifest's download_cache records
+    it: transferred_bytes, the objects it fetched, of them the ones it fetched again (refetched: the store had held
+    an object for the URL and no longer did) and the ones it found there (cache_hits). {} for a lease that fetched
+    without the store. A unit's downloaded_bytes are what its raw tree holds, the same for a unit that fetched a
+    shared object and one that found it in the store, so only this shows a refetch."""
+    cache = (manifest or {}).get("download_cache")
+    if not isinstance(cache, Mapping):
+        return {}
+    objects = [item for item in cache.get("objects") or [] if isinstance(item, Mapping)]
+    transferred = cache.get("transferred_bytes")
+    return {"transfer": {
+        "transferred_bytes": int(transferred if transferred is not None
+                                 else sum(int(item.get("transferred_bytes") or 0) for item in objects)),
+        "objects_fetched": sum(1 for item in objects if not item.get("cache_hit")),
+        "objects_refetched": sum(1 for item in objects if item.get("action") == "refetched"),
+        "cache_hits": sum(1 for item in objects if item.get("cache_hit")),
+    }}
 
 
 def thermo_raw_inputs(manifest: Mapping[str, Any] | None) -> int:
@@ -611,6 +779,7 @@ class Runner:
                 self.ledger.close_attempt(attempt["attempt_id"], "refused", self.stamp(), detail={"approval": str(error)})
             if current["state"] in ledger_module.TERMINAL_STATES:
                 return False
+            self._release_shared_claims(current, "stopped_no_approval")
             self.ledger.transition(
                 unit["unit_key"], "stopped_no_approval", self.stamp(), expect_from=current["state"],
                 terminal_reason="approval_missing", terminal_detail=str(error),
@@ -698,6 +867,7 @@ class Runner:
             return {"new_attempt": {"step": step, "outcome": result_outcome, "counted": counted, "detail": detail}}
 
         if kind == policy.REFUSED:
+            self._release_shared_claims(unit, "stopped_no_approval")
             self._move(
                 unit, "stopped_no_approval", terminal_reason="campaign_authorization_refused",
                 terminal_detail=json.dumps(detail, ensure_ascii=False, sort_keys=True), detail={"step": step},
@@ -1007,7 +1177,9 @@ class Runner:
         attempt = self.ledger.open_attempt(unit["unit_key"], "class", self.stamp(), tool="msdial_catalog_save_class_proposal")
         decision = self.ports.catalog.class_decision(unit["catalog_unit_id"], purpose)
         if decision.get("proposal_id") != unit["approved_class_digest"]:
-            # A grouping nobody approved: nothing is saved under the approval.
+            # A grouping nobody approved: nothing is saved under the approval, and the download the unit's siblings
+            # claimed for it is released.
+            self._release_shared_claims(unit, "stopped_policy_drift")
             self._move(
                 unit, "stopped_policy_drift", terminal_reason="class_digest_changed",
                 terminal_detail=json.dumps({"approved": unit["approved_class_digest"], "now": decision.get("proposal_id")}),
@@ -1082,6 +1254,7 @@ class Runner:
             "analysis_purpose": self.campaign["analysis_purpose"], "authorization_path": self._authorization(unit),
         }
         self._require("1")
+        self._claim_shared_downloads(unit)
         attempt = self.ledger.open_attempt(
             unit["unit_key"], "download_start", self.stamp(), tool="msdial_download_repository_raw",
             arguments=self.redact(arguments),
@@ -1142,6 +1315,85 @@ class Runner:
                 self.ledger.disk_event("pause", self.stamp(), **values)
             self._pause("disk", reason)
         return True
+
+    # ---- downloads several units share (2026-10-24) -----------------------------------------------------
+
+    def _group_members(self, unit: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """The other units of the unit's download group that download for themselves: a split part's raw data are
+        its parent's, so it neither claims nor downloads."""
+        group = _group(unit)
+        return [item for item in self.ledger.units() if item["unit_key"] != unit["unit_key"]
+                and item["role"] != "split_part" and _group(item) == group]
+
+    def _claim_shared_downloads(self, unit: Mapping[str, Any]) -> None:
+        """Before a unit of a download group several units share downloads, claim the group's objects in the
+        accession's download store for every other unit of it that will still download (a run unit whose next call
+        to a repository is its download, _downloads_next), as a batch approval's pre-claim does
+        (InteractivePort.pre_claim). The URLs are the Catalog's (CatalogPort.download_objects), which are the ones
+        each unit's lease fetches. A unit that has downloaded holds its lease's own claim, and one that has ended
+        claims nothing. Made again before every download of the group, so a unit retried after it ended is claimed
+        again; a live claim is kept as it is.
+
+        A pending claim keeps an object through the release of the unit that fetched it: without one the first
+        unit's cleanup let the store collect the object before the next sibling claimed it, and each sibling fetched
+        it again (MPST000012's four units fetched its one 14.78 GB tar four times). A unit of a group of one claims
+        nothing here. A claim that cannot be made never stops the download: it is an event, and the siblings then
+        fetch for themselves, as they did before."""
+        siblings = [item for item in self._group_members(unit) if item["role"] == "run" and _downloads_next(item)]
+        if not siblings:
+            return
+        names = [str(item["catalog_unit_id"]) for item in siblings]
+        listed = self.ports.catalog.download_objects(names)
+        result: Mapping[str, Any] = listed
+        if listed.get("ok") is not False:
+            urls = listed.get("units") or {}
+            units = [
+                {"analysis_unit_id": name, "repository": item["repository"], "accession": item["accession"],
+                 "objects": [{"url": url} for url in urls.get(name) or []]}
+                for name, item in zip(names, siblings) if urls.get(name)
+            ]
+            if not units:
+                return
+            result = self.ports.interactive.pre_claim(workspace_root=self.campaign["workspace_root"], units=units)
+        if result.get("ok") is False:
+            self._event_once(SHARED_DOWNLOAD_NOT_CLAIMED, {
+                "siblings": names, "reason": result.get("reason"), "detail": result.get("detail")}, unit["unit_key"])
+            return
+        self._event_once(SHARED_DOWNLOAD_CLAIMED, {"claimed": list(result.get("claimed") or [])}, unit["unit_key"])
+
+    def _release_shared_claims(self, unit: Mapping[str, Any], ending: str) -> None:
+        """Release what a unit of a shared download group claimed in its accession's store and will never read, as
+        it ends without validated outputs (`ending`: excluded, skipped, failed, stopped_no_approval or
+        stopped_policy_drift): a sibling's pre-claim (_claim_shared_downloads), or its own lease's claim on an object
+        it never linked (InteractivePort.release_claims), with the store's reason, failed_terminal for a failure and
+        excluded for the rest. Under a campaign that deletes raw data with boundary 5 live, the approval goes with
+        it, and the store then collects an object no other unit still claims; otherwise the claims are released and
+        nothing is deleted. A claim its lease materialized stays for Interactive's cleanup or discard, which release
+        it with the unit's raw tree. A unit of a group of one releases nothing here. What cannot be released is an
+        event, and never changes how the unit ends."""
+        if unit["role"] != "run" or not self._group_members(unit):
+            return
+        deletes = self.campaign["raw_retention_policy"] == "delete_after_validated_output" and self._live("5")
+        reason = "failed_terminal" if ending == "failed" else "excluded"
+        result = self.ports.interactive.release_claims(
+            workspace_root=self.campaign["workspace_root"], repository=unit["repository"], accession=unit["accession"],
+            unit_id=str(unit["catalog_unit_id"]), reason=reason,
+            authorization_path=self._authorization(unit) if deletes else "",
+        )
+        if result.get("ok") is False:
+            self._event_once(SHARED_DOWNLOAD_NOT_RELEASED, {
+                "ending": ending, "reason": result.get("reason"), "detail": result.get("detail")}, unit["unit_key"])
+        elif result.get("released") or result.get("collected"):
+            self._event(SHARED_DOWNLOAD_RELEASED, {
+                "ending": ending, "release_reason": reason, "approval_passed": deletes,
+                **{key: result.get(key) for key in ("released", "collected", "kept", "refused")}}, unit["unit_key"])
+
+    def _event_once(self, kind: str, detail: Mapping[str, Any], unit_key: str) -> None:
+        """An event, unless the unit already has one of this kind that says the same: a step made again after a crash
+        or a retry writes it once."""
+        recorded = self.redact(dict(detail))
+        if not any(row["unit_key"] == unit_key and _loads(row["detail_json"]) == recorded for row in self.ledger.events(kind)):
+            self._event(kind, detail, unit_key)
 
     def _download_failed(
         self, unit: dict[str, Any], *, result: dict[str, Any], outcome: str = "failed",
@@ -1318,9 +1570,11 @@ class Runner:
         raw = str(manifest.get("raw_directory") or "")
         size = self.ports.disk.tree_bytes(raw) if raw else 0
         self._progress.pop(unit["download_job_id"] or "", None)
-        # A download that finished, which ends its repository's run of network failures (_outage_streaks).
+        # A download that finished, which ends its repository's run of network failures (_outage_streaks). bytes is
+        # what the unit's raw tree holds; what its lease moved over the network is the transfer (download_transfer),
+        # which shows a shared object fetched again where the tree's bytes cannot.
         finished = {"step": "download", "outcome": "ok", "counted": False,
-                    "detail": {"job_id": unit["download_job_id"], "bytes": size}}
+                    "detail": {"job_id": unit["download_job_id"], "bytes": size, **download_transfer(manifest)}}
         if self._cancel_reason(unit["download_job_id"] or "") == "skip":
             self._move(
                 unit, "discarding", pending_terminal="skipped", manifest_path=manifest_path, downloaded_bytes=size,
@@ -1643,7 +1897,9 @@ class Runner:
                 "accession": unit["accession"], "order_index": unit["order_index"], "role": "split_part",
                 "parent_unit_key": unit["unit_key"], "download_group_id": unit["download_group_id"],
                 "class_proposal_id": unit["class_proposal_id"], "class_kind": unit["class_kind"],
-                "instrument": unit["instrument"], "ion_mode": unit["ion_mode"], "workspace": str(workspace),
+                # A part split by polarity (a unit whose record says Both, 2026-10-29) runs in its own polarity.
+                "instrument": unit["instrument"],
+                "ion_mode": str(part.get("polarity") or "") or unit["ion_mode"], "workspace": str(workspace),
                 "manifest_path": str(part["manifest_path"]), "handoff_path": unit["handoff_path"],
                 "authorization_copy": str(copy), "raw_disposition": "deferred_to_parent",
             })
@@ -1708,8 +1964,10 @@ class Runner:
         return raw, str(result.get("detail") or result.get("reason") or "not discarded"), None
 
     def _state_preflighted(self, unit: dict[str, Any]) -> bool:
-        """The analysis CSV and the reviewed metadata, with the approved Class applied (boundary 3)."""
+        """The analysis CSV and the reviewed metadata, with the approved Class applied (boundary 3). A DDA unit
+        deposited as both .wiff2 and .wiff is first switched to its .wiff (_wiff_first), once."""
         self._require("3")
+        self._wiff_first(unit)
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_metadata", self.stamp(), tool="msdial_prepare_repository_reanalysis")
         result = self.ports.interactive.prepare_metadata(manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit))
         if result.get("ok") is False or not result.get("prepared"):
@@ -1850,6 +2108,20 @@ class Runner:
             return True
         if result.get("ok") is not False:
             result = {"ok": False, "reason": "not_started", "detail": result.get("message") or result.get("error")}
+        exclusion = policy.console_start_exclusion(result)
+        if exclusion is not None:
+            # Refused for the unit's own data (a .wiff without its .wiff.scan, MPST000063): a retry meets the same
+            # files, so the unit ends excluded through the discard, as an exclusion at its download does, nothing
+            # counted (policy.console_start_exclusion, 2026-10-29).
+            self._move(
+                unit, "discarding", pending_terminal="excluded",
+                terminal_detail=json.dumps({"reason": exclusion["reason"], "step": step, "detail": exclusion["detail"]},
+                                           ensure_ascii=False, sort_keys=True),
+                detail={"step": step, "excluded": exclusion["reason"]},
+                end_console_run=(run_id, "not_started"),
+                close_attempt=(attempt, "blocked", False, {**self.redact(dict(result)), "excluded": exclusion["reason"]}),
+            )
+            return True
         self._fail(
             unit, step=step.replace("_start", ""), result=result,
             retry_state="metadata_prepared" if diagnostic else "prepared",
@@ -1858,6 +2130,8 @@ class Runner:
         return True
 
     def _state_metadata_prepared(self, unit: dict[str, Any]) -> bool:
+        if self._stale_after_wiff_fallback(unit):
+            return True
         return self._console_start(unit, "tuning")
 
     def _console_ended(
@@ -1893,8 +2167,168 @@ class Runner:
             # Read by automatic_rt_fallback: the unit's next attempts run without the correction, if the policy says.
             detail[AUTOMATIC_RT_FAILED] = True
         self._production_ended(unit, {"timeout": "timed_out"}.get(outcome, outcome))
+        switched = self._wiff_fallback(unit, job_id=str(job_id or ""), step=step, outcome=outcome)
+        if switched:
+            # The attempt that failed on the .wiff2 counts as any failed attempt; the unit's next attempts run on the
+            # .wiff, from its metadata preparation, since the analysis CSV, the threshold and the run bundle all read
+            # the input list (the user's decision of 2026-10-31).
+            detail[WIFF_FALLBACK] = policy.wiff_fallback_summary(switched)
+            retry_state = policy.WIFF_FALLBACK_RESUME_STATE
         self._fail(unit, step=step, result={"ok": False, "reason": outcome, **detail}, retry_state=retry_state,
                    outcome=outcome, console_run=(run[0], outcome) if run else None, job_id=job_id)
+        return True
+
+    def _wiff_fallback(self, unit: dict[str, Any], *, job_id: str, step: str, outcome: str) -> dict[str, Any] | None:
+        """After a Console job of the unit failed or timed out, Interactive's switch of its inputs from their .wiff2 to
+        the .wiff beside them (policy.WIFF_FALLBACK_RULE, the user's decision of 2026-10-31): the record the switch
+        wrote into the unit manifest, or None where the unit stays on its inputs and is retried as before.
+
+        Asked only where it can matter: the job failed or timed out (a cancel or an interruption is no reader's), the
+        unit analyses a .wiff2, and the unit has an attempt left after this one (policy.after_failure), so a switch
+        is never recorded for a run that will not happen. Interactive decides the rest - DDA only, every .wiff2 with
+        its .wiff and the .wiff's .wiff.scan beside it, each .wiff's own header read with the pinned extractor (sent as
+        the preflight is sent it) giving one DDA sample in the unit's polarity, once per unit - and refuses otherwise;
+        a refusal, and an Interactive without the tool (unsupported), leave the retry exactly as it was. Each ask is an
+        attempt of its own (WIFF_FALLBACK_STEP, never counted), and a switch is said in a WIFF_FALLBACK event, once.
+
+        A switch whose reply was lost, or that a crash left without the transition that follows it, is found in the
+        unit manifest: an encoding_fallback whose failed jobs name this job is the switch this failure made, and is
+        adopted as made, so the unit never resumes on a CSV and threshold of the .wiff2 after its inputs changed. An
+        adoption that finds the switch already recorded says nothing again."""
+        if outcome not in policy.WIFF_FALLBACK_OUTCOMES or not job_id:
+            return None
+        manifest = self._manifest(unit) or {}
+        recorded = policy.wiff_fallback_record(manifest)
+        if recorded and job_id in _failed_job_ids(recorded):
+            if not self._wiff_fallback_attempted(unit["unit_key"]):
+                summary = policy.wiff_fallback_summary(recorded)
+                adopted = self.ledger.open_attempt(unit["unit_key"], WIFF_FALLBACK_STEP, self.stamp(),
+                                                   tool="msdial_switch_repository_unit_to_wiff")
+                self.ledger.close_attempt(adopted, "ok", self.stamp(), detail=self.redact({
+                    "job_id": job_id, "step": step, "switched": True, "adopted": True, WIFF_FALLBACK: summary}))
+                self._event(WIFF_FALLBACK, {**summary, "step": step, "adopted": True}, unit["unit_key"])
+            return recorded
+        if manifest.get(policy.WIFF_FALLBACK_FIELD) is not None or not policy.analyses_wiff2(manifest):
+            return None
+        if policy.after_failure(int(unit["failures"]), self.now(), self.policy).state != "waiting_retry":
+            return None
+        if not self._live("4"):
+            return None
+        switch = getattr(self.ports.interactive, "switch_to_wiff", None)
+        attempt = self.ledger.open_attempt(unit["unit_key"], WIFF_FALLBACK_STEP, self.stamp(),
+                                           tool="msdial_switch_repository_unit_to_wiff",
+                                           arguments={"failed_job_ids": [job_id]})
+        if switch is None:
+            result: dict[str, Any] = {"ok": False, "reason": "unsupported",
+                                      "detail": "Interactive has no msdial_switch_repository_unit_to_wiff (0.5.55)."}
+        else:
+            try:
+                result = dict(switch(manifest_path=unit["manifest_path"], failed_job_ids=[job_id],
+                                     authorization_path=self._authorization(unit),
+                                     extractor_path=str((self.pins.get("extractor") or {}).get("path") or "")) or {})
+            except Exception as error:  # noqa: BLE001 - a switch that raises is no switch; the retry goes on as before
+                result = {"ok": False, "reason": "exception", "error_type": type(error).__name__, "detail": str(error)}
+        record = policy.wiff_fallback_record({policy.WIFF_FALLBACK_FIELD: result.get(policy.WIFF_FALLBACK_FIELD)})
+        if not (result.get("ok") is not False and result.get("switched") is True and record):
+            # Read again: a switch that was made and whose reply was lost is on record in the manifest.
+            again = policy.wiff_fallback_record(self._manifest(unit))
+            if not (again and job_id in _failed_job_ids(again)):
+                self.ledger.close_attempt(attempt, "blocked", self.stamp(), detail=self.redact({
+                    "job_id": job_id, "step": step, "switched": False, "reason": result.get("reason"),
+                    "detail": result.get("detail")}))
+                return None
+            record = again
+        summary = policy.wiff_fallback_summary(record)
+        self.ledger.close_attempt(attempt, "ok", self.stamp(), detail=self.redact({
+            "job_id": job_id, "step": step, "switched": True, WIFF_FALLBACK: summary}))
+        self._event(WIFF_FALLBACK, {**summary, "step": step}, unit["unit_key"])
+        return record
+
+    def _wiff_first(self, unit: dict[str, Any]) -> dict[str, Any] | None:
+        """Before the unit's metadata is prepared, Interactive's switch of its inputs from their .wiff2 to the .wiff
+        beside them under policy.WIFF_FIRST_RULE (the user's decision of 2026-11-04): the record the switch wrote, or
+        None where the unit stays on its inputs.
+
+        Asked once per unit (any WIFF_FIRST_STEP attempt), and only where the campaign policy has wiff_first_for_dda,
+        the unit's input candidates name a .wiff2, its manifest records no switch under either rule, and boundary 4 is
+        live. Interactive decides the rest, as for the fallback, and refuses otherwise; a refusal, an Interactive
+        without the rule, and an error leave the unit on its .wiff2. A switch whose reply was lost is read from the
+        unit manifest and adopted."""
+        if not self.policy.wiff_first_for_dda or self._wiff_first_attempted(unit["unit_key"]):
+            return None
+        manifest = self._manifest(unit) or {}
+        if manifest.get(policy.WIFF_FALLBACK_FIELD) is not None or not policy.analyses_wiff2(manifest):
+            return None
+        if not self._live("4"):
+            return None
+        switch = getattr(self.ports.interactive, "switch_to_wiff", None)
+        attempt = self.ledger.open_attempt(unit["unit_key"], WIFF_FIRST_STEP, self.stamp(),
+                                           tool="msdial_switch_repository_unit_to_wiff",
+                                           arguments={"rule": policy.WIFF_FIRST_RULE})
+        if switch is None:
+            result: dict[str, Any] = {"ok": False, "reason": "unsupported",
+                                      "detail": "Interactive has no msdial_switch_repository_unit_to_wiff (0.5.55)."}
+        else:
+            try:
+                result = dict(switch(manifest_path=unit["manifest_path"], failed_job_ids=[],
+                                     authorization_path=self._authorization(unit),
+                                     extractor_path=str((self.pins.get("extractor") or {}).get("path") or ""),
+                                     rule=policy.WIFF_FIRST_RULE) or {})
+            except Exception as error:  # noqa: BLE001 - a switch that raises is no switch; the unit runs on its .wiff2
+                result = {"ok": False, "reason": "exception", "error_type": type(error).__name__, "detail": str(error)}
+        record = policy.wiff_fallback_record({policy.WIFF_FALLBACK_FIELD: result.get(policy.WIFF_FALLBACK_FIELD)})
+        if not (result.get("ok") is not False and result.get("switched") is True
+                and record.get("rule") == policy.WIFF_FIRST_RULE):
+            # Read again: a switch that was made and whose reply was lost is on record in the manifest.
+            again = policy.wiff_fallback_record(self._manifest(unit))
+            if again.get("rule") != policy.WIFF_FIRST_RULE:
+                self.ledger.close_attempt(attempt, "blocked", self.stamp(), detail=self.redact({
+                    "rule": policy.WIFF_FIRST_RULE, "switched": False, "reason": result.get("reason"),
+                    "detail": result.get("detail")}))
+                return None
+            record = again
+        summary = policy.wiff_fallback_summary(record)
+        self.ledger.close_attempt(attempt, "ok", self.stamp(), detail=self.redact({"switched": True, WIFF_FIRST: summary}))
+        self._event(WIFF_FIRST, summary, unit["unit_key"])
+        return record
+
+    def _wiff_first_attempted(self, unit_key: str) -> bool:
+        """Whether the ledger records the one ask for the unit's switch before its metadata (WIFF_FIRST_STEP)."""
+        return any(item["step"] == WIFF_FIRST_STEP for item in self.ledger.attempts(unit_key))
+
+    def _wiff_fallback_attempted(self, unit_key: str) -> bool:
+        """Whether the ledger already records the unit's switch (a WIFF_FALLBACK_STEP attempt that switched)."""
+        return any(item["step"] == WIFF_FALLBACK_STEP and item["outcome"] == "ok" for item in self.ledger.attempts(unit_key))
+
+    def wiff_fallback_of(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """What the unit's switch from its .wiff2 to its .wiff was (policy.wiff_fallback_summary, with the boundary-4
+        crossing it was made under), read from the unit manifest, the record Interactive wrote; where the manifest
+        cannot be read, as the ledger's last WIFF_FALLBACK_STEP attempt that switched recorded it. None for a unit
+        that never switched."""
+        record = policy.wiff_fallback_record(self._manifest(unit))
+        if record:
+            return policy.wiff_fallback_summary(record, self._manifest(unit))
+        for item in reversed(self.ledger.attempts(unit["unit_key"])):
+            if item["step"] == WIFF_FALLBACK_STEP and item["outcome"] == "ok":
+                return _loads(item["detail_json"]).get(WIFF_FALLBACK) or None
+        return None
+
+    def _stale_after_wiff_fallback(self, unit: dict[str, Any]) -> bool:
+        """Send a unit back to its metadata preparation where its inputs were switched after its metadata was last
+        prepared: the analysis CSV, the threshold and the run bundle it would start from name the .wiff2. Whichever
+        path brought it to metadata_prepared or prepared - a retry, an interruption, a Console the backend lost, a
+        crash between the switch and the transition after it - it never starts a Console on them."""
+        record = policy.wiff_fallback_record(self._manifest(unit))
+        switched = policy.parse_iso(record.get("switched_at")) if record else None
+        if switched is None:
+            return False
+        prepared = [policy.parse_iso(item["ended_at"]) for item in self.ledger.attempts(unit["unit_key"])
+                    if item["step"] == "prepare_metadata" and item["outcome"] == "ok"]
+        prepared = [moment for moment in prepared if moment is not None]
+        if prepared and max(prepared) >= switched:
+            return False
+        self._move(unit, policy.WIFF_FALLBACK_RESUME_STATE,
+                   detail={WIFF_FALLBACK: "inputs switched after the metadata was prepared", "switched_at": record.get("switched_at")})
         return True
 
     def _console_lost(
@@ -2131,7 +2565,13 @@ class Runner:
         left not evaluable where it is required (2026-10-02). Such a unit counts as failed, so it is retried
         twice and then its raw data go. Any other FAIL, a WARN and any other check left not evaluable are
         recorded, and the unit runs. A gate that gives no usable report holds the unit (_gate_hold).
+
+        The pins are compared first (review 2): the method is written from the pinned Interactive, libraries and
+        parameter template, so with one of them changed every unit alike would fail LIB-2 and lose its raw data,
+        where the pin pause stops the campaign once and lifts when they match again.
         """
+        if self._pin_check_failed():
+            return False
         answers = self.answers(unit, unit["minimum_peak_height"])
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_run", self.stamp(), tool="msdial_prepare_guided_analysis")
         result = self.ports.interactive.prepare_guided(input_path=unit["input_path"], answers=answers)
@@ -2271,6 +2711,8 @@ class Runner:
         return moved
 
     def _state_prepared(self, unit: dict[str, Any]) -> bool:
+        if self._stale_after_wiff_fallback(unit):
+            return True
         return self._console_start(unit, "run")
 
     def _state_running(self, unit: dict[str, Any]) -> bool:
@@ -2442,6 +2884,9 @@ class Runner:
                            next_attempt_at=policy.iso(self.now() + timedelta(seconds=float(delay))))
                 return True
             raw = "held"
+        # What it claimed of a download its group shares and never read, so the store may collect what no sibling
+        # still needs; before the end is committed, and made again (to no effect) should the runner stop before it.
+        self._release_shared_claims(unit, pending)
         # The gate reads a unit manifest; a unit that never downloaded has none to read.
         verdict = self._after_run_gate(unit, "final") if unit["manifest_path"] and Path(unit["manifest_path"]).is_file() else None
         exit_code = verdict.get("exit_code") if verdict else None
@@ -2469,7 +2914,7 @@ class Runner:
         if unit["role"] == "split_part":
             if release:
                 return self._release_part_hold(unit)
-            return "deferred_to_parent", "deleted with the split parent once every part has ended", None
+            return self._end_part(unit, manifest)
         if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
             return "kept", "the campaign keeps raw data", None
         status = manifest.get("status")
@@ -2514,6 +2959,35 @@ class Runner:
             # data are held, counted apart, until Interactive's own discard deletes them (plan item 14).
             return "held", f"not deleted ({', '.join(blockers)}): {detail}", None
         return "wait", detail, None
+
+    def _end_part(self, unit: Mapping[str, Any], manifest: Mapping[str, Any]) -> tuple[str, str, str | None]:
+        """A split part ending without validated output: its own discard, under boundary 5, records in Interactive
+        that the part has ended, deleting nothing (its raw data are its parent's).
+
+        Interactive counts a part as ended only from the part's own record: validated, skipped or excluded at its
+        preflight, discarded, or run_failed after all its runs. A part whose diagnostic failed, or that stopped
+        before its run, stays preflight_passed there, and its parent's release waited for it for good (V4,
+        MPST000063, 2026-10-29). A part Interactive already records as ended is left as it is, and so is a part
+        its disposition holds: only an operator's skip ends that one (_release_part_hold)."""
+        detail = "deleted with the split parent once every part has ended"
+        if self.campaign["raw_retention_policy"] != "delete_after_validated_output":
+            return "deferred_to_parent", "the campaign keeps raw data", None
+        if str(manifest.get("status") or "") in PART_ENDED_STATUSES or _held_by_disposition(unit):
+            return "deferred_to_parent", detail, None
+        if not self._live("5"):
+            return ("deferred_to_parent", "no live approval covers boundary 5; the part's end is not recorded in "
+                    "Interactive, so its parent's release waits for it", None)
+        result = self.ports.interactive.discard(
+            manifest_path=unit["manifest_path"], authorization_path=self._authorization(unit),
+            unit_id=unit["unit_key"], parent_unit_id=unit["parent_unit_key"] or "",
+        )
+        if result.get("ok") is not False and (result.get("part_ended") or result.get("deleted")):
+            return "deferred_to_parent", f"the part's end recorded; {detail}", "5"
+        if policy.classify_result(result) in (policy.REFUSED, policy.CONTRACT):
+            # Not recorded, and asking again changes nothing: the parent's release then holds its raw data.
+            return ("deferred_to_parent", f"the part's end was not recorded ({result.get('codes') or result.get('reason')}: "
+                    f"{result.get('detail')}); its parent's release waits for it", None)
+        return "wait", str(result.get("blockers") or result.get("detail") or result.get("reason") or "not recorded"), None
 
     def _release_part_hold(self, unit: Mapping[str, Any]) -> tuple[str, str, str | None]:
         """An operator's skip of a split part Interactive's disposition holds: the part's own discard, with
@@ -2638,20 +3112,26 @@ class Runner:
             "run_id": f"{unit['unit_key']}:{job}", "unit_id": unit["catalog_unit_id"], "status": status.replace(" ", "_"),
             "class_proposal_id": unit.get("class_proposal_id") or "",
             "interactive_version": str((self.pins.get("interactive") or {}).get("version") or ""),
-            "msdial_version": str((self.pins.get("console") or {}).get("version") or ""),
+            "msdial_version": _console_version(self.pins.get("console") or {}),
             "mztab_path": mztab_path, "mztab_sha256": mztab_sha256,
             "provenance": {
                 "campaign_id": self.campaign["campaign_id"], "approval_id": self.approval["approval_id"],
                 "manifest_digest": self.campaign["manifest_digest"],
                 "console_sha256": str((self.pins.get("console") or {}).get("binary_sha256") or ""),
                 "extractor_sha256": str((self.pins.get("extractor") or {}).get("binary_sha256") or ""),
-                "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
+                **self._libraries_record(unit, job, manifest),
                 "minimum_peak_height": unit.get("minimum_peak_height"), "threshold_step": unit.get("threshold_step"),
                 "coarse_threshold_step": unit.get("coarse_threshold_step"), "step_fallback": _flag(unit.get("step_fallback")),
                 "fallback_reason": unit.get("fallback_reason"),
                 "attempt_status": status.replace(" ", "_") if not final else None,
             },
         }
+        fallback = self.wiff_fallback_of(unit)
+        if fallback:
+            # The unit's inputs were switched from its .wiff2 to its .wiff after a Console failure (2026-10-31): the
+            # rule, the failed job(s) and every file swapped, on every run record made after the switch. The .wiff2 run
+            # that failed was recorded as it ended, before the switch was asked for.
+            values["provenance"][WIFF_FALLBACK] = fallback
         if final:
             values.update(gate_verdict=policy.gate_verdict_token(exit_code), gate_exit_code=exit_code)
             values["provenance"].pop("attempt_status")
@@ -2716,6 +3196,9 @@ class Runner:
             "step_fallback": _flag(unit.get("step_fallback")),
             "fallback_reason": unit.get("fallback_reason"),
             "diagnostic_peak_count": unit.get("diagnostic_peak_count"),
+            # The switch of the unit's inputs from its .wiff2 to the .wiff beside them after a Console job failed (the
+            # user's decision of 2026-10-31): the rule, the failed job(s) and every file swapped; null where none was.
+            "encoding_fallback": self.wiff_fallback_of(unit),
             # What the campaign pinned of automatic RT correction, and whether this unit's runs went on without it
             # (null for a campaign whose policy pins none of it); whether its Blanks took a model interpolated by
             # analytical order, and the order source that decided it (blank_interpolation).
@@ -2728,12 +3211,70 @@ class Runner:
             } if self.pins_automatic_rt else None,
             "pins": {
                 "console_sha256": (self.pins.get("console") or {}).get("binary_sha256"),
+                "console_version": _console_version(self.pins.get("console") or {}) or None,
                 "extractor_sha256": (self.pins.get("extractor") or {}).get("binary_sha256"),
-                "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in self.pins.get("libraries") or []],
             },
+            # The libraries the approval names (the pins) and the ones the unit's last production run loaded, with
+            # where that was read; both null as-run fields for a unit that never ran (_libraries_record).
+            **self._libraries_record(unit, unit.get("run_job_id"), None),
             "written_at": self.stamp(),
         }
         _write_json(workspace / "campaign-record.json", self.redact(record))
+
+    def _libraries_record(
+        self, unit: Mapping[str, Any], job: str | None, manifest: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """What a unit's run record says of its libraries: libraries_authorized, the pins the approval names, and
+        libraries_as_run, what production run `job` loaded, with libraries_as_run_source saying where that was read
+        (_libraries_as_run). Until 2026-10-24 the records named the pins alone, and so named the approved LBM2 for
+        the 15 preflight units that ran the official one. Where the two differ, a libraries_differ_from_authorization
+        event says how, once for each difference."""
+        authorized = [
+            {"name": item["name"], "sha256": item["sha256"],
+             **{key: item[key] for key in ("role", "ion_modes", "library_kind") if item.get(key) is not None}}
+            for item in self.pins.get("libraries") or []
+        ]
+        ran, source = self._libraries_as_run(unit, job, manifest)
+        if ran is not None:
+            differences = library_differences(authorized, ran, self._ion_mode(unit))
+            if any(differences.values()):
+                # Without a kind difference the detail is as it was before kinds were compared, so an event a unit
+                # already has is not said again.
+                detail = {"job_id": job, "source": source,
+                          **{key: value for key, value in differences.items() if value or key != "library_kind_differs"}}
+                if not any(row["unit_key"] == unit["unit_key"] and _loads(row["detail_json"]) == self.redact(detail)
+                           for row in self.ledger.events(LIBRARIES_DIFFER)):
+                    self._event(LIBRARIES_DIFFER, detail, unit["unit_key"])
+        return {"libraries_authorized": authorized, "libraries_as_run": ran, "libraries_as_run_source": source}
+
+    def _libraries_as_run(
+        self, unit: Mapping[str, Any], job: str | None, manifest: Mapping[str, Any] | None
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """The libraries production run `job` of the unit loaded, by name and sha256 with their role and kind where
+        the record gives them, and the record they were read from: the unit manifest's console_run_finalisation,
+        which Interactive writes once the Console has returned, when it is this job's; else the libraries the run
+        manifest recorded as the run was prepared (output/run-manifest.json). (None, None) for a unit with no
+        production run, or whose run neither record describes."""
+        if not job:
+            return None, None
+        manifest = manifest if manifest is not None else (self._manifest(unit) or {})
+        finalisation = manifest.get("console_run_finalisation")
+        if isinstance(finalisation, Mapping) and str(finalisation.get("job_id") or "") == str(job) \
+                and isinstance(finalisation.get("libraries"), list):
+            return as_run_libraries(finalisation["libraries"]), FINALISATION_LIBRARIES
+        output = str(manifest.get("output_directory") or "").strip()
+        prepared = _read_object(Path(output) / "run-manifest.json" if output else self._workspace(unit) / "output" / "run-manifest.json")
+        if isinstance(prepared.get("libraries"), list):
+            return as_run_libraries(prepared["libraries"]), PREPARED_LIBRARIES
+        return None, None
+
+    def _ion_mode(self, unit: Mapping[str, Any]) -> str:
+        """The unit's ion mode as its runs are given it (answers): Interactive's answer seed first, then the ledger's."""
+        try:
+            seed = _loads((self._unit_directory(unit) / "answer-seed.json").read_text(encoding="utf-8"))
+        except OSError:
+            seed = {}
+        return str(seed.get("ion_mode") or unit.get("ion_mode") or "")
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -2871,6 +3412,11 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     for unit in units:
         if unit["state"] == "excluded":
             excluded_for[str(unit["terminal_reason"])] = excluded_for.get(str(unit["terminal_reason"]), 0) + 1
+    # What the finished downloads moved (download_transfer), beside what the units' raw trees hold: a shared object
+    # fetched once for its group is in one unit's transfer and every sibling's downloaded bytes.
+    finished = [_loads(row["detail_json"]) for row in ledger.attempts()
+                if row["step"] == "download" and row["outcome"] == "ok"]
+    transfers = [item["transfer"] for item in finished if isinstance(item.get("transfer"), Mapping)]
     return {
         "units": len(units),
         "states": dict(sorted(states.items())),
@@ -2882,6 +3428,10 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         # person reading this.
         "raw_held": {"units": len(held), "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in held),
                      "unit_keys": [unit["unit_key"] for unit in held]},
+        "downloads": {"finished": len(finished), "bytes": sum(int(item.get("bytes") or 0) for item in finished),
+                      "through_store": len(transfers),
+                      **{key: sum(int(item.get(key) or 0) for item in transfers)
+                         for key in ("transferred_bytes", "objects_fetched", "objects_refetched", "cache_hits")}},
         # Not run, for want of a before-production report: a warning, never a failure (2026-10-02).
         "gate_held": {"units": len(gate_held), "unit_keys": [unit["unit_key"] for unit in gate_held],
                       "warning": GATE_HELD_WARNING if gate_held else None},

@@ -18,8 +18,9 @@ full-repository reanalysis, and this module is their one written form:
 And the gate rule, decided on 2026-10-01 and completed on 2026-10-02:
 
 - Before production, a FAIL stops a unit's MS-DIAL run for ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1,
-  PRE-2 and CONV-1 (BLOCKS_RUN_CHECKS), and so does one of them left not evaluable where it is required
-  (strict_failures). The unit then counts as failed. Any other FAIL is recorded and the unit runs.
+  PRE-2 and CONV-1, and since 2026-10-24 LIB-2 (BLOCKS_RUN_CHECKS), and so does one of them left not
+  evaluable where it is required (strict_failures). The unit then counts as failed. Any other FAIL is
+  recorded and the unit runs.
 - A before-production gate that gives no report the runner can use (gate_report_problem) holds the unit:
   it does not run, its raw data are kept, nothing is counted against it, and the other units go on. A
   recheck runs the gate again. After the run a missing report is only recorded.
@@ -136,14 +137,15 @@ _FOURIER_INSTRUMENT = re.compile(
 )
 # The before-production checks whose FAIL stops a unit's MS-DIAL run: the ones that break results, which the
 # user's rule of 2026-10-01 named (the first five) and the user's placing of 2026-10-02 completed (ID-1,
-# PRE-2 and CONV-1). One of them left not evaluable where it is required stops the run too (2026-10-02,
+# PRE-2 and CONV-1), and LIB-2 (2026-10-24): the run loads only the libraries the approval names, with their
+# bytes. One of them left not evaluable where it is required stops the run too (2026-10-02,
 # run_blocking_unevaluated). A FAIL of any other check (CLS-1/2/3, ORD-1, PKH-1, SPL-1) is recorded and the
 # unit runs. A gate whose checks carry a run_policy can name more blocking checks; it cannot take one of
-# these off the list (run_blocking_failures). The gate's RUN_POLICY states the same eight
+# these off the list (run_blocking_failures). The gate's RUN_POLICY states the same nine
 # (tests/test_verify_run_policy.py holds the two lists equal).
 BLOCKS_RUN = "blocks_run"
 RECORD_ONLY = "record_only"
-BLOCKS_RUN_CHECKS = ("ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1")
+BLOCKS_RUN_CHECKS = ("ELIG-1", "ACQ-1", "SUM-1", "CNT-1", "INP-1", "ID-1", "PRE-2", "CONV-1", "LIB-2")
 
 
 class DispositionError(ValueError):
@@ -355,6 +357,10 @@ class CampaignPolicy:
     # and would end so again on every retry. With the fallback, the unit's next attempts run without the
     # correction, and its record and status say so; without it, the unit is retried and ends as any failure.
     automatic_rt_correction_fallback: bool = True
+    # A DDA unit or part deposited as both .wiff2 and .wiff runs on the .wiff from the start (the user's decision of
+    # 2026-11-04, WIFF_FIRST_RULE): the runner asks Interactive to switch it before its first metadata preparation,
+    # once (machine.Runner._wiff_first). Off, a unit runs on its .wiff2 until a Console job fails on it.
+    wiff_first_for_dda: bool = True
     runner_lock_stale_seconds: float = 600.0
     heartbeat_seconds: float = 30.0
     disk: DiskPolicy = field(default_factory=DiskPolicy)
@@ -402,7 +408,7 @@ class CampaignPolicy:
         anchors = self.automatic_rt_correction_maximum_anchors
         if isinstance(anchors, bool) or not isinstance(anchors, int) or anchors < AUTOMATIC_RT_MINIMUM_ANCHORS:
             raise ValueError(f"automatic_rt_correction_maximum_anchors is a whole number of at least {AUTOMATIC_RT_MINIMUM_ANCHORS}.")
-        for name in ("automatic_rt_correction", "automatic_rt_correction_fallback"):
+        for name in ("automatic_rt_correction", "automatic_rt_correction_fallback", "wiff_first_for_dda"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} is true or false.")
         if "before_production" not in self.gate_points:
@@ -624,6 +630,94 @@ DOWNLOAD_EXCLUDE = "exclude"
 DECLARED_INPUTS_UNSUPPORTED = "declared_inputs_unsupported_format"
 # The terminal reason of an exclusion whose disposition names none (never written by the agreed contract).
 DOWNLOAD_EXCLUDE_UNSTATED = "download_exclude"
+
+
+# A CONSOLE START REFUSED FOR THE UNIT'S OWN DATA (user decision, 2026-10-29). Interactive's run validation refuses a
+# SCIEX .wiff whose .wiff.scan is not beside it (validation_error, "WIFF.SCAN is not accessible next to ..."): MB-POST
+# MPST000063 deposited none, and a retry finds the same files. Interactive 0.5.53 excludes such an input at the
+# disposition (vendor_companion_missing); a unit preflighted before it, or a companion lost since, is excluded here at
+# the start, never retried. The texts are Interactive's validation messages whose cause lies in the data.
+CONSOLE_START_DATA_DEFECTS = (("WIFF.SCAN is not accessible next to", "vendor_companion_missing"),)
+
+
+def console_start_exclusion(result: Any) -> dict[str, Any] | None:
+    """{"reason", "detail"} where a Console start was refused for the unit's own data (CONSOLE_START_DATA_DEFECTS):
+    the unit is excluded, not failed and not retried. None for anything else."""
+    if not isinstance(result, Mapping) or result.get("ok") is not False or result.get("reason") != "validation_error":
+        return None
+    text = str(result.get("detail") or "")
+    for marker, reason in CONSOLE_START_DATA_DEFECTS:
+        if marker in text:
+            return {"reason": reason, "detail": text[:500]}
+    return None
+
+
+# A .WIFF IN PLACE OF ITS .WIFF2 (the user's decision of 2026-10-31; Interactive 0.5.55, wiff_fallback). The positive
+# part of MB-POST MPST000048 (ZenoTOF 7600, DDA) hung three times out of three in the .wiff2 reader while its files were
+# read in parallel. The .wiff2 stays the preferred encoding; where a Console job of a DDA unit or split part - its
+# peak-count diagnostic or its production run - fails or times out, and every .wiff2 it analyses has the same sample's
+# .wiff beside it with that .wiff's .wiff.scan, Interactive's msdial_switch_repository_unit_to_wiff switches the unit's
+# inputs to the .wiff, once, on record (manifest.encoding_fallback, WIFF_FALLBACK_RULE), and never for DIA, SWATH or
+# AIF (ZT Scan DIA data can only be analysed from the .wiff2). The runner asks for it after such a failure
+# (machine.Runner._wiff_fallback) and resumes the unit at its metadata preparation, so the analysis CSV, the
+# diagnostic's threshold and the run bundle are made again on the files that run.
+WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
+# THE SECOND RULE (the user's decision of 2026-11-04; Interactive 0.5.58, WIFF_FIRST_RULE). The verification campaigns
+# V6, V7 and V8 ran MPST000048 three times, and its multi-file .wiff2 production run hung on both polarities every
+# time, while the same samples ran from their .wiff in 11 to 18 minutes. Under CampaignPolicy.wiff_first_for_dda the
+# runner asks for the same switch before a unit's first metadata preparation (machine.Runner._wiff_first), answering
+# no failure: same DDA conditions, same record, its rule WIFF_FIRST_RULE and its failed_jobs empty. A unit Interactive
+# does not switch so runs on its .wiff2, and WIFF_FALLBACK_RULE still answers a failure there.
+WIFF_FIRST_RULE = "wiff_first_for_dda_2026_11_04"
+WIFF_RULES = (WIFF_FALLBACK_RULE, WIFF_FIRST_RULE)
+WIFF_FALLBACK_FIELD = "encoding_fallback"
+# The entry point Interactive records the switch's boundary-4 crossing under.
+WIFF_FALLBACK_ENTRY_POINT = "msdial_switch_repository_unit_to_wiff"
+# The Console job outcomes the switch answers (machine.Runner._console_ended): a failure and a timeout. A cancel is an
+# operator's, an interruption the backend's; neither is the reader's.
+WIFF_FALLBACK_OUTCOMES = frozenset({"failed", "timeout"})
+# Where a unit whose inputs were switched resumes: its metadata preparation, the first step that reads the input list.
+WIFF_FALLBACK_RESUME_STATE = "preflighted"
+
+
+def wiff_fallback_record(manifest: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The unit manifest's encoding_fallback under either rule (WIFF_RULES), or {}."""
+    record = (manifest or {}).get(WIFF_FALLBACK_FIELD)
+    return dict(record) if isinstance(record, Mapping) and record.get("rule") in WIFF_RULES else {}
+
+
+def analyses_wiff2(manifest: Mapping[str, Any] | None) -> bool:
+    """Whether a unit manifest's input candidates name a .wiff2: the only units the runner asks to switch."""
+    return any(str(item).rstrip("\\/").casefold().endswith(".wiff2") for item in (manifest or {}).get("input_candidates") or [])
+
+
+def wiff_fallback_summary(record: Mapping[str, Any], manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """What a run record says of a switch: the rule, the failed jobs (id, kind, how each ended), every file swapped
+    from and to, under the data root (never an absolute path), what each .wiff's own header gave, and, where the
+    manifest is given, the boundary-4 crossing the switch was made under (the unit's campaign_authorizations entry of
+    its entry point, of the approval its record names)."""
+    summary: dict[str, Any] = {
+        "rule": record.get("rule"),
+        "switched_at": record.get("switched_at"),
+        "failed_jobs": [{key: item.get(key) for key in ("job_id", "kind", "failure", "reason", "exit_code")}
+                        for item in record.get("failed_jobs") or [] if isinstance(item, Mapping)],
+        "swaps": [{"from": str(item.get("from_relative") or ""), "to": str(item.get("to_relative") or ""),
+                   "sample_id": str(item.get("sample_id") or "")}
+                  for item in record.get("swaps") or [] if isinstance(item, Mapping)],
+        "wiff_headers": [{key: item.get(key) for key in ("file_relative", "polarity", "header_console_acquisition_type",
+                                                          "sample_count", "acquisition_start_time")}
+                         for item in record.get("wiff_headers") or [] if isinstance(item, Mapping)],
+    }
+    if manifest is not None:
+        named = record.get("campaign_authorization") if isinstance(record.get("campaign_authorization"), Mapping) else {}
+        crossing = next((item for item in reversed(manifest.get("campaign_authorizations") or [])
+                         if isinstance(item, Mapping) and str(item.get("boundary")) == "4"
+                         and item.get("entry_point") == WIFF_FALLBACK_ENTRY_POINT
+                         and (not named or item.get("approval_id") == named.get("approval_id"))), None)
+        summary["campaign_authorization"] = (
+            {key: crossing.get(key) for key in ("approval_id", "boundary", "entry_point", "validated_at")}
+            if crossing else None)
+    return summary
 
 
 def download_exclusion(detail: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1115,6 +1209,10 @@ PIN_IDENTITY = {
     # provenance_status and pinned: the build record still verifies, and its commits are still one of
     # Interactive's PINNED_BUILDS (0.5.17). Interactive refuses a campaign preflight otherwise.
     "extractor": ("binary_sha256", "inventory_sha256", "provenance_status", "pinned"),
+    # The LC-MS parameter template Interactive's settings name (ports.PinReader.template, review 2): whichever file it
+    # is, its bytes give the method its LBM cutoffs and every other template setting. A template the answers name is
+    # one of the profile's libraries, held by the library pins (review 3).
+    "template": ("sha256",),
     "interactive": ("version", "commit", "dirty"),
     "catalog": ("version", "commit", "dirty"),
     "gate": ("commit", "dirty"),

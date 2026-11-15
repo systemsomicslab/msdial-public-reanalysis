@@ -1,10 +1,16 @@
 """The campaign manifest: which units, in what order, pinned to what, built read-only from the Catalog.
 
 ONE MANIFEST PER POOL. The declared pool comes first: LC-MS units whose repository record declares DDA,
-DIA, AIF or SWATH acquisition, does not say the study is targeted, and names one polarity. The
+DIA, AIF or SWATH acquisition, does not say the study is targeted, and names one polarity or Both. The
 acquisition-unknown pool is its own manifest, and its own approval: the same rules with the acquisition
 mode left Unknown by the repository, which the raw headers settle after download (Interactive's
 campaign_disposition says whether each unit then runs).
+
+A UNIT WHOSE RECORD SAYS BOTH POLARITIES IS ADMITTED (user decision, 2026-10-29). Interactive reads each file's
+polarity from its raw header and splits the unit into single-polarity parts, each run like any single-polarity
+unit; a file whose scans switch polarity inside the one file is excluded with its reason (unresolved mixed polarity
+is outside the campaign's scope: polarity_switching), one whose header gives no polarity is excluded as
+polarity_unresolved, and the rest of the unit runs.
 
 A PILOT IS ONE MANIFEST OF NAMED UNITS (plan --units). It plans exactly the analysis units it is given,
 from both pools, and holds each to the rules of the pool it is in: selection_basis says which, for every
@@ -39,9 +45,36 @@ listed with its reason:
   asked to take that campaign's unfinished units again (--replan-from). A campaign's workspaces are
   known by the authorization copy the runner writes into provenance before anything else is written
   there, so the siblings of a unit a campaign touched are planned as before;
+- fragmentation_not_cid_hcd: CID/HCD only (user decision, 2026-10-29). Every reference spectrum is CID/HCD-derived,
+  so a unit is excluded where its OWN evidence names another fragmentation method (EAD, OAD, ECD, ETD, EThcD, EID,
+  UVPD, IRMPD or the like), read as the ion-mobility option A reads its evidence: the unit's label, its
+  analysis_unit_evidence, every one of its sample rows' attributes, or every one of its analysis files' names
+  (fragmentation_reading). An instrument's model name is no evidence ("LTQ Orbitrap Velos ETD" says what the
+  instrument can do, not what was done), so no instrument field is read for a method; a file name's token counts
+  only where the unit's instrument could fragment so, or none is recorded (instrument_can, METHOD_INSTRUMENTS), and
+  is otherwise recorded as not credible on that instrument (MTBLS2372's "AA_EAD_A_1.raw" on a Thermo Exactive). So is
+  a sample row's name (MTBLS2372's Extract Name "AA_EAD_A_1"); a row field that states the method ("Fragmentation
+  method: OAD"), the label and the unit's evidence are explicit statements, which no instrument is asked to confirm. The study's text alone never excludes a unit, since one study can hold EAD and CID units
+  (MPST000010: unit 86f50459 is "EAD (14 eV)", its siblings CID or OAD): a study-level field (keywords, title,
+  description, ...), or an attribute every unit of a study of several units carries alike, is study text. Absence
+  of evidence means run. Where only some of a unit's files are named so, or only some of its rows state the method,
+  the unit is planned and says so (fragmentation_reading, whose named_files are those files and the files of those
+  rows), and Interactive 0.5.52's campaign lease keeps the same files out (fragmentation_not_cid_hcd: by their names,
+  by the rows' statements, and by an mzML's activation terms); no vendor header records the method. A row that only
+  names a method in a name, short of every row, is recorded and keeps nothing out. The study-shared filter reads
+  names only, never a field that states the method (review of 2026-10-29). An identifier names nothing: a hyphenated
+  GUID, or an all-hexadecimal run that is eight long or holds a digit. Every Interactive before 0.5.52 is refused;
 - mzdata_only: every analysis file is mzData, which MS-DIAL cannot read and nothing here converts
   (mzXML is converted by Interactive and runs);
 - no_download_object: files are listed, but none carries a URL;
+- archive_too_small_for_raw_data: every object the unit downloads is an archive, every size is known, and together
+  they hold under ARCHIVE_FLOOR_BYTES_PER_SAMPLE (50 kB) for each of its samples, which no LC-MS/MS run fits in.
+  Workbench lists a study's methods or supplementary tables as its only download for some studies: ST001312.zip is
+  18 kB of method texts and a PDF for 10 samples, ST003178_Supplemental_Tables.zip one spreadsheet for 38. Stage 3b
+  (2026-11-06) downloaded 12 such units first, smallest first, and each failed in Interactive with no MS-DIAL input
+  in what it fetched. In the declared pool the largest of them holds 30 kB per sample and the smallest archive with
+  raw data 1.35 MB. The acquisition-unknown pool has no such gap, so the floor sits low: an archive kept that holds
+  no raw data costs one small download and a failure, one left out that does would cost the unit;
 - class_undecided: the Catalog neither proposed a Class nor recorded an abstention;
 - not_in_pool (a pilot only): a named unit that neither pool's rules select.
 
@@ -53,6 +86,14 @@ THE DIGEST is sha256 over the manifest's canonical JSON (sorted keys, no spaces,
 disk is exactly those bytes, so Interactive's campaign_authorization can check a manifest against the
 digest a person approved by hashing the file. Nothing in it names a private library's location:
 libraries are pinned by file name, sha256 and size.
+
+THE LIBRARIES PINNED ARE THE ONES THE PROFILE NAMES (2026-10-24). The plan pins, and so the approval names, only the
+resource map's libraries the profile names as library:<file name>, each with the role it is loaded in and the ion
+modes whose units load it (library_pins); the map's other libraries are listed as left unpinned. The manifest also
+states, for a unit of each ion mode, the annotation profile the pinned Interactive applies and the LBM score cutoffs
+it writes into the method, read from that Interactive's code (annotation_record), and the summary says both. The plan
+used to pin every mapped library, so a map that still locates the official LBM2 the profile replaced would have put
+it into the approval.
 
 THE AUTOMATIC RT CORRECTION IS STATED IN WHAT A PERSON APPROVES. The campaign runs it on, with at most 12 anchors,
 #826's local window (the Console's 1.5 min) and an uncorrected fallback after an anchor-selection failure, Blanks
@@ -70,13 +111,16 @@ profile that gives any of those is refused, since the decision is #826 with Inte
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
+import inspect
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import policy
@@ -87,24 +131,31 @@ AUTHORIZATION_SCHEMA = "msdial-campaign-authorization.v1"
 POOLS = ("declared", "acquisition_unknown")
 # A manifest of named units from both pools (plan --units), each held to its own pool's rules.
 PILOT = "pilot"
+# The ion modes a pool admits. Both since 2026-10-29: each file's polarity is read from its raw header, and the unit is
+# split into single-polarity parts (Interactive's campaign disposition and split key).
+POOL_ION_MODES = ("Positive", "Negative", "Both")
+_POOL_ION_MODES_SQL = ", ".join(f"'{mode}'" for mode in POOL_ION_MODES)
 _POOL_WHERE = {
     "declared": (
         "u.separation = 'LC-MS' AND u.acquisition_mode IN ('DDA', 'DIA', 'AIF', 'SWATH') "
-        "AND (u.untargeted IS NULL OR u.untargeted <> 0) AND u.ion_mode IN ('Positive', 'Negative')"
+        "AND (u.untargeted IS NULL OR u.untargeted <> 0) AND u.ion_mode IN (" + _POOL_ION_MODES_SQL + ")"
     ),
     "acquisition_unknown": (
         "u.separation = 'LC-MS' AND u.acquisition_mode = 'Unknown' "
-        "AND (u.untargeted IS NULL OR u.untargeted <> 0) AND u.ion_mode IN ('Positive', 'Negative')"
+        "AND (u.untargeted IS NULL OR u.untargeted <> 0) AND u.ion_mode IN (" + _POOL_ION_MODES_SQL + ")"
     ),
 }
+_POLARITY_RULE = ("one polarity, or Both (each file's polarity read from its raw header, the unit split into "
+                  "single-polarity parts, a file whose scans switch polarity excluded)")
 SELECTION_RULES = {
-    "declared": "separation LC-MS; acquisition DDA, DIA, AIF or SWATH; untargeted not false; one polarity",
-    "acquisition_unknown": "separation LC-MS; acquisition Unknown (read from the raw headers); untargeted not false; one polarity",
+    "declared": f"separation LC-MS; acquisition DDA, DIA, AIF or SWATH; untargeted not false; {_POLARITY_RULE}",
+    "acquisition_unknown": ("separation LC-MS; acquisition Unknown (read from the raw headers); untargeted not false; "
+                            f"{_POLARITY_RULE}"),
 }
 SELECTION_RULES[PILOT] = "the analysis units named with --units, each held to the rules of the pool it is in"
 EXCLUSION_REASONS = (
-    "no_files", "ion_mobility", "preexisting_workspace", "campaign_workspace", "mzdata_only", "no_download_object",
-    "class_undecided",
+    "no_files", "ion_mobility", "fragmentation_not_cid_hcd", "preexisting_workspace", "campaign_workspace",
+    "mzdata_only", "no_download_object", "archive_too_small_for_raw_data", "class_undecided",
 )
 PILOT_EXCLUSION_REASONS = ("not_in_pool",) + EXCLUSION_REASONS
 # What an accession-level workspace of an earlier run keeps in the accession folder itself (Interactive's
@@ -128,6 +179,10 @@ DETECT = object()
 MZDATA_SUFFIXES = (".mzdata", ".mzdata.xml")
 ANALYSIS_ROLES = ("raw", "converted")
 ARCHIVE_KINDS = frozenset({"archive", "bundle"})
+# A unit that downloads only archives holding less than this for each of its samples is left out: no LC-MS/MS run
+# fits in it (archive_too_small, 2026-11-06).
+ARCHIVE_TOO_SMALL = "archive_too_small_for_raw_data"
+ARCHIVE_FLOOR_BYTES_PER_SAMPLE = 50_000
 # A drive path, a UNC path or a file:// URI: none belongs in a manifest a person approves and Interactive
 # copies into every unit's provenance.
 _ABSOLUTE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|\\\\[^\\\s]|file://", re.IGNORECASE)
@@ -283,6 +338,39 @@ def replan_states(workspace_root: Path, campaign_ids: Iterable[str]) -> dict[str
         finally:
             connection.close()
     return result
+
+
+def workspace_root_cautions(workspace_root: str | Path, environment: Mapping[str, str] | None = None) -> list[str]:
+    """Where the workspace root lies that the project keeps no campaign data (C:, the user profile, a temporary
+    folder), as the summary a person approves says it (review 2). The runner refuses a relative root, a network or
+    device path and one inside a code checkout (campaign-runner.py, resolve_workspace_root), but not these: its tests
+    plan in temporary folders, and an approval may name such a root knowingly, so the words say it instead.
+    setup-windows.ps1 refuses them only for the root it is given, which no campaign reads."""
+    environment = os.environ if environment is None else environment
+    text = str(workspace_root or "").strip()
+    if not text:
+        return []
+
+    def spelled(value: str) -> str:
+        # Long names and one case, so a folder spelled with an 8.3 name or in another case is the same folder.
+        return os.path.normcase(os.path.realpath(value))
+
+    root = spelled(text)
+
+    def inside(folder: str) -> bool:
+        base = spelled(folder).rstrip("\\/")
+        return bool(base) and (root == base or root.startswith(base + os.sep))
+
+    cautions = []
+    drive = PureWindowsPath(str(environment.get("SystemDrive") or "").strip()).drive
+    if drive and PureWindowsPath(root).drive.casefold() == drive.casefold():
+        cautions.append(f"on the system drive {drive}")
+    profile = str(environment.get("USERPROFILE") or "").strip()
+    if profile and inside(profile):
+        cautions.append("inside the user profile")
+    if any(inside(folder) for folder in {str(environment.get(name) or "").strip() for name in ("TEMP", "TMP")} if folder):
+        cautions.append("inside a temporary folder")
+    return cautions
 
 
 def legacy_accession_workspace(workspace_root: Path, repository: str, accession: str) -> bool:
@@ -462,17 +550,21 @@ def ion_mobility_reading(record: Mapping[str, Any], evidence: Callable[[Mapping[
 
 def exclusion_reasons(
     unit: Mapping[str, Any], workspace_root: Path, replan: Mapping[str, Mapping[str, str]] | None = None,
-    ion_mobility: Mapping[str, Any] | None = None,
+    ion_mobility: Mapping[str, Any] | None = None, fragmentation: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Every static reason this unit will not run, in EXCLUSION_REASONS order.
 
     `ion_mobility` is ion_mobility_reading() of the unit's Catalog record; without it the unit is not excluded
-    for ion mobility, since the plan's row holds neither its sample rows nor its inputs (unread_ion_mobility)."""
+    for ion mobility, since the plan's row holds neither its sample rows nor its inputs (unread_ion_mobility).
+    `fragmentation` is fragmentation_reading() of the same record; without it the unit is not excluded for its
+    fragmentation method (absence of evidence means run)."""
     reasons = []
     if not unit["file_count"]:
         reasons.append("no_files")
     if ion_mobility is not None and ion_mobility["excluded"]:
         reasons.append("ion_mobility")
+    if fragmentation is not None and fragmentation["excluded"]:
+        reasons.append(NOT_CID_HCD)
     workspace, _detail = workspace_exclusion(unit, workspace_root, replan)
     if workspace:
         reasons.append(workspace)
@@ -480,6 +572,320 @@ def exclusion_reasons(
     if paths and all(path.endswith(MZDATA_SUFFIXES) for path in paths):
         reasons.append("mzdata_only")
     return reasons
+
+
+# ---- CID/HCD only (2026-10-29) -------------------------------------------------------------------------------
+
+NOT_CID_HCD = "fragmentation_not_cid_hcd"
+CID_HCD_ONLY_RULE = "cid_hcd_only_2026_10_29"
+# The Interactive that keeps a unit's files out by their names (msdial_app.fragmentation): a unit planned with some of
+# its files named so is refused to an earlier one, which would run them.
+CID_HCD_ONLY_INTERACTIVE = (0, 5, 52)
+# THE TOKEN RULE, held identical in Interactive (fragmentation.py), the campaign plan and the gate. A token is whole
+# when no letter or digit stands before it and no letter after it. It names nothing inside an identifier: a run of
+# letters and digits that is all hexadecimal and either eight long or more or holds a digit (8ead4b2c, ead1), or a
+# hyphenated GUID (95c44b45-ead1-43e8-afd1-de952d13d4ae). With words, repository text may spell a method out.
+NON_CID_METHODS = ("EAD", "OAD", "ECD", "ETD", "EThcD", "ETciD", "NETD", "EDD", "EID", "UVPD", "IRMPD")
+GUID_PATTERN = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+METHOD_WORDS_PATTERN = (
+    r"electron[- ]activated dissociation|oxygen[- ]attachment dissociation|electron[- ]capture dissociation|"
+    r"electron[- ]transfer dissociation|electron[- ]induced dissociation|ultraviolet photodissociation|"
+    r"infrared multiphoton dissociation"
+)
+WORD_METHODS = {"electron activated": "EAD", "oxygen attachment": "OAD", "electron capture": "ECD",
+                "electron transfer": "ETD", "electron induced": "EID", "ultraviolet photodissociation": "UVPD",
+                "infrared multiphoton": "IRMPD"}
+# A sample-row field that states how the ions were fragmented ("analyticalCondition / Fragmentation method"): an
+# explicit statement, held to no instrument and never read as the study's text. An instrument field names a model,
+# which says what the instrument can do, never what was done, and is no evidence at all.
+METHOD_STATEMENT_FIELD_PATTERN = r"fragment|dissociation|activation|collision"
+INSTRUMENT_FIELD_PATTERN = r"instrument"
+_CANONICAL_METHOD = {name.casefold(): name for name in NON_CID_METHODS}
+_METHOD_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(" + "|".join(sorted(NON_CID_METHODS, key=len, reverse=True)) + r")(?![A-Za-z])", re.IGNORECASE)
+_METHOD_WORDS = re.compile(METHOD_WORDS_PATTERN, re.IGNORECASE)
+_ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
+_ALL_HEX = re.compile(r"[0-9A-Fa-f]+")
+_GUID = re.compile(GUID_PATTERN)
+_METHOD_STATEMENT_FIELD = re.compile(METHOD_STATEMENT_FIELD_PATTERN, re.IGNORECASE)
+_INSTRUMENT_FIELD = re.compile(INSTRUMENT_FIELD_PATTERN, re.IGNORECASE)
+# WHICH INSTRUMENTS CAN FRAGMENT SO (user decision, 2026-10-29), as Interactive's fragmentation.METHOD_INSTRUMENTS
+# holds it, and the tests hold the three copies (plan, gate, Interactive) identical. A file name's token counts only
+# where the unit's instrument matches the method's capable families, or names a capable vendor and no model (a model is
+# a word with a digit, or one of INSTRUMENT_MODEL_WORDS), or no instrument is recorded (UNRECORDED_INSTRUMENTS).
+_TRIBRID = r"fusion|lumos|eclipse|ascend|tribrid"
+_FTICR = r"ft\s*-?\s*icr|fticr|solarix|\bapex\b"
+_ETD_CAPABLE = _TRIBRID + r"|\betd\b"
+METHOD_INSTRUMENTS = {
+    "EAD": {"capable": r"zeno\s*-?\s*tof|\b[78]600\b", "vendors": r"sciex|applied biosystems"},
+    "OAD": {"capable": r"lcms\s*-?\s*90[35]0|\b90[35]0\b", "vendors": r"shimadzu"},
+    "ETD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "EThcD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "ETciD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "NETD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "ECD": {"capable": _FTICR + r"|\bexd\b|\becd\b|6545\s*xt", "vendors": r"bruker|agilent"},
+    "EDD": {"capable": _FTICR, "vendors": r"bruker"},
+    "EID": {"capable": _FTICR + r"|\bexd\b", "vendors": r"bruker|agilent"},
+    "UVPD": {"capable": _TRIBRID + r"|\buvpd\b", "vendors": r"thermo"},
+    "IRMPD": {"capable": _FTICR + r"|ion\s*trap|\bltq\b|\blcq\b|amazon|esquire|\bhct\b|\bqtrap\b|\birmpd\b",
+              "vendors": r"bruker|thermo"},
+}
+INSTRUMENT_MODEL_WORDS = (
+    r"\d|exactive|orbitrap|tripletof|qtrap|synapt|xevo|vion|impact|maxis|timstof|compact|\bltq\b|\blcq\b|velos|"
+    r"elite|fusion|lumos|eclipse|ascend|exploris|astral|zeno|solarix|\bapex\b|q-?tof|\btof\b|ion\s*trap|amazon|"
+    r"esquire|\bhct\b|fticr|ft-icr"
+)
+UNRECORDED_INSTRUMENTS = ("", "unknown", "not available", "n/a", "na", "none", "-", "ms", "lc-ms", "lc/ms", "lcms",
+                          "mass spectrometer", "mass spectrometry")
+
+
+def instrument_can(method: str, instrument: Any) -> bool:
+    """Whether a file name's method token is credible on this instrument (METHOD_INSTRUMENTS); True where none is
+    recorded, or the method has no row."""
+    text = " ".join(str(instrument or "").split())
+    if text.casefold().strip(" .") in UNRECORDED_INSTRUMENTS:
+        return True
+    row = METHOD_INSTRUMENTS.get(method)
+    if row is None or re.search(row["capable"], text, re.IGNORECASE):
+        return True
+    return bool(re.search(row["vendors"], text, re.IGNORECASE)) and not re.search(
+        INSTRUMENT_MODEL_WORDS, text, re.IGNORECASE)
+
+# A sample-attribute or evidence field that is the study's text, never the unit's (the study's keywords, title,
+# description, abstract, summary, publication).
+STUDY_TEXT_FIELD = re.compile(r"keyword|title|description|abstract|summary|publication", re.IGNORECASE)
+
+
+def methods_named(text: object, words: bool = False) -> list[str]:
+    """The non-CID/HCD methods a text names by a whole token (and, with `words`, by a spelled-out name), in order and
+    once each; [] for none."""
+    value = str(text or "")
+    found: list[str] = []
+    guids = [(item.start(), item.end()) for item in _GUID.finditer(value)]
+    for match in _METHOD_TOKEN.finditer(value):
+        if any(start <= match.start() < end for start, end in guids):
+            continue
+        run = next((item for item in _ALNUM_RUN.finditer(value) if item.start() <= match.start() < item.end()), None)
+        if run is not None and _ALL_HEX.fullmatch(run.group(0)) and (
+                len(run.group(0)) >= 8 or any(character.isdigit() for character in run.group(0))):
+            continue
+        name = _CANONICAL_METHOD[match.group(1).casefold()]
+        if name not in found:
+            found.append(name)
+    if words:
+        for match in _METHOD_WORDS.finditer(value):
+            spelled = re.sub(r"[- ]+", " ", match.group(0).casefold())
+            name = next(code for start, code in WORD_METHODS.items() if spelled.startswith(start))
+            if name not in found:
+                found.append(name)
+    return found
+
+
+def methods_in_file_name(path: object) -> list[str]:
+    """methods_named over a path's base name (a vendor folder's own name)."""
+    text = str(path or "").rstrip("\\/")
+    return methods_named(re.split(r"[\\/]", text)[-1] if text else "")
+
+
+def stated_methods(values: object) -> list[str]:
+    """The non-CID/HCD methods a sample row states in a field that states the method (METHOD_STATEMENT_FIELD_PATTERN),
+    an instrument field aside; [] for none."""
+    found: list[str] = []
+    for field, value in (values.items() if isinstance(values, dict) else []):
+        if _INSTRUMENT_FIELD.search(str(field)) or not _METHOD_STATEMENT_FIELD.search(str(field)):
+            continue
+        for name in methods_named(value, words=True):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+file_name_methods = methods_in_file_name
+INSTRUMENT_FIELD = _INSTRUMENT_FIELD
+METHOD_STATEMENT_FIELD = _METHOD_STATEMENT_FIELD
+
+
+def study_shared_attributes(connection: sqlite3.Connection, study_id: str) -> set[tuple[str, str]]:
+    """The (field, value) sample attributes every unit of a study of several units carries: the study's text copied
+    into each unit's rows (MPST000010's keywords "CID, OAD, lipidomics, ..."), never one unit's. Read-only."""
+    per_unit: dict[str, set[tuple[str, str]]] = {}
+    for unit_id, field, value in connection.execute(
+        "SELECT sm.unit_id, a.field_name, a.raw_value FROM sample_attribute a JOIN sample sm ON sm.sample_pk = a.sample_pk "
+        "JOIN analysis_unit u ON u.unit_id = sm.unit_id WHERE u.study_id = ?", (str(study_id),),
+    ):
+        per_unit.setdefault(str(unit_id), set()).add((str(field), str(value)))
+    units = connection.execute("SELECT COUNT(*) FROM analysis_unit WHERE study_id = ?", (str(study_id),)).fetchone()[0]
+    if int(units or 0) < 2 or len(per_unit) < int(units):
+        return set()
+    return set.intersection(*per_unit.values())
+
+
+def unit_evidence_rows(connection: sqlite3.Connection, unit_id: str) -> list[tuple[str, str, str]]:
+    """The unit's analysis_unit_evidence rows (source, field, value). Read-only."""
+    try:
+        return [(str(source or ""), str(field or ""), str(value or "")) for source, field, value in connection.execute(
+            "SELECT source, source_field, source_value FROM analysis_unit_evidence WHERE unit_id = ?", (str(unit_id),))]
+    except sqlite3.Error:
+        return []
+
+
+def unread_fragmentation(problem: str) -> dict[str, Any]:
+    """The reading of a unit whose Catalog record could not be read: never excluded for its fragmentation method."""
+    return {"excluded": False, "evidence": "not_read", "signal": False, "methods": [], "named_files": [],
+            "not_credible_files": 0, "instrument": "", "analysis_files": 0, "named_samples": 0, "samples": 0,
+            "stated_samples": 0, "stated_files": 0, "sources": [],
+            "detail": f"not read: the Catalog's record of the unit could not be read ({_clip(problem, 160)}), so it is "
+                      "not excluded for its fragmentation method; Interactive's lease reads each file's name"}
+
+
+def fragmentation_reading(
+    record: Mapping[str, Any], evidence_rows: Iterable[tuple[str, str, str]] = (),
+    study_shared: Iterable[tuple[str, str]] | Callable[[], Iterable[tuple[str, str]]] = (),
+) -> dict[str, Any]:
+    """Whether the unit is excluded for its fragmentation method, read from its own evidence (CID/HCD only, 2026-10-29).
+
+    The unit's label and its analysis_unit_evidence values (`evidence_rows`, a study-text or instrument field aside)
+    speak for the whole unit. A sample row speaks for its sample's files: a field that states the method
+    (stated_methods: "Fragmentation method: OAD") explicitly, held to no instrument and never read as the study's
+    text; any other field (a name: Extract Name "AA_EAD_A_1") only where the unit's instrument could fragment so
+    (instrument_can) and the value is not one every unit of the study carries alike (`study_shared`,
+    study_shared_attributes, read only where such a row names a method). A file's name speaks for that file, where the
+    instrument could fragment so. The unit is excluded where its label or evidence names a method, or every sample
+    row does, or every analysis file is named so or is a file of a row that states one. Where only some are, the unit
+    is planned and `named_files` lists the files Interactive's lease keeps out: those named so, and those of rows that
+    state the method (mapped by the input's sample_id, else by the row's raw_file name). A row that only names a
+    method in a name, short of every row, is recorded and keeps nothing out. Returns {"excluded", "evidence"
+    ("catalog"), "signal", "methods", "sources", "named_files", "not_credible_files", "instrument", "analysis_files",
+    "named_samples", "stated_samples", "stated_files", "samples", "detail"}."""
+    unit_sources: list[str] = []
+    methods: list[str] = []
+
+    def note(found: list[str]) -> None:
+        for name in found:
+            if name not in methods:
+                methods.append(name)
+
+    found = methods_named(record.get("label"), words=True)
+    if found:
+        note(found)
+        unit_sources.append(f"label: {_clip(record.get('label'), 80)}")
+    for _source, field, value in evidence_rows:
+        if STUDY_TEXT_FIELD.search(field) or INSTRUMENT_FIELD.search(field):
+            continue
+        found = methods_named(value, words=True)
+        if found:
+            note(found)
+            unit_sources.append(f"evidence {field}: {_clip(value, 80)}")
+    instrument = str(record.get("instrument") or "")
+    samples = [item for item in record.get("samples") or [] if isinstance(item, Mapping)]
+    shared: set[tuple[str, str]] | None = None
+    named_samples = 0
+    stated_ids: set[str] = set()
+    stated_names: set[str] = set()
+    sample_sources: list[str] = []
+    for sample in samples:
+        attributes = sample.get("attributes") or {}
+        stated = stated_methods(dict(attributes))
+        hits = []
+        for field, value in attributes.items():
+            if INSTRUMENT_FIELD.search(str(field)):
+                continue
+            if METHOD_STATEMENT_FIELD.search(str(field)):
+                # A statement of the method, read as stated_methods reads it (which maps the row's files), whatever
+                # else its field's name says ("Fragmentation method description"): its methods are the unit's too.
+                found = methods_named(value, words=True)
+            elif STUDY_TEXT_FIELD.search(str(field)):
+                continue
+            else:
+                # A name or an identifier, not a statement of the method: held to the instrument as a file name is,
+                # and read as the study's text where every unit of the study carries it alike.
+                found = [method for method in methods_named(value, words=True) if instrument_can(method, instrument)]
+                if found:
+                    if shared is None:
+                        shared = set(study_shared() if callable(study_shared) else study_shared)
+                    if (str(field), str(value)) in shared:
+                        found = []
+            if found:
+                hits.append((str(field), str(value), found))
+        if hits:
+            named_samples += 1
+            for field, value, found in hits:
+                note(found)
+                said = f"row {field}: {_clip(value, 80)}"
+                if said not in sample_sources:
+                    sample_sources.append(said)
+        if stated:
+            sample_id = str(sample.get("sample_id") or "").strip()
+            if sample_id:
+                stated_ids.add(sample_id)
+            raw = PureWindowsPath(str(sample.get("raw_file") or "").rstrip("\\/")).name.casefold()
+            if raw:
+                stated_names.update({raw, PureWindowsPath(raw).stem})
+    entries = [item for item in record.get("analysis_inputs") or [] if isinstance(item, Mapping)]
+    if not entries:
+        entries = [item for item in record.get("files") or []
+                   if isinstance(item, Mapping) and str(item.get("role") or "") in ANALYSIS_ROLES]
+    entries = [item for item in entries if str(item.get("path") or "").strip()]
+    inputs = [str(item["path"]) for item in entries]
+
+    def credible(item: str) -> list[str]:
+        return [method for method in file_name_methods(item) if instrument_can(method, instrument)]
+
+    def of_stated_row(entry: Mapping[str, Any]) -> bool:
+        if str(entry.get("sample_id") or "").strip() in stated_ids:
+            return True
+        name = PureWindowsPath(str(entry.get("path") or "").rstrip("\\/")).name.casefold()
+        return bool(name) and (name in stated_names or PureWindowsPath(name).stem in stated_names)
+
+    name_files = [item for item in inputs if credible(item)]
+    stated_files = [str(entry["path"]) for entry in entries if of_stated_row(entry)]
+    named_files = list(dict.fromkeys([*name_files, *stated_files]))
+    not_credible = [item for item in inputs if len(credible(item)) < len(file_name_methods(item))]
+    for item in name_files:
+        note(credible(item))
+    every_sample = bool(samples) and named_samples == len(samples)
+    every_file = bool(inputs) and len(named_files) == len(inputs)
+    excluded = bool(unit_sources) or every_sample or every_file
+    stated_count = sum(1 for sample in samples if stated_methods(dict(sample.get("attributes") or {})))
+    parts = []
+    if unit_sources:
+        parts.append("the unit's own record names it (" + "; ".join(unit_sources[:3]) + ")")
+    if named_samples:
+        parts.append(f"{named_samples} of its {len(samples)} sample row(s) name it ("
+                     + "; ".join(sample_sources[:2]) + ")")
+    if name_files:
+        parts.append(f"{len(name_files)} of its {len(inputs)} analysis file(s) are named so ("
+                     + ", ".join(PureWindowsPath(item).name for item in name_files[:3])
+                     + (", ..." if len(name_files) > 3 else "") + ")")
+    detail = ""
+    if methods:
+        if excluded:
+            tail = ". Every reference spectrum is CID/HCD-derived (user decision, 2026-10-29)"
+        else:
+            kept = []
+            if name_files:
+                kept.append(f"the {len(name_files)} file(s) named so")
+            if stated_files:
+                kept.append(f"the {len(stated_files)} file(s) of the {stated_count} row(s) that state the method")
+            tail = (". Not the whole unit: " + (" and ".join(kept) + " are kept out by Interactive's lease, and the "
+                                                "rest runs" if kept else "nothing is kept out"))
+            if named_samples > stated_count:
+                tail += (f"; {named_samples - stated_count} row(s) name it only in a name, which is recorded and keeps "
+                         "nothing out")
+        detail = f"{', '.join(methods)}: " + "; ".join(parts) + tail
+    if not_credible:
+        named_methods = sorted({method for item in not_credible for method in file_name_methods(item)})
+        detail += ("; " if detail else "") + (
+            f"{len(not_credible)} of its {len(inputs)} analysis file(s) are named {', '.join(named_methods)}, which "
+            f"its instrument ({_clip(instrument, 60)}) could not perform: not credible on this instrument, recorded "
+            "and not excluded")
+    return {
+        "excluded": excluded, "evidence": "catalog", "signal": bool(methods) or bool(not_credible), "methods": methods,
+        "sources": unit_sources + sample_sources, "named_files": [] if excluded else named_files,
+        "not_credible_files": len(not_credible), "instrument": instrument,
+        "analysis_files": len(inputs), "named_samples": named_samples, "stated_samples": stated_count,
+        "stated_files": 0 if excluded else len(stated_files), "samples": len(samples), "detail": detail,
+    }
 
 
 # ---- the profile ----------------------------------------------------------------------------------------
@@ -558,7 +964,673 @@ def profile_problems(profile: Mapping[str, Any] | None, library_names: Iterable[
     missing = sorted(library_references(profile) - set(library_names))
     if missing:
         problems.append(f"the profile names libraries the plan did not pin: {', '.join(missing)}")
+    problems.extend(template_path_problems(profile))
+    problems.extend(msp_kind_problems(profile))
     return problems
+
+
+# ---- the libraries the profile names, and how the pinned Interactive annotates with them --------------------
+
+# The role a library is loaded in, by its suffix, as Interactive names it (sharing._role_of).
+LIBRARY_ROLES = {".lbm": "lbm", ".lbm2": "lbm", ".msp": "msp", ".msp2": "msp"}
+# The library strategy for which the pinned Interactive applies its tiered annotation profile (LBM, then a strict
+# and a broad MSP tier: annotation_pipeline.tiered_lcms_annotation, from agent_workflow._apply_libraries).
+TIERED_STRATEGY = "tiered_lipid_msp"
+# The LBM score cutoffs, by the name the summary gives each and the state key Interactive's method writer reads.
+LBM_CUTOFF_KEYS = (("weighted", "lbm_weighted_dot_product"), ("simple", "lbm_simple_dot_product"),
+                   ("reverse", "lbm_reverse_dot_product"))
+# Interactive's own LC-MS parameter template, used where neither the answers nor its settings name another.
+DEFAULT_TEMPLATE = "msdial_console_param4lipidomics.txt"
+# How the summary says whose a parameter template is (lcms_parameter_template).
+TEMPLATE_WHOSE = {"interactive": ", Interactive's own", "answers": ", which the answers name",
+                  "settings": ", which Interactive's settings name"}
+# The settings of an MSP annotator row the manifest states and the authorization carries to the gate's LIB-2, by the
+# key Interactive's annotation profile gives each (annotation_pipeline.tiered_lcms_annotation), besides its id, its
+# library (by file name) and its library kind. Each is stated only where the profile's row gives it: of the tiered
+# profile's rows, only the in-silico one gives suggestions (False, the author's decision of 2026-10-25).
+MSP_ROW_SETTINGS = ("priority", "rt_tolerance", "ms1_tolerance", "ms2_tolerance", "weighted_dot_product_cutoff",
+                    "simple_dot_product_cutoff", "reverse_dot_product_cutoff", "matched_peaks_percentage_cutoff",
+                    "minimum_spectrum_match", "use_rt_scoring", "use_rt_filtering", "target_omics", "suggestions")
+# Where an ion mode's answers name its acquired MSP and its in-silico (predicted) MSP, and the parameter by which the
+# pinned Interactive's tiered profile takes the in-silico one (Interactive 0.5.48:
+# annotation_pipeline.tiered_lcms_annotation(..., in_silico_path=...), the four-tier profile).
+ACQUIRED_MSP_KEY, IN_SILICO_MSP_KEY = "msp_paths", "in_silico_msp_paths"
+IN_SILICO_PARAMETER = "in_silico_path"
+# The in-silico library's declared preprocessing, and the step Interactive refuses for a positive-mode run (the
+# negative-mode records' +1.008 artefact; agent_workflow._in_silico_preprocessing_problems).
+IN_SILICO_PREPROCESSING_KEY = "in_silico_msp_preprocessing"
+NEGATIVE_ONLY_PREPROCESSING = "precursor_plus_1008_peak_removed"
+# The library kinds the Console reads as an in-silico (predicted) MSP; any other, a blank one included, is acquired.
+PREDICTED_LIBRARY_KINDS = frozenset({"predicted", "insilico", "computed", "generated", "predictedmsp"})
+# What an ion mode's annotation contract holds (annotation_contract): what the gate's LIB-2 holds the method to.
+ANNOTATION_CONTRACT_KEYS = ("profile_id", "lbm", "lbm_cutoffs", "lbm_priority", "msp_rows")
+# The parts of a tiered ion mode's contract that LIB-2 compares only where they are stated, so the plan must have read
+# them (annotation_problems, review 3), with the words the refusal gives each.
+CONTRACT_PART_WORDS = (("profile_id", "its annotation profile"), ("lbm_cutoffs", "its LBM cutoffs"),
+                       ("msp_rows", "its MSP annotator rows"))
+# The libraries the probe of the tiered strategy names (tiered_lbm_from_answers); none of them exists or is read.
+PROBE_LBM, PROBE_OFFICIAL_LBM, PROBE_MSP = ("campaign-plan-probe.lbm2", "campaign-plan-probe-official.lbm2",
+                                            "campaign-plan-probe.msp")
+
+
+def contract_part_unread(key: str, value: Any) -> bool:
+    """Whether a part of an ion mode's contract was not read: no profile id, LBM cutoffs that are not all three
+    stated, or no MSP rows (an empty list states that there are none)."""
+    if key == "lbm_cutoffs":
+        return not isinstance(value, Mapping) or any(value.get(name) is None for name, _state in LBM_CUTOFF_KEYS)
+    if key == "msp_rows":
+        return not isinstance(value, list)
+    return not value
+
+
+def library_role(name: str) -> str:
+    return LIBRARY_ROLES.get(Path(str(name)).suffix.casefold(), "text")
+
+
+def library_kind(value: Any) -> str:
+    """An MSP's library kind as the Console reads it: predicted for an in-silico library, else acquired."""
+    return "predicted" if str(value or "").strip().casefold() in PREDICTED_LIBRARY_KINDS else "acquired"
+
+
+def ion_mode_answers(profile: Mapping[str, Any] | None, mode: str) -> dict[str, Any]:
+    """The profile's answers for a unit of one ion mode, merged as Runner.answers merges them. The answer seed
+    Interactive gives each unit, which it merges first, names no library."""
+    from .machine import _merge
+
+    profile = profile or {}
+    answers = profile.get("answers") if isinstance(profile.get("answers"), Mapping) else {}
+    by_mode = profile.get("by_ion_mode") if isinstance(profile.get("by_ion_mode"), Mapping) else {}
+    extra = by_mode.get(mode) if isinstance(by_mode.get(mode), Mapping) else {}
+    return _merge(dict(answers), dict(extra))
+
+
+def library_ion_modes(profile: Mapping[str, Any] | None) -> dict[str, list[str]]:
+    """Each library the profile names, with the ion modes whose units are given it (none for one named only outside
+    the answers a unit is given)."""
+    modes: dict[str, list[str]] = {name: [] for name in sorted(library_references(profile))}
+    for mode in ION_MODES:
+        for name in sorted(library_references(ion_mode_answers(profile, mode))):
+            modes.setdefault(name, []).append(mode)
+    return modes
+
+
+def split_libraries(profile: Mapping[str, Any] | None, names: Iterable[str]) -> tuple[list[str], list[str]]:
+    """The resource map's libraries the plan pins, which are the ones the profile names as library:<file name>, and
+    the ones it leaves unpinned. Pinning every mapped library would approve, with the rest, a library no unit is to
+    load, such as the official LBM2 the profile replaced while the map still locates it."""
+    named = library_references(profile)
+    names = sorted({str(name) for name in names})
+    return [name for name in names if name in named], [name for name in names if name not in named]
+
+
+def msp_library_kinds(profile: Mapping[str, Any] | None) -> dict[str, set[str]]:
+    """The library kind each MSP the profile names is searched as, by file name: predicted where an ion mode's answers
+    name it in libraries.in_silico_msp_paths (the in-silico tier), acquired where they name it in libraries.msp_paths.
+    A name given both has both (msp_kind_problems)."""
+    kinds: dict[str, set[str]] = {}
+    for mode in ION_MODES:
+        libraries = ion_mode_answers(profile, mode).get("libraries")
+        libraries = libraries if isinstance(libraries, Mapping) else {}
+        for key, kind in ((ACQUIRED_MSP_KEY, "acquired"), (IN_SILICO_MSP_KEY, "predicted")):
+            for name in library_references(libraries.get(key)):
+                kinds.setdefault(name, set()).add(kind)
+    return kinds
+
+
+def msp_kind_problems(profile: Mapping[str, Any] | None) -> list[str]:
+    """An MSP the profile names both as an acquired library and as an in-silico one, for one ion mode (which
+    Interactive's _in_silico_library_problems refuses too) or one each, since its pin can state one kind only; and an
+    MSP named other than as library:<file name>."""
+    both = sorted(name for name, kinds in msp_library_kinds(profile).items() if len(kinds) > 1)
+    problems = [f"the profile names {name} both in libraries.{ACQUIRED_MSP_KEY} (acquired) and in "
+                f"libraries.{IN_SILICO_MSP_KEY} (in-silico): name each MSP in one of them" for name in both]
+    # An MSP named otherwise than as library:<file name> is neither pinned nor stated: the plan stated the three-tier
+    # contract for an in-silico MSP named bare, while Interactive searched it as the fourth tier (review 1).
+    for mode in ION_MODES:
+        libraries = ion_mode_answers(profile, mode).get("libraries")
+        libraries = libraries if isinstance(libraries, Mapping) else {}
+        for key in (ACQUIRED_MSP_KEY, IN_SILICO_MSP_KEY):
+            value = libraries.get(key)
+            items = value if isinstance(value, (list, tuple)) else [value]
+            if any(item not in (None, "") and _one_library(item) is None for item in items):
+                problems.append(f"the answers of {mode} units name libraries.{key} other than as library:<file name>, "
+                                "which the plan can neither pin nor state: name each as library:<file name>")
+    return list(dict.fromkeys(problems))
+
+
+def library_pins(identities: Iterable[Mapping[str, Any]], profile: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The pinned libraries' identities, each with the role it is loaded in and the ion modes whose units load it,
+    which the authorization carries to each unit for the gate's LIB-2; an MSP the profile names as an acquired or an
+    in-silico library also with that library kind (msp_library_kinds), so LIB-2 and the run records hold an in-silico
+    library to being searched as predicted (2026-10-28)."""
+    modes = library_ion_modes(profile)
+    kinds = msp_library_kinds(profile)
+    pins = []
+    for item in identities:
+        pin = {**dict(item), "role": library_role(item["name"]), "ion_modes": list(modes.get(item["name"], []))}
+        kind = kinds.get(item["name"]) or set()
+        if pin["role"] == "msp" and len(kind) == 1:
+            pin["library_kind"] = next(iter(kind))
+        pins.append(pin)
+    return pins
+
+
+def lcms_parameter_template(agent_workflow: Any, answer: Any = None) -> tuple[Path, str]:
+    """The LC-MS parameter template the pinned Interactive's _workflow takes, and whose it is ("answers", "settings" or
+    "interactive"): the answers' template_path, else the one its settings name now (load_user_settings), else its
+    own; a path naming no file falls back to its own, as _existing_path does. `answer` is a location: a profile names
+    its template as library:<file name>, which template_location resolves as Runner.answers does. The plan reads the
+    template's LBM cutoffs from it. The pins hold the one a unit whose answers name none takes by its sha256
+    (ports.PinReader.template), and one the answers name as a library, so each is held where it is read (review 3:
+    the template pin held the settings' one for a profile whose answers named another)."""
+    settings = agent_workflow.load_user_settings()
+    default = Path(agent_workflow.RESOURCES) / DEFAULT_TEMPLATE
+    template = agent_workflow._existing_path(answer or settings.get("template_path"), default)
+    return template, ("interactive" if template == default.resolve() else "answers" if answer else "settings")
+
+
+def _one_library(value: Any) -> str | None:
+    """The file name a value names as library:<file name>, where it is exactly one such reference."""
+    names = library_references(value)
+    return next(iter(names)) if isinstance(value, str) and len(names) == 1 else None
+
+
+def template_location(value: Any, library_paths: Mapping[str, str] | None) -> str | None:
+    """Where the parameter template an ion mode's answers name as library:<file name> is on this machine, from the
+    resource map, as Runner.answers resolves it before Interactive reads it; None for any other value, or a name the
+    map does not locate. Read unresolved, "library:x.txt" names no file, and the plan stated Interactive's own
+    template's cutoffs under the answers' name while the run read the library's (review 3)."""
+    name = _one_library(value)
+    location = (library_paths or {}).get(name) if name else None
+    return str(location) if location else None
+
+
+def answered_templates(profile: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The template_path each ion mode's answers give, for the modes whose answers give one."""
+    found = {mode: ion_mode_answers(profile, mode).get("template_path") for mode in ION_MODES}
+    return {mode: value for mode, value in found.items() if value not in (None, "")}
+
+
+def template_path_problems(profile: Mapping[str, Any] | None) -> list[str]:
+    """An ion mode whose answers name a parameter template other than as library:<file name>. No pin holds such a
+    template, and a relative path resolves against the backend's working directory, so the plan could neither read
+    its cutoffs as the run does nor see it change (review 3)."""
+    modes = [mode for mode, value in answered_templates(profile).items() if _one_library(value) is None]
+    if not modes:
+        return []
+    return [f"the answers of {' and '.join(modes)} units name a parameter template (template_path) other than as "
+            "library:<file name>, which no pin holds: name it as library:<file name>, which the plan pins as a "
+            "library, or leave it out"]
+
+
+def interactive_annotation() -> dict[str, Any]:
+    """What the Interactive on the path (the plan's pinned one) does in annotation, read from its code, never
+    restated here: its tiered annotation profile (tiered), the LBM score cutoffs it writes into the method where the
+    profile sets none (lbm_cutoffs) and where they come from. An Interactive with agent_workflow.LBM_TEMPLATE_CUTOFFS
+    carries the parameter template's cutoffs into the method; one without wrote its method writer's defaults
+    (workflow.LBM_DOT_PRODUCT_CUTOFFS) over them. The template is the one Interactive's _workflow takes: the answers'
+    template_path, else its settings', else its own. lbm_cutoffs are those of a unit whose answers name none, and
+    template_cutoffs gives them for one whose answers name one (review of 2026-10-25: the plan read the settings'
+    alone). tiered_lbm_from_answers says whether its tiered_lipid_msp strategy loads the LBM the answers name
+    (tiered_lbm_from_answers()). retention_time_use is how its _workflow applies the answers' retention-time use to
+    the annotator rows right after the library strategy (agent_workflow._apply_retention_time_use): it rewrites each
+    MSP row's RT use and tolerance, which the tiered profile alone does not set (review 2). What its code does not
+    have is None, and problems says why."""
+    found: dict[str, Any] = {"tiered": None, "lbm_cutoffs": None, "lbm_cutoffs_source": "", "template_cutoffs": None,
+                             "tiered_lbm_from_answers": None, "retention_time_use": None, "problems": []}
+    try:
+        from msdial_app import workflow
+    except Exception as error:  # noqa: BLE001 - not read, so not stated; the summary says so
+        found["problems"].append(f"msdial_app.workflow could not be imported ({type(error).__name__})")
+        return found
+    defaults = getattr(workflow, "LBM_DOT_PRODUCT_CUTOFFS", None)
+    if isinstance(defaults, Mapping) and all(key in defaults for key, _state in LBM_CUTOFF_KEYS):
+        found["lbm_cutoffs"] = {key: defaults[key] for key, _state in LBM_CUTOFF_KEYS}
+        found["lbm_cutoffs_source"] = "Interactive's method writer (workflow.LBM_DOT_PRODUCT_CUTOFFS)"
+    try:
+        from msdial_app import agent_workflow
+
+        carried = getattr(agent_workflow, "LBM_TEMPLATE_CUTOFFS", None)
+        if isinstance(carried, Mapping):
+
+            def template_cutoffs(answer: Any) -> tuple[dict[str, Any] | None, str]:
+                # As agent_workflow._workflow takes an LC-MS template: the answers', else the settings', else its own.
+                template, whose = lcms_parameter_template(agent_workflow, answer)
+                lbm = workflow.load_parameter_template(template).get("lbm_annotator") or {}
+                if not all(carried.get(state) in lbm for _key, state in LBM_CUTOFF_KEYS):
+                    return None, ""
+                return ({key: lbm[carried[state]] for key, state in LBM_CUTOFF_KEYS},
+                        f"the parameter template {template.name}{TEMPLATE_WHOSE[whose]}")
+
+            cutoffs, source = template_cutoffs(None)
+            if cutoffs is not None:
+                found["lbm_cutoffs"], found["lbm_cutoffs_source"] = cutoffs, source
+            found["template_cutoffs"] = template_cutoffs
+    except Exception as error:  # noqa: BLE001
+        found["problems"].append(f"the parameter template's LBM cutoffs could not be read ({type(error).__name__})")
+    try:
+        from msdial_app.annotation_pipeline import tiered_lcms_annotation
+
+        found["tiered"] = tiered_lcms_annotation
+    except Exception as error:  # noqa: BLE001
+        found["problems"].append(f"msdial_app.annotation_pipeline could not be imported ({type(error).__name__})")
+    try:
+        from msdial_app import agent_workflow
+
+        found["tiered_lbm_from_answers"] = tiered_lbm_from_answers(agent_workflow)
+    except Exception as error:  # noqa: BLE001
+        found["problems"].append(f"whether its {TIERED_STRATEGY} strategy loads the LBM the answers name could not be "
+                                 f"read ({type(error).__name__})")
+    try:
+        from msdial_app import agent_workflow
+
+        if callable(getattr(agent_workflow, "_apply_retention_time_use", None)):
+            found["retention_time_use"] = agent_workflow._apply_retention_time_use
+    except Exception as error:  # noqa: BLE001
+        found["problems"].append(f"how its workflow applies the answers' retention-time use could not be read "
+                                 f"({type(error).__name__})")
+    return found
+
+
+def tiered_lbm_from_answers(agent_workflow: Any) -> bool:
+    """Whether the pinned Interactive's tiered_lipid_msp strategy loads the LBM its answers name (libraries.lbm_path).
+
+    Every Interactive before the fix of 2026-10-24 (0.5.47) loaded its library catalog's official LBM in its place,
+    while the answers, and every record the runner built from them, named the profile's: the 15 MB-POST preflight
+    units ran so, and the plan approved them as the profile's (review of 2026-10-25). The strategy is applied as
+    agent_workflow._apply_libraries applies it, to answers naming a probe LBM2 and MSP, with the catalog it would
+    consult standing in for one whose official LBM is a third probe name, and the LBM it loads is read back. None of
+    the three exists, and nothing is read or written: the fixed strategy records an LBM2 it cannot find by name."""
+    state: dict[str, Any] = {"library_provenance": []}
+    answers = {"library_strategy": TIERED_STRATEGY, "libraries": {"lbm_path": PROBE_LBM, "msp_paths": [PROBE_MSP]}}
+    official = {"id": "lipidomics", "kind": "lbm", "local_path": PROBE_OFFICIAL_LBM, "record_id": "probe",
+                "record_url": "", "doi": "", "license": "", "downloaded": True}
+    catalog = getattr(agent_workflow, "catalog_status", None)
+    if catalog is not None:
+        agent_workflow.catalog_status = lambda: [dict(official)]
+    try:
+        agent_workflow._apply_libraries(state, {}, answers)
+    finally:
+        if catalog is not None:
+            agent_workflow.catalog_status = catalog
+    return Path(str(state.get("lbm_path") or "")).name == PROBE_LBM
+
+
+def msp_row_contract(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One MSP annotator row of Interactive's annotation profile as the approval states it: its id, its library by file
+    name (never a location), the settings LIB-2 compares (MSP_ROW_SETTINGS) and its library kind as the Console reads
+    it."""
+    contract = {"annotator_id": str(row.get("annotator_id") or ""),
+                "library": PureWindowsPath(str(row.get("msp_file_path") or "").replace("/", "\\")).name}
+    contract.update({key: row[key] for key in MSP_ROW_SETTINGS if key in row})
+    contract["library_kind"] = library_kind(row.get("library_kind"))
+    return contract
+
+
+class RetentionTimeUseUnread(Exception):
+    """The answers give a retention-time use, and how the pinned Interactive applies it to the MSP rows could not be
+    read: annotation_record states no rows then, and says why."""
+
+
+def msp_rows_as_run(rows: Iterable[Any], answers: Mapping[str, Any], retention_time_use: Any) -> list[dict[str, Any]]:
+    """The tiered profile's MSP rows as the pinned Interactive's _workflow leaves them, as the approval states each
+    (msp_row_contract). _workflow applies the answers' retention-time use (use_retention_time_for_annotation and
+    retention_time_tolerance) right after the library strategy (agent_workflow._apply_retention_time_use), and from
+    Interactive 0.5.45 that rewrites every MSP row's RT scoring and filtering and, given a tolerance, its RT tolerance.
+    Read from tiered_lcms_annotation alone, the contract stated the profile's False/False and 0.5 while the run wrote
+    True/True and the answers' tolerance, so LIB-2 would have failed every unit of a profile that answers true (review
+    2). The pinned Interactive's own function is applied to copies of the rows, so its code decides, never a
+    restatement here. Answers that give no retention-time use need nothing applied; ones that give one when the
+    function cannot be read, or cannot be applied, raise RetentionTimeUseUnread."""
+    state: dict[str, Any] = {"msp_annotators": [copy.deepcopy(dict(row)) for row in rows if isinstance(row, Mapping)],
+                             "text_annotators": []}
+    if answers.get("use_retention_time_for_annotation") is not None:
+        if not callable(retention_time_use):
+            raise RetentionTimeUseUnread("how the pinned Interactive applies the answers' retention-time use to the MSP "
+                                         "rows could not be read, so the rows are not stated")
+        try:
+            retention_time_use(state, copy.deepcopy(dict(answers)))
+        except Exception as error:  # noqa: BLE001 - Interactive's _workflow would raise on the same answers
+            raise RetentionTimeUseUnread(f"the answers' retention-time use could not be applied to the MSP rows as the "
+                                         f"pinned Interactive applies it ({type(error).__name__}), so the rows are not "
+                                         "stated") from error
+    return [msp_row_contract(row) for row in state["msp_annotators"]]
+
+
+def _msp_row_words(row: Mapping[str, Any]) -> str:
+    def value(key: str) -> str:
+        return str(row.get(key, "?"))
+
+    return (f"{row['annotator_id']} ({row['library']}; priority {value('priority')}; MS1/MS2 tolerance "
+            f"{value('ms1_tolerance')}/{value('ms2_tolerance')}; weighted/simple/reverse "
+            f"{value('weighted_dot_product_cutoff')}/{value('simple_dot_product_cutoff')}/"
+            f"{value('reverse_dot_product_cutoff')}; matched peaks {value('matched_peaks_percentage_cutoff')}, at least "
+            f"{value('minimum_spectrum_match')}; RT scoring/filtering {value('use_rt_scoring')}/{value('use_rt_filtering')}"
+            f" within {value('rt_tolerance')} min; target omics {value('target_omics')}; {row['library_kind']}"
+            + (f"; suggestions {value('suggestions')}" if "suggestions" in row else "") + ")")
+
+
+def name_polarity(name: str) -> str:
+    """The ion mode a library's file name states by a "pos"/"positive" or "neg"/"negative" token, or "", as
+    Interactive's agent_workflow._name_polarity reads it."""
+    tokens = {token for token in re.split(r"[_\-.\s]+", str(name).casefold()) if token}
+    positive, negative = bool(tokens & {"pos", "positive"}), bool(tokens & {"neg", "negative"})
+    return "Positive" if positive and not negative else "Negative" if negative and not positive else ""
+
+
+def in_silico_preprocessing_steps() -> "set[str] | None":
+    """The preprocessing steps the pinned Interactive's Materials and Methods can state
+    (annotation_pipeline.IN_SILICO_PREPROCESSING_STEPS), or None where it has none to read."""
+    try:
+        from msdial_app.annotation_pipeline import IN_SILICO_PREPROCESSING_STEPS
+    except Exception:  # noqa: BLE001 - an Interactive without the in-silico tier; its refusal is said elsewhere
+        return None
+    return {str(step) for step in IN_SILICO_PREPROCESSING_STEPS}
+
+
+def tiered_takes_in_silico(tiered: Any) -> bool | None:
+    """Whether the pinned Interactive's tiered profile takes an in-silico MSP (its in_silico_path parameter,
+    Interactive 0.5.48); None where its signature cannot be read. One without it builds the three-tier profile
+    whatever the answers name, and its _apply_libraries ignores libraries.in_silico_msp_paths."""
+    try:
+        return IN_SILICO_PARAMETER in inspect.signature(tiered).parameters
+    except (TypeError, ValueError):
+        return None
+
+
+def _named(value: Any) -> str:
+    """The libraries a value names as library:<file name>, as one text."""
+    return ", ".join(sorted(library_references(value)))
+
+
+def annotation_record(
+    profile: Mapping[str, Any] | None,
+    pinned: Iterable[Mapping[str, Any]],
+    not_pinned: Iterable[str],
+    interactive: Any = DETECT,
+    library_paths: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """What the manifest states of its libraries and their annotation, words included, so the digest a person
+    approves covers them: the libraries the plan pinned (the profile's) and the resource map's others, left unpinned;
+    and for a unit of each ion mode its library strategy, the annotation profile the pinned Interactive applies for
+    it, its LBM and the LBM score cutoffs that Interactive writes into the method (interactive_annotation). The
+    cutoffs a profile's workflow_overrides set are its own, over those of the template the unit takes; a template_path
+    the answers name (library:<file name>) is read where the resource map (`library_paths`, read here and stated
+    nowhere) locates it, as Interactive reads it once Runner.answers resolves it (review 3). `interactive` is
+    interactive_annotation(), or DETECT to read it.
+
+    Each ion mode's item is also the annotation contract the authorization carries to the gate's LIB-2
+    (annotation_contract, review of 2026-10-25): the profile id, the LBM, its cutoffs and its priority, and each MSP
+    annotator row the tiered profile sets, with the answers' retention-time use applied as the pinned Interactive's
+    workflow applies it (msp_rows_as_run), so a method that drifts from what was approved, as the 0.15/0.15/0.3 LBM
+    cutoffs of 13 preflight units did from 0.1/0.1/0.1, stops the run. A tiered strategy given an LBM in libraries
+    also says whether the pinned Interactive loads it (lbm_from_profile, tiered_lbm_from_answers): one that loads its
+    official LBM in its place, or cannot be probed, is not approvable (annotation_problems). So is a strategy that
+    loads a library the profile does not name (unnamed_library): the official strategy, and the tiered one given no
+    libraries.lbm_path, which loads its catalog's official LBM; the plan pins only what the profile names, so LIB-2
+    would stop every unit (review 2).
+
+    An in-silico MSP the answers name (libraries.in_silico_msp_paths, the fourth tier) is passed to the pinned
+    Interactive's tiered profile as its _apply_libraries passes it (in_silico_path), so the contract is the four-tier
+    profile it writes: the in-silico row predicted, with suggestions false (2026-10-28: the plan stated the three-tier
+    profile, and LIB-2 failed every four-tier unit). Where that Interactive's tiered profile takes no in-silico MSP, no
+    contract is stated and the plan is refused (in_silico_unsupported, annotation_problems)."""
+    found = interactive_annotation() if interactive is DETECT else dict(interactive)
+    problems = list(found.get("problems") or [])
+    pinned = [dict(item) for item in pinned]
+    not_pinned = sorted(str(item) for item in not_pinned)
+    lines = []
+    if pinned:
+        lines.append("  libraries pinned, the ones the profile names: " + ", ".join(
+            f"{item['name']} ({item.get('role') or library_role(item['name'])}"
+            + (", in-silico (predicted)" if item.get("library_kind") == "predicted" else "")
+            + (f"; {', '.join(item['ion_modes'])}" if item.get("ion_modes") else "") + ")" for item in pinned))
+    else:
+        lines.append("  libraries pinned: none")
+    lines.append("  libraries in the resource map left unpinned, since the profile names none of them: "
+                 + (", ".join(not_pinned) if not_pinned else "none"))
+    by_mode: dict[str, dict[str, Any]] = {}
+    if profile is None:
+        lines.append("  annotation: the manifest has no profile")
+    for mode in ION_MODES if profile is not None else ():
+        answers = ion_mode_answers(profile, mode)
+        libraries = answers.get("libraries") if isinstance(answers.get("libraries"), Mapping) else {}
+        overrides = answers.get("workflow_overrides") if isinstance(answers.get("workflow_overrides"), Mapping) else {}
+        strategy = str(answers.get("library_strategy") or "")
+        lbm = _named(libraries.get("lbm_path")) or _named(overrides.get("lbm_path"))
+        item: dict[str, Any] = {"library_strategy": strategy or None, "lbm": lbm or None, "profile_id": None,
+                                "lbm_cutoffs": None, "lbm_cutoffs_source": "", "lbm_priority": None, "msp_rows": None}
+        tiered = found.get("tiered")
+        rows: list[dict[str, Any]] = []
+        rt_answered = answers.get("use_retention_time_for_annotation") is not None
+        # The in-silico MSP the answers name for the fourth tier (2026-10-28: the plan stated the three-tier contract
+        # for a profile naming one, and LIB-2 failed every four-tier unit after its download and diagnostic).
+        in_silico = sorted(library_references(libraries.get(IN_SILICO_MSP_KEY)))
+        if in_silico:
+            item["in_silico_libraries"] = in_silico
+        # What Interactive's _in_silico_library_problems counts and reads without the file (review 2): its entries,
+        # duplicates included, and the preprocessing steps the answers declare.
+        entries = libraries.get(IN_SILICO_MSP_KEY)
+        entries = [entry for entry in (entries if isinstance(entries, (list, tuple)) else [entries])
+                   if entry not in (None, "")]
+        if len(entries) > 1:
+            item["in_silico_entries"] = len(entries)
+        steps = libraries.get(IN_SILICO_PREPROCESSING_KEY)
+        steps = [str(step) for step in (steps if isinstance(steps, (list, tuple)) else [steps]) if step not in (None, "")]
+        if steps:
+            item["in_silico_preprocessing"] = steps
+        takes_in_silico = tiered_takes_in_silico(tiered) if callable(tiered) else None
+        if strategy == TIERED_STRATEGY and callable(tiered) and in_silico and takes_in_silico is not True:
+            # An Interactive whose tiered profile takes no in-silico MSP runs three tiers: no contract is stated, and
+            # the plan is refused (annotation_problems), never approved as the three-tier contract.
+            item["in_silico_unsupported"] = (
+                f"its tiered profile (annotation_pipeline.tiered_lcms_annotation) takes no in-silico MSP (no "
+                f"{IN_SILICO_PARAMETER}), so it would run three tiers" if takes_in_silico is False else
+                "whether its tiered profile takes an in-silico MSP could not be read")
+        elif strategy == TIERED_STRATEGY and callable(tiered):
+            msp = sorted(library_references(libraries.get(ACQUIRED_MSP_KEY)))
+            try:
+                # As agent_workflow._apply_libraries calls it: the first in-silico MSP, by keyword.
+                annotation = (tiered(lbm, msp[0] if msp else "", **{IN_SILICO_PARAMETER: in_silico[0]}) if in_silico
+                              else tiered(lbm, msp[0] if msp else ""))
+                item["profile_id"] = str(annotation.get("profile_id") or "") or None
+                lbm_annotator = annotation.get("lbm_annotator")
+                item["lbm_priority"] = lbm_annotator.get("priority") if isinstance(lbm_annotator, Mapping) else None
+                if isinstance(annotation.get("msp_annotators"), list):
+                    rows = msp_rows_as_run(annotation["msp_annotators"], answers, found.get("retention_time_use"))
+                    item["msp_rows"] = rows
+            except RetentionTimeUseUnread as error:
+                # Rows the answers' RT use would rewrite unseen are not stated, so LIB-2 holds the method to none.
+                problems.append(str(error))
+            except Exception as error:  # noqa: BLE001 - not read, so not stated; the summary says so
+                problems.append(f"the tiered annotation profile could not be read ({type(error).__name__})")
+        if strategy == TIERED_STRATEGY and _named(libraries.get("lbm_path")):
+            item["lbm_from_profile"] = found.get("tiered_lbm_from_answers")
+        # A library the strategy loads that the profile does not name, which the plan cannot pin (split_libraries):
+        # LIB-2 would stop every unit on it, after its download and diagnostic (review 2).
+        if strategy == "official":
+            item["unnamed_library"] = "its library catalog's official library (library strategy official)"
+        elif strategy == TIERED_STRATEGY and not _named(libraries.get("lbm_path")):
+            item["unnamed_library"] = (f"its library catalog's official LBM (the {TIERED_STRATEGY} strategy, given no "
+                                       "libraries.lbm_path)")
+        stated = {key: overrides[state] for key, state in LBM_CUTOFF_KEYS if state in overrides}
+        template = answers.get("template_path")
+        # The cutoffs of the template this unit takes: the settings' or Interactive's own (found["lbm_cutoffs"]), or
+        # the one its answers name, which Interactive takes over its settings' (agent_workflow._workflow). One that
+        # carries no template's cutoffs writes its method writer's whatever the template (found["lbm_cutoffs"]).
+        base = dict(found["lbm_cutoffs"]) if found.get("lbm_cutoffs") else None
+        base_source = str(found.get("lbm_cutoffs_source") or "")
+        if template and callable(found.get("template_cutoffs")):
+            base, base_source = None, ""
+            location = template_location(template, library_paths)
+            if location is None:
+                named = _named(template) or "not as library:<file name>"
+                problems.append(f"the parameter template the answers name ({named}) is not one the resource map "
+                                "locates, so its LBM cutoffs were not read")
+            else:
+                try:
+                    cutoffs, source = found["template_cutoffs"](location)
+                except Exception as error:  # noqa: BLE001 - not read, so not stated; the summary says so
+                    cutoffs, source = None, ""
+                    problems.append(f"the LBM cutoffs of the template the answers name could not be read "
+                                    f"({type(error).__name__})")
+                if cutoffs:
+                    base, base_source = dict(cutoffs), source
+        if stated:
+            # Interactive applies the overrides over the template the unit takes, so the others are that template's
+            # (review 3: they were the settings' template's, whatever the answers named).
+            item["lbm_cutoffs"] = {key: stated.get(key, (base or {}).get(key)) for key, _state in LBM_CUTOFF_KEYS}
+            item["lbm_cutoffs_source"] = (f"the profile's workflow_overrides ({', '.join(sorted(stated))})"
+                                          + (f", the others from {base_source}" if len(stated) < len(LBM_CUTOFF_KEYS)
+                                             and base_source else ""))
+        elif base:
+            item["lbm_cutoffs"], item["lbm_cutoffs_source"] = base, base_source
+        by_mode[mode] = item
+        cutoffs = item["lbm_cutoffs"]
+        loads = ""
+        if "lbm_from_profile" in item and item["lbm_from_profile"] is False:
+            loads = (", WHICH THE PINNED INTERACTIVE DOES NOT LOAD: its tiered_lipid_msp strategy loads its library "
+                     "catalog's official LBM in its place")
+        elif "lbm_from_profile" in item and item["lbm_from_profile"] is not True:
+            loads = (", which the pinned Interactive may not load: whether its tiered_lipid_msp strategy loads the LBM "
+                     "the answers name could not be read")
+        if item.get("unnamed_library"):
+            loads += (f", and the pinned Interactive loads {item['unnamed_library']}, WHICH THE PLAN DOES NOT PIN: it "
+                      "pins only the libraries the profile names")
+        if in_silico:
+            loads += f"; the profile's in-silico MSP {', '.join(in_silico)}"
+            if item.get("in_silico_unsupported"):
+                loads += (", WHICH THE PINNED INTERACTIVE DOES NOT SEARCH: " if takes_in_silico is False else
+                          ", which the pinned Interactive may not search: ") + item["in_silico_unsupported"]
+            elif strategy != TIERED_STRATEGY:
+                loads += f", WHICH ONLY THE {TIERED_STRATEGY} STRATEGY SEARCHES"
+        lines.append(
+            f"  annotation of {mode} units: library strategy {strategy or 'not stated'}; annotation profile "
+            + (f"{item['profile_id']} (the pinned Interactive's annotation_pipeline)" if item["profile_id"] else
+               "none" + (f" (library strategy {strategy})" if strategy else ""))
+            + f"; the profile's LBM {lbm or 'none'}{loads}; LBM cutoffs weighted/simple/reverse "
+            + ("/".join(str(cutoffs.get(key)) for key, _state in LBM_CUTOFF_KEYS) + f" from {item['lbm_cutoffs_source']}"
+               if cutoffs else "not readable from the pinned Interactive's code")
+            + (f"; LBM priority {item['lbm_priority']}" if item["lbm_priority"] is not None else "")
+        )
+        if rows:
+            lines.append(f"    MSP annotators of {mode} units, as that profile sets them"
+                         + (", with the answers' retention-time use applied as the pinned Interactive's workflow "
+                            "applies it" if rt_answered else "") + ": "
+                         + "; ".join(_msp_row_words(row) for row in rows))
+    if problems:
+        lines.append("  not read from the pinned Interactive: " + "; ".join(dict.fromkeys(problems)))
+    return {"libraries_not_pinned": not_pinned, "by_ion_mode": by_mode, "statement": lines}
+
+
+def annotation_problems(manifest: Mapping[str, Any]) -> list[str]:
+    """Why the manifest's units would not annotate with the libraries its profile names: the pinned Interactive's
+    tiered_lipid_msp strategy loads its library catalog's official LBM in place of the profile's, or whether it does
+    could not be read (review of 2026-10-25); or the strategy loads a library the profile does not name, which the
+    plan does not pin (unnamed_library, review 2). Approved, every unit would download and run its diagnostic before
+    LIB-2 stopped it, and then fail. Every ion mode is read, whatever the units' Catalog ion modes: a unit runs in the
+    mode its raw data give (a Mixed split's part, a header that overrides the declaration), and takes that mode's
+    answers (review 3). A tiered ion mode whose contract the plan could not read in full is refused too: LIB-2
+    compares only what the contract states, so cutoff, priority or MSP-row drift would pass it unseen (review 3).
+    So is an in-silico MSP (libraries.in_silico_msp_paths) the pinned Interactive's tiered profile cannot be shown to
+    search (no in_silico_path, Interactive before 0.5.48): it would run three tiers while the answers and pins name
+    the fourth, and the plan stated the three-tier contract until 2026-10-28; or one named for another strategy, or
+    more than one for an ion mode, which Interactive's own plan refuses.
+    A manifest planned before the plan stated these says nothing either way."""
+    annotation = manifest.get("annotation") if isinstance(manifest.get("annotation"), Mapping) else {}
+    by_mode = annotation.get("by_ion_mode") if isinstance(annotation.get("by_ion_mode"), Mapping) else {}
+    problems = []
+    for mode in sorted(by_mode, key=str):
+        item = by_mode[mode]
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("unnamed_library"):
+            # The official strategy loads its catalog's library whatever the profile names (annotation_record).
+            remedy = (f"use library strategy {TIERED_STRATEGY} with the LBM2 named as libraries.lbm_path, as "
+                      "library:<file name>, since the official strategy loads its catalog's library whatever the "
+                      "profile names" if item.get("library_strategy") == "official" else
+                      "name the library in the profile as library:<file name> (the LBM2 as libraries.lbm_path)")
+            problems.append(f"the pinned Interactive loads {item['unnamed_library']} for {mode} units, which the plan "
+                            "does not pin, since it pins only the libraries the profile names, so LIB-2 would stop "
+                            f"every unit: {remedy}, and plan again")
+        in_silico = [str(name) for name in item.get("in_silico_libraries") or []]
+        if in_silico and item.get("library_strategy") != TIERED_STRATEGY:
+            # Interactive's plan refuses it (agent_workflow: in_silico_msp_paths is searched only by tiered_lipid_msp).
+            problems.append(f"the profile names an in-silico MSP ({', '.join(in_silico)}) for {mode} units, which only "
+                            f"the {TIERED_STRATEGY} strategy searches, and their strategy is "
+                            f"{item.get('library_strategy') or 'not stated'}: use {TIERED_STRATEGY}, or leave "
+                            f"libraries.{IN_SILICO_MSP_KEY} out, and plan again")
+        elif max(len(in_silico), int(item.get("in_silico_entries") or 0)) > 1:
+            # Interactive's tiered profile searches one, the run's ion mode's (_in_silico_library_problems), and
+            # counts a name given twice twice.
+            count = max(len(in_silico), int(item.get("in_silico_entries") or 0))
+            problems.append(f"the profile names {count} in-silico MSPs ({', '.join(in_silico)}) for {mode} "
+                            f"units, and the {TIERED_STRATEGY} profile searches one: name one per ion mode under "
+                            "by_ion_mode, and plan again")
+        for name in in_silico:
+            # Interactive refuses a file its name says is for the other ion mode (agent_workflow._name_polarity),
+            # and one that is no .msp.
+            said = name_polarity(name)
+            if said and said != str(mode):
+                problems.append(f"the in-silico MSP {name} is named for {said} ion mode and the profile gives it to "
+                                f"{mode} units, which Interactive would refuse for every unit that runs in that mode: "
+                                "give each ion mode its own file under by_ion_mode, and plan again")
+            if PureWindowsPath(name).suffix.casefold() != ".msp":
+                problems.append(f"the in-silico MSP {name} for {mode} units is no .msp file, which the in-silico tier "
+                                "reads, so Interactive would refuse it: name an .msp, and plan again")
+        # As Interactive's tiered strategy reads them (_tiered_library_problems); another strategy reads none.
+        steps = ([str(step) for step in item.get("in_silico_preprocessing") or []]
+                 if item.get("library_strategy") == TIERED_STRATEGY else [])
+        known =in_silico_preprocessing_steps() if steps else None
+        unknown = [step for step in steps if known is not None and step not in known]
+        if unknown:
+            problems.append(f"the answers of {mode} units name in-silico preprocessing {', '.join(unknown)}, which the "
+                            "pinned Interactive's Materials and Methods cannot state, so it would refuse it: name only "
+                            f"{', '.join(sorted(known or []))}, and plan again")
+        if steps and not in_silico:
+            problems.append(f"the answers of {mode} units name libraries.{IN_SILICO_PREPROCESSING_KEY} without an "
+                            "in-silico MSP, which Interactive refuses: leave it out, and plan again")
+        if NEGATIVE_ONLY_PREPROCESSING in steps and str(mode) == "Positive":
+            problems.append(f"the answers of Positive units name the in-silico preprocessing "
+                            f"{NEGATIVE_ONLY_PREPROCESSING}, the negative-mode records' artefact, which Interactive "
+                            "refuses for a positive-mode run: give it under by_ion_mode.Negative only, and plan again")
+        if item.get("in_silico_unsupported"):
+            # Approved, the run would load the three-tier profile while the answers and pins name the in-silico MSP,
+            # and LIB-2 would stop every unit after its download and diagnostic (2026-10-28).
+            problems.append(f"the profile names the in-silico MSP {', '.join(in_silico)} for {mode} units, and the "
+                            f"pinned Interactive cannot be held to searching it: {item['in_silico_unsupported']}: "
+                            "pin an Interactive whose tiered profile searches an in-silico MSP (0.5.48 or later), or "
+                            f"leave libraries.{IN_SILICO_MSP_KEY} out, and plan again")
+        unread = [words for key, words in CONTRACT_PART_WORDS if key in item and contract_part_unread(key, item[key])]
+        # A contract left unread because the in-silico MSP cannot be searched is refused above, with its reason.
+        if item.get("library_strategy") == TIERED_STRATEGY and unread and not item.get("in_silico_unsupported"):
+            problems.append(f"the plan could not read {', '.join(unread)} for {mode} units from the pinned Interactive "
+                            "(the summary says why), so LIB-2 would not hold the method to them: plan again once the "
+                            "plan can read them")
+        if "lbm_from_profile" not in item or item["lbm_from_profile"] is True:
+            continue
+        if item["lbm_from_profile"] is False:
+            problems.append(f"the pinned Interactive's {TIERED_STRATEGY} strategy loads its library catalog's official "
+                            f"LBM, not the profile's {item.get('lbm')}, for {mode} units: pin an Interactive that loads "
+                            "the LBM its answers name, and plan again")
+        else:
+            problems.append(f"whether the pinned Interactive's {TIERED_STRATEGY} strategy loads the profile's LBM "
+                            f"{item.get('lbm')} for {mode} units could not be read: plan again with an Interactive "
+                            "the plan can probe")
+    return problems
+
+
+def annotation_contract(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]] | None:
+    """What the manifest states each ion mode's units annotate with, as the authorization carries it to the gate's
+    LIB-2 (review of 2026-10-25): the annotation profile id, the LBM by file name, its score cutoffs and priority, and
+    each MSP annotator row (msp_row_contract), None where the manifest does not state one. Names only, never a
+    location. None for a manifest planned before the plan stated its annotation."""
+    annotation = manifest.get("annotation") if isinstance(manifest.get("annotation"), Mapping) else None
+    by_mode = (annotation or {}).get("by_ion_mode")
+    if not isinstance(by_mode, Mapping):
+        return None
+    return {str(mode): {key: item.get(key) for key in ANNOTATION_CONTRACT_KEYS}
+            for mode, item in by_mode.items() if isinstance(item, Mapping)}
 
 
 AUTOMATIC_RT_ANSWER = "execute_automatic_rt_correction"
@@ -957,6 +2029,9 @@ def build_manifest(
     unit_ids: Sequence[str] | None = None,
     ion_mobility_evidence: Any = DETECT,
     policy_overrides: Iterable[str] = (),
+    libraries_not_pinned: Iterable[str] = (),
+    annotation_code: Any = DETECT,
+    library_paths: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The manifest for one pool, or for a pilot of named units (`unit_ids`, pool "pilot"). `catalog` is a
     read-only Catalog; nothing is written anywhere.
@@ -964,6 +2039,10 @@ def build_manifest(
     `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
     `ion_mobility_evidence` is the Catalog's helper, None for the fallback rule, or DETECT to look it up.
     `policy_overrides` names the policy fields a --policy file set, so the manifest can say what it changed.
+    `libraries_not_pinned` names the resource map's libraries the profile does not name (split_libraries), which
+    the manifest lists as left unpinned; `annotation_code` is what annotation_record reads of the pinned
+    Interactive, or DETECT to read it; `library_paths` locates the pinned libraries, for annotation_record to read a
+    parameter template the profile names as one, and goes into no manifest.
     """
     policy_overrides = sorted({str(item) for item in policy_overrides})
     if (unit_ids is None) == (pool is None or pool == PILOT):
@@ -997,17 +2076,34 @@ def build_manifest(
     evidence = catalog_ion_mobility_evidence() if ion_mobility_evidence is DETECT else ion_mobility_evidence
     candidates: list[dict[str, Any]] = []
     mobility: dict[str, dict[str, Any]] = {}
+    fragmentation: dict[str, dict[str, Any]] = {}
+    shared_by_study: dict[str, set[tuple[str, str]]] = {}
+
+    def shared_of(study_id: str) -> Callable[[], set[tuple[str, str]]]:
+        def read() -> set[tuple[str, str]]:
+            if study_id not in shared_by_study:
+                shared_by_study[study_id] = study_shared_attributes(catalog.connection, study_id) if study_id else set()
+            return shared_by_study[study_id]
+        return read
+
     for unit in selected:
         try:
             record: Mapping[str, Any] = catalog.get_unit(unit["unit_id"])
         except Exception as error:  # noqa: BLE001 - not read, so not excluded for it; the manifest says so
             mobility[unit["unit_id"]] = unread_ion_mobility(f"{type(error).__name__}: {error}")
+            fragmentation[unit["unit_id"]] = unread_fragmentation(f"{type(error).__name__}: {error}")
         else:
             mobility[unit["unit_id"]] = ion_mobility_reading(record, evidence)
-        reasons = exclusion_reasons(unit, workspace_root, replan, ion_mobility=mobility[unit["unit_id"]])
+            fragmentation[unit["unit_id"]] = fragmentation_reading(
+                record, unit_evidence_rows(catalog.connection, unit["unit_id"]),
+                shared_of(str(record.get("study_id") or "")))
+        reasons = exclusion_reasons(unit, workspace_root, replan, ion_mobility=mobility[unit["unit_id"]],
+                                    fragmentation=fragmentation[unit["unit_id"]])
         if reasons:
             _reason, found = workspace_exclusion(unit, workspace_root, replan)
             said = [f"ion_mobility: {mobility[unit['unit_id']]['detail']}"] if "ion_mobility" in reasons else []
+            if NOT_CID_HCD in reasons:
+                said.append(f"{NOT_CID_HCD}: {fragmentation[unit['unit_id']]['detail']}")
             excluded.append(_exclusion(unit, reasons, detail="; ".join(said + ([found] if found else []))))
         else:
             candidates.append(unit)
@@ -1034,12 +2130,14 @@ def build_manifest(
         if planned is None or not planned["object_count"]:
             excluded.append(_exclusion(unit, ["no_download_object"]))
             continue
+        too_small = archive_too_small(planned, kinds.get(unit["unit_id"], set()),
+                                      int(decisions[unit["unit_id"]].get("assignment_count") or 0))
+        if too_small:
+            excluded.append(_exclusion(unit, [ARCHIVE_TOO_SMALL], detail=too_small))
+            continue
         included.append((unit, planned))
     groups = {item["group_id"]: item for item in download["groups"]}
-    group_order = sorted(
-        {planned["group_id"] for _unit, planned in included},
-        key=lambda group: (groups[group]["distinct_bytes_lower_bound"], group),
-    )
+    group_order = sorted({planned["group_id"] for _unit, planned in included}, key=lambda group: _group_rank(groups[group]))
     rank = {group: index for index, group in enumerate(group_order)}
     included.sort(key=lambda pair: (rank[pair[1]["group_id"]], pair[0]["repository"], pair[0]["accession"], pair[0]["unit_id"]))
     units = []
@@ -1074,6 +2172,11 @@ def build_manifest(
             # Interactive, whose header check decides each file.
             **({"ion_mobility_reading": {key: mobility[unit["unit_id"]][key] for key in ("evidence", "state", "detail")}}
                if mobility[unit["unit_id"]]["signal"] else {}),
+            # Some of its files or rows name a fragmentation method other than CID/HCD, and not all (2026-10-29), or its
+            # record could not be read for it: which, and that Interactive's lease keeps the files named so out.
+            **({"fragmentation_reading": _fragmentation_entry(fragmentation[unit["unit_id"]])}
+               if fragmentation[unit["unit_id"]]["signal"] or fragmentation[unit["unit_id"]]["evidence"] == "not_read"
+               else {}),
         })
     used_groups = []
     for group in group_order:
@@ -1088,6 +2191,9 @@ def build_manifest(
             "object_count": item["object_count"],
             "shared_object_count": item["shared_object_count"],
         })
+    too_early = _cid_hcd_interactive_problem(pins, units)
+    if too_early:
+        raise PlanError(too_early)
     included_ids = {unit["unit_id"] for unit in units}
     objects = [item for item in download["objects"] if set(item.get("selected_consumer_unit_ids") or []) & included_ids]
     totals = _totals(selected + outside, excluded, units, used_groups, objects)
@@ -1103,6 +2209,8 @@ def build_manifest(
         "created_at": policy.iso(now or datetime.now(timezone.utc)),
         "analysis_purpose": analysis_purpose,
         "workspace_root": str(workspace_root),
+        # Where the root lies that the project keeps no campaign data, as the summary says it first (review 2).
+        "workspace_root_cautions": workspace_root_cautions(workspace_root),
         "raw_retention_policy": raw_retention_policy,
         "catalog": {"database": catalog_database, "version": catalog_version},
         "selection": {
@@ -1111,6 +2219,10 @@ def build_manifest(
             # Which reading of ion mobility excluded units: the Catalog's ion_mobility_evidence, or the
             # fallback rule without it (option A, 2026-10-03).
             "ion_mobility_evidence": "fallback" if evidence is None else "catalog",
+            # CID/HCD only (2026-10-29): the rule a unit's fragmentation reading was made under.
+            "fragmentation_rule": CID_HCD_ONLY_RULE,
+            # The bytes per sample under which a unit of archives alone is left out (2026-11-06).
+            "archive_floor_bytes_per_sample": ARCHIVE_FLOOR_BYTES_PER_SAMPLE,
             **({"units": requested, "pools": {name: SELECTION_RULES[name] for name in POOLS}} if pool == PILOT else {}),
         },
         "policy": campaign_policy.as_dict(),
@@ -1120,6 +2232,10 @@ def build_manifest(
         "automatic_rt_correction": automatic_rt_correction_record(campaign_policy.as_dict(), profile, policy_overrides),
         "profile": dict(profile) if profile is not None else None,
         "pins": dict(pins),
+        # The libraries pinned and left unpinned, and how the pinned Interactive annotates with them, as the summary
+        # states it, words included, so the digest a person approves covers both.
+        "annotation": annotation_record(profile, pins.get("libraries") or [], libraries_not_pinned, annotation_code,
+                                        library_paths),
         "units": units,
         "groups": used_groups,
         "exclusions": excluded,
@@ -1131,6 +2247,59 @@ def build_manifest(
     }
 
 
+def _fragmentation_entry(reading: Mapping[str, Any]) -> dict[str, Any]:
+    """What a planned unit's manifest entry says of its fragmentation reading: the rule, what was named, by what, and
+    the analysis files Interactive's lease keeps out by their names (by base name, at most 20, with their count)."""
+    files = list(reading.get("named_files") or [])
+    return {
+        "rule": CID_HCD_ONLY_RULE, "evidence": reading.get("evidence"), "methods": list(reading.get("methods") or []),
+        "named_files": len(files), "analysis_files": int(reading.get("analysis_files") or 0),
+        "named_file_names": [Path(item.replace("\\", "/")).name for item in files[:20]],
+        "not_credible_files": int(reading.get("not_credible_files") or 0),
+        "instrument": str(reading.get("instrument") or ""),
+        "named_samples": int(reading.get("named_samples") or 0), "samples": int(reading.get("samples") or 0),
+        "stated_samples": int(reading.get("stated_samples") or 0), "stated_files": int(reading.get("stated_files") or 0),
+        "detail": str(reading.get("detail") or ""),
+    }
+
+
+def _cid_hcd_interactive_problem(pins: Mapping[str, Any], units: Iterable[Mapping[str, Any]]) -> str:
+    """Why the pinned Interactive cannot run a campaign under the CID/HCD-only rule, or "": every Interactive before
+    CID_HCD_ONLY_INTERACTIVE runs the files a lease of 0.5.52 keeps out, and returns no polarity for a split part, so
+    it is refused whatever the units (review of 2026-10-29, L2). The runner always pins the version it imports
+    (ports.code_pins); a pin that states none, as only a hand-made one does, is not refused for it."""
+    version = _version(str((pins.get("interactive") or {}).get("version") or ""))
+    if not version or version >= CID_HCD_ONLY_INTERACTIVE:
+        return ""
+    named = [str(unit["unit_id"]) for unit in units if (unit.get("fragmentation_reading") or {}).get("named_files")]
+    return (f"The pinned Interactive is {(pins.get('interactive') or {}).get('version')}; the campaign needs "
+            f"{'.'.join(str(part) for part in CID_HCD_ONLY_INTERACTIVE)} or later, whose lease keeps out the files whose "
+            "name, header or sample row names a fragmentation method other than CID/HCD and whose split returns each "
+            "part's polarity" + (f" ({len(named)} planned unit(s) have such files: {', '.join(named[:5])}"
+                                 f"{' ...' if len(named) > 5 else ''})" if named else "") + ". Pin a later Interactive.")
+
+
+def archive_too_small(planned: Mapping[str, Any], kinds: Iterable[str], samples: int) -> str:
+    """Why a unit is left out as archives too small to hold its raw data, or "" when it is not.
+
+    `planned` is the unit's entry in the Catalog's download_plan, `kinds` the kinds of the objects it downloads and
+    `samples` the samples its Class assigns. Only a unit that downloads nothing but archives, every one of known size,
+    is judged: a listed raw file is read by its header in Interactive, and a size the repository did not give is no
+    evidence of anything."""
+    kinds = set(kinds)
+    if samples <= 0 or not kinds or not kinds <= ARCHIVE_KINDS:
+        return ""
+    if not planned.get("size_known") or planned.get("unknown_size_objects"):
+        return ""
+    known = int(planned.get("known_bytes") or 0)
+    if known >= samples * ARCHIVE_FLOOR_BYTES_PER_SAMPLE:
+        return ""
+    objects = int(planned.get("object_count") or 0)
+    return (f"{known:,} bytes in {objects} archive{'s' if objects != 1 else ''} for {samples} samples, "
+            f"{known // samples:,} per sample: under the floor of {ARCHIVE_FLOOR_BYTES_PER_SAMPLE:,}, no LC-MS/MS run "
+            "fits in it")
+
+
 def _exclusion(unit: Mapping[str, Any], reasons: list[str], detail: str = "") -> dict[str, Any]:
     record = {
         "unit_id": unit["unit_id"], "repository": unit["repository"], "accession": unit["accession"],
@@ -1139,6 +2308,21 @@ def _exclusion(unit: Mapping[str, Any], reasons: list[str], detail: str = "") ->
     if detail:
         record["detail"] = detail
     return record
+
+
+def _group_rank(group: Mapping[str, Any]) -> tuple[bool, int, int, int, str]:
+    """Where a download group runs: smallest first, and a group with an object of unknown size after every
+    group whose size is known.
+
+    An object the repository listed without a size counts 0 in distinct_bytes_lower_bound, so ranking by
+    that bound alone put such a group first whatever its size. Stage 3 (2026-11-05) began with the 21
+    MetaboLights units of unknown size, 17,082 objects fetched at about 0.6 MB/s, ahead of 692 units of
+    known size. Among themselves those groups go by object count, the only measure of their size there is.
+    """
+    unknown = bool(group.get("unknown_size_objects") or group.get("files_without_url"))
+    lower_bound = int(group.get("distinct_bytes_lower_bound") or 0)
+    objects = int(group.get("object_count") or 0)
+    return unknown, objects if unknown else lower_bound, lower_bound, objects, str(group["group_id"])
 
 
 def _totals(
@@ -1239,6 +2423,7 @@ def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> lis
     if not libraries:
         problems.append("the manifest pins no library: plan again with --resources")
     problems.extend(profile_problems(manifest.get("profile"), [item["name"] for item in libraries]))
+    problems.extend(annotation_problems(manifest))
     problems.extend(automatic_rt_correction_problems(
         manifest.get("profile"), manifest.get("pins", {}).get("console"), manifest.get("policy")
     ))
@@ -1293,6 +2478,7 @@ def authorization_record(
     for item in covers:
         text = str(item).strip()
         boundaries.append(int(text) if text.isdecimal() else text)
+    contract = annotation_contract(manifest)
     return {
         "schema": AUTHORIZATION_SCHEMA,
         "approval_id": approval_id,
@@ -1305,7 +2491,15 @@ def authorization_record(
         "covers": boundaries,
         "units": [unit["unit_id"] for unit in manifest["units"]],
         "raw_retention_policy": manifest["raw_retention_policy"],
-        "libraries": [{"name": item["name"], "sha256": item["sha256"]} for item in manifest["pins"]["libraries"]],
+        # Each library by name and sha256, with the role it is loaded in and the ion modes whose units load it where
+        # the plan recorded them (library_pins), and an MSP's library kind (acquired, or predicted for the in-silico
+        # tier): the gate's LIB-2 and LIB-3 read them, and Interactive refuses only a location.
+        "libraries": [{"name": item["name"], "sha256": item["sha256"],
+                       **{key: item[key] for key in ("role", "ion_modes", "library_kind") if key in item}}
+                      for item in manifest["pins"]["libraries"]],
+        # What each ion mode's units annotate with, as the manifest states it (annotation_contract): LIB-2 holds the
+        # method to it, so cutoffs, priorities or a profile other than the approved ones stop the run.
+        **({"annotation": contract} if contract is not None else {}),
         "revoked_at": None,
     }
 
@@ -1334,7 +2528,10 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     """What a person approves. The transfer is printed as the pinned Interactive's lease makes it, which is
     the approval quantity: until the lease fetches through the download store (pins.interactive
     .lease_uses_store, plan item 15) each unit fetches its own objects, so the bytes moved and held are the
-    per-unit sum, and the distinct bytes are what sharing would move."""
+    per-unit sum, and the distinct bytes are what sharing would move. Each shared object is said to be fetched
+    once only where the runner also claims it for every sibling before the first of them downloads
+    (pins.interactive.pre_claim_downloads, 2026-10-24); without that claim the distinct bytes are the least the
+    transfer can be, and the per-unit sum the most."""
     totals = manifest["totals"]
     version = str((manifest.get("pins", {}).get("interactive") or {}).get("version") or "?")
 
@@ -1358,18 +2555,77 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
         lines.append("  ion mobility read from " + (
             "the Catalog's ion_mobility_evidence" if evidence == "catalog"
             else "the unit's instrument, its rows' instrument fields and its inputs' container formats (no Catalog helper)"))
+    floor = (manifest.get("selection") or {}).get("archive_floor_bytes_per_sample")
+    if floor:
+        lines.append(f"  a unit that downloads only archives, all of known size, holding under {int(floor):,} bytes for "
+                     "each of its samples is excluded as archive_too_small_for_raw_data: no LC-MS/MS run fits in it "
+                     "(a study's methods or supplementary tables, 2026-11-06)")
+    if (manifest.get("selection") or {}).get("fragmentation_rule"):
+        lines.append("  CID/HCD only (user decision, 2026-10-29): every reference spectrum is CID/HCD-derived, so a unit "
+                     "whose own record, every sample row or every analysis file name names another fragmentation "
+                     "method is excluded, and a file named so is kept out by Interactive's lease; a file name counts "
+                     "only where the unit's instrument could fragment so, an instrument's model name is no evidence, "
+                     "absence of evidence means run, and no vendor header records the method")
+    if (manifest.get("policy") or {}).get("wiff_first_for_dda") is True:
+        lines.append("  .wiff first for DDA (user decision, 2026-11-04): a DDA unit or part whose every .wiff2 has its "
+                     ".wiff with that .wiff's .wiff.scan beside it runs on the .wiff from the start (Interactive 0.5.58, "
+                     f"{policy.WIFF_FIRST_RULE}), once each .wiff's own header reads one DDA sample in its polarity; a "
+                     "DIA, SWATH or AIF unit (ZT Scan DIA can only be analysed from the .wiff2), and any unit "
+                     "Interactive does not switch, runs on its .wiff2, where a failed Console job is still answered by "
+                     f"the switch after failure ({policy.WIFF_FALLBACK_RULE})")
+    partly = [unit for unit in manifest.get("units") or [] if (unit.get("fragmentation_reading") or {}).get("named_files")]
+    if partly:
+        lines.append(f"  {len(partly)} planned unit(s) run without some files whose names name another fragmentation "
+                     "method: " + ", ".join(f"{unit['unit_id']} ({unit['fragmentation_reading']['named_files']} of "
+                                            f"{unit['fragmentation_reading']['analysis_files']})" for unit in partly[:5])
+                     + (", ..." if len(partly) > 5 else ""))
+    both = [unit["unit_id"] for unit in manifest.get("units") or [] if unit.get("ion_mode") == "Both"]
+    if both:
+        lines.append(f"  {len(both)} planned unit(s) declare Both polarities: each file's polarity is read from its raw "
+                     "header and the unit is split into single-polarity parts; a file whose scans switch polarity is "
+                     "excluded (unresolved mixed polarity is out of scope) and the rest runs")
     unread = [unit["unit_id"] for unit in manifest.get("units") or []
               if (unit.get("ion_mobility_reading") or {}).get("evidence") == "not_read"]
     if unread:
         lines.append(f"  ion mobility not read for {len(unread)} planned units whose Catalog record could not be read, "
                      f"so not excluded for it ({', '.join(unread[:5])}{', ...' if len(unread) > 5 else ''})")
+    # Where the raw data and outputs go, and whether the raw data stay (boundary 1 states both). The root is chosen per
+    # campaign since 2026-10-24, and until the review of 2026-10-25 only the manifest named it, never these words.
+    root = str(manifest.get("workspace_root") or "")
+    lines.append(f"  workspace root {root}: every unit's raw data, MS-DIAL outputs and records, and this campaign's "
+                 "ledger, are written under it" if root else "  workspace root: not stated")
+    cautions = [str(item) for item in manifest.get("workspace_root_cautions") or []]
+    if cautions:
+        where = cautions[0] if len(cautions) == 1 else ", ".join(cautions[:-1]) + " and " + cautions[-1]
+        lines.append(f"  THE WORKSPACE ROOT IS {where.upper()}, where the project keeps no campaign data: approve it only "
+                     "if that is meant")
+    retention = str(manifest.get("raw_retention_policy") or "")
+    # Boundary 5 covers more than the validated case (review 2): the runner discards the raw data of a unit that ends
+    # without validated outputs too (Runner._discard_raw), as decided on 2026-09-30.
+    lines.append(f"  raw retention {retention or 'not stated'}" + (
+        ": each unit's raw data are deleted when the unit ends (boundary 5): once its outputs are validated, and also "
+        "when it ends without validated outputs (failed after its retries, excluded or skipped), so they are not kept "
+        "for diagnosis" if retention == "delete_after_validated_output"
+        else ": each unit's raw data are kept" if retention == "keep" else ""))
     lower = " at least" if totals["units_of_unknown_size"] else ""
     lines.append(f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}")
-    if (manifest.get("pins", {}).get("interactive") or {}).get("lease_uses_store") is True:
+    interactive = manifest.get("pins", {}).get("interactive") or {}
+    if interactive.get("lease_uses_store") is True and interactive.get("pre_claim_downloads") is True:
         lines += [
             f"  transfer and disk:{lower} {tb(totals['distinct_bytes_known'])} of known size, each shared object fetched "
             f"once through Interactive {version}'s download store; lower bound {tb(totals['distinct_bytes_lower_bound'])}",
+            "  before a unit of a download group downloads, the runner claims the group's objects in the store for every "
+            "unit of it still to download, so no unit's cleanup deletes what a sibling has yet to read",
             f"  without the store the units would fetch {tb(totals['per_unit_known_bytes'])}",
+        ]
+    elif interactive.get("lease_uses_store") is True:
+        # The store, and nothing that claims an object for a unit that has not started (a manifest planned before the
+        # runner pre-claimed, 2026-10-24): an earlier sibling's cleanup may delete what the next one then fetches again.
+        lines += [
+            f"  transfer and disk:{lower} {tb(totals['distinct_bytes_known'])} of known size where no shared object is "
+            f"fetched twice, up to {tb(totals['per_unit_known_bytes'])}: Interactive {version}'s lease fetches through "
+            "the download store, but nothing claims an object for a unit that has not started, so once an earlier "
+            "unit's raw data are deleted the next unit of its group may fetch it again",
         ]
     else:
         lines += [
@@ -1389,10 +2645,46 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
             f"  planned beside an earlier accession-level workspace, left as it is: {len(legacy)} accessions "
             f"({', '.join(legacy[:5])}{', ...' if len(legacy) > 5 else ''})"
         )
+    annotation = manifest.get("annotation")
+    if isinstance(annotation, Mapping) and isinstance(annotation.get("statement"), list):
+        lines += [str(line) for line in annotation["statement"]]
+    else:
+        lines.append("  libraries and annotation: not stated (the manifest was planned before the plan stated them)")
+    lines += template_pin_text(manifest)
     lines += correction["statement"]
     lines.append(multi_energy_aif_text((manifest.get("pins") or {}).get("console") or {}))
     lines.append(f"  manifest digest {digest}")
     return "\n".join(lines)
+
+
+def template_pin_text(manifest: Mapping[str, Any]) -> list[str]:
+    """What the summary says of the LC-MS parameter templates the units take and what holds each: one the answers of
+    an ion mode name, as library:<file name>, is pinned with the libraries; the template pin holds the one the other
+    modes' units take (ports.PinReader.template). The template pin was said to be the run's template for a profile
+    whose answers named another (review 3)."""
+    profile = manifest.get("profile") if isinstance(manifest.get("profile"), Mapping) else None
+    answered = {mode: str(value) for mode, value in answered_templates(profile).items()}
+    lines = []
+    for value in sorted(set(answered.values())):
+        modes = " and ".join(mode for mode in ION_MODES if answered.get(mode) == value)
+        name = _one_library(value)
+        lines.append(f"  LC-MS parameter template of {modes} units {name}, which the answers name, pinned as a library "
+                     "by its sha256: a change to it pauses the campaign before the next unit or Console start" if name
+                     else f"  LC-MS parameter template of {modes} units {value}, which the answers name other than as "
+                     "library:<file name>: NOT PINNED, so the plan is not approvable")
+    others = [mode for mode in ION_MODES if mode not in answered]
+    if not others:
+        return lines
+    template = (manifest.get("pins") or {}).get("template") or {}
+    whom = f" of {' and '.join(others)} units" if answered else ""
+    if template.get("sha256"):
+        lines.append(f"  LC-MS parameter template{whom} {template.get('name')}"
+                     f"{TEMPLATE_WHOSE.get(str(template.get('named_by')), '')}, pinned by its sha256 "
+                     f"{str(template['sha256'])[:12]}...: a change to it pauses the campaign before the next unit or "
+                     "Console start")
+    else:
+        lines.append(f"  LC-MS parameter template{whom}: not pinned, so a change to it is seen only by LIB-2, unit by unit")
+    return lines
 
 
 def manifest_automatic_rt_correction(manifest: Mapping[str, Any]) -> dict[str, Any]:

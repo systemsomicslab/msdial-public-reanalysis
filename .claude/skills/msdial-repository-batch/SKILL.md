@@ -27,12 +27,16 @@ For a repository range:
    units. Report missing accessions.
 4. Use the workspace root chosen for this campaign explicitly as
    `workspace_root` for every repository plan and download preview, and as the
-   runner's `--workspace-root`. MB-POST production uses
-   `F:\MSDIAL_Public_Reanalysis\analysis`; `D:\13_MSDIAL_Public_Reanalysis\analysis`
-   is the archive of the pilots and preflights, not a default for new work. Any
-   other root needs the user's explicit confirmation. Never derive the root from
-   the Claude project directory, and never use one on C:, in the user profile,
-   in a temporary folder, or inside a code checkout.
+   campaign runner's `--workspace-root`. The root is chosen per campaign and
+   never assumed: ask the user which root it is when it has not been named, and
+   get their explicit confirmation of it before the first download. The MB-POST
+   and Pool A campaigns use `F:\MSDIAL_Public_Reanalysis\analysis`;
+   `D:\13_MSDIAL_Public_Reanalysis\analysis` is the archive of the pilots and
+   preflights, not a default for new work. Never derive the root from the Claude
+   project directory, and never use one on C:, in the user profile, in a
+   temporary folder, or inside a code checkout. The Interactive MCP server
+   refuses a root outside its configured `MSDIAL_REPOSITORY_WORKSPACE_ROOT`;
+   report that rather than working around it.
 5. Classify units as eligible, excluded, or requiring review using the supported
    scope in `CLAUDE.md`: untargeted LC-MS/MS acquired by DDA or DIA/AIF/SWATH.
    If acquisition is unknown, require raw-header preflight; never guess DDA.

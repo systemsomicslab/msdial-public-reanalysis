@@ -27,6 +27,15 @@ Run the workflow the way a user would, using the `msdial-lipidomics-workflow` sk
 on the lipidomics dataset you are given. Take it from raw data through to a merged,
 concentration-normalized lipidome.
 
+The skill is no longer in this repository. It ships with MS-DIAL Interactive, at
+`skills/msdial-lipidomics-workflow/` in
+[systemsomicslab/msdial-interactive-app](https://github.com/systemsomicslab/msdial-interactive-app)
+(moved there by
+[msdial-interactive-app#74](https://github.com/systemsomicslab/msdial-interactive-app/pull/74)),
+and Interactive's setup script (`Setup MS-DIAL for Claude.cmd`, or
+`scripts/setup_claude.py`) installs it. Record the Interactive version and commit the
+skill you used came from.
+
 Do not skip the confirmations, and do not repair a step that goes wrong by hand. If a
 step needs manual intervention to proceed, that is a finding: record what you had to
 do and why, then continue.

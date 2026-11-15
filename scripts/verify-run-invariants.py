@@ -73,6 +73,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
+# MS-DIAL's text exports carry each peak's MS/MS spectrum in one field, and a ZenoTOF DDA spectrum can be longer
+# than Python's default csv field limit of 131,072 characters (MB-POST MPST000048, V5 of 2026-10-29: up to 270,713).
+# Raised for the process, to the largest value a C long holds on Windows, as MS-DIAL Interactive 0.5.54 raises it.
+csv.field_size_limit(2**31 - 1)
+
 PASS = "pass"
 FAIL = "fail"
 WARN = "warn"
@@ -88,9 +93,11 @@ STAGES = ("before-production", "after-run", "before-publish")
 # (Check.blocks_run); one not evaluable where the stage owed nothing never does. Any other FAIL is
 # recorded and the unit runs: CLS-1, CLS-2, CLS-3, ORD-1 and PKH-1, which the rule named, and SPL-1,
 # which the user placed with them; PRE-1, which never FAILs, records too, and so does PAIR-1 (2026-10-06),
-# which lists every inferred name pairing and never FAILs. Each check's docstring gives
+# which lists every inferred name pairing and never FAILs. LIB-2 (2026-10-24, with the user's decision that the
+# campaign's LBM2 is the one its profile names) stops the run too: a run that loads a library the approval does not
+# name, or other bytes under an approved name, is not the approved analysis. Each check's docstring gives
 # its reason under "RUN POLICY". The campaign runner reads the class from each check's run_policy in
-# --json, and holds the eight blocking ones itself whatever the report states.
+# --json, and holds the nine blocking ones itself whatever the report states.
 BLOCKS_RUN = "blocks_run"
 RECORD_ONLY = "record_only"
 RUN_POLICY = {
@@ -110,6 +117,7 @@ RUN_POLICY = {
     "INP-1": BLOCKS_RUN,
     "CNT-1": BLOCKS_RUN,
     "PAIR-1": RECORD_ONLY,
+    "LIB-2": BLOCKS_RUN,
 }
 
 # A user-profile path inside an artifact built to be shared. Deliberately narrow: it
@@ -327,11 +335,60 @@ def check_unit_identity(report: Report, provenance: dict | None, reason: str) ->
 # eligibility
 # --------------------------------------------------------------------------------------------
 
+UNTARGETED_FROM_HEADERS = "untargeted_inferred_from_headers"
+UNTARGETED_FROM_DECLARED_ACQUISITION = "untargeted_inferred_from_declared_acquisition"
+UNTARGETED_DECLARED_MODES = frozenset({"DDA", "DIA", "AIF", "SWATH"})
+
+
+def _untargeted_basis_problem(provenance: dict) -> str:
+    """Why a campaign unit's untargeted status rests on nothing on record, or "".
+
+    Where the raw owner's Catalog handoff records untargeted as unset and the project says untargeted, a binding
+    campaign disposition must record the inference: from the headers (untargeted_inferred_from_headers), or, for a
+    unit that ran on its declaration alone (acquisition_declared_only), from its declared DDA, DIA, AIF or SWATH
+    acquisition (untargeted_inferred_from_declared_acquisition with its untargeted_inference; user decision,
+    2026-10-29). Nothing else stands for an unset declaration. A handoff that records no untargeted field at all,
+    and a unit outside a campaign, are not judged here."""
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    if project.get("untargeted") is not True:
+        return ""
+    owner, _reason = _raw_owner_manifest(provenance)
+    owner = owner if isinstance(owner, dict) else provenance
+    owner_project = owner.get("project") if isinstance(owner.get("project"), dict) else {}
+    metadata = owner_project.get("repository_metadata")
+    handoff = metadata.get("catalog_handoff") if isinstance(metadata, dict) else None
+    settings = handoff.get("technical_settings") if isinstance(handoff, dict) else None
+    if not isinstance(settings, dict) or "untargeted" not in settings or settings.get("untargeted") is not None:
+        return ""
+    dispositions = _binding_dispositions(provenance)
+    if not dispositions:
+        return ""
+    for disposition in dispositions:
+        warnings = set(disposition.get("warnings") or [])
+        if UNTARGETED_FROM_HEADERS in warnings:
+            return ""
+        inference = disposition.get("untargeted_inference")
+        if UNTARGETED_FROM_DECLARED_ACQUISITION in warnings:
+            mode = str((inference or {}).get("declared_acquisition_mode") or "").upper() if isinstance(inference, dict) else ""
+            if (isinstance(inference, dict) and inference.get("basis") == "declared_acquisition"
+                    and mode in UNTARGETED_DECLARED_MODES and "acquisition_declared_only" in warnings):
+                return ""
+            return (f"its campaign disposition records {UNTARGETED_FROM_DECLARED_ACQUISITION} without a declared-only "
+                    "run on a declared DDA, DIA, AIF or SWATH acquisition behind it")
+    return ("the repository leaves untargeted unset, the project says untargeted, and no campaign disposition records "
+            f"the inference ({UNTARGETED_FROM_HEADERS} or {UNTARGETED_FROM_DECLARED_ACQUISITION})")
+
+
 def check_execution_allowed(report: Report, provenance: dict | None, reason: str) -> None:
     """The manifest's own eligibility verdict must permit execution.
 
     The server writes execution_allowed and then consults it nowhere, so the verdict currently
     gates nothing on its own. Reading it here is what turns it back into a gate.
+
+    UNTARGETED ON RECORD (user decision, 2026-10-29). Where the raw owner's Catalog handoff leaves untargeted unset,
+    a campaign unit that runs as untargeted FAILs unless a binding disposition records the inference: from the
+    headers, or from a declared DDA, DIA, AIF or SWATH acquisition in a unit that ran on its declaration alone
+    (_untargeted_basis_problem).
 
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A unit judged ineligible, unresolved or
     split is not a run whose results mean anything.
@@ -350,6 +407,13 @@ def check_execution_allowed(report: Report, provenance: dict | None, reason: str
             f"Gate the parts instead: {', '.join(parts) or 'none recorded'}.",
             execution_allowed=allowed, status=provenance.get("status"), parts=parts,
         )
+        return
+    untargeted = _untargeted_basis_problem(provenance) if allowed is True else ""
+    if untargeted:
+        # The untargeted status the unit runs on is an inference only a campaign disposition may record (2026-10-29).
+        report.add("ELIG-1", stage, "Manifest permits execution", FAIL,
+                   f"execution_allowed is true, but {untargeted}: the unit was made eligible on an untargeted status "
+                   "nothing on record establishes.", execution_allowed=allowed, status=provenance.get("status"))
         return
     if allowed is True:
         report.add("ELIG-1", stage, "Manifest permits execution", PASS,
@@ -1529,6 +1593,31 @@ def _checksum_basis(owner: dict, not_analysed: "dict[str, tuple[str, str]] | Non
     return "insufficient", detail, evidence
 
 
+def _checksum_subject(provenance: dict, owner: dict) -> tuple[dict, str]:
+    """The manifest whose inputs SUM-1 and SUM-2 resolve, and whose lineage rows they read: "own" or "raw_owner".
+
+    A unit's own, except for a split part. A part downloaded nothing, so what vouches for its bytes is
+    its raw owner's: the downloads, archive extractions and their member listings, extracted files,
+    the declared checksums and the allow-list validator's counts. Its inputs and their lineage rows are
+    its own. Judged on the owner's candidates and rows, a part passed on its parent's: a part switched
+    from its .wiff2 to its .wiff (WIFF_FALLBACK_RULE) runs on .wiff inputs whose own rows nothing read,
+    while SUM-1 passed on the parent's .wiff2 rows. So a part that carries rows of its own is judged by
+    them, with the owner's evidence: the owner's manifest with the part's input_candidates and
+    input_lineage in place of its own. Each candidate is resolved through the part's row only; a part
+    whose own table lacks one is refused for it, never covered by the parent's row.
+
+    A part written before Interactive copied the rows into it (its input_lineage absent, or holding no
+    rows) has nothing of its own to read, and keeps the owner's candidates and rows as before.
+    """
+    if owner is provenance:
+        return owner, "own"
+    lineage = provenance.get("input_lineage")
+    rows = lineage.get("rows") if isinstance(lineage, dict) else None
+    if not isinstance(rows, list) or not rows or not isinstance(provenance.get("input_candidates"), list):
+        return owner, "raw_owner"
+    return {**owner, "input_candidates": provenance["input_candidates"], "input_lineage": lineage}, "own"
+
+
 def check_checksum_coverage(report: Report, provenance: dict | None, reason: str,
                            csv_rows: list[dict] | None = None) -> None:
     """SUM-1. Every admitted input had its declared checksum verified.
@@ -1545,7 +1634,9 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
     declaration is still a FAIL: some files could be compared and the rest were not.
 
     A split part carries its raw owner's verdict. Read on the part alone, the record is absent
-    and a FAIL on the parent would become a mere absence on the part.
+    and a FAIL on the parent would become a mere absence on the part. Its own inputs are resolved
+    through its own lineage rows where it carries them, against the owner's evidence
+    (_checksum_subject); evidence lineage_rows_of says whose rows were read.
 
     AN ARCHIVE'S PUBLISHED MD5 is the only checksum a Metabolomics Workbench archive unit has. Where
     the manifest carries input_lineage, an input extracted from an archive whose MD5 matched at
@@ -1577,19 +1668,21 @@ def check_checksum_coverage(report: Report, provenance: dict | None, reason: str
                        f"This unit was split from another, whose manifest cannot be used: {owner_reason}")
             return
         inherited_from = str((provenance.get("split_from") or {}).get("analysis_unit_id") or "")
+    subject, rows_of = _checksum_subject(provenance, owner)
     if not isinstance(owner.get("allowlist_checksum_validation"), dict) or not isinstance(
-        owner.get("input_candidates"), list
+        subject.get("input_candidates"), list
     ):
         report.add("SUM-1", stage, title, NOT_EVALUABLE,
                    "The manifest records no checksum validation block or no input candidates.",
                    inherited_from=inherited_from)
         return
-    not_analysed = _not_analysed(provenance, owner, csv_rows)
-    kind, detail, evidence = _checksum_basis(owner, not_analysed)
+    not_analysed = _not_analysed(provenance, subject, csv_rows)
+    kind, detail, evidence = _checksum_basis(subject, not_analysed)
     if evidence.get("inputs_excluded") and evidence.get("inputs"):
         detail += _excluded_sentence(not_analysed)
     status = {"verified": PASS, "archive_verified": ARCHIVE_VERIFIED_STATUS, "download_sha256": WARN}.get(kind, FAIL)
-    report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, **evidence)
+    report.add("SUM-1", stage, title, status, detail, inherited_from=inherited_from, lineage_rows_of=rows_of,
+               **evidence)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1858,7 +1951,12 @@ def check_converted_inputs_are_their_conversions(
         by_output.setdefault(_path_key(output["path"]), []).append(record)
     if by_output and not raw_roots:
         problems.append("the raw owner's manifest names no raw_directory, so where each output lies cannot be told")
-    judged = {key: items for key, items in by_output.items() if not split or key in inputs}
+    # A converted mzML a binding campaign disposition excluded never runs, so its conversion is not judged as an input's:
+    # in a Both unit an mzXML whose scans record no polarity converts with none, and the disposition excludes it as
+    # polarity_unresolved (review of 2026-10-29, L3).
+    excluded_outputs = set(_exclusion_reasons(owner, provenance))
+    judged = {key: items for key, items in by_output.items()
+              if (not split or key in inputs) and key not in excluded_outputs}
     # The raw owner converted every part's files, with the ion mode it declared.
     declared = _declared_ion_mode(owner)
     declarer = "the parent unit" if split else "the unit"
@@ -1916,6 +2014,7 @@ def check_converted_inputs_are_their_conversions(
 
     evidence = {
         "records": len(records or []), "judged": len(judged), "converted": tally["converted"], "failed": len(failed),
+        "excluded_by_disposition": sum(1 for key in by_output if key in excluded_outputs),
         "rehashed": tally["rehashed"], "released_with_raw_tree": tally["released"],
         "spectra_validated": tally["spectra"], "imputed_polarity_spectra": tally["imputed"],
         "declared_ion_mode": declared[1] or None,
@@ -1982,6 +2081,11 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     two records that must agree. An input the parent's binding campaign disposition excluded stays
     among the parent's candidates and goes into no part.
 
+    A PART SWITCHED FROM ITS .WIFF2 TO ITS .WIFF (the user's decision of 2026-10-31, WIFF_FALLBACK_RULE) holds the
+    .wiff where the parent's record of it names the .wiff2. Where the switch's record holds (_wiff_fallback: its
+    candidates before the switch, with exactly its swaps made, are its candidates now), the part is held to the
+    parent's record by its candidates before the switch; a record that does not hold changes nothing here.
+
     RUN POLICY: record_only, as the user placed it (2026-10-02). Its FAIL does not break this part's
     results: they come from the part's own rows, whose types ACQ-1 holds to their headers, and whose
     inputs INP-1, SUM-1 and CNT-1 hold to the part's candidates, all of which do stop the run. What a
@@ -2010,13 +2114,19 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     left_out = len(candidates) - len(parent_inputs)
     claimed = sorted(_path_key(path) for item in parts for path in item.get("input_candidates") or [])
     own_inputs = sorted(_path_key(item) for item in provenance.get("input_candidates") or [])
+    # A part switched from its .wiff2 to its .wiff under a switch that holds (WIFF_FALLBACK_RULE, 2026-10-31) is held to
+    # the parent's record by its candidates before the switch: the switch is on record as exactly what changed since.
+    fallback = _wiff_fallback(provenance)
+    split_inputs = (sorted(_path_key(item) for item in (provenance.get(WIFF_FALLBACK_FIELD) or {}).get(
+        "input_candidates_before") or []) if fallback.holds else own_inputs)
     problems = []
     if parent.get("status") != "split_by_acquisition" or parent.get("execution_allowed") is not False:
         problems.append("the parent is not recorded as split and held from execution")
     if own is None:
         problems.append(f"the parent's split_into does not name {own_id or 'this part'}")
-    elif sorted(_path_key(item) for item in own.get("input_candidates") or []) != own_inputs:
-        problems.append("this part's input_candidates differ from the parent's record of it")
+    elif sorted(_path_key(item) for item in own.get("input_candidates") or []) != split_inputs:
+        problems.append("this part's input_candidates differ from the parent's record of it"
+                        + (" before its switch from .wiff2 to .wiff" if fallback.holds else ""))
     held = {_path_key(path): Path(str(path).rstrip("\\/")).name for item in parts
             for path in item.get("input_candidates") or [] if _path_key(path) in excluded}
     if held:
@@ -2042,9 +2152,11 @@ def check_split_part_partitions_its_parent(report: Report, provenance: dict | No
     report.add("SPL-1", stage, title, PASS,
                f"{own_id} is one of {len(parts)} parts holding the parent's {len(parent_inputs)} "
                "inputs exactly once"
-               + (f", the {left_out} its campaign disposition excluded in none" if left_out else "") + ".",
+               + (f", the {left_out} its campaign disposition excluded in none" if left_out else "")
+               + (f"; {fallback.sentence()}" if fallback.holds else "") + ".",
                parent=split_from.get("analysis_unit_id"), parts=len(parts),
-               **({"excluded_inputs": left_out} if left_out else {}))
+               **({"excluded_inputs": left_out} if left_out else {}),
+               **({"wiff_fallback": fallback.evidence()} if fallback.present else {}))
 
 
 # --------------------------------------------------------------------------------------------
@@ -2305,6 +2417,222 @@ def check_sample_count_invariant(
 
 
 INP1_TITLE = "Each declared analysis input is one input candidate and one CSV row"
+# CID/HCD ONLY (user decision, 2026-10-29; Interactive 0.5.52, msdial_app.fragmentation). Every reference spectrum is
+# CID/HCD-derived, so a campaign lease keeps out an input whose evidence names another fragmentation method, with
+# reason fragmentation_not_cid_hcd, the methods and the evidence (its file name, an mzML's activation terms, a
+# converted mzXML's activationMethod, a sample row that states the method); absence of evidence means run. INP-1
+# holds both sides of it where the lease applied it (its record carries fragmentation_check)
+# (_not_cid_hcd_problems): no input that reaches the run has a file name naming such a method, by the same whole-token
+# rule (an identifier, a GUID or a hexadecimal run, names nothing) on an instrument that could perform it (instrument_can:
+# the unit's instrument, as its Catalog handoff records it, matches the method's capable families, or names a capable
+# vendor and no model, or none is recorded), and no input was kept out for it without evidence that holds: such a
+# name, or a method its header gave. An instrument's model name is no evidence of a method. No vendor header records the method (the SCIEX
+# Wiff2Reader writes CID for every spectrum), so the gate infers none.
+NOT_CID_HCD = "fragmentation_not_cid_hcd"
+# THE TOKEN RULE, held identical in Interactive (fragmentation.py), the campaign plan and the gate. A token is whole
+# when no letter or digit stands before it and no letter after it. It names nothing inside an identifier: a run of
+# letters and digits that is all hexadecimal and either eight long or more or holds a digit (8ead4b2c, ead1), or a
+# hyphenated GUID (95c44b45-ead1-43e8-afd1-de952d13d4ae). With words, repository text may spell a method out.
+NON_CID_METHODS = ("EAD", "OAD", "ECD", "ETD", "EThcD", "ETciD", "NETD", "EDD", "EID", "UVPD", "IRMPD")
+GUID_PATTERN = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+METHOD_WORDS_PATTERN = (
+    r"electron[- ]activated dissociation|oxygen[- ]attachment dissociation|electron[- ]capture dissociation|"
+    r"electron[- ]transfer dissociation|electron[- ]induced dissociation|ultraviolet photodissociation|"
+    r"infrared multiphoton dissociation"
+)
+WORD_METHODS = {"electron activated": "EAD", "oxygen attachment": "OAD", "electron capture": "ECD",
+                "electron transfer": "ETD", "electron induced": "EID", "ultraviolet photodissociation": "UVPD",
+                "infrared multiphoton": "IRMPD"}
+# A sample-row field that states how the ions were fragmented ("analyticalCondition / Fragmentation method"): an
+# explicit statement, held to no instrument and never read as the study's text. An instrument field names a model,
+# which says what the instrument can do, never what was done, and is no evidence at all.
+METHOD_STATEMENT_FIELD_PATTERN = r"fragment|dissociation|activation|collision"
+INSTRUMENT_FIELD_PATTERN = r"instrument"
+_CANONICAL_METHOD = {name.casefold(): name for name in NON_CID_METHODS}
+_METHOD_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(" + "|".join(sorted(NON_CID_METHODS, key=len, reverse=True)) + r")(?![A-Za-z])", re.IGNORECASE)
+_METHOD_WORDS = re.compile(METHOD_WORDS_PATTERN, re.IGNORECASE)
+_ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
+_ALL_HEX = re.compile(r"[0-9A-Fa-f]+")
+_GUID = re.compile(GUID_PATTERN)
+_METHOD_STATEMENT_FIELD = re.compile(METHOD_STATEMENT_FIELD_PATTERN, re.IGNORECASE)
+_INSTRUMENT_FIELD = re.compile(INSTRUMENT_FIELD_PATTERN, re.IGNORECASE)
+# The evidence that holds by the methods it records: a header's (an mzML's activation, a converted mzXML's
+# activationMethod), and a sample row that states the method (sample_row).
+NOT_CID_HCD_HEADER_EVIDENCE = ("mzml_activation", "mzxml_activation_method", "sample_row")
+# WHICH INSTRUMENTS CAN FRAGMENT SO (user decision, 2026-10-29), as Interactive's fragmentation.METHOD_INSTRUMENTS
+# holds it, and the tests hold the three copies (plan, gate, Interactive) identical. A file name's token counts only
+# where the unit's instrument matches the method's capable families, or names a capable vendor and no model (a model is
+# a word with a digit, or one of INSTRUMENT_MODEL_WORDS), or no instrument is recorded (UNRECORDED_INSTRUMENTS).
+_TRIBRID = r"fusion|lumos|eclipse|ascend|tribrid"
+_FTICR = r"ft\s*-?\s*icr|fticr|solarix|\bapex\b"
+_ETD_CAPABLE = _TRIBRID + r"|\betd\b"
+METHOD_INSTRUMENTS = {
+    "EAD": {"capable": r"zeno\s*-?\s*tof|\b[78]600\b", "vendors": r"sciex|applied biosystems"},
+    "OAD": {"capable": r"lcms\s*-?\s*90[35]0|\b90[35]0\b", "vendors": r"shimadzu"},
+    "ETD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "EThcD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "ETciD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "NETD": {"capable": _ETD_CAPABLE, "vendors": r"thermo|bruker|agilent"},
+    "ECD": {"capable": _FTICR + r"|\bexd\b|\becd\b|6545\s*xt", "vendors": r"bruker|agilent"},
+    "EDD": {"capable": _FTICR, "vendors": r"bruker"},
+    "EID": {"capable": _FTICR + r"|\bexd\b", "vendors": r"bruker|agilent"},
+    "UVPD": {"capable": _TRIBRID + r"|\buvpd\b", "vendors": r"thermo"},
+    "IRMPD": {"capable": _FTICR + r"|ion\s*trap|\bltq\b|\blcq\b|amazon|esquire|\bhct\b|\bqtrap\b|\birmpd\b",
+              "vendors": r"bruker|thermo"},
+}
+INSTRUMENT_MODEL_WORDS = (
+    r"\d|exactive|orbitrap|tripletof|qtrap|synapt|xevo|vion|impact|maxis|timstof|compact|\bltq\b|\blcq\b|velos|"
+    r"elite|fusion|lumos|eclipse|ascend|exploris|astral|zeno|solarix|\bapex\b|q-?tof|\btof\b|ion\s*trap|amazon|"
+    r"esquire|\bhct\b|fticr|ft-icr"
+)
+UNRECORDED_INSTRUMENTS = ("", "unknown", "not available", "n/a", "na", "none", "-", "ms", "lc-ms", "lc/ms", "lcms",
+                          "mass spectrometer", "mass spectrometry")
+
+
+def instrument_can(method: str, instrument: object) -> bool:
+    """Whether a file name's method token is credible on this instrument (METHOD_INSTRUMENTS); True where none is
+    recorded, or the method has no row."""
+    text = " ".join(str(instrument or "").split())
+    if text.casefold().strip(" .") in UNRECORDED_INSTRUMENTS:
+        return True
+    row = METHOD_INSTRUMENTS.get(method)
+    if row is None or re.search(row["capable"], text, re.IGNORECASE):
+        return True
+    return bool(re.search(row["vendors"], text, re.IGNORECASE)) and not re.search(
+        INSTRUMENT_MODEL_WORDS, text, re.IGNORECASE)
+
+
+def methods_named(text: object, words: bool = False) -> list[str]:
+    """The non-CID/HCD methods a text names by a whole token (and, with `words`, by a spelled-out name), in order and
+    once each; [] for none."""
+    value = str(text or "")
+    found: list[str] = []
+    guids = [(item.start(), item.end()) for item in _GUID.finditer(value)]
+    for match in _METHOD_TOKEN.finditer(value):
+        if any(start <= match.start() < end for start, end in guids):
+            continue
+        run = next((item for item in _ALNUM_RUN.finditer(value) if item.start() <= match.start() < item.end()), None)
+        if run is not None and _ALL_HEX.fullmatch(run.group(0)) and (
+                len(run.group(0)) >= 8 or any(character.isdigit() for character in run.group(0))):
+            continue
+        name = _CANONICAL_METHOD[match.group(1).casefold()]
+        if name not in found:
+            found.append(name)
+    if words:
+        for match in _METHOD_WORDS.finditer(value):
+            spelled = re.sub(r"[- ]+", " ", match.group(0).casefold())
+            name = next(code for start, code in WORD_METHODS.items() if spelled.startswith(start))
+            if name not in found:
+                found.append(name)
+    return found
+
+
+def methods_in_file_name(path: object) -> list[str]:
+    """methods_named over a path's base name (a vendor folder's own name)."""
+    text = str(path or "").rstrip("\\/")
+    return methods_named(re.split(r"[\\/]", text)[-1] if text else "")
+
+
+def stated_methods(values: object) -> list[str]:
+    """The non-CID/HCD methods a sample row states in a field that states the method (METHOD_STATEMENT_FIELD_PATTERN),
+    an instrument field aside; [] for none."""
+    found: list[str] = []
+    for field, value in (values.items() if isinstance(values, dict) else []):
+        if _INSTRUMENT_FIELD.search(str(field)) or not _METHOD_STATEMENT_FIELD.search(str(field)):
+            continue
+        for name in methods_named(value, words=True):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+_name_methods = methods_in_file_name
+
+
+def _credible_name_methods(path: str, instrument: str) -> list[str]:
+    """The methods a path's name names that the unit's instrument could perform (instrument_can): a name's token on an
+    instrument that could not is not credible there, and is no evidence (user decision, 2026-10-29)."""
+    return [method for method in _name_methods(path) if instrument_can(method, instrument)]
+
+
+def _unit_instrument(manifest: dict | None) -> str:
+    """The unit's instrument as its Catalog handoff's technical settings record it, as Interactive's lease read it."""
+    project = (manifest or {}).get("project") if isinstance((manifest or {}).get("project"), dict) else {}
+    metadata = project.get("repository_metadata") if isinstance(project.get("repository_metadata"), dict) else {}
+    handoff = metadata.get("catalog_handoff") if isinstance(metadata.get("catalog_handoff"), dict) else {}
+    settings = handoff.get("technical_settings") if isinstance(handoff.get("technical_settings"), dict) else {}
+    return str(settings.get("instrument") or "").strip()
+
+
+def _not_cid_hcd_problems(provenance: dict, owner: dict | None, csv_rows: list[dict] | None) -> list[str]:
+    """What stands against the CID/HCD-only rule of 2026-10-29 in a unit whose lease applied it: an input candidate or a
+    CSV row whose file name names another fragmentation method on an instrument that could perform it, a CSV row of a
+    sample whose row states one (stated_methods), and an input the lease kept out for it with no evidence that holds.
+
+    Only where the raw owner's lease record carries fragmentation_check (Interactive 0.5.52): a lease before it applied
+    no such rule, and a unit it made, an old campaign's finished one among them, is gated as it always was (review of
+    2026-10-29, L2)."""
+    owner = owner if isinstance(owner, dict) else provenance
+    if not isinstance(owner.get("fragmentation_check"), dict):
+        return []
+    problems = []
+    # A name counts only where the raw owner's instrument, as its lease read it, could fragment so.
+    instrument = _unit_instrument(owner) or _unit_instrument(provenance)
+    # The candidates, which the lease built after it kept such inputs out, and what each CSV row names.
+    candidates = provenance.get("input_candidates")
+    reaching = [str(item) for item in candidates] if isinstance(candidates, list) else []
+    reaching += [str(row.get("file_path") or row.get("file_name") or "") for row in csv_rows or []]
+    names = {Path(item.replace("\\", "/")).name: _credible_name_methods(item, instrument)
+             for item in reaching if _credible_name_methods(item, instrument)}
+    named = list(names.items())
+    if named:
+        problems.append(
+            f"{len(named)} input(s) among the candidates or the CSV rows have a file name naming a fragmentation "
+            "method other than CID/HCD (" + ", ".join(f"{name}: {', '.join(methods)}" for name, methods in named[:5])
+            + "), which the CID/HCD-only rule of 2026-10-29 keeps out")
+    # A sample whose row states the method (the plan maps such rows to their files, and the lease keeps them out).
+    stated = {
+        str(row.get("sample_id") or "").strip()
+        for manifest in (provenance, owner)
+        for row in ((manifest.get("project") or {}).get("sample_metadata") or [])
+        if isinstance(row, dict) and str(row.get("sample_id") or "").strip()
+        and stated_methods(row.get("values") or row.get("attributes") or {})
+    }
+    # A CSV row's sample: its own sample_id where it carries one, else its input's lineage row's.
+    aliases = _input_keys_by_console_path(provenance)
+    sample_by_key = {
+        _path_key(row["path"]): str(row.get("sample_id") or "").strip()
+        for manifest in (owner, provenance) for row in _lineage_rows(manifest)
+        if isinstance(row, dict) and str(row.get("path") or "").strip()
+    }
+    running = sorted({
+        str(row.get("sample_id") or "").strip() or sample_by_key.get(_input_key(row, aliases), "")
+        for row in csv_rows or []
+    } & stated)
+    if running:
+        problems.append(
+            f"{len(running)} sample(s) whose row states a fragmentation method other than CID/HCD have a CSV row ("
+            + ", ".join(running[:5]) + "), which the CID/HCD-only rule of 2026-10-29 keeps out")
+    unheld = []
+    for source in [owner] if owner is provenance else [owner, provenance]:
+        for item in source.get("excluded_input_candidates") or []:
+            if not isinstance(item, dict) or item.get("reason") != NOT_CID_HCD:
+                continue
+            path = str(item.get("path") or "")
+            evidence = str(item.get("evidence") or "")
+            methods = item.get("methods") if isinstance(item.get("methods"), list) else []
+            if evidence == "file_name" and _credible_name_methods(path, instrument):
+                continue
+            if evidence in NOT_CID_HCD_HEADER_EVIDENCE and methods:
+                continue
+            unheld.append(f"{Path(path.replace(chr(92), '/')).name} (evidence {evidence or 'none recorded'})")
+    if unheld:
+        problems.append(
+            f"the lease kept out {len(unheld)} input(s) as {NOT_CID_HCD} with no evidence that holds ("
+            + ", ".join(unheld[:5]) + "): only a file name naming another method, or one its header gave, keeps an "
+            "input out, and absence of evidence means run")
+    return problems
 
 
 def _declared_inputs(project: dict) -> tuple[list | None, str]:
@@ -2498,7 +2826,8 @@ def _excluded_candidates(provenance: dict, candidates: list) -> list[str]:
 # archive's members of no admitted file's stem (2026-10-08, second round, answer 1), in a declared unit each member
 # no declaration names (not_named_by_the_catalog_declaration, second round, answer 3), and an unattributed member of
 # a stem two sample rows share (stem_of_several_sample_rows). INP-1 holds the run to that record
-# (_unattributed_choice_problems, blocks_run): no member the record leaves out reaches the run, and a converted
+# (_unattributed_choice_problems, blocks_run): no member the record leaves out reaches the run (save a .wiff that a
+# switch which holds runs in place of its .wiff2, left out only as undeclared: V7, 2026-11-02), and a converted
 # unattributed input is the conversion of the mzXML it names. PAIR-1 holds the record itself (record_only):
 # converted lists every converted member, and each left-out entry gives a reason. Which one of a sample's
 # encodings runs is the one encoding rule's (below), never left_out's.
@@ -2570,7 +2899,7 @@ RAW_HEADER_REASONS = frozenset({"raw_header_unreadable", "raw_header_unsupported
 # listed vendor folder that did not arrive whole, and a vendor header the raw-metadata extractor could not read.
 ENCODING_UNREADABLE_REASONS = frozenset({
     "undecodable", CONVERSION_FAILED, "polarity_contradicts_declaration", REQUIRES_CONVERSION,
-    "incomplete_container", *RAW_HEADER_REASONS})
+    "incomplete_container", "vendor_companion_missing", *RAW_HEADER_REASONS})
 # The preflight's warning where a vendor file the rule used was excluded for a header it could not read, and the
 # sample's next encoding was not taken (the lease read no header for the rule).
 ENCODING_FALLBACK_NOT_TAKEN = "encoding_fallback_not_taken"
@@ -2593,6 +2922,8 @@ ENCODING_REASON_RANKS = {
     "polarity_contradicts_declaration": frozenset({ENCODING_MZXML_RANK}),
     REQUIRES_CONVERSION: frozenset({ENCODING_MZXML_RANK}),
     "incomplete_container": frozenset({ENCODING_VENDOR_RANK, ENCODING_RE_ENCODING_RANK}),
+    # A .wiff without its .wiff.scan (Interactive 0.5.53, 2026-10-29): a vendor file only.
+    "vendor_companion_missing": frozenset({ENCODING_VENDOR_RANK}),
     **{reason: frozenset({ENCODING_VENDOR_RANK, ENCODING_RE_ENCODING_RANK}) for reason in RAW_HEADER_REASONS},
 }
 ENCODING_RANK_NAMES = {ENCODING_VENDOR_RANK: "a vendor format", ENCODING_RE_ENCODING_RANK: "a re-encoding",
@@ -2825,6 +3156,11 @@ def _unattributed_choice_problems(provenance: dict, csv_rows: "list[dict] | None
     - a converted unattributed input is not the conversion of the mzXML its name_pairing names (member_name is the
       basename of its conversion's source_path, an mzXML).
 
+    A .wiff that a switch which holds runs in place of its .wiff2 (WIFF_FALLBACK_RULE, _wiff_fallback) is no left-out
+    member reaching the run where the record leaves it out only because no declaration names it: the declaration names
+    its .wiff2, and the switch has held it to the same sample (its stem, its folder, its own header). Any other reason
+    still refuses it.
+
     Which one of a sample's encodings runs is the one encoding rule's, held by _encoding_run_problems."""
     left_out = unattributed.left_out
     if not unattributed and not left_out:
@@ -2837,8 +3173,12 @@ def _unattributed_choice_problems(provenance: dict, csv_rows: "list[dict] | None
     out_of = {}
     for item in left_out:
         out_of.setdefault(item["path"].casefold(), item)
+    switched_in = _wiff_fallback(provenance).sources()
+    run_as_switched = [member for row, member, _source in inputs if member.casefold() in out_of
+                       and _path_key(row["path"]) in switched_in
+                       and out_of[member.casefold()].get("reason") == NOT_NAMED_BY_DECLARATION]
     reached = [f"{member} ({out_of[member.casefold()].get('reason') or 'no reason recorded'})"
-               for _row, member, _source in inputs if member.casefold() in out_of]
+               for _row, member, _source in inputs if member.casefold() in out_of and member not in run_as_switched]
     if reached:
         problems.append(f"{len(reached)} input(s) are archive members that {UNATTRIBUTED_RECORD}.{UNATTRIBUTED_LEFT_OUT} "
                         f"leaves out, and they reach the run all the same: {'; '.join(reached[:5])}")
@@ -2859,6 +3199,8 @@ def _unattributed_choice_problems(provenance: dict, csv_rows: "list[dict] | None
                 "converted_unattributed_inputs": sum(1 for row, _m, source in inputs if source and _is_unattributed(row))}
     if left_out:
         evidence[UNATTRIBUTED_LEFT_OUT] = _left_out_summary(left_out)
+    if run_as_switched:
+        evidence["left_out_run_in_place_of_wiff2"] = run_as_switched[:20]
     return problems, evidence
 
 
@@ -3052,9 +3394,14 @@ def _unit_polarity(provenance: dict) -> str:
     (_declared_ion_mode), else the project record's ion_mode, the unit's own and then its raw owner's."""
     owner, _ = _raw_owner_manifest(provenance)
     owner = owner if isinstance(owner, dict) else provenance
-    declared = _declared_ion_mode(owner)[0]
+    declared, value, _source = _declared_ion_mode(owner)
     if declared:
         return declared.capitalize()
+    if value:
+        # The raw owner declared no single polarity (Both, admitted since 2026-10-29, or Unknown): the lease, which ran
+        # before any preflight, grouped by none (Interactive's _unit_polarity), and a split part's own ion mode, the
+        # polarity its split gave it from the headers, is not what the lease read.
+        return ""
     for manifest in (provenance, owner):
         project = manifest.get("project") if isinstance(manifest.get("project"), dict) else {}
         mode = str(project.get("ion_mode") or "").strip().casefold()
@@ -3480,6 +3827,14 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
     rows, _reaching = _reaching_rows(provenance, csv_rows)
     problems = _encoding_record_problems(provenance, record)
     reaching = {_row_member(row, root).casefold(): row for row in rows}
+    # A switch from .wiff2 to .wiff that holds (WIFF_FALLBACK_RULE): each .wiff2 its choice used is met by its .wiff,
+    # and that .wiff, which the choice may leave unused beside its .wiff2, runs in its place. One that does not hold
+    # accepts nothing, and says why.
+    switch = _wiff_fallback(provenance)
+    problems.extend(_wiff_fallback_problems(provenance))
+    stands_in = {_aif_input_key(to, root).casefold(): _aif_input_key(source, root).casefold()
+                 for source, to in switch.swaps} if switch.holds and root else {}
+    replaced = {source: to for to, source in stands_in.items()}
     exclusions = _encoding_exclusions(provenance)
     samples = _input_samples(provenance, ("rows", "excluded"))
     names = _sample_row_names(provenance)
@@ -3490,7 +3845,8 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
     every_choice = [*choices, *(entry for entry in owner_choices if entry.identity not in identities)]
 
     reached = [f"{path} ({reason or 'no reason'}; {entry.used or 'no file'} used)"
-               for entry in every_choice for path, reason in entry.unused if path.casefold() in reaching]
+               for entry in every_choice for path, reason in entry.unused if path.casefold() in reaching
+               and stands_in.get(path.casefold()) != (entry.used or "").casefold()]
     if reached:
         problems.append(f"{len(reached)} file(s) the one encoding rule left unused reach the run all the same: "
                         + "; ".join(dict.fromkeys(reached[:5])) + " (clause 1: exactly one file of a sample is used)")
@@ -3499,6 +3855,9 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
         if not entry.used:
             continue
         row = reaching.get(entry.used.casefold())
+        if row is None and replaced.get(entry.used.casefold()) in reaching:
+            # The .wiff2 the rule used runs as its .wiff, under a switch that holds.
+            row = reaching[replaced[entry.used.casefold()]]
         if row is None:
             excluded = _encoding_used_exclusion(entry, provenance, root, exclusions)
             later = [path for path, reason in entry.unused if reason in ENCODING_ORDER_REASONS]
@@ -3542,7 +3901,10 @@ def _encoding_run_problems(provenance: dict, csv_rows: "list[dict] | None") -> "
                                                   paired))
     problems.extend(_unaccounted_listed_members(provenance, rows, record, every_choice, unit_polarity, names, paired))
     problems.extend(_left_out_rule_problems(provenance, rows, record, unit_polarity, names, paired, exclusions))
-    return list(dict.fromkeys(problems)), _encoding_evidence(record)
+    evidence = _encoding_evidence(record)
+    if switch.present:
+        evidence = {**evidence, "wiff_fallback": switch.evidence()}
+    return list(dict.fromkeys(problems)), evidence
 
 
 def _unrecorded_encoding_problems(provenance: dict, rows: list[dict], record: _EncodingRecord,
@@ -3825,6 +4187,9 @@ def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _Enc
             account(path, of_a_sample=False)
     for item in _record_left_out(provenance):
         account(item["path"], of_a_sample=False)
+    # The .wiff2 a switch that holds ran as their .wiff (WIFF_FALLBACK_RULE): on record in manifest.encoding_fallback.
+    for source in _wiff_fallback(provenance).sources().values():
+        account(source)
     undeclared = _undeclared(owner, provenance)
     keys = _sample_groups([*known, *listed], unit_polarity, names or [], paired)
     by_sample: dict[tuple, str] = {}
@@ -3845,11 +4210,21 @@ def _unaccounted_listed_members(provenance: dict, rows: list[dict], record: _Enc
 def _encoding_run_sentence(provenance: dict, csv_rows: "list[dict] | None") -> str:
     """The sentence that names each sample whose data arrived in several encodings, the file the rule used, and
     whether that file runs: a file used that was excluded on record (or a sample none of whose files could be read)
-    is named as a sample that runs on no file, never as one whose file runs. "" where no sample arrived so."""
+    is named as a sample that runs on no file, never as one whose file runs; and, where a switch from .wiff2 to .wiff
+    holds (WIFF_FALLBACK_RULE), the switch. "" where neither is so."""
     record = _encoding_record(provenance)
+    switched = _wiff_fallback(provenance).sentence()
     sentence = _encoding_sentence(record)
     if not sentence:
-        return ""
+        return switched
+    if switched:
+        return f"{_encoding_run_sentence_of(provenance, csv_rows, record, sentence)}. {switched}"
+    return _encoding_run_sentence_of(provenance, csv_rows, record, sentence)
+
+
+def _encoding_run_sentence_of(provenance: dict, csv_rows: "list[dict] | None", record: "_EncodingRecord",
+                              sentence: str) -> str:
+    """_encoding_run_sentence for a unit some of whose samples arrived in several encodings."""
     root = record.root
     rows, _reaching = _reaching_rows(provenance, csv_rows)
     exclusions = _encoding_exclusions(provenance)
@@ -3904,6 +4279,325 @@ def _encoding_unused_paths(provenance: dict) -> list[str]:
         return []
     return list(dict.fromkeys(os.path.join(record.root, path.replace("/", os.sep))
                               for entry in record.choices if entry.used for path, _reason in entry.unused))
+
+
+# A .WIFF IN PLACE OF ITS .WIFF2 (the user's decision of 2026-10-31; Interactive 0.5.55, msdial_app.wiff_fallback). The
+# one encoding rule, held jointly with the Catalog, runs a sample from its .wiff2 wherever its .wiff lies beside it, and
+# the positive part of MB-POST MPST000048 hung three times out of three in the .wiff2 reader while its files were read in
+# parallel. The .wiff2 stays the preferred encoding; where a Console job of a DDA unit or split part failed or timed out
+# and every .wiff2 it analyses has the same sample's .wiff beside it with that .wiff's .wiff.scan, Interactive switches
+# the unit's next attempt to the .wiff, once, and records it: manifest.encoding_fallback {rule WIFF_FALLBACK_RULE,
+# failed_jobs, swaps [{from, to, companion, from_relative, to_relative, sample_id}], input_candidates_before}, and on
+# each .wiff's lineage row encoding_fallback {rule, in_place_of, stands_for, in_place_of_row}. The one encoding rule's
+# own record (encoding_choices) is not rewritten. A run of the .wiff departs from that rule, and INP-1 (the listed
+# .wiff2 no record accounts for, the choice whose file used runs on nothing, the unused .wiff that runs) and SPL-1 (a
+# part's candidates against its parent's record of them) refuse it - unless the record holds (_wiff_fallback): it
+# names this rule, a failed or timed-out Console job of the unit that its run_attempts record, a DDA unit, swaps each
+# of a .wiff2 for the .wiff of its stem in its folder with that .wiff's .wiff.scan, and input candidates that are those
+# before the switch with exactly those swaps made, no .wiff2 left to run, and a lineage row of each .wiff that says it
+# runs in place of its .wiff2. Review of #88 added: each failed job is a diagnostic (tuning) or a run that ended before
+# the switch; a campaign unit's switch names its approval and the unit records that approval's boundary-4 crossing of
+# the switch's entry point; and each .wiff's own header, read at the switch by the pinned extractor
+# (encoding_fallback.wiff_headers), was read, lists exactly one sample, gives DDA and states the polarity the unit runs
+# in. The re-review of #88 added: that polarity is the gate's own reading (_wiff2_polarity: the unit's ion mode, else
+# the .wiff2's header record, else its file-name inference), never the entry's expected_polarity; each entry stands in
+# for its own swap's .wiff2; and the extractor that read them (encoding_fallback.extractor, and each entry's
+# extractor_sha256) is the one the unit's preflight ran and, in a campaign, a verified build of a pinned pair
+# (_wiff_fallback_extractor_problems). PKH-1 no longer takes a threshold from a diagnostic the switch marked superseded,
+# or one whose representative is no current input (_stale_diagnostic). Then each .wiff is read through that header, its
+# .wiff2's record kept as the decision record (_per_file_records: ACQ-1, and the polarity reading, where the header
+# replaces a .wiff2's file-name inference), the .wiff2 is accounted for, and the rule's choice that used it is met by its
+# .wiff. A record that does not hold accepts nothing, and INP-1 names why.
+#
+# THE SECOND RULE (the user's decision of 2026-11-04; Interactive 0.5.58, WIFF_FIRST_RULE). V6, V7 and V8 hung on the
+# multi-file .wiff2 production run of MPST000048 on both polarities every time, and the same samples ran from their
+# .wiff in minutes, so a DDA unit deposited as both runs on its .wiff from the start. Its record is the fallback's,
+# held to everything above, except that it answers no failure: it names WIFF_FIRST_RULE and no failed job, and a
+# record under it that names one does not hold. Each .wiff's lineage row names the record's own rule.
+WIFF_FALLBACK_RULE = "wiff2_to_wiff_after_console_failure_2026_10_31"
+WIFF_FIRST_RULE = "wiff_first_for_dda_2026_11_04"
+WIFF_RULES = (WIFF_FALLBACK_RULE, WIFF_FIRST_RULE)
+WIFF_FALLBACK_FIELD = "encoding_fallback"
+# How a run attempt the switch answers ended (Interactive's record_run_end): stopped for time, an error, or a non-zero
+# exit; a cancel, a Console that never started and a missing .wiff.scan are no reader's failure.
+WIFF_FALLBACK_STOPS = frozenset({"timeout", "idle_timeout", "error"})
+WIFF_FALLBACK_NO_FAILURE = frozenset({"cancelled", "start_failed", "sciex_scan_sidecar"})
+# The Console jobs the switch answers: a peak-count diagnostic (tuning) and a production run (run).
+WIFF_FALLBACK_KINDS = frozenset({"tuning", "run"})
+# The entry point Interactive records the switch's boundary-4 crossing under.
+WIFF_FALLBACK_ENTRY_POINT = "msdial_switch_repository_unit_to_wiff"
+# Where each .wiff's own raw header, read at the switch, is recorded (encoding_fallback.wiff_headers): direct evidence
+# of the file that runs, preferred over its .wiff2's record by ACQ-1 and the polarity reading (_per_file_records).
+WIFF_HEADERS = "wiff_headers"
+
+
+def _parse_moment(value: object) -> "datetime | None":
+    """An ISO 8601 time as an aware datetime (UTC where it states no zone), or None."""
+    try:
+        moment = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+@dataclass
+class _WiffFallback:
+    """A unit's switch from its .wiff2 to its .wiff: whether the manifest records one, why it does not hold, and the
+    swaps ((.wiff2, .wiff) absolute paths) it makes where it holds."""
+    present: bool = False
+    problems: list = field(default_factory=list)
+    swaps: list = field(default_factory=list)
+    failed_jobs: list = field(default_factory=list)
+    headers: dict = field(default_factory=dict)  # {key of a .wiff: its header as read at the switch}
+    rule: str = ""
+
+    @property
+    def holds(self) -> bool:
+        return self.present and not self.problems
+
+    def sources(self) -> dict[str, str]:
+        """{key of each .wiff: its .wiff2's path} where the record holds, else {}."""
+        return {_path_key(to): source for source, to in self.swaps} if self.holds else {}
+
+    def sentence(self) -> str:
+        if not self.holds:
+            return ""
+        if self.rule == WIFF_FIRST_RULE:
+            return (f"{len(self.swaps)} .wiff2 input(s) run as the .wiff beside them from the start under "
+                    f"{WIFF_FIRST_RULE}, a DDA unit's, each .wiff with its .wiff.scan, the swaps exactly what changed")
+        jobs = ", ".join(f"{item.get('job_id')} ({item.get('failure') or item.get('reason')})" for item in self.failed_jobs)
+        return (f"{len(self.swaps)} .wiff2 input(s) run as the .wiff beside them under {WIFF_FALLBACK_RULE}, after the "
+                f"Console job(s) {jobs} failed on them, each .wiff with its .wiff.scan, the swaps exactly what changed")
+
+    def evidence(self) -> dict:
+        if not self.present:
+            return {}
+        return {"rule": self.rule, "holds": self.holds, "problems": self.problems[:10],
+                "failed_jobs": [str(item.get("job_id") or "") for item in self.failed_jobs],
+                "swaps": [{"from": Path(str(source)).name, "to": Path(str(to)).name} for source, to in self.swaps[:20]]}
+
+
+def _wiff_fallback(provenance: dict | None) -> _WiffFallback:
+    """The unit's record of a switch from its .wiff2 to its .wiff (see A .WIFF IN PLACE OF ITS .WIFF2), read and held to
+    everything that makes it the switch the user's decision allows: why it does not hold, where it does not."""
+    record = (provenance or {}).get(WIFF_FALLBACK_FIELD)
+    if record is None:
+        return _WiffFallback()
+    result = _WiffFallback(present=True)
+    problems = result.problems
+    if not isinstance(record, dict):
+        problems.append(f"manifest.{WIFF_FALLBACK_FIELD} is no object")
+        return result
+    rule = str(record.get("rule") or "")
+    result.rule = rule
+    if rule not in WIFF_RULES:
+        problems.append(f"it names the rule {record.get('rule')!r}, not {' or '.join(WIFF_RULES)}")
+    # The failed Console job(s), as the unit's own run_attempts record how each ended; none under WIFF_FIRST_RULE.
+    attempts = {str(item.get("job_id") or ""): item for item in provenance.get("run_attempts") or []
+                if isinstance(item, dict) and str(item.get("job_id") or "")}
+    jobs = [item for item in record.get("failed_jobs") or [] if isinstance(item, dict)]
+    result.failed_jobs = jobs
+    if rule == WIFF_FIRST_RULE:
+        if record.get("failed_jobs"):
+            problems.append(f"it names failed Console jobs under {WIFF_FIRST_RULE}, which answers none")
+    elif not jobs:
+        problems.append("it names no failed Console job")
+    for item in jobs if rule != WIFF_FIRST_RULE else []:
+        job = str(item.get("job_id") or "")
+        attempt = attempts.get(job)
+        if attempt is None:
+            problems.append(f"the unit's run_attempts record no Console job {job or '(unnamed)'}")
+            continue
+        reason, exit_code = str(attempt.get("reason") or ""), attempt.get("exit_code")
+        failed = bool(attempt.get("ended_at")) and reason not in WIFF_FALLBACK_NO_FAILURE and (
+            reason in WIFF_FALLBACK_STOPS or exit_code not in (None, 0))
+        if not failed:
+            problems.append(f"Console job {job} did not fail or time out as its run attempt records it "
+                            f"({reason or 'no reason'}, exit {exit_code})")
+        if str(attempt.get("kind") or "") not in WIFF_FALLBACK_KINDS:
+            problems.append(f"Console job {job} is a {attempt.get('kind') or 'kindless'} attempt, no peak-count "
+                            "diagnostic (tuning) or production run (run)")
+        ended, switched_at = _parse_moment(attempt.get("ended_at")), _parse_moment(record.get("switched_at"))
+        if ended is None or switched_at is None or ended > switched_at:
+            problems.append(f"Console job {job} did not end before the switch it is the evidence of "
+                            f"(ended {attempt.get('ended_at') or 'never'}, switched {record.get('switched_at') or 'never'})")
+    # Made under the campaign's approval: the record names the approval, and the unit's campaign_authorizations hold the
+    # boundary-4 crossing of the switch's entry point under it. A campaign unit's switch that names none was made under
+    # no approval of the campaign's.
+    named = record.get("campaign_authorization")
+    if isinstance(named, dict):
+        crossings = [item for item in provenance.get("campaign_authorizations") or [] if isinstance(item, dict)
+                     and str(item.get("boundary")) == "4" and item.get("entry_point") == WIFF_FALLBACK_ENTRY_POINT
+                     and item.get("approval_id") == named.get("approval_id")]
+        if not crossings:
+            problems.append(f"no boundary-4 crossing of {WIFF_FALLBACK_ENTRY_POINT} under approval "
+                            f"{named.get('approval_id') or '(unnamed)'} is recorded for it")
+    elif _binding_dispositions(provenance):
+        problems.append("it names no campaign approval, and the unit is a campaign unit")
+    # DDA only: ZT Scan DIA data can only be analysed from the .wiff2.
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    modes = {str(project.get("acquisition_mode") or "").strip().upper(), str(record.get("acquisition_mode") or "").upper()}
+    modes |= {str(item.get("console_acquisition_type") or "").strip().upper() for item in _binding_dispositions(provenance)
+              if str(item.get("console_acquisition_type") or "").strip()}
+    if modes != {"DDA"}:
+        problems.append(f"the unit is not DDA ({', '.join(sorted(item or 'unrecorded' for item in modes))}): a DIA, "
+                        "SWATH or AIF .wiff2 is never switched")
+    swaps = []
+    for item in record.get("swaps") or []:
+        source = str(item.get("from") or "") if isinstance(item, dict) else ""
+        to = str(item.get("to") or "") if isinstance(item, dict) else ""
+        companion = str(item.get("companion") or "") if isinstance(item, dict) else ""
+        name = Path(source.replace("\\", "/")).name or "(unnamed)"
+        if not source.casefold().endswith(".wiff2") or not to.casefold().endswith(".wiff"):
+            problems.append(f"the swap of {name} is not of a .wiff2 for a .wiff")
+        elif _path_key(to) != _path_key(source[: -len(".wiff2")] + ".wiff"):
+            problems.append(f"{Path(to.replace(chr(92), '/')).name} is not the .wiff of {name}'s sample beside it")
+        elif _path_key(companion) != _path_key(to + ".scan"):
+            problems.append(f"the swap of {name} names no .wiff.scan beside its .wiff")
+        swaps.append((source, to))
+    if not swaps:
+        problems.append("it swaps no file")
+    # Each .wiff's own header, read at the switch by the pinned extractor: exactly one DDA sample, in the polarity the
+    # unit runs in, standing in for its own swap's .wiff2. The polarity is the gate's own reading (_wiff2_polarity),
+    # never the header entry's expected_polarity (review of #88, lows 1 to 3).
+    headers = {_path_key(item.get("file")): item for item in record.get(WIFF_HEADERS) or []
+               if isinstance(item, dict) and str(item.get("file") or "").strip()}
+    problems.extend(_wiff_fallback_extractor_problems(provenance, record, list(headers.values())))
+    for source, to in swaps:
+        header = headers.get(_path_key(to))
+        name = Path(to.replace("\\", "/")).name or "(unnamed)"
+        if header is None:
+            problems.append(f"it records no header of {name} read at the switch ({WIFF_FALLBACK_FIELD}.{WIFF_HEADERS})")
+            continue
+        polarity, count = str(header.get("polarity") or ""), header.get("sample_count")
+        expected = _wiff2_polarity(provenance, source)
+        if _path_key(header.get("in_place_of") or "") != _path_key(source):
+            problems.append(f"{name}'s header entry stands in for {header.get('in_place_of') or 'no file'}, not its "
+                            f"swap's {Path(source.replace(chr(92), '/')).name}")
+        if str(header.get("outcome") or "") not in ("ok", "reused"):
+            problems.append(f"{name}'s header was not read ({header.get('outcome') or 'no outcome'})")
+        elif header.get("header_console_acquisition_type") != "DDA":
+            problems.append(f"{name}'s header gives {header.get('header_console_acquisition_type') or 'no'} Console "
+                            "acquisition type, not DDA")
+        elif count != 1 or isinstance(count, bool):
+            problems.append(f"{name}'s header lists {'no sample count' if count is None else f'{count} samples'}, "
+                            "not exactly one")
+        elif polarity not in ("Positive", "Negative") or polarity != expected:
+            problems.append(f"{name}'s header states {polarity or 'no polarity'}, and the unit runs in "
+                            f"{expected or 'no recorded polarity'}")
+    result.headers = headers
+    froms = [_path_key(source) for source, _to in swaps]
+    if len(set(froms)) != len(froms) or len({_path_key(to) for _source, to in swaps}) != len(swaps):
+        problems.append("it swaps one file twice")
+    # The swaps are exactly what changed: the candidates before, with each .wiff2 replaced by its .wiff.
+    before = record.get("input_candidates_before")
+    by_source = {_path_key(source): to for source, to in swaps}
+    if not isinstance(before, list):
+        problems.append("it records no input candidates before the switch")
+    else:
+        if any(key not in {_path_key(item) for item in before} for key in froms):
+            problems.append("it swaps a file that was no input candidate before the switch")
+        expected = sorted(_path_key(by_source.get(_path_key(item), item)) for item in before)
+        if expected != sorted(_path_key(item) for item in provenance.get("input_candidates") or []):
+            problems.append("the input candidates are not those before the switch with exactly its swaps made")
+    excluded = {_path_key(item) for item in _excluded_inputs(provenance)}
+    left = [Path(str(item).replace("\\", "/")).name for item in provenance.get("input_candidates") or []
+            if str(item).casefold().rstrip("\\/").endswith(".wiff2") and _path_key(item) not in excluded]
+    if left:
+        problems.append(f"{len(left)} .wiff2 input(s) still run beside the switched ones ({', '.join(left[:3])}): the "
+                        "switch is of the whole unit")
+    rows = {_path_key(row["path"]): row for row in _own_lineage_rows(provenance)}
+    switched = {_path_key(to) for _source, to in swaps}
+    for source, to in swaps:
+        fallback = (rows.get(_path_key(to)) or {}).get(WIFF_FALLBACK_FIELD)
+        if not (isinstance(fallback, dict) and fallback.get("rule") == rule
+                and _path_key(fallback.get("in_place_of") or "") == _path_key(source)):
+            problems.append(f"the lineage row of {Path(to.replace(chr(92), '/')).name} does not say it runs in place of "
+                            f"{Path(source.replace(chr(92), '/')).name}")
+    unlisted = [Path(str(row["path"]).replace("\\", "/")).name for key, row in rows.items()
+                if isinstance(row.get(WIFF_FALLBACK_FIELD), dict) and key not in switched]
+    if unlisted:
+        problems.append(f"the lineage rows of {', '.join(unlisted[:3])} say they run in place of a .wiff2 the record "
+                        "does not swap")
+    result.swaps = swaps
+    return result
+
+
+def _wiff2_polarity(provenance: dict, source: str) -> str:
+    """The polarity a .wiff must state to run in place of the .wiff2 ``source``, recomputed from the records as
+    Interactive's wiff_fallback._expected_polarity reads them, never taken from the switch's own entry: the unit's ion
+    mode where it names one; else the polarity the .wiff2's raw-header record states (the unit's own preflight, the
+    verdicts a split part carried, its raw owner's preflight); else the file-name inference recorded for it (the
+    unit's, its binding dispositions', its raw owner's). '' where nothing records one."""
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    mode = str(project.get("ion_mode") or "").strip().capitalize()
+    if mode in ("Positive", "Negative"):
+        return mode
+    key = _path_key(source)
+    owner = _raw_owner_manifest(provenance)[0] if isinstance(provenance.get("split_from"), dict) else None
+    owners = [owner] if isinstance(owner, dict) else []
+    records: list = []
+    for manifest in [provenance, *owners]:
+        preflight = manifest.get("raw_metadata_preflight")
+        summary = preflight.get("summary") if isinstance(preflight, dict) else None
+        records += list(summary.get("per_file") or []) if isinstance(summary, dict) else []
+        records += list(manifest.get("header_verdicts_from_parent") or [])
+    for item in records:
+        if isinstance(item, dict) and _path_key(item.get("file") or "") == key \
+                and str(item.get("polarity") or "").strip() in ("Positive", "Negative"):
+            return str(item["polarity"]).strip()
+    for manifest in [provenance, *_binding_dispositions(provenance), *owners]:
+        for item in (manifest.get("polarity_inferences") or []) if isinstance(manifest, dict) else []:
+            if isinstance(item, dict) and _path_key(item.get("path") or "") == key \
+                    and str(item.get("polarity") or "").strip() in ("Positive", "Negative"):
+                return str(item["polarity"]).strip()
+    return ""
+
+
+def _wiff_fallback_extractor_problems(provenance: dict, record: dict, headers: list) -> list[str]:
+    """Why the extractor that read the .wiff headers is not the campaign's pinned one (review of #88, low 3), held as
+    PRE-2 holds the preflight's: encoding_fallback.extractor names a sha256 and every header entry names the same;
+    where the unit's preflight (its own, else its raw owner's) recorded its extractor, the switch's is that one; and in
+    a campaign unit it is a verified build of a pinned pair (the gate's mirror of the pins lists it as built, or
+    Interactive recorded it pinned, which PRE-2 reads as the mirror being behind)."""
+    extractor = record.get("extractor") if isinstance(record.get("extractor"), dict) else None
+    if extractor is None:
+        return ["it records no extractor that read the .wiff headers"]
+    sha256 = str(extractor.get("sha256") or "").strip().casefold()
+    if not _SHA256_TEXT.fullmatch(sha256):
+        return [f"the extractor that read the .wiff headers is named by no sha256 ({sha256[:24] or 'none'})"]
+    problems: list[str] = []
+    differing = sorted({Path(str(item.get("file") or "").replace("\\", "/")).name for item in headers
+                        if str(item.get("extractor_sha256") or "").strip().casefold() != sha256})
+    if differing:
+        problems.append(f"the headers of {', '.join(differing[:3])} name another extractor than {sha256[:12]}")
+    preflight_sha = str(_recorded_extractor(provenance).get("sha256") or "").strip().casefold()
+    if not preflight_sha and isinstance(provenance.get("split_from"), dict):
+        owner, _ = _raw_owner_manifest(provenance)
+        preflight_sha = str(_recorded_extractor(owner).get("sha256") or "").strip().casefold() if owner else ""
+    if preflight_sha and preflight_sha != sha256:
+        problems.append(f"the .wiff headers were read by extractor {sha256[:12]}, not the {preflight_sha[:12]} the "
+                        "unit's preflight ran")
+    if _binding_dispositions(provenance):
+        pin = _extractor_pin(str(extractor.get("msrawdataworkbench_commit") or "").strip(),
+                             str(extractor.get("msdialworkbench_commit") or "").strip())
+        pinned = bool(pin and pin["state"] == EXTRACTOR_PIN_BUILT) or extractor.get("pinned") is True
+        if str(extractor.get("provenance_status") or "").strip() != EXTRACTOR_VERIFIED or not pinned:
+            problems.append(f"the extractor that read the .wiff headers ({sha256[:12]}) is no verified build of a "
+                            "pinned pair, which a campaign acts only on")
+    return problems
+
+
+def _wiff_fallback_problems(provenance: dict) -> list[str]:
+    """Why the unit's record of a switch from .wiff2 to .wiff does not hold, as INP-1 says it; [] for none or one that
+    holds."""
+    fallback = _wiff_fallback(provenance)
+    if not fallback.present or fallback.holds:
+        return []
+    return [f"manifest.{WIFF_FALLBACK_FIELD} does not hold ({'; '.join(fallback.problems[:5])}), so the .wiff it "
+            f"names run in place of their .wiff2 on no rule ({WIFF_FALLBACK_RULE} switches a DDA unit whose Console "
+            f"job failed, and {WIFF_FIRST_RULE} one from the start, every .wiff2 for its .wiff with its .wiff.scan, "
+            "once, on record)"]
 
 
 def _encoding_conversion_problems(provenance: dict, records: "list | None") -> "tuple[list[str], list[str]]":
@@ -4013,6 +4707,22 @@ def check_analysis_inputs_are_the_inputs(
     a download that is no archive shows delivered and that no record or declaration names. A sample whose file used was excluded is named as running on no file. A declared input the rule left unused is no
     candidate and no excluded input: it is counted beside the candidates, accounted for by its sample's choice.
 
+    A .WIFF IN PLACE OF ITS .WIFF2 (the user's decision of 2026-10-31; Interactive 0.5.55). A DDA unit whose Console job
+    failed or timed out on its .wiff2 may run its next attempt on the .wiff beside them, with their .wiff.scan, once.
+    The rule's .wiff2 then runs on nothing and its .wiff in its place, which this check refuses as a departure from the
+    rule - unless manifest.encoding_fallback records the switch and holds (_wiff_fallback: this rule, a failed job its
+    run_attempts record, a DDA unit, swaps each of a .wiff2 for its .wiff with its .wiff.scan that are exactly what
+    changed in the candidates, no .wiff2 left running, each .wiff's lineage row saying so). Then each .wiff2 is accounted
+    for by the record, a choice that used it is met by its .wiff, and the check says so. A record that does not hold
+    FAILs it, naming why.
+
+    CID/HCD ONLY (user decision, 2026-10-29; Interactive 0.5.52). In a unit whose lease applied the rule (its record
+    carries fragmentation_check), INP-1 FAILs, with or without a declaration, where an input that reaches the run has a
+    file name naming a fragmentation method other than CID/HCD on an instrument that could perform it, a CSV row is of a
+    sample whose row states one, or the lease kept an input out as fragmentation_not_cid_hcd with no evidence that
+    holds (_not_cid_hcd_problems). A lease before 0.5.52 is not judged by it.
+    An input the lease kept out for it is counted beside the candidates, like any other it excluded itself.
+
     RUN POLICY: blocks_run, as the user named it (2026-10-01). A folder read as its member files, or
     an input the run never opens, gives results for files that are not the unit's.
     """
@@ -4048,6 +4758,7 @@ def check_analysis_inputs_are_the_inputs(
         # round, answer 3), and so is the one encoding rule (2026-10-09): the declaration is missing, the record is not.
         choices, choice_evidence = _unattributed_choice_problems(provenance, csv_rows, unattributed)
         encoding_problems, encoding_evidence = _encoding_run_problems(provenance, csv_rows)
+        encoding_problems = [*encoding_problems, *_not_cid_hcd_problems(provenance, owner, csv_rows)]
         if choices or encoding_problems:
             report.add("INP-1", stage, INP1_TITLE, FAIL,
                        "What MS-DIAL will open is not what the lease's record lets it open: "
@@ -4166,6 +4877,9 @@ def check_analysis_inputs_are_the_inputs(
     # The one encoding rule of 2026-10-09, recomputed from its record, beside a declaration as without one.
     encoding_problems, encoding_evidence = _encoding_run_problems(provenance, csv_rows)
     problems.extend(encoding_problems)
+    # The CID/HCD-only rule of 2026-10-29: nothing named another fragmentation method runs, and nothing is kept out for
+    # it without evidence.
+    problems.extend(_not_cid_hcd_problems(provenance, owner, csv_rows))
     if len(own_candidates) - len(held) != len(csv_rows):
         problems.append(f"the analysis CSV has {len(csv_rows)} row(s) for {len(own_candidates)} input candidate(s)"
                         + (f", {len(held)} of them excluded by the campaign disposition" if held else ""))
@@ -4504,6 +5218,26 @@ def _per_file_records(provenance: dict) -> dict[str, dict]:
         for item in source if isinstance(source, list) else []:
             if isinstance(item, dict) and str(item.get("file") or "").strip():
                 records.setdefault(_path_key(item["file"]), item)
+    # A .wiff that runs in place of its .wiff2 under a switch that holds (WIFF_FALLBACK_RULE, 2026-10-31) is read
+    # through its own header, read at the switch (encoding_fallback.wiff_headers): direct evidence of the file that
+    # runs, where the .wiff2's (unreadable for a ZenoTOF .wiff2) was not. The .wiff2's record stays the decision record:
+    # the type the disposition decided, and its basis, are kept.
+    fallback = _wiff_fallback(provenance)
+    for key, source in fallback.sources().items():
+        base = dict(records.get(_path_key(source)) or {})
+        header = fallback.headers.get(key)
+        if header is None:
+            if base:
+                records.setdefault(key, base)
+            continue
+        merged = {**base, "file": str(header.get("file") or ""), "outcome": str(header.get("outcome") or ""),
+                  "polarity": header.get("polarity"), "acquisition_mode": header.get("acquisition_mode"),
+                  "header_console_acquisition_type": header.get("header_console_acquisition_type"),
+                  "ms_levels": header.get("ms_levels"), "acquisition_start_time": header.get("acquisition_start_time"),
+                  "header_read_from": f"{WIFF_FALLBACK_FIELD}.{WIFF_HEADERS}", "in_place_of": source}
+        if "console_acquisition_type" not in base:
+            merged["console_acquisition_type"] = header.get("header_console_acquisition_type")
+        records[key] = merged
     return records
 
 
@@ -4725,11 +5459,147 @@ MULTI_ENERGY_AIF_CONSOLE_MARKERS = ("The collision-energy files of ", " nor a co
 # Interactive compares collision energies to 0.1 eV (raw_metadata_preflight.COLLISION_ENERGY_DECIMALS).
 COLLISION_ENERGY_DECIMALS = 1
 SANCTIONED_ACQUISITION_MAPPINGS: dict[tuple[str, str], str] = {("AIF", "SWATH"): AIF_AS_SWATH_FIELD}
+# A FILE NAME'S POLARITY (user decision, 2026-10-29; FILE_NAME_POLARITY_RULE), held identical in Interactive
+# (raw_metadata_preflight.py) and the gate. Read only for an input whose raw header could not be read
+# (unsupported_format: the pinned extractor opens no ZenoTOF .wiff2), in a unit whose declaration names no single
+# polarity. The base name decides: a whole token pos, positive, neg or negative (between _ - . and spaces), or
+# ESI+ / ESI- / (+) / (-) with no letter after the sign (ESI-MS, ESI-QTOF name an ion source, not a polarity). A
+# pos/neg token beside a control or ctrl token names a sample (Neg_Ctrl_1), not a polarity; a QC or blank injection
+# keeps its polarity (QC_pos_01). A name that states both polarities, or neither, states none. A folder between the
+# unit's data root and the file (``root``) that states the opposite polarity makes the name state none, with both
+# tokens on record (POS/ER_neg_01.wiff2); one that states the same polarity is recorded beside it.
+FILE_NAME_POLARITY_RULE = "unreadable_header_polarity_from_file_name_2026_10_29"
+FILE_NAME_POLARITY_TOKENS = {"pos": "Positive", "positive": "Positive", "neg": "Negative", "negative": "Negative"}
+FILE_NAME_POLARITY_SIGNS = r"(?<![A-Za-z0-9])ESI\s*([+-])(?![A-Za-z])|\(([+-])\)(?![A-Za-z])"
+FILE_NAME_POLARITY_EXEMPTING = frozenset({"control", "ctrl"})
+_FILE_NAME_POLARITY_SIGNS = re.compile(FILE_NAME_POLARITY_SIGNS, re.IGNORECASE)
+_FILE_NAME_TOKEN_SPLIT = re.compile(r"[_\-. ]+")
+_FILE_NAME_SUFFIXES = (".wiff2", ".wiff", ".mzml", ".mzxml", ".raw", ".lcd", ".d", ".abf", ".cdf")
+
+
+def _polarity_tokens(text: str) -> dict[str, str]:
+    """{polarity: the first token that states it} in one name or folder name, by FILE_NAME_POLARITY_RULE's tokens."""
+    found: dict[str, str] = {}
+    for match in _FILE_NAME_POLARITY_SIGNS.finditer(text):
+        sign = match.group(1) or match.group(2)
+        found.setdefault("Positive" if sign == "+" else "Negative", match.group(0))
+    tokens = [token for token in _FILE_NAME_TOKEN_SPLIT.split(_FILE_NAME_POLARITY_SIGNS.sub(" ", text)) if token]
+    folded = [token.casefold() for token in tokens]
+    for index, token in enumerate(folded):
+        polarity = FILE_NAME_POLARITY_TOKENS.get(token)
+        if polarity is None:
+            continue
+        if any(neighbour in FILE_NAME_POLARITY_EXEMPTING for neighbour in folded[max(index - 1, 0):index + 2]):
+            continue
+        found.setdefault(polarity, tokens[index])
+    return found
+
+
+def file_name_polarity_reading(path: object, root: object = "") -> dict[str, object]:
+    """What FILE_NAME_POLARITY_RULE reads of a path: {"polarity": "Positive", "Negative" or "", "token": the name's
+    token, "folder_token": a folder's token stating the same polarity, "conflict": the tokens that leave it unresolved}.
+    ``root`` is the unit's data root; only folders below it are read, and none where the path is not under it."""
+    text = str(path or "").replace("\\", "/").rstrip("/")
+    parts = [part for part in text.split("/") if part]
+    name = parts[-1] if parts else ""
+    for suffix in _FILE_NAME_SUFFIXES:
+        if name.casefold().endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    folders: list[str] = []
+    base = str(root or "").replace("\\", "/").rstrip("/")
+    if base and text.casefold().startswith(base.casefold() + "/"):
+        folders = [part for part in text[len(base) + 1:].split("/") if part][:-1]
+    stated = _polarity_tokens(name)
+    reading: dict[str, object] = {"polarity": "", "token": "", "folder_token": "", "conflict": []}
+    if len(stated) != 1:
+        if len(stated) > 1:
+            reading["conflict"] = sorted(stated.values())
+        return reading
+    ((polarity, token),) = stated.items()
+    same = ""
+    for folder in folders:
+        found = _polarity_tokens(folder)
+        opposite = [value for key, value in found.items() if key != polarity]
+        if opposite:
+            reading["conflict"] = [opposite[0], token]
+            return reading
+        same = same or found.get(polarity, "")
+    reading.update(polarity=polarity, token=token, folder_token=same)
+    return reading
+
+
+def file_name_polarity(path: object, root: object = "") -> tuple[str, str] | None:
+    """(polarity, the token that states it) from a path's base name, or None where it states none, both, or a folder
+    below ``root`` states the opposite (file_name_polarity_reading)."""
+    reading = file_name_polarity_reading(path, root)
+    return (str(reading["polarity"]), str(reading["token"])) if reading["polarity"] else None
+
+POLARITY_SOURCE_FILE_NAME = "file_name"
+
+
+def _polarity_basis(provenance: dict, records: dict[str, dict], csv_rows: list[dict], aliases: dict[str, str],
+                    dispositions: list[dict]) -> tuple[list[str], list[str]]:
+    """(failures, warnings) for the polarity of each row whose input's raw header could not be read
+    (unsupported_format), in a unit whose raw owner declares no single polarity. Such a row runs in a polarity only
+    on a recorded file-name inference (Interactive 0.5.53, FILE_NAME_POLARITY_RULE, user decision 2026-10-29): one
+    the binding disposition or the manifest records for its input, under that rule, whose polarity the gate reads
+    from the name again (file_name_polarity) and is the unit's ion mode. Nothing else stands in for a header:
+    a row with neither is a FAIL, and a row on an inference a WARN that names it."""
+    if not dispositions:
+        # Outside a campaign (an accession-level run, no Catalog handoff) nothing is decided by the rule: not judged.
+        return [], []
+    owner, _reason = _raw_owner_manifest(provenance)
+    owner = owner if isinstance(owner, dict) else provenance
+    if _declared_ion_mode(owner)[0]:
+        return [], []
+    inferences: dict[str, dict] = {}
+    for source in [*dispositions, provenance, owner]:
+        for item in (source.get("polarity_inferences") or []) if isinstance(source, dict) else []:
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                inferences.setdefault(_path_key(item["path"]), item)
+    project = provenance.get("project") if isinstance(provenance.get("project"), dict) else {}
+    run_mode = str(project.get("ion_mode") or "").strip()
+    failures: list[str] = []
+    warnings: list[str] = []
+    for row in csv_rows:
+        key = _input_key(row, aliases)
+        record = records.get(key) if key else None
+        if not isinstance(record, dict) or str(record.get("outcome") or "") != "unsupported_format":
+            continue
+        if str(record.get("polarity") or "").strip() in ("Positive", "Negative"):
+            continue
+        path = str(record.get("file") or row.get("file_path") or "")
+        name = Path(path.replace("\\", "/")).name or str(row.get("file_name") or "")
+        item = inferences.get(key) or inferences.get(_path_key(path))
+        if item is None:
+            failures.append(f"{name}: its raw header could not be read, its unit declares no single polarity, and no "
+                            "file-name polarity inference is recorded for it")
+            continue
+        # Read as Interactive read it: the base name, with the folders below the raw owner's data root.
+        read = file_name_polarity(path, str(owner.get("input_directory") or ""))
+        problem = ("it is recorded from another source than its file name"
+                   if item.get("polarity_source") != POLARITY_SOURCE_FILE_NAME else
+                   f"it is recorded under {item.get('rule')!r}, not {FILE_NAME_POLARITY_RULE}"
+                   if item.get("rule") != FILE_NAME_POLARITY_RULE else
+                   "its name states no single polarity" if read is None else
+                   f"its name states {read[0]}, not the recorded {item.get('polarity')}"
+                   if read[0] != item.get("polarity") else
+                   f"the unit runs as {run_mode}" if run_mode in ("Positive", "Negative") and run_mode != read[0] else "")
+        if problem:
+            failures.append(f"{name}: its polarity inference does not hold: {problem}")
+        else:
+            warnings.append(f"{name}: its raw header could not be read, and its polarity {read[0]} is its file name's "
+                            f"token {read[1]!r}, recorded as an inference ({FILE_NAME_POLARITY_RULE})")
+    return failures, warnings
+
+
 ACQ1_SOURCES = {
     "header": "from headers", "declaration": "from the repository declaration",
     "folded_ms1_only": "MS1-only folded into DDA", "unresolved": "with no Console type resolved",
     "unsettled": "DIA with its scheme unsettled", "other": "from another source", "no_record": "with no header record",
     "sanctioned": f"AIF run as SWATH under {AIF_AS_SWATH_RULE}",
+    "polarity_from_file_name": f"with a polarity read from the file name ({FILE_NAME_POLARITY_RULE})",
 }
 
 
@@ -5128,13 +5998,17 @@ def check_acquisition_type_is_the_headers(
     multi_rows: "list[tuple[str, tuple[float, ...] | None, str, str]]" = []
     multi_failures: list[str] = []
 
+    polarity_failures: list[str] = []
+
     def refuse(**evidence) -> None:
-        typed = len(failures) - unparsed - len(multi_failures)
+        typed = len(failures) - unparsed - len(multi_failures) - len(polarity_failures)
         parts = ([f"{unparsed} carry an acquisition_type other than {domain_text}"] if unparsed else []) + (
             [f"{typed} would be deconvoluted as an acquisition type their header does not give"]
             if typed > 0 else []) + (
             [f"{len(multi_rows)} run as multi-energy AIF where the records or the Console do not allow it"]
-            if multi_failures else [])
+            if multi_failures else []) + (
+            [f"{len(polarity_failures)} run in a polarity no header, single declaration or recorded file-name "
+             "inference gives"] if polarity_failures else [])
         report.add("ACQ-1", stage, ACQ1_TITLE, FAIL,
                    f"Of the {len(rows)} row(s), " + " and ".join(parts) + ", which completes, validates and is wrong: "
                    + "; ".join(failures[:3]) + ".",
@@ -5280,6 +6154,13 @@ def check_acquisition_type_is_the_headers(
                             f"acquisition type, so its {value} rests on something other than the raw headers")
         else:
             sources["header"] += 1
+    # The polarity of an input whose header could not be read: a recorded file-name inference, or nothing (2026-10-29).
+    refused_polarity, inferred_polarity = _polarity_basis(provenance, records, csv_rows, aliases, dispositions)
+    polarity_failures.extend(refused_polarity)
+    failures.extend(refused_polarity)
+    warnings.extend(inferred_polarity)
+    if inferred_polarity:
+        sources["polarity_from_file_name"] += len(inferred_polarity)
     evidence = {"basis": dict(basis), "sources": dict(sources), "extractor_records": len(extracted)}
     overrides = [entry for entry in decisions.values() if str(entry.get("basis") or "") == "header"]
     if overrides:
@@ -6073,6 +6954,897 @@ def check_mztab_run_count(report: Report, output: Path, expected: int | None, st
         )
         report.add("TAB-2", stage, "mzTab-M declares one ms_run per approved sample", status,
                    detail, file=mztab.name, ms_runs=count, approved=expected)
+
+
+# --------------------------------------------------------------------------------------------
+# libraries: the ones the run loads are the ones the campaign approved
+# --------------------------------------------------------------------------------------------
+
+LIB2_TITLE = "The libraries the run loads are the ones the campaign approved"
+# The copy of the campaign approval the runner writes into a unit's provenance before anything else is written there;
+# a unit without one is no campaign unit.
+CAMPAIGN_AUTHORIZATION_FILE = "campaign-authorization.json"
+# The role a library is loaded in, by its suffix, as Interactive names it (sharing._role_of), and its name in words.
+LIBRARY_ROLE_SUFFIXES = {".lbm": "lbm", ".lbm2": "lbm", ".msp": "msp", ".msp2": "msp"}
+LIBRARY_ROLE_WORDS = {"lbm": "LBM", "msp": "MSP library", "text": "text database"}
+# The method-file keys that name a library the Console loads, in the role each loads it; and those that name a
+# settings file of one library per row (Interactive's msp_annotator_settings.tsv and text_annotator_settings.tsv),
+# with the column that names it.
+METHOD_LIBRARY_KEYS = (("lbm file path", "lbm"), ("msp file path", "msp"), ("text db file path", "text"))
+METHOD_LIBRARY_TABLES = (("msp annotator settings file path", "msp", "msp_file_path"),
+                         ("text annotator settings file path", "text", "text_db_file_path"))
+# The LBM score cutoffs the method file states, recorded beside the verdict and held to the approval's.
+METHOD_LBM_CUTOFFS = (("weighted", "weighted dot product cutoff for lbm-based annotation"),
+                      ("simple", "simple dot product cutoff for lbm-based annotation"),
+                      ("reverse", "reverse dot product cutoff for lbm-based annotation"))
+# The method-file keys of the annotation profile and of the LBM annotator's priority, held to the approval's.
+METHOD_ANNOTATION_PROFILE = "annotation pipeline profile"
+METHOD_LBM_PRIORITY = "lbm annotator priority"
+# The settings of an MSP annotator row the approval states (the plan's MSP_ROW_SETTINGS, which a test holds equal), by
+# the column of Interactive's msp_annotator_settings.tsv that writes each.
+MSP_ROW_COLUMNS = (("priority", "priority"), ("rt_tolerance", "rt_tolerance"), ("ms1_tolerance", "ms1_tolerance"),
+                   ("ms2_tolerance", "ms2_tolerance"), ("weighted_dot_product_cutoff", "weighted_dot_product_cutoff"),
+                   ("simple_dot_product_cutoff", "simple_dot_product_cutoff"),
+                   ("reverse_dot_product_cutoff", "reverse_dot_product_cutoff"),
+                   ("matched_peaks_percentage_cutoff", "matched_peaks_percentage_cutoff"),
+                   ("minimum_spectrum_match", "minimum_spectrum_match"),
+                   ("use_rt_scoring", "use_retention_information_for_scoring"),
+                   ("use_rt_filtering", "use_retention_information_for_filtering"), ("target_omics", "target_omics"),
+                   # Whether the Console names a feature from a failed or precursor-only comparison against the row's
+                   # library: false on the in-silico row (the author's decision of 2026-10-25, MsdialWorkbench #850).
+                   ("suggestions", "suggestions"))
+# The library kinds the Console reads as an in-silico (predicted) MSP (the plan's PREDICTED_LIBRARY_KINDS); any
+# other, a blank one included, is acquired.
+PREDICTED_LIBRARY_KINDS = frozenset({"predicted", "insilico", "computed", "generated", "predictedmsp"})
+# Each library file's sha256, by its location, size and time, so one gate process reads a library once.
+_LIBRARY_SHA256: dict = {}
+
+
+def _library_kind(value: object) -> str:
+    return "predicted" if str(value or "").strip().casefold() in PREDICTED_LIBRARY_KINDS else "acquired"
+
+
+def _answered_target_omics(answers: dict) -> str:
+    """The Target omics the answers give the method, as Interactive applies them: a workflow_overrides target_omics
+    over everything, else target_omics_pin, else the target_omics answer. Before 2026-10-28 LIB-2 read the answer
+    alone, so a campaign pinning Lipidomics over a unit Interactive seeded as Metabolomics would have failed it."""
+    overrides = answers.get("workflow_overrides") if isinstance(answers.get("workflow_overrides"), dict) else {}
+    for value in (overrides.get("target_omics"), answers.get("target_omics_pin"), answers.get("target_omics")):
+        if str(value or "").strip():
+            return str(value).strip()
+    return ""
+
+
+def _same_setting(stated: object, approved: object) -> bool:
+    """Whether a method or settings file's value is the approved one: a number by its value, so "0.10" is 0.1, a
+    switch by its word (True and "True"), and anything else by its text, case aside."""
+    if isinstance(approved, bool) or str(approved).strip().casefold() in ("true", "false"):
+        return str(stated).strip().casefold() == str(approved).strip().casefold()
+    try:
+        return math.isclose(float(str(stated).strip()), float(str(approved).strip()), rel_tol=1e-9, abs_tol=1e-12)
+    except (TypeError, ValueError):
+        return str(stated if stated is not None else "").strip().casefold() == \
+            str(approved if approved is not None else "").strip().casefold()
+
+
+def _library_role(name: str) -> str:
+    return LIBRARY_ROLE_SUFFIXES.get(PureWindowsPath(name).suffix.casefold(), "text")
+
+
+def _library_name(text: object) -> str:
+    """A library's file name, from a location in either spelling or from a bare name."""
+    return PureWindowsPath(str(text or "").strip().replace("/", "\\")).name
+
+
+def _library_location(text: str, base: Path) -> Path:
+    """Where a method or settings file's library is: as written when absolute, else beside that file."""
+    path = Path(text)
+    return path if path.is_absolute() else base / path
+
+
+def _library_sha256(path: Path) -> "str | None":
+    """The file's sha256, streamed, or None where it cannot be read. Kept for the process by location, size and time."""
+    try:
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return None
+    if key not in _LIBRARY_SHA256:
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(block)
+        except OSError:
+            return None
+        _LIBRARY_SHA256[key] = digest.hexdigest()
+    return _LIBRARY_SHA256[key]
+
+
+def _library_table(path: Path, column: str) -> "tuple[list[dict] | None, str]":
+    """A settings file's rows, keys case-folded, or None with why it cannot be read (by file name only)."""
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle, delimiter="\t"))
+    except (OSError, ValueError, csv.Error) as exc:
+        return None, f"{path.name}, which method.txt names, could not be read ({type(exc).__name__})"
+    folded = [{str(key or "").strip().casefold(): str(value or "").strip() for key, value in row.items()} for row in rows]
+    if folded and column not in folded[0]:
+        return None, f"{path.name} has no {column} column"
+    return folded, ""
+
+
+def _named_libraries(value: object) -> "set[str]":
+    """The file names of every library location under a mapping key that names a path (lbm_path, msp_paths, ...)."""
+    found: set = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if "path" in str(key).casefold():
+                for text in item if isinstance(item, list) else [item]:
+                    if isinstance(text, str) and text.strip():
+                        found.add(_library_name(text))
+            elif isinstance(item, (dict, list)):
+                found |= _named_libraries(item)
+    elif isinstance(value, list):
+        for item in value:
+            found |= _named_libraries(item)
+    return found
+
+
+def _by_role(names: "set[str]") -> "dict[str, set[str]]":
+    grouped: dict = {}
+    for name in names:
+        grouped.setdefault(_library_role(name), set()).add(name)
+    return grouped
+
+
+def _names(names: "set[str]") -> str:
+    return ", ".join(sorted(names, key=str.casefold)) or "none"
+
+
+def check_loaded_libraries_are_the_approved_ones(report: Report, workspace: Path, output: Path) -> None:
+    """LIB-2. Every library the run will load is one the campaign approval names, with the bytes it names.
+
+    The approval names libraries by file name and sha256 (provenance/campaign-authorization.json, the runner's copy).
+    What MS-DIAL loads is what method.txt names (Lbm file path, Msp file path, Text DB file path) and the settings
+    files it points to (MSP and text annotator settings, one library per row). The 15 MB-POST preflight units of
+    2026-10-14 and -15 were approved with one LBM2 and loaded the official one, because Interactive's
+    tiered_lipid_msp strategy took its catalog's LBM over the answer's, while the runner's records named the approved
+    one. So this reads what the method loads, hashes each file (streamed, once per process), and FAILs where:
+    - a loaded library is not in the approval by name, or its bytes or its prepared record are not the sha256 the
+      approval names;
+    - what is loaded in a role (LBM, MSP, text) is not what the answers this unit was given name for it (output/
+      guided-answers.json, which the runner resolved from the approved profile), or, where those cannot be read,
+      not what the approval names for the unit's ion mode (its libraries' ion_modes, plan.library_pins); where
+      neither says and the approval names more than one LBM, which one is this unit's cannot be established;
+    - the names disagree between the sources: method.txt, workflow-settings.json and the run manifest's prepared
+      libraries, and the answers against the approval;
+    - an MSP annotator row states no target_omics, so the Console scores it as the project's Target omics;
+    - the method's Target omics is not the one the answers give (a workflow_overrides target_omics, else
+      target_omics_pin, else the target_omics answer, as Interactive applies them: _answered_target_omics);
+    - an MSP is searched, or recorded in the run manifest, as another library kind than the approval names for it
+      (an in-silico library as acquired, or the reverse; plan.library_pins, 2026-10-28);
+    - what the method annotates with is not what the approval states for the unit's ion mode (its annotation contract,
+      plan.annotation_contract, review of 2026-10-25): the annotation pipeline profile; where an LBM is loaded, its
+      score cutoffs and its priority; and the MSP annotator rows, each by its id, with its library, priority,
+      tolerances, score cutoffs, matched peaks, RT use, target omics, suggestions where the approval states them (the
+      four-tier profile's in-silico row, 2026-10-28) and library kind as the Console reads it. The
+      13 preflight units of 2026-10-14 ran LBM cutoffs of 0.15/0.15/0.3 against 0.1/0.1/0.1 two days later, and
+      nothing compared them: the method's template can change after the plan stated them (Interactive's settings
+      name it). What the approval does not state (an approval made before) is not compared.
+    It names files, never their locations. The method's LBM cutoffs and Target omics are recorded beside the verdict.
+    A unit without the approval copy is no campaign unit, and the check does not apply to it (not evaluable, not
+    required).
+
+    What it reads is the method Interactive's prepare wrote. Interactive's start builds the plan again and writes
+    method.txt and the MSP settings again before the Console runs (review 2), so this check holds the started method
+    only through the pins: everything the comparison above rests on is pinned (Interactive's commit, each library's
+    sha256 and, since review 2, the parameter template's sha256, ports.PinReader.template), and the runner compares the
+    pins before every Console start and pauses the campaign where one changed. After the run the same check, at the
+    later stages, reads the method that ran and records what differs.
+
+    RUN POLICY: blocks_run (2026-10-24, with the user's decision that the campaign's LBM2 is the one its profile
+    names). A run that loads a library nobody approved annotates every feature with it: its results are not the
+    approved analysis, and its records would name another library. Left not evaluable on what the stage owes
+    (method.txt, a settings file it names, a library neither readable nor recorded), it stops the run as a FAIL does.
+    """
+    stage = "before-production"
+    copy = workspace / "provenance" / CAMPAIGN_AUTHORIZATION_FILE
+    if not copy.is_file():
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   "Not applicable: provenance holds no campaign-authorization.json, so this is no campaign unit and no "
+                   "approval names the libraries it may load.", required=False, applicable=False)
+        return
+    authorization, reason = _read_json(copy)
+    entries = (authorization or {}).get("libraries", [])
+    if authorization is None or not isinstance(entries, list):
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   f"The campaign approval cannot be read: {reason or 'its libraries are not a list'}.", applicable=True)
+        return
+    approved: dict = {}
+    for entry in entries:
+        if isinstance(entry, dict) and _library_name(entry.get("name")):
+            name = _library_name(entry.get("name"))
+            modes = entry.get("ion_modes")
+            approved[name.casefold()] = {
+                "name": name, "sha256": str(entry.get("sha256") or "").strip().casefold(),
+                "role": str(entry.get("role") or "").strip() or _library_role(name),
+                "ion_modes": [str(item) for item in modes] if isinstance(modes, list) else None,
+                # An MSP's library kind where the plan pinned one (plan.library_pins); none in an approval before.
+                "library_kind": str(entry.get("library_kind") or "").strip(),
+            }
+    method = output / "method.txt"
+    if not method.is_file():
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   "method.txt is absent, so what the run will load cannot be read.", applicable=True)
+        return
+    try:
+        text = method.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as exc:
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   f"method.txt could not be read ({type(exc).__name__}).", applicable=True)
+        return
+    fields: dict = {}
+    for line in text.splitlines():
+        field = _console_field(line)
+        if field:
+            fields[field[0]] = field[1]
+
+    problems: list = []
+    unread: list = []
+    # What the method loads: (role, name, location), and each MSP annotator row (as recorded, and with every setting).
+    loaded: list = []
+    msp_rows: list = []
+    msp_settings: list = []
+    msp_table_unread = False
+    for key, role in METHOD_LIBRARY_KEYS:
+        if fields.get(key):
+            location = _library_location(fields[key], method.parent)
+            loaded.append((role, _library_name(fields[key]), location))
+    for key, role, column in METHOD_LIBRARY_TABLES:
+        if not fields.get(key):
+            continue
+        table = _library_location(fields[key], method.parent)
+        rows, why = _library_table(table, column)
+        if rows is None:
+            unread.append(why)
+            msp_table_unread = msp_table_unread or role == "msp"
+            continue
+        for index, row in enumerate(rows, start=1):
+            if not row.get(column):
+                continue
+            name = _library_name(row[column])
+            loaded.append((role, name, _library_location(row[column], table.parent)))
+            if role == "msp":
+                msp_rows.append({"annotator_id": row.get("annotator_id") or f"row {index}", "library": name,
+                                 "target_omics": row.get("target_omics", ""), "library_kind": row.get("library_kind", "")})
+                msp_settings.append({**row, "annotator_id": msp_rows[-1]["annotator_id"], "library": name})
+    loaded_by_role: dict = {}
+    for role, name, _location in loaded:
+        loaded_by_role.setdefault(role, set()).add(name)
+
+    settings, _settings_reason = _read_json(output / "workflow-settings.json")
+    prepared, _prepared_reason = _read_json(output / "run-manifest.json")
+    answers_record, _answers_reason = _read_json(output / "guided-answers.json")
+    recorded = {}
+    for entry in (prepared or {}).get("libraries") or [] if isinstance((prepared or {}).get("libraries"), list) else []:
+        if isinstance(entry, dict):
+            name = _library_name(entry.get("name") or entry.get("filename") or entry.get("path"))
+            if name:
+                recorded[name.casefold()] = {"name": name, "role": str(entry.get("role") or "") or _library_role(name),
+                                             "sha256": str(entry.get("sha256") or "").strip().casefold(),
+                                             "library_kind": str(entry.get("library_kind") or "").strip()}
+
+    # Each loaded library is approved, with the bytes the approval names.
+    measured: dict = {}
+    for role, name, location in loaded:
+        key = name.casefold()
+        if key in measured:
+            continue
+        digest = _library_sha256(location)
+        measured[key] = digest or ""
+        item = approved.get(key)
+        if item is None:
+            problems.append(f"{name} is loaded as the {LIBRARY_ROLE_WORDS[role]}, and the approval does not name it")
+            continue
+        if digest and digest != item["sha256"]:
+            problems.append(f"{name} hashes to {digest[:12]}..., and the approval names {item['sha256'][:12] or 'no sha256'}...")
+        prepared_sha = (recorded.get(key) or {}).get("sha256") or ""
+        if prepared_sha and prepared_sha != item["sha256"]:
+            problems.append(f"the run manifest records {name} as {prepared_sha[:12]}..., not the approved "
+                            f"{item['sha256'][:12] or 'no sha256'}...")
+        if not digest and not prepared_sha:
+            unread.append(f"{name} could not be read to hash it, and the run manifest records no sha256 for it")
+
+    # What is loaded in each role is what this unit was to load.
+    ion_mode = fields.get("ion mode", "")
+    answers = (answers_record or {}).get("answers") if isinstance((answers_record or {}).get("answers"), dict) else None
+    asked = None
+    if answers is not None and isinstance(answers.get("libraries"), dict):
+        overrides = answers.get("workflow_overrides") if isinstance(answers.get("workflow_overrides"), dict) else {}
+        asked = _by_role(_named_libraries(answers["libraries"])
+                         | _named_libraries({key: value for key, value in overrides.items()
+                                             if str(key).casefold() in ("lbm_path", "msp_path", "text_db_path")}))
+    moded = None
+    if any(item["ion_modes"] is not None for item in approved.values()):
+        moded = _by_role({item["name"] for item in approved.values() if ion_mode in (item["ion_modes"] or [])})
+    roles = sorted(set(loaded_by_role) | set(asked or {}) | set(moded or {}))
+    for role in roles:
+        words = LIBRARY_ROLE_WORDS[role]
+        have = loaded_by_role.get(role, set())
+        wanted = (asked if asked is not None else moded or {}).get(role, set())
+        source = "the answers this unit was given name" if asked is not None else f"the approval names for {ion_mode or 'its'} units"
+        if (asked is not None or moded is not None) and {name.casefold() for name in have} != {name.casefold() for name in wanted}:
+            problems.append(f"{source} {_names(wanted)} as the {words}, and method.txt loads {_names(have)}")
+        if asked is not None and moded is not None:
+            stated = moded.get(role, set())
+            if {name.casefold() for name in asked.get(role, set())} != {name.casefold() for name in stated}:
+                problems.append(f"the answers name {_names(asked.get(role, set()))} as the {words}, and the approval "
+                                f"names {_names(stated)} for {ion_mode or 'its'} units")
+    if asked is None and moded is None:
+        lbms = {item["name"] for item in approved.values() if item["role"] == "lbm"}
+        if loaded_by_role.get("lbm") and len(lbms) > 1:
+            unread.append(f"the approval names {len(lbms)} LBMs ({_names(lbms)}), and neither the answers this unit "
+                          "was given nor the approval says which one is this unit's")
+
+    # The other records name what the method loads.
+    if settings is not None:
+        named: set = set()
+        for key in ("lbm_path", "msp_path", "text_db_path"):
+            if str(settings.get(key) or "").strip():
+                named.add(_library_name(settings[key]))
+        for rows, column in (("msp_annotators", "msp_file_path"), ("text_annotators", "text_db_file_path")):
+            for row in settings.get(rows) if isinstance(settings.get(rows), list) else []:
+                if isinstance(row, dict) and str(row.get(column) or "").strip():
+                    named.add(_library_name(row[column]))
+        if isinstance(settings.get("lbm_annotator"), dict) and str(settings["lbm_annotator"].get("lbm_file_path") or "").strip():
+            named.add(_library_name(settings["lbm_annotator"]["lbm_file_path"]))
+        for role, names in sorted(_by_role(named).items()):
+            have = loaded_by_role.get(role, set())
+            if {name.casefold() for name in names} != {name.casefold() for name in have}:
+                problems.append(f"workflow-settings.json names {_names(names)} as the {LIBRARY_ROLE_WORDS[role]}, and "
+                                f"method.txt loads {_names(have)}")
+        for role in sorted(set(loaded_by_role) - set(_by_role(named))):
+            problems.append(f"method.txt loads {_names(loaded_by_role[role])} as the {LIBRARY_ROLE_WORDS[role]}, and "
+                            "workflow-settings.json names none")
+    if prepared is not None and isinstance(prepared.get("libraries"), list):
+        by_role: dict = {}
+        for item in recorded.values():
+            by_role.setdefault(item["role"], set()).add(item["name"])
+        for role in sorted(set(by_role) | set(loaded_by_role)):
+            names, have = by_role.get(role, set()), loaded_by_role.get(role, set())
+            if {name.casefold() for name in names} != {name.casefold() for name in have}:
+                problems.append(f"the run manifest records {_names(names)} as the {LIBRARY_ROLE_WORDS.get(role, role)}, "
+                                f"and method.txt loads {_names(have)}")
+
+    # Every MSP row states its own target omics, and the project's is the one asked for.
+    blank = [f"{row['annotator_id']} ({row['library']})" for row in msp_rows if not row["target_omics"]]
+    if blank:
+        problems.append(f"{len(blank)} MSP annotator row(s) state no target_omics, so the Console scores them as the "
+                        f"project's {fields.get('target omics') or 'Target omics'}: {', '.join(blank)}")
+    target = _answered_target_omics(answers) if answers is not None else ""
+    if target and fields.get("target omics") and target.casefold() != fields["target omics"].casefold():
+        problems.append(f"the answers give Target omics {target}, and method.txt states {fields['target omics']}")
+
+    # An MSP is searched as the library kind the approval names for it (plan.library_pins, 2026-10-28): an in-silico
+    # library searched as acquired would report its matches as reference spectra, and the reverse would demote them.
+    for row in msp_rows:
+        item = approved.get(row["library"].casefold())
+        if item and item.get("library_kind") and _library_kind(row["library_kind"]) != _library_kind(item["library_kind"]):
+            problems.append(f"the MSP annotator {row['annotator_id']} searches {row['library']} as "
+                            f"{_library_kind(row['library_kind'])}, and the approval names it as "
+                            f"{_library_kind(item['library_kind'])}")
+    for key, entry in sorted(recorded.items()):
+        item = approved.get(key)
+        if item and item.get("library_kind") and entry.get("library_kind") and \
+                _library_kind(entry["library_kind"]) != _library_kind(item["library_kind"]):
+            problems.append(f"the run manifest records {entry['name']} as {_library_kind(entry['library_kind'])}, and "
+                            f"the approval names it as {_library_kind(item['library_kind'])}")
+
+    # What the method annotates with is what the approval states for this unit's ion mode (review of 2026-10-25).
+    contracts = (authorization or {}).get("annotation")
+    contract = contracts.get(ion_mode) if isinstance(contracts, dict) else None
+    compared: list = []
+    if isinstance(contract, dict):
+        mode_words = f"for {ion_mode or 'its'} units"
+        profile_id = str(contract.get("profile_id") or "").strip()
+        if profile_id:
+            compared.append("annotation profile")
+            stated = fields.get(METHOD_ANNOTATION_PROFILE, "")
+            if stated.casefold() != profile_id.casefold():
+                problems.append(f"method.txt states annotation pipeline profile {stated or 'none'}, and the approval "
+                                f"states {profile_id} {mode_words}")
+        approved_cutoffs = contract.get("lbm_cutoffs")
+        if loaded_by_role.get("lbm") and isinstance(approved_cutoffs, dict) and approved_cutoffs:
+            compared.append("LBM cutoffs")
+            if any(name in approved_cutoffs and not _same_setting(fields.get(key), approved_cutoffs[name])
+                   for name, key in METHOD_LBM_CUTOFFS):
+                problems.append(
+                    "method.txt states LBM cutoffs weighted/simple/reverse "
+                    + "/".join(str(fields.get(key) or "none") for _name, key in METHOD_LBM_CUTOFFS)
+                    + ", and the approval states " + "/".join(str(approved_cutoffs.get(name, "none"))
+                                                             for name, _key in METHOD_LBM_CUTOFFS) + f" {mode_words}")
+        priority = contract.get("lbm_priority")
+        if loaded_by_role.get("lbm") and priority is not None:
+            compared.append("LBM priority")
+            if not _same_setting(fields.get(METHOD_LBM_PRIORITY), priority):
+                problems.append(f"method.txt states LBM annotator priority {fields.get(METHOD_LBM_PRIORITY) or 'none'}, "
+                                f"and the approval states {priority} {mode_words}")
+        approved_rows = contract.get("msp_rows")
+        # An MSP settings file that cannot be read leaves its rows unknown: said above as not evaluable, not compared.
+        if isinstance(approved_rows, list) and not msp_table_unread:
+            compared.append("MSP annotator rows")
+            wanted = {str(row.get("annotator_id") or "").casefold(): row for row in approved_rows if isinstance(row, dict)}
+            have = {str(row["annotator_id"]).casefold(): row for row in msp_settings}
+            if set(wanted) != set(have):
+                problems.append(f"the run's MSP annotators are {_names({row['annotator_id'] for row in msp_settings})}, "
+                                f"and the approval states "
+                                f"{_names({str(row.get('annotator_id') or '') for row in wanted.values()})} {mode_words}")
+            for key in sorted(set(wanted) & set(have)):
+                row, approved_row = have[key], wanted[key]
+                differ = []
+                if str(approved_row.get("library") or "").casefold() not in ("", row["library"].casefold()):
+                    differ.append(f"library {row['library']}, approved {approved_row['library']}")
+                for setting, column in MSP_ROW_COLUMNS:
+                    if setting in approved_row and not _same_setting(row.get(column, ""), approved_row[setting]):
+                        differ.append(f"{setting} {row.get(column) or 'blank'}, approved {approved_row[setting]}")
+                if "library_kind" in approved_row and \
+                        _library_kind(row.get("library_kind")) != _library_kind(approved_row["library_kind"]):
+                    differ.append(f"library kind {_library_kind(row.get('library_kind'))}, approved "
+                                  f"{_library_kind(approved_row['library_kind'])}")
+                if differ:
+                    problems.append(f"the MSP annotator {row['annotator_id']} states " + "; ".join(differ))
+
+    cutoffs = {name: fields.get(key) for name, key in METHOD_LBM_CUTOFFS if key in fields}
+    evidence = {
+        "applicable": True, "ion_mode": ion_mode, "target_omics": fields.get("target omics", ""),
+        "lbm_cutoffs": cutoffs,
+        "loaded": [{"name": name, "role": role, "sha256": measured.get(name.casefold()) or
+                    (recorded.get(name.casefold()) or {}).get("sha256", "")}
+                   for role, name in sorted({(role, name) for role, name, _location in loaded})],
+        "msp_rows": msp_rows,
+        "approved": sorted(item["name"] for item in approved.values()),
+        "expected_from": "answers" if asked is not None else "approval_ion_modes" if moded is not None else "",
+        # What of the annotation the approval states was held to it; none for an approval that states none.
+        "annotation_compared": compared,
+    }
+    if problems:
+        report.add("LIB-2", stage, LIB2_TITLE, FAIL,
+                   f"{len(problems)} problem(s) with the libraries this run will load or how it annotates with them: "
+                   + "; ".join(problems[:8]) + ("; ..." if len(problems) > 8 else "") + ".", problems=problems, **evidence)
+        return
+    if unread:
+        report.add("LIB-2", stage, LIB2_TITLE, NOT_EVALUABLE,
+                   "Whether the run loads the approved libraries cannot be established: " + "; ".join(unread) + ".",
+                   unread=unread, **evidence)
+        return
+    report.add("LIB-2", stage, LIB2_TITLE, PASS,
+               f"method.txt loads {_names({name for _role, name, _location in loaded})}: each is a library the approval "
+               "names, with its sha256, and what this unit was to load; the other records name the same; "
+               + (f"its {', '.join(compared)} are the ones the approval states." if compared else
+                  "the approval states no annotation to hold the method to."), **evidence)
+
+
+# --------------------------------------------------------------------------------------------
+# libraries: an in-silico library's matches are in-silico evidence, never identifications
+# --------------------------------------------------------------------------------------------
+
+LIB3_TITLE = "An in-silico library's matches are reported as in-silico evidence, never as identifications"
+# The Evidence source MS-DIAL writes for a match against predicted spectra, and the two Interactive counts as
+# identifications (workflow.IDENTIFICATION_EVIDENCE_SOURCES): an acquired reference spectrum and an LBM2 rule.
+IN_SILICO_EVIDENCE = "InSilico"
+IDENTIFICATION_EVIDENCE = ("ReferenceSpectrum", "RuleBased")
+# The confidence codes (Annotation tag (VS1.0); mzTab-M reliability) an accepted in-silico match may carry, and why:
+# 430, which every Console before the pending MS-DIAL change writes for it, and 450, the author's decision of
+# 2026-10-28 for an accepted in-silico match. Which one a run carries is recorded as seen, never inferred.
+IN_SILICO_CONFIDENCE_CODES = {"430": "a Console before the MS-DIAL change for in-silico confidence codes",
+                              "450": "the author's code for an accepted in-silico match (2026-10-28)"}
+# How MS-DIAL's mzTab-M declares a predicted MSP library (MTD database[n]), and the lipid RT check's tag of a lipid
+# whose retention time follows the reversed-phase order (opt_global_lipid_rt_outcome; the review list's Outcome).
+MZTAB_IN_SILICO_DATABASE = "User-defined in-silico MSP library file"
+LIPID_RT_CONFIRMED = "confirmed"
+# The clauses LIB-3 holds, by letter, in the words its detail gives each.
+LIB3_CLAUSES = (
+    ("a", "an in-silico match carries the evidence source InSilico, never ReferenceSpectrum or RuleBased"),
+    ("b", f"mzTab-M declares the in-silico library as \"{MZTAB_IN_SILICO_DATABASE}\""),
+    ("c", "the in-silico annotator row is predicted, with suggestions false"),
+    ("d", "no in-silico match is tagged lipid-RT Confirmed"),
+    ("e", "no in-silico match is counted as an identification"),
+)
+
+
+def _flag(value: object) -> bool:
+    return str(value or "").strip().casefold() == "true"
+
+
+def _tsv_rows(path: Path) -> "tuple[list[dict] | None, str]":
+    """A tab-separated export's rows, with its header as written, or None and why (by file name only)."""
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
+            return list(csv.DictReader(handle, delimiter="\t")), ""
+    except (OSError, ValueError, csv.Error) as exc:
+        return None, f"{path.name} could not be read ({type(exc).__name__})"
+
+
+def _mztab_label(value: str) -> str:
+    """The name of an mzTab-M CV parameter, [label, accession, name, value]."""
+    parts = value.strip().strip("[]").split(",")
+    return parts[2].strip() if len(parts) >= 3 else value.strip()
+
+
+def _mztab_annotation(path: Path) -> "tuple[dict | None, str]":
+    """An mzTab-M's databases (MTD database[n], with -prefix and -version) and its summary rows (SML), as dicts by
+    the SMH header, or None and why."""
+    databases: dict = {}
+    header: "list[str] | None" = None
+    rows: list = []
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            for line in handle:
+                fields = line.rstrip("\n").rstrip("\r").split("\t")
+                if fields[0] == "MTD" and len(fields) >= 3:
+                    match = re.fullmatch(r"database\[(\d+)\](?:-(prefix|version|uri))?", fields[1].strip())
+                    if match:
+                        entry = databases.setdefault(match.group(1), {})
+                        entry[match.group(2) or "label"] = (_mztab_label(fields[2]) if not match.group(2)
+                                                            else fields[2].strip())
+                elif fields[0] == "SMH":
+                    header = fields
+                elif fields[0] == "SML" and header:
+                    rows.append(dict(zip(header, fields)))
+    except OSError as exc:
+        return None, f"{path.name} could not be read ({type(exc).__name__})"
+    return {"databases": databases, "header": header or [], "rows": rows}, ""
+
+
+def _comment_annotator(comment: object) -> str:
+    """The annotator a peak table's Comment names ('...; Annotation method: <id>; ...'), as Interactive reads it."""
+    for part in str(comment or "").split("; "):
+        if part.startswith("Annotation method: "):
+            return part[len("Annotation method: "):].strip()
+    return ""
+
+
+def check_in_silico_matches_are_not_identifications(report: Report, workspace: Path, output: Path,
+                                                    stage: str = "after-run") -> None:
+    """LIB-3. A run that searched an in-silico (predicted) MSP library reports its matches as in-silico evidence, never
+    as identifications: the author's decisions of 2026-10-25 (the GLACIER tier: no suggestions, lipid matches never
+    Confirmed) and 2026-10-28 (D-B: GLACIER names are kept, as InSilico and not identifications; D-C: an accepted
+    in-silico match is coded 450). Interactive 0.5.48 searches the in-silico tier with library_kind predicted and
+    suggestions false, and MS-DIAL (#850) reports such matches as InSilico; this check reads what the run wrote:
+
+    (a) an in-silico annotator's matches carry the evidence source InSilico, never ReferenceSpectrum or RuleBased, in
+        mzTab-M's summary rows of the in-silico database and, where the run exported it, in the alignment's candidate
+        table; and an accepted in-silico match carries confidence code 430 or 450 (IN_SILICO_CONFIDENCE_CODES; the
+        codes seen are recorded, and no capability decides which one is due);
+    (b) mzTab-M declares each in-silico library the run searched as "User-defined in-silico MSP library file", and
+        no acquired library as one;
+    (c) each MSP annotator row that searches an in-silico library (by its row's library kind, the approval's in-silico
+        row and libraries, or the answers' libraries.in_silico_msp_paths) is predicted with suggestions false, every
+        such row the approval or the answers name is there, and no feature is named from an in-silico suggestion (a
+        summary row or representative candidate of it that is no accepted match);
+    (d) no in-silico match is tagged lipid-RT Confirmed (mzTab-M's opt_global_lipid_rt_outcome; the review list,
+        where the candidate table says which features an in-silico match represents);
+    (e) no in-silico match is counted as an identification: Interactive counts as identifications the named peaks of
+        the per-file peak tables (.mdpeak) whose Evidence source is ReferenceSpectrum or RuleBased
+        (workflow.parse_mdpeak), so no peak an in-silico annotator named (its Comment's Annotation method) carries
+        either. The identifications and in-silico names counted so are recorded.
+
+    Where the QA matrix marks a feature Reference matched whose representative is an in-silico match (the Console's
+    IsReferenceMatched, which the QA counts as reference_matched_count), the count is recorded and said, not judged:
+    no decision says whether that QA metric is an identification count.
+
+    Not applicable to a run that searched no in-silico library and whose approval and answers name none. Not
+    evaluable where a clause's artifact cannot be read: the MSP settings (c), the mzTab-M (a, b, d), the peak tables
+    (e). Names files and annotators, never locations or compound names. A check after production: no run_policy.
+    """
+    fields: dict = {}
+    method = output / "method.txt"
+    if method.is_file():
+        try:
+            for line in method.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+                field = _console_field(line)
+                if field:
+                    fields[field[0]] = field[1]
+        except OSError:
+            fields = {}
+    ion_mode = fields.get("ion mode", "")
+    answers_record, _reason = _read_json(output / "guided-answers.json")
+    answers = (answers_record or {}).get("answers") if isinstance((answers_record or {}).get("answers"), dict) else {}
+    if not ion_mode:
+        # Without the method, the unit's ion mode as its answers or its manifest give it (review 2).
+        recorded, _reason = _read_json(workspace / "provenance" / "run-manifest.json")
+        project = (recorded or {}).get("project") if isinstance((recorded or {}).get("project"), dict) else {}
+        ion_mode = str(answers.get("ion_mode") or project.get("ion_mode") or "").strip()
+    unread: dict = {}
+    problems: dict = {letter: [] for letter, _words in LIB3_CLAUSES}
+
+    # What names an in-silico library or annotator: the run's MSP settings, the approval, the answers, the run manifest.
+    settings = None
+    table_text = fields.get("msp annotator settings file path", "")
+    if table_text:
+        settings, why = _library_table(_library_location(table_text, method.parent), "msp_file_path")
+        if settings is None:
+            unread["c"] = why
+    else:
+        unread["c"] = ("method.txt names no MSP annotator settings file" if method.is_file()
+                       else "method.txt is absent")
+    authorization, _reason = _read_json(workspace / "provenance" / CAMPAIGN_AUTHORIZATION_FILE)
+    contracts = (authorization or {}).get("annotation")
+    contracts = contracts if isinstance(contracts, dict) else {}
+    # The unit's ion mode's contract; every mode's where the mode is not known, so a tier is never missed.
+    modes = [ion_mode] if ion_mode else sorted(contracts, key=str)
+    contract_rows = [row for mode in modes for row in (contracts.get(mode) or {}).get("msp_rows") or []
+                     if isinstance(row, dict) and _library_kind(row.get("library_kind")) == "predicted"]
+    expected_ids = {str(row.get("annotator_id") or "").strip() for row in contract_rows} - {""}
+    expected_names = {_library_name(row.get("library")) for row in contract_rows} - {""}
+    for entry in (authorization or {}).get("libraries") or []:
+        modes = entry.get("ion_modes") if isinstance(entry, dict) else None
+        if isinstance(entry, dict) and _library_kind(entry.get("library_kind")) == "predicted" and \
+                str(entry.get("library_kind") or "").strip() and (not isinstance(modes, list) or not ion_mode
+                                                                    or ion_mode in modes):
+            expected_names.add(_library_name(entry.get("name")))
+    libraries = answers.get("libraries") if isinstance(answers.get("libraries"), dict) else {}
+    answered = libraries.get("in_silico_msp_paths")
+    for text in answered if isinstance(answered, list) else [answered]:
+        if isinstance(text, str) and text.strip():
+            expected_names.add(_library_name(text))
+    prepared, _reason = _read_json(output / "run-manifest.json")
+    for entry in (prepared or {}).get("libraries") or [] if isinstance((prepared or {}).get("libraries"), list) else []:
+        if isinstance(entry, dict) and _library_kind(entry.get("library_kind")) == "predicted" and \
+                str(entry.get("library_kind") or "").strip():
+            expected_names.add(_library_name(entry.get("name") or entry.get("filename") or entry.get("path")))
+    expected_names.discard("")
+    folded_names = {name.casefold() for name in expected_names}
+
+    searched = [row for row in settings or [] if row.get("msp_file_path") and (
+        _library_kind(row.get("library_kind")) == "predicted"
+        or _library_name(row["msp_file_path"]).casefold() in folded_names
+        or row.get("annotator_id", "") in expected_ids)]
+    acquired_names = {_library_name(row["msp_file_path"]).casefold() for row in settings or []
+                      if row.get("msp_file_path") and row not in searched}
+    in_silico_ids = {row.get("annotator_id", "") for row in searched} | expected_ids
+    in_silico_ids.discard("")
+    in_silico_names = {_library_name(row["msp_file_path"]) for row in searched} | expected_names
+    folded_in_silico = {name.casefold() for name in in_silico_names}
+    acquired_names -= folded_in_silico
+    if not in_silico_ids and not in_silico_names:
+        why = f" (the MSP annotator settings could not be read: {unread['c']})" if "c" in unread and table_text else ""
+        report.add("LIB-3", stage, LIB3_TITLE, NOT_EVALUABLE,
+                   "Not applicable: the run searched no in-silico (predicted) MSP library, and neither the approval nor "
+                   f"the answers name one{why}.", required=False, applicable=False)
+        return
+
+    # (c) The in-silico rows are predicted, with suggestions false, and every one the approval or answers name is there.
+    if settings is not None:
+        for row in searched:
+            words = f"{row.get('annotator_id') or 'an MSP annotator'} ({_library_name(row['msp_file_path'])})"
+            if _library_kind(row.get("library_kind")) != "predicted":
+                problems["c"].append(f"{words} searches an in-silico library with library kind "
+                                     f"{row.get('library_kind') or 'blank'}, which the Console reads as acquired")
+            if "suggestions" not in row:
+                problems["c"].append(f"{words} states no suggestions setting, so the Console suggests names from it")
+            elif str(row["suggestions"]).strip().casefold() != "false":
+                problems["c"].append(f"{words} states suggestions {row['suggestions'] or 'blank'}, not False")
+        have_ids = {row.get("annotator_id", "") for row in settings}
+        have_names = {_library_name(row["msp_file_path"]).casefold() for row in searched}
+        for annotator in sorted(expected_ids - have_ids):
+            problems["c"].append(f"the approval states the in-silico annotator {annotator}, and the run's MSP settings "
+                                 "have no such row")
+        for name in sorted(expected_names, key=str.casefold):
+            if name.casefold() not in have_names:
+                problems["c"].append(f"{name} is named as the in-silico library, and no MSP annotator row searches it")
+
+    codes: Counter = Counter()
+    represented: set = set()
+    counted = {"alignment_in_silico_matches": 0, "peak_in_silico_names": 0, "peak_identifications": 0}
+    sources: dict = {letter: [] for letter, _words in LIB3_CLAUSES}
+    if "c" not in unread:
+        sources["c"].append("msp_annotator_settings.tsv")
+
+    # (a) and (c) in the alignment's candidate tables, where the run exported them; the in-silico representatives.
+    for table in sorted(output.glob("*.mdcandidate.tsv")):
+        rows, why = _tsv_rows(table)
+        needed = {"alignment_master_id", "annotator_id", "evidence_source", "is_reference_matched", "is_representative",
+                  "annotation_tag_vs1"}
+        if rows is None or (rows and not needed <= set(rows[0])):
+            unread.setdefault("a", why or f"{table.name} has no {', '.join(sorted(needed - set(rows[0])))} column")
+            continue
+        sources["a"].append(table.name)
+        bad = Counter()
+        suggested = 0
+        for row in rows:
+            if row.get("annotator_id", "") not in in_silico_ids:
+                continue
+            evidence = str(row.get("evidence_source") or "").strip()
+            matched = _flag(row.get("is_reference_matched"))
+            if evidence in IDENTIFICATION_EVIDENCE or (matched and evidence != IN_SILICO_EVIDENCE):
+                bad[evidence or "blank"] += 1
+            if matched and evidence == IN_SILICO_EVIDENCE:
+                code = str(row.get("annotation_tag_vs1") or "").strip()
+                if code not in IN_SILICO_CONFIDENCE_CODES:
+                    bad[f"InSilico coded {code or 'blank'}"] += 1
+            if _flag(row.get("is_representative")):
+                if matched:
+                    represented.add(str(row.get("alignment_master_id") or "").strip())
+                else:
+                    suggested += 1
+        for what, count in sorted(bad.items()):
+            problems["a"].append(f"{table.name}: {count} in-silico candidate(s) carry {what}")
+        if suggested:
+            problems["c"].append(f"{table.name}: {suggested} feature(s) are represented by an in-silico candidate that "
+                                 "is no accepted match, a name from a suggestion")
+
+    # (a), (b), (c) and (d) in mzTab-M.
+    mztabs = sorted(output.glob("*.mzTab"))
+    if not mztabs:
+        for letter in ("a", "b", "d"):
+            unread.setdefault(letter, "no .mzTab file is in the output")
+    for mztab in mztabs:
+        parsed, why = _mztab_annotation(mztab)
+        if parsed is None:
+            for letter in ("a", "b", "d"):
+                unread.setdefault(letter, why)
+            continue
+        # A database is the in-silico library's where its -version names that file (MS-DIAL writes the file name
+        # there), or, from a Console that names none, where it is labelled in-silico; its -prefix leads the summary
+        # rows' database_identifier.
+        prefixes = set()
+        for entry in parsed["databases"].values():
+            version = _library_name(entry.get("version")).casefold()
+            labelled = entry.get("label") == MZTAB_IN_SILICO_DATABASE
+            if version and version in folded_in_silico:
+                prefixes.add(str(entry.get("prefix") or "").strip())
+                if not labelled:
+                    problems["b"].append(f"{mztab.name} declares the in-silico library {_library_name(entry['version'])}"
+                                         f" as \"{entry.get('label') or 'nothing'}\"")
+            elif labelled and version and version in acquired_names:
+                problems["b"].append(f"{mztab.name} declares the acquired library {_library_name(entry['version'])} as "
+                                     f"\"{MZTAB_IN_SILICO_DATABASE}\"")
+            elif labelled:
+                prefixes.add(str(entry.get("prefix") or "").strip())
+        prefixes.discard("")
+        if in_silico_names and not prefixes:
+            problems["b"].append(f"{mztab.name} declares no database for the in-silico library "
+                                 f"{_names(in_silico_names)}")
+        sources["b"].append(mztab.name)
+        header = parsed["header"]
+        if "opt_global_evidence_source" not in header:
+            unread.setdefault("a", f"{mztab.name} carries no opt_global_evidence_source column")
+        else:
+            sources["a"].append(mztab.name)
+        if "opt_global_lipid_rt_outcome" in header:
+            sources["d"].append(mztab.name)
+        bad = Counter()
+        suggested = confirmed = 0
+        for row in parsed["rows"]:
+            # A row's evidence and code are its representative's, the first identifier's.
+            first = str(row.get("database_identifier") or "").split("|")[0].strip()
+            if ":" not in first or first.split(":", 1)[0] not in prefixes:
+                continue
+            evidence = str(row.get("opt_global_evidence_source") or "").strip()
+            code = str(row.get("reliability") or "").strip()
+            if "opt_global_evidence_source" in header:
+                # An accepted match is coded 4xx; any other code is a name MS-DIAL suggested (5xx), whatever its
+                # evidence source (a weak comparison against predicted spectra is InSilico coded 530).
+                if evidence in IDENTIFICATION_EVIDENCE:
+                    bad[evidence] += 1
+                elif evidence == IN_SILICO_EVIDENCE and code in IN_SILICO_CONFIDENCE_CODES:
+                    codes[code] += 1
+                    counted["alignment_in_silico_matches"] += 1
+                elif code.startswith("4"):
+                    bad[f"an accepted match coded {code} with evidence {evidence or 'blank'}"] += 1
+                else:
+                    suggested += 1
+            if str(row.get("opt_global_lipid_rt_outcome") or "").strip().casefold() == LIPID_RT_CONFIRMED:
+                confirmed += 1
+        for what, count in sorted(bad.items()):
+            problems["a"].append(f"{mztab.name}: {count} summary row(s) of the in-silico database carry {what}")
+        if suggested:
+            problems["c"].append(f"{mztab.name}: {suggested} summary row(s) of the in-silico database are no accepted "
+                                 "in-silico match, names from a suggestion")
+        if confirmed:
+            problems["d"].append(f"{mztab.name}: {confirmed} summary row(s) of the in-silico database are tagged "
+                                 "lipid-RT Confirmed")
+
+    # (d) in the lipid RT check's review list, for the features an in-silico match represents. Where neither mzTab-M
+    # writes an outcome nor a review list exists, the check tagged nothing.
+    reviews = sorted(output.glob("*_lipidrt_review.tsv"))
+    if mztabs and not sources["d"] and not reviews and "d" not in unread:
+        # The Console writes a review list whenever the check runs (lipid_rt_check), so none means none was tagged.
+        sources["d"].append("no lipid RT outcome or review list was written, so the check tagged nothing")
+    if reviews and not represented and not sources["d"] and "d" not in unread:
+        unread["d"] = ("mzTab-M writes no opt_global_lipid_rt_outcome, and without the candidate table which features an "
+                       "in-silico match represents in the review list is not known")
+    if represented:
+        for review in reviews:
+            rows, why = _tsv_rows(review)
+            if rows is None:
+                unread.setdefault("d", why)
+                continue
+            sources["d"].append(review.name)
+            confirmed = sum(1 for row in rows if str(row.get("ID") or "").strip() in represented
+                            and str(row.get("Outcome") or "").strip().casefold() == LIPID_RT_CONFIRMED)
+            if confirmed:
+                problems["d"].append(f"{review.name}: {confirmed} feature(s) an in-silico match represents are "
+                                     "Confirmed")
+
+    # (e) in the per-file peak tables Interactive counts identifications from.
+    peaks = sorted(output.glob("*.mdpeak"))
+    if not peaks:
+        unread.setdefault("e", "no .mdpeak peak table is in the output")
+    for peak_table in peaks:
+        rows, why = _tsv_rows(peak_table)
+        if rows is None or (rows and not {"Evidence source", "Comment"} <= set(rows[0])):
+            unread.setdefault("e", why or f"{peak_table.name} has no Evidence source or Comment column")
+            continue
+        sources["e"].append(peak_table.name)
+        bad = Counter()
+        for row in rows:
+            name = str(row.get("Name") or "").strip()
+            if not name or name.casefold() == "unknown":
+                continue
+            evidence = str(row.get("Evidence source") or "").strip()
+            if evidence in IDENTIFICATION_EVIDENCE:
+                counted["peak_identifications"] += 1
+            if _comment_annotator(row.get("Comment")) not in in_silico_ids:
+                continue
+            if evidence in IDENTIFICATION_EVIDENCE:
+                bad[evidence] += 1
+            elif evidence == IN_SILICO_EVIDENCE:
+                counted["peak_in_silico_names"] += 1
+        for what, count in sorted(bad.items()):
+            problems["e"].append(f"{peak_table.name}: {count} peak(s) an in-silico annotator named carry {what}, "
+                                 "which Interactive counts as identifications")
+
+    # The QA matrix's Reference matched cells of the features an in-silico match represents: recorded, not judged.
+    qa_cells = None
+    if represented:
+        for matrix in sorted(output.glob("*.qa.tsv")):
+            rows, _why = _tsv_rows(matrix)
+            if rows:
+                qa_cells = (qa_cells or 0) + sum(1 for row in rows if str(row.get("ID") or "").strip() in represented
+                                                 and _flag(row.get("Reference matched")))
+
+    verdicts = {}
+    for letter, _words in LIB3_CLAUSES:
+        verdicts[letter] = FAIL if problems[letter] else NOT_EVALUABLE if letter in unread and not sources[letter] \
+            else PASS
+    found = [f"({letter}) {item}" for letter, _words in LIB3_CLAUSES for item in problems[letter]]
+    evidence = {
+        "applicable": True, "ion_mode": ion_mode,
+        "in_silico_annotators": sorted(in_silico_ids), "in_silico_libraries": sorted(in_silico_names, key=str.casefold),
+        "clauses": verdicts, "sources": {letter: sorted(set(items)) for letter, items in sources.items()},
+        # The confidence codes the accepted in-silico matches carry in mzTab-M, and what each means.
+        "confidence_codes_seen": dict(sorted(codes.items())),
+        "confidence_code_basis": {code: IN_SILICO_CONFIDENCE_CODES.get(code, "not an in-silico code") for code in codes},
+        **counted,
+        "qa_reference_matched_cells_of_in_silico_features": qa_cells,
+    }
+    code_words = (", ".join(f"{code} ({IN_SILICO_CONFIDENCE_CODES.get(code, 'not an in-silico code')}) x{count}"
+                            for code, count in sorted(codes.items())) or "none (no accepted in-silico match)")
+    qa_words = (f" The QA matrix marks {qa_cells} feature-file cell(s) Reference matched whose representative is an "
+                "in-silico match (the Console's IsReferenceMatched, counted in reference_matched_count); recorded, "
+                "not judged." if qa_cells else "")
+    if found:
+        report.add("LIB-3", stage, LIB3_TITLE, FAIL,
+                   f"{len(found)} problem(s) with how the in-silico tier's matches are reported: "
+                   + "; ".join(found[:8]) + ("; ..." if len(found) > 8 else "") + "." + qa_words,
+                   problems=found, **evidence)
+        return
+    missing = [f"({letter}) {unread[letter]}" for letter, _words in LIB3_CLAUSES if verdicts[letter] == NOT_EVALUABLE]
+    if missing:
+        report.add("LIB-3", stage, LIB3_TITLE, NOT_EVALUABLE,
+                   "Whether the in-silico tier's matches are reported as in-silico evidence cannot be fully established: "
+                   + "; ".join(missing) + "." + qa_words, unread=missing, **evidence)
+        return
+    report.add("LIB-3", stage, LIB3_TITLE, PASS,
+               f"The in-silico annotator(s) {_names(in_silico_ids)} search {_names(in_silico_names)} as predicted with "
+               f"suggestions false; mzTab-M declares it as \"{MZTAB_IN_SILICO_DATABASE}\"; its "
+               f"{counted['alignment_in_silico_matches']} summary row(s) carry InSilico, none tagged lipid-RT "
+               f"Confirmed; confidence codes {code_words}; the peak tables count "
+               f"{counted['peak_identifications']} identification(s) and {counted['peak_in_silico_names']} in-silico "
+               "name(s) apart." + qa_words, **evidence)
 
 
 # --------------------------------------------------------------------------------------------
@@ -8577,8 +10349,10 @@ def check_no_unearned_checksum_claim(report: Report, provenance: dict | None, ou
     if owner is None:
         report.add("SUM-2", stage, title, NOT_EVALUABLE, owner_reason or "The manifest is absent.")
         return
-    # The inputs SUM-1 judged: what an artifact says of the inputs is said of those analysed.
-    kind, _detail, basis_evidence = _checksum_basis(owner, _not_analysed(provenance, owner, csv_rows))
+    # The inputs SUM-1 judged: what an artifact says of the inputs is said of those analysed, a split
+    # part's own where it carries their rows (_checksum_subject).
+    subject, _rows_of = _checksum_subject(provenance, owner)
+    kind, _detail, basis_evidence = _checksum_basis(subject, _not_analysed(provenance, subject, csv_rows))
     if kind not in ("download_sha256", "archive_verified"):
         report.add("SUM-2", stage, title, NOT_EVALUABLE,
                    "The inputs were checksum-verified, or SUM-1 refused them; there is no unearned "
@@ -9444,6 +11218,36 @@ def _step_rule(item: dict, provenance: dict | None = None) -> dict:
     return {"evidence": evidence, "said": said, "broken": broken, "notes": notes}
 
 
+def _stale_diagnostic(diagnostic: dict, provenance: dict) -> str:
+    """Why a peak-count diagnostic measured other files than the ones that run, or "": the switch from .wiff2 to .wiff
+    marked it superseded (superseded_by_encoding_fallback), or its representative file - by the path it records, or the
+    input its Console alias stands for - is none of the unit's current input candidates. A representative recorded by
+    name alone is not judged: a name does not tell S1.wiff2 from S1.wiff."""
+    mark = diagnostic.get("superseded_by_encoding_fallback")
+    if mark:
+        rule = mark.get("rule") if isinstance(mark, dict) else ""
+        return f"diagnostic {diagnostic.get('job_id') or '(no job)'} is marked superseded ({rule or 'the switch'})"
+    path = str((diagnostic.get("representative") or {}).get("file_path") or "").strip() \
+        if isinstance(diagnostic.get("representative"), dict) else ""
+    if not path:
+        return ""
+    aliases = _input_keys_by_console_path(provenance)
+    # The Console paths the lineage records for each input as well, read without the disk: after the raw data are
+    # released neither the alias nor its input is there to compare, and the record still says which input it was.
+    for manifest in _lineage_manifests(provenance):
+        for row in _lineage_rows(manifest):
+            alias = row.get("console_alias") if isinstance(row.get("console_alias"), dict) else {}
+            for console in (row.get("console_path"), alias.get("path")):
+                if str(console or "").strip():
+                    aliases.setdefault(_path_key(console), _path_key(row["path"]))
+    key = aliases.get(_path_key(path), _path_key(path))
+    current = {_path_key(item) for item in provenance.get("input_candidates") or [] if str(item).strip()}
+    if key not in current:
+        return (f"diagnostic {diagnostic.get('job_id') or '(no job)'} measured "
+                f"{Path(path.replace(chr(92), '/')).name}, which is no current input of the unit")
+    return ""
+
+
 def check_threshold_was_measured_on_this_unit(
     report: Report, provenance: dict | None, reason: str, output: Path
 ) -> None:
@@ -9470,6 +11274,11 @@ def check_threshold_was_measured_on_this_unit(
     they are. The floor is absolute (_step_family): never finer than 10 for QTOF-type data or 100 for
     Fourier-transform data, whatever family step the diagnostic itself records, and a recorded family step
     is 100 or 1,000.
+
+    A THRESHOLD MEASURED ON OTHER FILES (the re-review of #88, low 4) produces nothing: a diagnostic the switch from
+    .wiff2 to .wiff marked superseded_by_encoding_fallback, and one whose representative file (by its recorded path, or
+    the input its Console alias stands for) is no current input candidate, are not read as the producing diagnostic,
+    and a threshold only such diagnostics produced is a FAIL that says which and why (_stale_diagnostic).
 
     WHAT THE PRODUCTION RUN KEPT (production_peak_counts, Interactive 0.5.28) is reported where recorded,
     against the estimate, and judged by nothing: the user asked that it be recorded (2026-10-06).
@@ -9512,6 +11321,21 @@ def check_threshold_was_measured_on_this_unit(
                    method_threshold=written, measured=measured)
         return
     producing = [item for value, item in measured_by if abs(executed - value) < 1e-9]
+    # A threshold measured on other files than those that run is not this run's (review of #88, low 4): a diagnostic the
+    # switch from .wiff2 to .wiff marked superseded, and one whose representative file is no current input (the .wiff2
+    # it measured), do not produce it.
+    stale = [(item, why) for item in producing for why in [_stale_diagnostic(item, provenance)] if why]
+    producing = [item for item in producing if not _stale_diagnostic(item, provenance)]
+    if stale and not producing:
+        report.add(
+            "PKH-1", stage, PKH1_TITLE, FAIL,
+            f"method.txt asks for a Minimum peak height of {written}, and only a diagnostic measured on other files than "
+            f"the ones that run produced it: {'; '.join(why for _item, why in stale[:3])}. Run the diagnostic again on "
+            "the files that run.",
+            method_threshold=written, measured=measured,
+            stale_diagnostics=[{"job_id": str(item.get("job_id") or ""), "reason": why} for item, why in stale[:10]],
+        )
+        return
     if producing:
         # The diagnostic that produced the threshold, the latest where several did: re-running it with
         # another step or representative is normal, and the step rule is read from the one that ran.
@@ -10901,6 +12725,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_analytical_order_is_real(report, csv_rows, csv_reason, "before-production", provenance)
         check_analysis_inputs_are_the_inputs(report, provenance, provenance_reason, csv_rows, csv_reason)
         check_inferred_name_pairings_are_listed(report, provenance, provenance_reason)
+        check_loaded_libraries_are_the_approved_ones(report, workspace, output)
         approved = check_sample_count_invariant(
             report, provenance, provenance_reason, csv_rows, csv_reason,
             run_manifest, output, "before-production",
@@ -10921,6 +12746,7 @@ def verify(workspace: Path, stage: str) -> Report:
         check_method_file_reached_the_console(report, output, "after-run", provenance)
         check_aif_files_have_collision_energies(report, provenance, csv_rows, csv_reason, output, "after-run")
         check_binary_identity_is_recorded(report, run_manifest, output, "after-run")
+        check_in_silico_matches_are_not_identifications(report, workspace, output, "after-run")
 
     if "before-publish" in stages:
         check_no_metric_rests_on_a_synthetic_order(report, output, csv_rows, "before-publish", provenance)
@@ -10968,12 +12794,12 @@ COMPLETION_STAGES = (
      ("CLS-3",)),
     ("B4", "diagnostic_done", "a recorded peak-height diagnostic whose absolute directory exists", ("PKH-1",)),
     ("B5", "production_prepared", "output holds analysis_files.csv, method.txt and run-manifest.json",
-     ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production", "INP-1", "ACQ-1")),
+     ("CLS-1", "CLS-2", "ORD-1", "CNT-1@before-production", "INP-1", "ACQ-1", "LIB-2")),
     ("B6", "production_run_done", "at least one .mdpeak in output",
      ("EXP-1", "CNT-1@after-run", "MTH-1", "AIF-1", "FIN-2", "FIN-3")),
     ("B7", "mztab_validated",
      "a validated terminal status, a validation record with no failure, and an mzTab-M in output",
-     ("TAB-1", "TAB-2", "BIN-1", "FIN-1")),
+     ("TAB-1", "TAB-2", "BIN-1", "FIN-1", "LIB-3")),
     ("B8", "qa_produced", "a QA matrix (*.qa.tsv) exists", ("QA-1", "ORD-2")),
     ("B9", "publication_artifacts",
      "the publication report, Materials and Methods and supplementary table exist",

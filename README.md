@@ -26,7 +26,7 @@ chat history. Clone it beside this repository:
 D:\13_MSDIAL_Public_Reanalysis\
   code\      this repository (public)
   context\   systemsomicslab/msdial-family-dev-context (private)
-  analysis\  reanalysis workspace, never committed
+  analysis\  archive of the pilots and preflights, never committed
 ```
 
 It is a separate private repository because it documents licensed vendor SDK
@@ -35,19 +35,42 @@ install locations and private MSP library paths on the development machine.
 ## Current local paths
 
 - Claude workspace: `D:\13_MSDIAL_Public_Reanalysis\code`
-- Repository reanalysis data: a workspace root chosen per campaign and passed
-  explicitly; MB-POST production uses `F:\MSDIAL_Public_Reanalysis\analysis`,
-  and `D:\13_MSDIAL_Public_Reanalysis\analysis` holds the pilots and preflights
+- Repository reanalysis data: the workspace root chosen for each campaign and
+  passed explicitly (below); the MB-POST and Pool A campaigns use
+  `F:\MSDIAL_Public_Reanalysis\analysis`, and
+  `D:\13_MSDIAL_Public_Reanalysis\analysis` is the archive of the pilots and
+  preflights
 - Interactive: `D:\0_SourceCode\msdial_interactive_app`
 - Catalog: `D:\0_SourceCode\msdial_repository_catalog`
 - Full catalog: `D:\0_SourceCode\msdial_repository_catalog\catalog-data\native-smoke.sqlite`
 - Python: detected by `setup-windows.ps1`, or supplied with `-Python`
 
-The Claude instructions and launcher are stored under `code`. All repository
-downloads, MS-DIAL processing files, and generated results use `analysis`:
+The Claude instructions and launcher are stored under `code`. Repository
+downloads, MS-DIAL processing files and generated results go under the
+workspace root of the campaign they belong to. The root is chosen per campaign
+and never assumed: production runs on a root of its own, and
+`D:\13_MSDIAL_Public_Reanalysis\analysis` keeps the pilots and preflights run
+before it, with their ledgers, as an archive. Pass the root explicitly every
+time: as `workspace_root` to every `msdial_repository_reanalysis_plan` and
+`msdial_download_repository_raw` call, and to `scripts/campaign-runner.py` as
+`--workspace-root` (or through `MSDIAL_REPOSITORY_WORKSPACE_ROOT`). Reading an
+archived campaign means naming the archive root. Wherever it is, the root is not
+on C:, in the user profile, in a temporary folder, or inside a code checkout.
+The runner refuses a root that is not an absolute path, is a network or device
+path (`\\server\share`, `\\localhost\C$\...`, `\\?\...`), lies on a mapped
+network drive or lies inside a code checkout. It does not refuse C:, the user
+profile or a temporary folder: its plan summary, the text a person approves,
+names the root and the raw retention, and says in capitals where the root is
+on the system drive, in the user profile or in a temporary folder, so the
+person approving confirms such a root knowingly or plans again.
+`setup-windows.ps1` checks only the root it is given, which it creates; no
+campaign reads that root, so it protects no campaign's.
+The `MSDIAL_REPOSITORY_WORKSPACE_ROOT` of the Interactive MCP server in
+`.mcp.json` bounds a Claude session to one root: a session that works on another
+root needs that value changed and the server reconnected. Each unit gets:
 
 ```text
-D:\13_MSDIAL_Public_Reanalysis\analysis\<repository>\<accession>\<analysis-unit-id>\
+<workspace_root>\<repository>\<accession>\<analysis-unit-id>\
   raw\downloads\
   raw\data\
   provenance\
@@ -63,9 +86,13 @@ units, 1,051,091 sample records, and 365,276 raw-file records.
 2. Copy `.mcp.example.json` to `.mcp.json` and replace the example paths with
    paths on the analysis PC. The local `.mcp.json` is intentionally ignored by
    Git because it contains machine-specific paths.
-3. Run `powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1` with
-   `-InteractiveRoot`, `-CatalogRoot`, and `-ReanalysisRoot` when the defaults
-   do not match the analysis PC.
+3. Run `powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1
+   -ReanalysisRoot <workspace root>`, adding `-InteractiveRoot` and
+   `-CatalogRoot` when the defaults do not match the analysis PC. The root has
+   no default; the script refuses one on C:, in the user profile, in a
+   temporary folder, or inside a code checkout, and takes only a folder on a
+   mounted drive of this PC named by its letter (`X:\...`), never a network or
+   device path (`\\server\share`, `\\?\...`) or a mapped network drive.
 4. Install and authenticate Claude Code if `claude --version` is unavailable.
 5. Run `claude` from this directory, or double-click `Start Claude Code.cmd`.
 6. Approve the two project-scoped MCP servers when Claude Code asks.
@@ -80,6 +107,24 @@ project skills from `.claude/skills/`. Project MCP configuration requires an
 explicit trust decision in Claude Code. Audit outputs under `feedback/` and
 generated status pages under `reports/` are also local by default; only the
 review template is version controlled.
+
+### Skills
+
+This repository keeps one skill, `msdial-repository-batch`, for repository
+batches.
+
+The laboratory lipidomics skill, `msdial-lipidomics-workflow` (internal
+standards, normalization to concentration, and the positive/negative merge),
+has moved to MS-DIAL Interactive, which is now its canonical home:
+`skills/msdial-lipidomics-workflow/` in
+[systemsomicslab/msdial-interactive-app](https://github.com/systemsomicslab/msdial-interactive-app),
+since [msdial-interactive-app#74](https://github.com/systemsomicslab/msdial-interactive-app/pull/74).
+Interactive's setup script (`Setup MS-DIAL for Claude.cmd`, or
+`scripts/setup_claude.py`) installs it into `~/.claude/skills/` for Claude Code
+and packages it for Claude Desktop, and its tutorial is
+`docs/tutorials/lab-lipidomics.md` there. A copy installed earlier as a link to
+this repository's `.claude/skills/msdial-lipidomics-workflow` no longer resolves
+once this checkout is updated; run Interactive's setup script to replace it.
 
 ## Safety boundary
 
@@ -157,7 +202,36 @@ counts as failed, and `record_only` where the FAIL is recorded and the unit
 runs. The user decided it: a FAIL stops the run only for the checks that break
 the MS-DIAL results (2026-10-01), and every before-production check is placed
 (2026-10-02). ELIG-1, ACQ-1, SUM-1, CNT-1, INP-1, ID-1, PRE-2 and CONV-1 are
-`blocks_run`. CLS-1, CLS-2, CLS-3, ORD-1, PKH-1 and SPL-1 are `record_only`,
+`blocks_run`, and so is LIB-2 (2026-10-24): in a campaign unit, every library
+`method.txt` and its MSP annotator settings load must be one the approval
+names, with the sha256 it names, and what the unit's answers name for its
+role; the names must agree across `method.txt`, `workflow-settings.json` and
+the run manifest; every MSP annotator row must state its own
+`target_omics`; and what the method annotates with must be what the approval
+states for the unit's ion mode (review of 2026-10-25): the annotation profile,
+the LBM's score cutoffs and priority, and each MSP annotator row's library,
+priority, tolerances, score cutoffs, RT use, target omics, library kind and,
+where the approval states it, suggestions. Since 2026-10-28 the pin of an MSP
+the profile names in `libraries.msp_paths` or `libraries.in_silico_msp_paths`
+carries its library kind (`acquired`, or `predicted` for the in-silico one),
+and the method must search it as that kind; the method's Target omics is held
+to what Interactive applies: a `workflow_overrides` `target_omics`, else
+`target_omics_pin`, else the `target_omics` answer. The
+plan writes that annotation contract into the manifest and the authorization,
+read from the pinned Interactive, with the profile's retention-time answers
+applied to the MSP rows as Interactive applies them, and refuses a tiered
+profile whose LBM2 the pinned Interactive would replace with its official one,
+or a strategy that loads a library the profile does not name (the official
+strategy, or the tiered one given no `libraries.lbm_path`). It names files,
+never their locations, and does not apply to a unit without
+`provenance/campaign-authorization.json`. LIB-2 reads the method Interactive's
+prepare wrote, and Interactive's start writes it again; the parameter template
+its LBM cutoffs come from (the one Interactive's settings name, else its own)
+is pinned by sha256 with the code and the libraries, and the runner compares
+the pins before each unit's prepare and each Console start, so a template
+changed during a campaign pauses it instead of failing every later unit or
+running unseen. CLS-1, CLS-2, CLS-3,
+ORD-1, PKH-1 and SPL-1 are `record_only`,
 and so are PRE-1, which never FAILs, and PAIR-1 (2026-10-06), which lists as a
 WARN every input the lease paired with a declared raw file by inference
 (`input_names_paired_by_inference`), so each such pairing is on record; a split
@@ -408,6 +482,148 @@ names. The gate reads no column or status of the audit TSVs. A unit that fell
 back has no audit TSVs and none expected, since Interactive lists them only for
 a run with the correction on.
 
+A profile may name an in-silico MSP library for each ion mode
+(`libraries.in_silico_msp_paths`, the fourth tier of `tiered_lipid_msp`). The
+plan then states the four-tier contract the pinned Interactive's own tiered
+profile writes for it (Interactive 0.5.48: LBM priority 4, the acquired rows 3
+and 2, and the in-silico row 1, `predicted`, suggestions false, no RT); until
+2026-10-28 it stated the three-tier one, and LIB-2 failed every four-tier unit.
+A pinned Interactive whose tiered profile takes no in-silico MSP is refused at
+the plan, and so is what that Interactive's own plan would refuse after each
+unit's download without reading the file: an in-silico MSP named for another
+strategy, more than once for an ion mode, for the other ion mode, other than as
+`library:<file name>`, or not as an `.msp`, and a preprocessing step it cannot
+state or that does not fit the ion mode. After the run, LIB-3 (the author's decisions of 2026-10-25 and
+2026-10-28) holds how such a run reports the in-silico tier's matches: (a)
+their evidence source is `InSilico`, never `ReferenceSpectrum` or `RuleBased`,
+and an accepted one is coded 430 (a Console before the MS-DIAL change) or 450
+(the author's code), the codes seen being recorded; (b) mzTab-M declares the
+library as "User-defined in-silico MSP library file"; (c) the in-silico row is
+`predicted` with suggestions false, and no feature is named from an in-silico
+suggestion; (d) no in-silico match is tagged lipid-RT Confirmed; (e) no
+in-silico match is counted as an identification in the per-file peak tables
+Interactive counts them from. LIB-3 is not applicable to a run without an
+in-silico tier. Where the QA matrix marks a feature represented by an in-silico
+match Reference matched, LIB-3 records the count without judging it.
+`scripts/report-insilico-concordance.py <unit> [...] [--json]` reports, per
+unit and in aggregates only, how often the in-silico tier's top candidate shares
+the InChIKey's first block with an acquired reference match (the author's
+decision D-B: collected on Stage 1 before Stage 2 is decided); it needs the
+alignment candidate table, which a run writes only where its answers set
+`export_annotation_candidates` true.
+
+Two decisions of 2026-10-29 shape what a campaign selects and runs. A unit
+whose Catalog record says `Both` polarities is in the pools: Interactive reads
+each file's polarity from its raw header and splits the unit into
+single-polarity parts, which run like any other unit (each part's ledger row
+carries its own polarity); a file whose scans switch polarity inside the one
+file is excluded (`polarity_switching`, unresolved mixed polarity being outside
+the campaign's scope), one whose header gives none as `polarity_unresolved`,
+and the rest of the unit runs. And only CID/HCD data run, since every reference
+spectrum is CID/HCD-derived (rule `cid_hcd_only_2026_10_29`): the plan excludes
+a unit as `fragmentation_not_cid_hcd` where its own evidence names another
+fragmentation method (EAD, OAD, ECD, ETD, EThcD, EID, UVPD, IRMPD and the like)
+in its label, unit evidence, every sample row, or every analysis file name,
+read as the ion-mobility option A reads evidence (the study's text, or an
+attribute every unit of a study carries alike, never excludes a unit). An
+instrument's model name ("LTQ Orbitrap Velos ETD") is no evidence, and a file
+name counts only where the unit's instrument could fragment so, or none is
+recorded (`METHOD_INSTRUMENTS`, one table in the plan, the gate and
+Interactive); otherwise it is recorded as not credible on that instrument. A
+sample row's name (an Extract Name "AA_EAD_A_1") is held to the instrument as a
+file name is; a row field that states the method ("Fragmentation method: OAD"),
+the label and the unit's evidence are not. A
+unit only some of whose files are named so is planned with a
+`fragmentation_reading`, needs Interactive 0.5.52 or later, and that
+Interactive's campaign lease keeps those files out with their evidence (also an
+mzML's activation terms, or a converted mzXML's `activationMethod`); no vendor
+header records the method, and the SCIEX wiff2 reader's CID is no evidence.
+A sample row that states the method in only some rows plans the unit too, with
+the files of those rows listed to be kept out (Interactive's lease reads the
+same rows, evidence `sample_row`); a statement is never read as the study's
+text. An identifier (a GUID, an all-hexadecimal run of eight or holding a
+digit) names nothing. The plan refuses any Interactive before 0.5.52. Absence
+of evidence means run. INP-1 FAILs, blocking the run, a unit whose lease
+applied the rule (its record carries `fragmentation_check`) and whose
+candidates or CSV rows include a file named so or a sample whose row states the
+method, or whose lease kept an input out for it without evidence that holds; a
+lease before 0.5.52 is gated as it always was. CONV-1 leaves out the conversion
+of an input a binding disposition excluded (a Both unit's mzXML without
+polarity, excluded as `polarity_unresolved`).
+
+Two more of 2026-10-29, from the verification campaign v4-both-20261029. A
+SCIEX .wiff without its .wiff.scan cannot be opened by the Console: Interactive
+0.5.53 excludes it at the disposition (`vendor_companion_missing`), and a
+Console start refused for it ("WIFF.SCAN is not accessible next to ...") ends
+the unit excluded, never retried (`policy.console_start_exclusion`). And where
+the pinned extractor cannot read an input's header (`unsupported_format`, every
+ZenoTOF .wiff2) in a unit that runs on its declared acquisition and declares no
+single polarity, Interactive reads the input's polarity from one polarity
+token of its file name and records it (`polarity_inferences`,
+`unreadable_header_polarity_from_file_name_2026_10_29`); ACQ-1 FAILs a row of
+such an input that runs on anything else, and WARNs naming the inference. Such a unit,
+running on its declaration alone and declaring DDA, DIA, AIF or SWATH, is
+untargeted where its record leaves that unset
+(`untargeted_inferred_from_declared_acquisition`); ELIG-1 FAILs a campaign unit
+whose handoff leaves untargeted unset and whose disposition records neither
+that inference nor `untargeted_inferred_from_headers`.
+
+The user's decision of 2026-10-31, from the verification campaign
+v5-mpst48-20261029, whose MPST000048 positive part hung three times out of
+three in the .wiff2 reader. The .wiff2 stays the preferred encoding; where a
+diagnostic or production run of a unit or split part fails or times out, the
+unit analyses a .wiff2 and it has an attempt left, the runner asks Interactive
+0.5.55 (`msdial_switch_repository_unit_to_wiff`) to switch it to the same
+samples' .wiff. Interactive switches a DDA unit only (ZT Scan DIA data can only
+be analysed from the .wiff2), only where every .wiff2 has its .wiff with that
+.wiff's .wiff.scan, and once, recording the switch in the unit manifest
+(`encoding_fallback`, rule `wiff2_to_wiff_after_console_failure_2026_10_31`).
+The attempt that failed counts; the unit then resumes at its metadata
+preparation, so the analysis CSV, the diagnostic's threshold and the run bundle
+are made again on the .wiff, and the remaining attempts run on them. The switch
+is a `wiff_fallback` attempt, a `wiff2_to_wiff_fallback` event, and part of the
+unit's `campaign-record.json` and of the Catalog run records after it. A refusal,
+or an Interactive without the tool, leaves the retry as it was. Interactive
+reads each .wiff's own header with the pinned extractor (the runner sends it,
+as for the preflight) and switches only where each reads as one DDA sample in
+the unit's polarity; the headers are recorded beside the switch. A unit whose
+inputs were switched after its metadata was last prepared goes back to its
+metadata preparation whichever path brought it to a Console start (a retry, an
+interruption, a job the backend lost). INP-1 and SPL-1 accept the .wiff only
+where that record holds (a diagnostic or run the unit's run_attempts record as
+failed before the switch, a DDA unit, swaps exactly of each .wiff2 for its .wiff
+with its .wiff.scan, no .wiff2 left running, each .wiff's header, and in a
+campaign the switch's boundary-4 crossing); without it they FAIL as before.
+ACQ-1 reads each .wiff through its own header, the .wiff2's disposition kept as
+the decision record. Each header must list exactly one sample, state the
+polarity the gate recomputes for its .wiff2 (the unit's ion mode, else the
+.wiff2's header record, else its file-name inference), stand in for its own
+swap's .wiff2, and come from the extractor the unit's preflight ran (in a
+campaign, a verified build of a pinned pair). PKH-1 FAILs a threshold that only
+a diagnostic marked superseded by the switch, or one whose representative file
+is no current input, produced.
+
+The user's decision of 2026-11-04 adds a second rule,
+`wiff_first_for_dda_2026_11_04` (Interactive 0.5.58). The verification campaigns
+V6, V7 and V8 ran MPST000048 three times. Its multi-file .wiff2 production run
+hung on both polarities every time, and the same samples then ran from their
+.wiff in 11 to 18 minutes.
+
+Under the campaign policy's `wiff_first_for_dda`, on by default and stated in the
+plan's summary, the runner asks for the same switch once, before a unit's first
+metadata preparation, with no failed job. Interactive's conditions and record are
+the fallback's, and a DIA, SWATH or AIF unit is still never switched. The ask is a
+`wiff_first` attempt, and a switch is a `wiff_first_for_dda` event.
+
+A unit Interactive does not switch runs on its .wiff2, where the fallback still
+answers a failure. So does a unit whose pinned Interactive takes no rule: the port
+answers `unsupported` rather than calling the first rule without a failed job. A
+unit switched under either rule is never switched again.
+
+The gate holds a record under the second rule to everything above except the
+failure: it must name no failed job, and each .wiff's lineage row must name the
+same rule.
+
 ## Running a campaign unattended
 
 Launch `scripts/campaign-runner.py run` for an unattended campaign through Task
@@ -507,6 +723,51 @@ units by reason (`excluded_by_reason`: `preflight_exclude`, `download_blocked`,
 `declared_inputs_unsupported_format`). The same failure recorded without a
 disposition, as by an Interactive before the contract, is retried and fails as
 before.
+
+A download several units share is fetched once (2026-10-24). Interactive's lease
+fetches through the accession's download store, whose gc deletes an object under
+the approval once no live claim keeps it, and only a pending claim keeps one for
+a unit that has not started. The runner made none, so with raw data deleted after
+each unit, the first unit's cleanup let the store collect the object its siblings
+were to fetch next, and each fetched it again (MPST000012's four units fetched one
+14.78 GB tar four times) while the plan's summary said "fetched once". Now, before
+a unit of a download group of more than one unit downloads, the runner claims the
+group's objects, by the Catalog's URLs, for every other unit of it that will still
+download (Interactive's `pre_claim_downloads`, the claim a batch approval makes).
+A unit that ends without validated outputs (excluded, skipped, failed, stopped)
+releases what it claimed and never read through the store's own release, with the
+approval only where raw data are deleted under a live boundary 5, so the store
+collects what no sibling still needs; a claim a lease materialized is left to
+Interactive's cleanup or discard. A claim that cannot be made never stops a
+download: a `shared_download_not_claimed` event says so. Each finished download's
+attempt records what its lease moved (`transfer`: transferred bytes, objects
+fetched, refetched and found in the store), and `status` adds it up under
+`downloads`, beside the bytes the units' raw trees hold, so a shared object
+fetched again shows. The plan's summary says "each shared object fetched once"
+only for an Interactive whose lease uses the store and that has
+`pre_claim_downloads` (`pins.interactive.pre_claim_downloads`); otherwise it gives
+the distinct bytes as the least and the per-unit sum as the most.
+
+The runner takes the workspace root per campaign (2026-10-24). Until then a
+command without `--workspace-root` used `D:\13_MSDIAL_Public_Reanalysis\analysis`
+without a word, so one aimed at another root looked on D:, said the campaign had
+no approval, or planned against the pilots' workspaces. Every command now takes
+the root from `--workspace-root` (given before the command), else from
+`MSDIAL_REPOSITORY_WORKSPACE_ROOT`, and with neither it refuses (exit code 2),
+reading and writing no campaign file. The task definition `schedule-command` prints
+names the root itself, so a scheduled runner does not depend on the variable;
+the pilots and preflights are read by naming the archive root. While a command
+runs, the runner sets `MSDIAL_REPOSITORY_WORKSPACE_ROOT` to the campaign's root
+in its own process and puts the user's value back afterwards, so the Interactive
+tools it calls in-process are bounded to that root, as an MCP session is to its
+own. A backend already answering on the campaign port is used only if it was
+started for the campaign's root: the root is read from that process's
+environment, or, where that cannot be read, from the campaign's
+`backend-launch.json`, which now keeps it, when that record names the process.
+One started for another root, for none, or whose root cannot be read is refused,
+naming both roots (`run` exits with code 3; a campaign paused for its backend
+stays paused): a backend left running for a campaign on the archive root would
+otherwise take the new campaign's jobs into the old campaign's job registry.
 
 ## Codex pre-audit
 
