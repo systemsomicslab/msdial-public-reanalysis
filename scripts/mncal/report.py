@@ -98,23 +98,23 @@ def write_run_report(run: Path) -> Path:
     if cal and table.exists():
         lines += ["## Headline cutoffs", "",
                   "All pairs, all adducts and instrument pairs, all Δprec bins, ≥ 2 matched peaks, target "
-                  "precision 0.8.", "",
+                  "precision p = 0.7 (the WS7 target, author 2026-11-15) and 0.8.", "",
                   "Kernels are named by their run short name (see Kernels for the identity).", "",
-                  "| kernel | mode | truth | view | t* | precision [95% CI] | recall [95% CI] | n above |",
-                  "|---|---|---|---|---|---|---|---|"]
+                  "| kernel | mode | truth | view | p | t* | precision [95% CI] | recall [95% CI] | n above |",
+                  "|---|---|---|---|---|---|---|---|---|"]
         short_of = {k["identity"]: k.get("short") for k in sp.get("kernels", [])}
         with open(table, encoding="utf-8") as handle:
             for row in csv.DictReader(handle, delimiter="\t"):
-                if (row["adduct"], row["dprec_bin"], row["instrument_pair"], row["min_matched"],
-                        row["target_precision"]) != ("all", "all", "all", "2", "0.800000"):
+                if (row["adduct"], row["dprec_bin"], row["instrument_pair"], row["min_matched"]) !=                         ("all", "all", "all", "2") or row["target_precision"] not in ("0.700000", "0.800000"):
                     continue
+                p_txt = _fmt(row["target_precision"], 1)
                 kernel = short_of.get(row["kernel_identity"]) or row["kernel_identity"].split("?")[0]
                 if row["estimable"] != "1":
                     lines.append(f"| {kernel} | {row['ion_mode']} | {row['truth_definition']} | "
-                                 f"{row['bias_view']} | not estimable | – | – | – |")
+                                 f"{row['bias_view']} | {p_txt} | not estimable | – | – | – |")
                     continue
                 lines.append(
-                    f"| {kernel} | {row['ion_mode']} | {row['truth_definition']} | {row['bias_view']} | "
+                    f"| {kernel} | {row['ion_mode']} | {row['truth_definition']} | {row['bias_view']} | {p_txt} | "
                     f"{_fmt(row['threshold'], 2)} | {_fmt(row['precision'])} [{_fmt(row['precision_ci_low'])}, "
                     f"{_fmt(row['precision_ci_high'])}] | {_fmt(row['recall'])} [{_fmt(row['recall_ci_low'])}, "
                     f"{_fmt(row['recall_ci_high'])}] | {_count(row['n_pairs_above'])} |")

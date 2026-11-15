@@ -4,6 +4,8 @@ Populations per truth definition:
   tanimoto07   every structure-resolved pair (exhaustive, w = 1); y = Tanimoto >= 0.7.
   same_parent  every pair whose two blocks both have a direct parent (exhaustive); y = same parent.
   mces2/3/5    the stratified MCES sample with HT weights N_h / n_h; y = MCES <= k (exact below 10).
+  mces3_homologue  the same sample and weights; y = MCES <= 3 or a homologue pair (homologue.py, series or
+               redistribution). Needs the run's homologue-truth step; without it the truth is skipped.
 Exhaustive cells read the kept pairs only, which hold every pair with any score >= 0.3 and every positive,
 so precision and n above any t >= 0.3 and every recall are exact; the grid therefore starts at 0.30 for
 exhaustive truth (thresholds below 0.3 are reported as not estimable, never extrapolated).
@@ -22,7 +24,7 @@ import pandas as pd
 from . import metrics as M
 from . import pairs as P
 
-TRUTHS = ("mces3", "mces2", "mces5", "tanimoto07", "same_parent")
+TRUTHS = ("mces3", "mces2", "mces5", "mces3_homologue", "tanimoto07", "same_parent")
 BIAS_VIEWS = ("all", "no_lipid_lipid", "class_balanced")
 TARGETS = (0.5, 0.7, 0.8, 0.9)
 EXHAUSTIVE_MIN_T = 0.30
@@ -36,6 +38,12 @@ COLUMNS = ["kernel_identity", "implementation", "library", "ion_mode", "adduct",
 
 def truth_population(kind: str, kept: pd.DataFrame, sample: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray,
                                                                                 np.ndarray]:
+    if kind == "mces3_homologue":
+        if "homologue" not in sample:
+            return sample.iloc[0:0], np.zeros(0), np.zeros(0)
+        frame = sample[sample["mces"].notna() & (sample["mces_mode"] >= 0)]
+        y = ((frame["mces"].to_numpy() <= 3) | (frame["homologue"].to_numpy() > 0)).astype(float)
+        return frame, y, frame["ht_weight"].to_numpy(float)
     if kind.startswith("mces"):
         k = int(kind[4:])
         frame = sample[sample["mces"].notna() & (sample["mces_mode"] >= 0)]
@@ -133,11 +141,12 @@ def cell_rows(score: np.ndarray, bins: np.ndarray, y: np.ndarray, w: np.ndarray,
 def build_table(kept: pd.DataFrame, sample: pd.DataFrame, kernels: list[dict], *, library: str, ion_mode: str,
                 parent_of: dict[str, str | None], ref_matched_short: str, B: int = 1000, seed: int = 0,
                 suppress_small: bool = False, adducts: bool = True, instrument: bool = True,
-                views: tuple[str, ...] = BIAS_VIEWS, progress=print) -> pd.DataFrame:
+                views: tuple[str, ...] = BIAS_VIEWS, truths: tuple[str, ...] = TRUTHS,
+                progress=print) -> pd.DataFrame:
     import time
 
     rows: list[dict] = []
-    for truth in TRUTHS:
+    for truth in truths:
         frame, y, w = truth_population(truth, kept, sample)
         if frame.empty:
             continue

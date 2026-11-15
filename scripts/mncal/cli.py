@@ -295,6 +295,63 @@ def cmd_structure_truth(args) -> int:
 
 
 # ------------------------------------------------------------------------------------------- calibrate
+def _load_sample(data: Path, mode: str, kept):
+    """The MCES sample of a mode, with the homologue relation of each pair when the run has a homologue-truth
+    step (column `homologue`: 0 none, 1 series, 2 redistribution)."""
+    import numpy as np
+    import pandas as pd
+
+    sample_path = data / f"mces_sample_{mode}.parquet"
+    sample = pd.read_parquet(sample_path) if sample_path.exists() else kept.iloc[0:0].assign(
+        mces=np.nan, mces_mode=-1, ht_weight=np.nan)
+    if "mces" not in sample:
+        sample = sample.assign(mces=np.nan, mces_mode=-1)
+    hom_path = data / f"homologue_blocks_{mode}.parquet"
+    if hom_path.exists() and len(sample):
+        from . import homologue as HOM
+
+        table = pd.read_parquet(hom_path)
+        sample = sample.assign(homologue=HOM.pair_relation(table, sample["block_a"], sample["block_b"]))
+    return sample
+
+
+def cmd_homologue_truth(args) -> int:
+    """Per block: the repeat-unit skeleton and unit counts (homologue_rules_v1); per mode: the relation counts
+    over the MCES sample. A private run keeps the block table (it holds structure-derived SMILES) local."""
+    import numpy as np
+    import pandas as pd
+
+    from . import homologue as HOM
+
+    run = Path(args.run)
+    data = _data_dir(run)
+    summary = {}
+    for mode in args.modes:
+        blocks = pd.read_parquet(data / f"blocks_{mode}.parquet")
+        table = HOM.block_table(blocks)
+        table.to_parquet(data / f"homologue_blocks_{mode}.parquet", index=False)
+        entry = {"blocks": int(len(table)), "blocks_with_skeleton": int((table["skeleton_code"] >= 0).sum()),
+                 "blocks_with_units": int(((table["n_ch2"] + table["n_cf2"] + table["n_oxa"]) > 0).sum())}
+        sample_path = data / f"mces_sample_{mode}.parquet"
+        if sample_path.exists():
+            sample = pd.read_parquet(sample_path, columns=["block_a", "block_b", "mces", "mces_mode", "ht_weight"])
+            sample = sample[sample["mces"].notna() & (sample["mces_mode"] >= 0)]
+            rel = HOM.pair_relation(table, sample["block_a"], sample["block_b"])
+            mces3 = sample["mces"].to_numpy() <= 3
+            w = sample["ht_weight"].to_numpy(float)
+            entry["sample_pairs"] = int(len(sample))
+            entry["sample_series"] = int((rel == 1).sum())
+            entry["sample_redistribution"] = int((rel == 2).sum())
+            entry["sample_homologue_and_mces_gt3"] = int(((rel > 0) & ~mces3).sum())
+            entry["ht_share_mces3"] = float(np.sum(w * mces3) / np.sum(w)) if len(w) else None
+            entry["ht_share_mces3_homologue"] = (float(np.sum(w * (mces3 | (rel > 0))) / np.sum(w))
+                                                 if len(w) else None)
+        summary[mode] = entry
+        print(f"homologue-truth {mode}: {entry}")
+    _update_run(run, "homologue-truth", {"rules": HOM.RULES_VERSION, "summary": summary})
+    return 0
+
+
 def cmd_calibrate(args) -> int:
     import numpy as np
     import pandas as pd
@@ -310,17 +367,14 @@ def cmd_calibrate(args) -> int:
         kernels = [k for k in kernels if k["short"] in args.only_kernels]
     ref_short = next((k["short"] for k in kernels if k["short"] in ("primary", "matchms")), kernels[0]["short"])
     views = tuple(args.views) if args.views else CAL.BIAS_VIEWS
-    if set(views) != set(CAL.BIAS_VIEWS):
-        return _calibrate_views(args, run, data, record, kernels, ref_short, views)
+    truths = tuple(args.truths) if args.truths else CAL.TRUTHS
+    if set(views) != set(CAL.BIAS_VIEWS) or set(truths) != set(CAL.TRUTHS):
+        return _calibrate_views(args, run, data, record, kernels, ref_short, views, truths)
     tables, sanity, counts = [], {}, {}
     for mode in args.modes:
         pairs_dir = data / "pairs" / mode
         kept = _load_kept(pairs_dir)
-        sample_path = data / f"mces_sample_{mode}.parquet"
-        sample = pd.read_parquet(sample_path) if sample_path.exists() else kept.iloc[0:0].assign(
-            mces=np.nan, mces_mode=-1, ht_weight=np.nan)
-        if "mces" not in sample:
-            sample = sample.assign(mces=np.nan, mces_mode=-1)
+        sample = _load_sample(data, mode, kept)
         blocks = pd.read_parquet(data / f"blocks_{mode}.parquet")
         parent_of = dict(zip(blocks["block"], blocks["direct_parent"]))
         ion_mode = {"pos": "Positive", "neg": "Negative"}[mode]
@@ -371,8 +425,10 @@ def cmd_calibrate(args) -> int:
 
 
 def _calibrate_views(args, run: Path, data: Path, record: dict, kernels: list[dict], ref_short: str,
-                     views: tuple[str, ...]) -> int:
-    """Recompute only the given bias views and replace their rows in the existing cutoff table.
+                     views: tuple[str, ...], truths: tuple[str, ...] | None = None) -> int:
+    """Recompute only the given bias views and truths and replace their rows in the existing cutoff table.
+
+    Rows of a truth the table does not hold yet (a new tier) are added.
 
     The previous table is kept beside it as cutoff_table.<first 12 hex of its sha256>.tsv. Sanity numbers,
     curves and stratum counts do not depend on the bias view, so the calibrate step keeps them; the step gains
@@ -391,26 +447,25 @@ def _calibrate_views(args, run: Path, data: Path, record: dict, kernels: list[di
     old = pd.read_csv(out, sep="\t", dtype=str, keep_default_na=False)
     ion = {"pos": "Positive", "neg": "Negative"}
     identities = {k["identity"] for k in kernels}
+    truths = truths or CAL.TRUTHS
     drop = old["bias_view"].isin(views) & old["ion_mode"].isin([ion[m] for m in args.modes]) & \
-        old["kernel_identity"].isin(identities)
+        old["kernel_identity"].isin(identities) & old["truth_definition"].isin(truths)
+    new_truths = set(truths) - set(old["truth_definition"])
     tables = []
     for mode in args.modes:
         kept = _load_kept(data / "pairs" / mode)
-        sample_path = data / f"mces_sample_{mode}.parquet"
-        sample = pd.read_parquet(sample_path) if sample_path.exists() else kept.iloc[0:0].assign(
-            mces=np.nan, mces_mode=-1, ht_weight=np.nan)
-        if "mces" not in sample:
-            sample = sample.assign(mces=np.nan, mces_mode=-1)
+        sample = _load_sample(data, mode, kept)
         blocks = pd.read_parquet(data / f"blocks_{mode}.parquet")
         parent_of = dict(zip(blocks["block"], blocks["direct_parent"]))
         tables.append(CAL.build_table(kept, sample, kernels, library=record.get("library_label", "VS20"),
                                       ion_mode=ion[mode], parent_of=parent_of, ref_matched_short=ref_short,
                                       B=args.bootstrap, seed=args.seed, suppress_small=record.get("private", False),
-                                      views=views))
+                                      views=views, truths=truths))
     new_rows = pd.read_csv(__import__("io").StringIO(CAL.canonical_tsv(pd.concat(tables, ignore_index=True))),
                            sep="\t", dtype=str, keep_default_na=False)
-    if len(new_rows) != int(drop.sum()):
-        raise SystemExit(f"view rerun produced {len(new_rows)} rows for {int(drop.sum())} replaced rows; table kept")
+    replaced_rows = new_rows[~new_rows["truth_definition"].isin(new_truths)]
+    if len(replaced_rows) != int(drop.sum()):
+        raise SystemExit(f"rerun produced {len(replaced_rows)} rows for {int(drop.sum())} replaced rows; table kept")
     merged = pd.concat([old[~drop], new_rows], ignore_index=True)
     keys = ["kernel_identity", "ion_mode", "adduct", "dprec_bin", "instrument_pair", "min_matched",
             "truth_definition", "bias_view", "target_precision"]
@@ -423,13 +478,18 @@ def _calibrate_views(args, run: Path, data: Path, record: dict, kernels: list[di
     step.pop("finished_at", None)
     step.pop("code", None)
     reruns = list(step.get("view_reruns", []))
-    reruns.append({"views": list(views), "modes": list(args.modes), "code": C.code_commit(),
+    reruns.append({"views": list(views), "truths": list(truths), "added_truths": sorted(new_truths),
+                   "rows_added": int(len(new_rows) - len(replaced_rows)), "modes": list(args.modes),
+                   "code": C.code_commit(),
                    "previous_table_sha256": old_digest, "table_sha256": digest, "rows_replaced": int(drop.sum()),
                    "priority_class": C.priority_class(), "finished_at": C.now_iso()})
     step.update({"table_sha256": digest, "rows": int(len(merged)),
                  "estimable_rows": int((merged["estimable"] == "1").sum()), "view_reruns": reruns})
     _update_run(run, "calibrate", step)
-    print(f"cutoff_table.tsv rows={len(merged)} replaced={int(drop.sum())} sha256={digest} (was {old_digest})")
+    if args.curves:
+        _curves(run, data, kernels, args.modes, ref_short, truths=truths)
+    print(f"cutoff_table.tsv rows={len(merged)} replaced={int(drop.sum())} "
+          f"added={int(len(new_rows) - len(replaced_rows))} sha256={digest} (was {old_digest})")
     return 0
 
 
@@ -444,7 +504,8 @@ def _stratum_counts(records: list[dict]) -> dict:
     return out
 
 
-def _curves(run: Path, data: Path, kernels: list[dict], modes: list[str], ref_short: str) -> None:
+def _curves(run: Path, data: Path, kernels: list[dict], modes: list[str], ref_short: str,
+            truths: tuple[str, ...] = ("mces3", "mces3_homologue", "tanimoto07", "same_parent")) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -459,12 +520,15 @@ def _curves(run: Path, data: Path, kernels: list[dict], modes: list[str], ref_sh
     out.mkdir(exist_ok=True)
     for mode in modes:
         kept = _load_kept(data / "pairs" / mode)
-        sample_path = data / f"mces_sample_{mode}.parquet"
-        sample = pd.read_parquet(sample_path) if sample_path.exists() else kept.iloc[0:0]
-        for truth in ("mces3", "tanimoto07", "same_parent"):
+        sample = _load_sample(data, mode, kept)
+        for truth in truths:
+            if truth not in ("mces3", "mces3_homologue", "tanimoto07", "same_parent"):
+                continue
             if truth.startswith("mces") and ("mces" not in sample or sample["mces"].notna().sum() == 0):
                 continue
             frame, y, w = CAL.truth_population(truth, kept, sample)
+            if frame.empty:
+                continue
             fig, ax = plt.subplots(figsize=(6, 4.5))
             for k in kernels:
                 mcol = f"m_{k['short']}" if k["reports_matches"] else f"m_{ref_short}"
@@ -556,7 +620,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--curves", action="store_true")
     p.add_argument("--views", nargs="+", choices=["all", "no_lipid_lipid", "class_balanced"],
                    help="recompute only these bias views and replace their rows in the existing table")
+    p.add_argument("--truths", nargs="+",
+                   choices=["mces3", "mces2", "mces5", "mces3_homologue", "tanimoto07", "same_parent"],
+                   help="recompute only these truths (a truth new to the table is added)")
     p.set_defaults(func=cmd_calibrate)
+
+    p = sub.add_parser("homologue-truth", help="Repeat-unit skeletons per block and the homologue relation")
+    p.add_argument("--run", required=True)
+    p.add_argument("--modes", nargs="+", default=["pos", "neg"])
+    p.set_defaults(func=cmd_homologue_truth)
 
     p = sub.add_parser("report", help="Write <run>/report.md from run.json and the cutoff table")
     p.add_argument("--run", required=True)

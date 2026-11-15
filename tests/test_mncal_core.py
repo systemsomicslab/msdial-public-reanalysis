@@ -660,6 +660,117 @@ class ClassBalancedBootstrapTests(unittest.TestCase):
 
 
 @unittest.skipUnless(D5, "D5 env only")
+class HomologueTruthTests(unittest.TestCase):
+    """homologue_rules_v1: PFAS CF2 series, alkyl and lipid CH2 series, C2H4O series, and non-homologues."""
+
+    S = {
+        "PFHxA": "OC(=O)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F",
+        "PFOA": "OC(=O)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F",
+        "PFDA": "OC(=O)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F",
+        "PFBS": "OS(=O)(=O)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F",
+        "PFOS": "OS(=O)(=O)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F",
+        "6:2 FTOH": "OCCC(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F",
+        "8:2 FTOH": "OCCC(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F",
+        "8:2 FTSA": "OS(=O)(=O)CCC(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F",
+        "FA 16:0": "CCCCCCCCCCCCCCCC(=O)O",
+        "FA 18:0": "CCCCCCCCCCCCCCCCCC(=O)O",
+        "FA 18:1 n-9": "CCCCCCCC/C=C\\CCCCCCCC(=O)O",
+        "FA 18:1 n-7": "CCCCCC/C=C\\CCCCCCCCCC(=O)O",
+        "FA 18:2": "CCCCC/C=C\\C/C=C\\CCCCCCCC(=O)O",
+        "PC 16:0/18:1": "CCCCCCCCCCCCCCCC(=O)OCC(COP(=O)(O)OCC[N+](C)(C)C)OC(=O)CCCCCCC/C=C\\CCCCCCCC",
+        "PC 18:0/18:1": "CCCCCCCCCCCCCCCCCC(=O)OCC(COP(=O)(O)OCC[N+](C)(C)C)OC(=O)CCCCCCC/C=C\\CCCCCCCC",
+        "PC 18:0/16:1": "CCCCCCCCCCCCCCCCCC(=O)OCC(COP(=O)(O)OCC[N+](C)(C)C)OC(=O)CCCCCCC/C=C\\CCCCCC",
+        "PE 16:0/18:1": "CCCCCCCCCCCCCCCC(=O)OCC(COP(=O)(O)OCCN)OC(=O)CCCCCCC/C=C\\CCCCCCCC",
+        "CAR 10:0": "CCCCCCCCCC(=O)OC(CC(=O)O)C[N+](C)(C)C",
+        "CAR 12:0": "CCCCCCCCCCCC(=O)OC(CC(=O)O)C[N+](C)(C)C",
+        "triethylene glycol": "OCCOCCOCCO",
+        "tetraethylene glycol": "OCCOCCOCCOCCO",
+        "1,5-pentanediol": "OCCCCCO",
+        "methanol": "CO", "ethanol": "CCO", "propanol": "CCCO",
+        "toluene": "Cc1ccccc1", "ethylbenzene": "CCc1ccccc1", "propylbenzene": "CCCc1ccccc1",
+        "glucose": "OCC1OC(O)C(O)C(O)C1O", "cyclohexane": "C1CCCCC1", "cycloheptane": "C1CCCCCC1",
+    }
+    EXPECT = [
+        ("PFHxA", "PFOA", "series"), ("PFOA", "PFDA", "series"), ("PFBS", "PFOS", "series"),
+        ("PFOA", "PFOS", "none"), ("6:2 FTOH", "8:2 FTOH", "series"), ("8:2 FTOH", "8:2 FTSA", "none"),
+        ("PFOA", "8:2 FTOH", "none"),
+        ("FA 16:0", "FA 18:0", "series"), ("FA 18:0", "FA 18:1 n-9", "none"),
+        ("FA 18:1 n-9", "FA 18:1 n-7", "redistribution"), ("FA 18:1 n-9", "FA 18:2", "none"),
+        ("PC 16:0/18:1", "PC 18:0/18:1", "series"), ("PC 16:0/18:1", "PC 18:0/16:1", "redistribution"),
+        ("PC 16:0/18:1", "PE 16:0/18:1", "none"), ("CAR 10:0", "CAR 12:0", "series"),
+        ("triethylene glycol", "tetraethylene glycol", "series"),
+        ("triethylene glycol", "1,5-pentanediol", "none"),
+        ("methanol", "ethanol", "none"), ("ethanol", "propanol", "series"),
+        ("toluene", "ethylbenzene", "none"), ("ethylbenzene", "propylbenzene", "series"),
+        ("glucose", "cyclohexane", "none"), ("cyclohexane", "cycloheptane", "none"),
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.H = _import("mncal.homologue")
+
+    def test_expected_relations(self):
+        sk = {k: self.H.skeleton(v) for k, v in self.S.items()}
+        for a, b, want in self.EXPECT:
+            got = self.H.relation(sk[a][0], sk[a][1:], sk[b][0], sk[b][1:])
+            self.assertEqual(got, want, f"{a} vs {b}")
+            self.assertEqual(self.H.relation(sk[b][0], sk[b][1:], sk[a][0], sk[a][1:]), want, f"{b} vs {a}")
+
+    def test_cf2_units_carry_their_fluorines_and_terminal_groups_are_kept(self):
+        sk, ch2, cf2, oxa = self.H.skeleton(self.S["PFOA"])
+        self.assertEqual((ch2, cf2, oxa), (0, 6, 0))
+        self.assertIn("C(F)(F)F", sk)                      # CF3 is not a unit
+        sk, ch2, cf2, oxa = self.H.skeleton(self.S["6:2 FTOH"])
+        self.assertEqual((ch2, cf2, oxa), (2, 5, 0))         # CH2 and CF2 runs stay apart
+
+    def test_stereo_is_ignored_and_unparsable_input_gives_no_skeleton(self):
+        a = self.H.skeleton("C[C@H](N)C(=O)O")
+        b = self.H.skeleton("C[C@@H](N)C(=O)O")
+        self.assertEqual(a, b)
+        self.assertEqual(self.H.skeleton("not a smiles"), (None, 0, 0, 0))
+        self.assertEqual(self.H.relation(None, (0, 0, 0), None, (0, 0, 0)), "none")
+
+    def test_pair_relation_matches_relation(self):
+        import itertools
+
+        import numpy as np
+        import pandas as pd
+
+        names = sorted(self.S)
+        blocks = pd.DataFrame({"block": names, "smiles_std": [self.S[n] for n in names],
+                               "structure_ok": [True] * len(names)})
+        blocks.loc[blocks["block"] == "glucose", "structure_ok"] = False
+        table = self.H.block_table(blocks)
+        pairs = list(itertools.combinations(names, 2))
+        got = self.H.pair_relation(table, [a for a, _ in pairs], [b for _, b in pairs])
+        sk = table.set_index("block")
+        code = {"none": 0, "series": 1, "redistribution": 2}
+        for (a, b), g in zip(pairs, got):
+            ra, rb = sk.loc[a], sk.loc[b]
+            want = self.H.relation(ra.skeleton if ra.skeleton_code >= 0 else None,
+                                   (ra.n_ch2, ra.n_cf2, ra.n_oxa),
+                                   rb.skeleton if rb.skeleton_code >= 0 else None, (rb.n_ch2, rb.n_cf2, rb.n_oxa))
+            self.assertEqual(int(g), code[want], f"{a} vs {b}")
+        self.assertTrue(np.all(got[[i for i, (a, b) in enumerate(pairs) if "glucose" in (a, b)]] == 0))
+
+    def test_truth_population_is_mces3_or_homologue(self):
+        import numpy as np
+        import pandas as pd
+
+        CAL = _import("mncal.calibrate")
+        sample = pd.DataFrame({"mces": [1.0, 5.0, 5.0, 12.0, np.nan], "mces_mode": [1, 1, 1, 4, -1],
+                               "homologue": np.array([0, 1, 0, 2, 1], np.int8),
+                               "ht_weight": [1.0, 2.0, 3.0, 4.0, 5.0]})
+        frame, y, w = CAL.truth_population("mces3_homologue", None, sample)
+        self.assertEqual(list(y), [1.0, 1.0, 0.0, 1.0])
+        self.assertEqual(list(w), [1.0, 2.0, 3.0, 4.0])
+        frame, y, _ = CAL.truth_population("mces3", None, sample)
+        self.assertEqual(list(y), [1.0, 0.0, 0.0, 0.0])
+        empty, y0, _ = CAL.truth_population("mces3_homologue", None, sample.drop(columns="homologue"))
+        self.assertTrue(empty.empty)
+
+
+@unittest.skipUnless(D5, "D5 env only")
 class OverlayDdlTests(unittest.TestCase):
     EDGE = ["similarity_id", "query_spectrum_id", "reference_spectrum_id", "neighbour_name", "neighbour_inchikey",
             "neighbour_library_id", "ion_mode", "query_adduct", "adduct_assumed", "query_precursor_mz",

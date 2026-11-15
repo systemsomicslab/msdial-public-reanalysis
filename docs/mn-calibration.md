@@ -29,7 +29,8 @@ set PYTHONPATH=scripts;<catalog pin>\src
 | 2 | `check-kernels` | Primary identity round-trip through WS2's `canonical_kernel_id`, equality with WS3's reported string, `similarity-fixtures/` parity (abs 1e-9). |
 | 3 | `score-pairs` | Pair universe U (same ion mode and adduct, different block, abs(dprec) <= 400 Da, all instrument combinations); prefilter; kernels; Tanimoto; class and lipid relations. Chunked, resumable, <= 16 workers at BelowNormal priority. |
 | 4 | `structure-truth` | myopic MCES (threshold 10) on a stratified simple random sample. `--reuse-mces <run>` reuses an earlier run's results for block pairs whose standard SMILES are unchanged (the sample depends only on representatives, seed and caps, never on kernels). |
-| 5 | `calibrate` | `cutoff_table.tsv`, curves, sanity numbers; `table_sha256` in `run.json`. |
+| 4b | `homologue-truth` | Repeat-unit skeleton and unit counts per block (`homologue_blocks_<mode>.parquet`; local only in a private run, because it holds structure-derived SMILES) and the relation counts over the MCES sample. Seconds per mode. |
+| 5 | `calibrate` | `cutoff_table.tsv`, curves, sanity numbers; `table_sha256` in `run.json`. `--truths` / `--views` recompute part of the table and replace or add its rows. |
 | 6 | `report` | `report.md` from `run.json` and the table. |
 | - | `guard` | VS21 leak scanner (strict, or `--allow-neighbour-identity` for WS7). |
 
@@ -75,7 +76,25 @@ stratified by the run's modified-cosine matched count and is scored only on pair
   dprec bin x Tanimoto bin), n_h = min(N_h, 500) below Tanimoto 0.6 and min(N_h, 2000) from 0.6 (the spec takes these bins whole; at VS20 scale that is about 80k pairs per mode, so they are capped), chosen by a
   seed-fixed pair hash (bottom-k); HT weight N_h / n_h.
 - Class: same ClassyFire direct parent.
-- Analog definitions: MCES <= 3 (primary), <= 2, <= 5; Tanimoto >= 0.7; same direct parent.
+- Analog definitions: MCES <= 3 (primary), <= 2, <= 5; Tanimoto >= 0.7; same direct parent; and, since
+  2026-11-15, the homologue-aware tier `mces3_homologue` (below).
+- `mces3_homologue` (`homologue_rules_v1`, `scripts/mncal/homologue.py`, step `homologue-truth`): y = MCES <= 3,
+  or the two blocks are homologues, on the MCES sample with its HT weights. `mces3` is unchanged. The author
+  decided this on 2026-11-15 after the VS20 run: MCES <= 3 counts a PFAS CF2 step as three edits, and an
+  alkyl or lipid chain step as one edit per CH2, so the series that dominate high-score pairs fail it.
+  - Repeat-unit skeleton of a block (standard SMILES, stereo removed):
+    - unit atoms are acyclic, uncharged, single-bonded CH2 (two heavy neighbours), CF2 (two terminal F and
+      two other heavy neighbours) and ether O between two CH2 units (the O of C2H4O);
+    - adjacent CH2, adjacent CF2, and CH2 next to such an O form one run, but a CH2 and a CF2 never share a run;
+    - each run becomes one dummy atom labelled CH2, CF2 or CH2 with O;
+    - the canonical SMILES of the result is the skeleton, and the block keeps its unit counts.
+    Terminal CH3 and CF3 are not units.
+  - Homologues have equal skeletons and unit counts that differ in one unit kind only (`series`: CH2, CF2,
+    or C2H4O, the last as dCH2 = 2 dO), or that do not differ at all (`redistribution`: the same units spread
+    differently over chains, such as PC 16:0/18:1 and PC 18:0/16:1, or a double bond moved along a chain).
+  - Tests cover PFCA, PFSA and fluorotelomer CF2 series, fatty acid, acylcarnitine and PC CH2 series,
+    glycol C2H4O series, and non-homologues: head-group changes, unsaturation, terminal methyl, ring size and
+    sulfonate against carboxylate.
 - E1 precision(t) and recall(t) with w = 1 (exhaustive) or HT weights (MCES). Bias views: all pairs;
   lipid-lipid pairs excluded; class-balanced (each direct-parent class gets equal total weight, a pair
   counting half for each endpoint's class).
@@ -109,6 +128,30 @@ precision_ci_high, recall, recall_ci_low, recall_ci_high, n_pairs_above, n_analo
 trailing wilson_low, n_eff_above, bootstrap_b, population. `min_matched = k` is a floor (>= k matched
 peaks). Rows pooled over adducts or instrument pairs carry `all`. In a private run, counts 1-9 are written
 `<10`.
+
+### Truth vocabulary (proposed to WS1, 2026-11-15)
+
+`truth_definition` in `cutoff_table.tsv` and in `mn_evidence_proposal` takes one of `mces3`, `mces2`,
+`mces5`, `tanimoto07`, `same_parent` and, new, `mces3_homologue`.
+
+- The overlay DDL does not change, because the column is free text.
+- What changes is the vocabulary that WS8's claim derivation reads. WS1 owns that vocabulary, and WS0
+  routes the change.
+- A consumer that knows only the five earlier values must treat `mces3_homologue` as unknown and must not
+  map it to `mces3`.
+- The rules file version (`homologue_rules_v1`) is recorded in `run.json` (step `homologue-truth`).
+
+## WS7 decisions (author, 2026-11-15)
+
+- **Kernel: pow05.** The identity is
+  `gnps.modified_cosine?assign=greedy&ipow=1&mzpow=0&prep=mn&prep.above=0.025&prep.abs=0&prep.frame=0&prep.maxmz=10000&prep.minmz=0&prep.pow=0.5&prep.precwin=17&prep.rel=1&prep.scale=100&prep.topk=0&prep.topkwin=50&tol=0.025`.
+  - It is recorded as a **deviation** from the pre-registered primary (`prep.pow=1`), which reached no
+    tanimoto07 target in VS20 positive mode and reached negative-mode targets only at t = 1.00.
+  - The primary's C# parity (O3) does not carry over: no C# kernel has been checked against `prep.pow=0.5`.
+    A pow05 cutoff therefore holds for the Python kernel only, until WS3 reports parity.
+- **Sensitivity kernel in the reports: bonanza.** The identity is `msdial.bonanza.v1?...` as above.
+- **Target precision: 0.7 in both ion modes**, on tanimoto07 truth. Once its cutoffs exist, the
+  `mces3_homologue` tier is reported alongside.
 
 ## WS7 overlay (`mn-overlay-v1`)
 
