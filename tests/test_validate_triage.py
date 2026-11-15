@@ -567,7 +567,10 @@ class FalsePassTest(TriageCase):
         pos["excluded_rows"].append({"row_index": 0, "sample_id": row["sample_id"], "raw_file": row["raw_file"], "member_path": row["member_path"],
                                      "reason": "belongs_to_other_unit", "belongs_to_unit": "AN007768", "detail": "said to be AN007768's"})
         report, _ = self.run_validator("ST004606", docs, catalog=False)
-        self.assertIn("T-EXCL", self.checks(report, "hold", "AN007766"))
+        # The hold is for row 0 itself. The index swap above also leaves AN007768's row 56 pointing nowhere,
+        # so a bare "some T-EXCL on AN007766" would pass even if the check went back to row indexes.
+        excl = [f.message for f in report.findings if f.check == "T-EXCL" and f.level == "hold" and f.unit == "AN007766"]
+        self.assertTrue(any(m.startswith("row 0 (20250128_FK_1-1, 20250128_FK_1-1.mzML) is said to belong to AN007768, but AN007768 does not keep") for m in excl), excl)
 
     def test_a_handoffs_folder_with_several_accessions(self) -> None:
         handoffs = self.tmp / "handoffs"
@@ -590,6 +593,163 @@ class FalsePassTest(TriageCase):
         del all_docs["ST004606"]["AN007769"]
         report = vt.validate(te.write(all_docs["ST004606"], self.tmp / "triage" / "ST004606-short"), vt.read_catalog(handoffs), vt.read_listing(listing))
         self.assertEqual({f.unit for f in report.findings if f.check == "T-SET"}, {"AN007769"})
+
+
+INF25 = "Inf1_infected_NA_1__025"
+INF25_RAW = f"VIAH002_003_WorkbenchUpload/Lipids/Neg/{INF25}.raw"
+
+
+def messages(report, check: str, unit: str, level: str = "error") -> list[str]:
+    return [f.message for f in report.findings if f.check == check and f.unit == unit and f.level == level]
+
+
+class SecondReviewTest(TriageCase):
+    """Wrong triage files that still passed after the first review's fixes (5ba5b4d), and the branches those
+    fixes added without a test."""
+
+    def test_name_tokens_are_read_from_the_member_a_raw_file_only_row_resolves_to(self) -> None:
+        """ST002747: a Lipids/Neg file moved into the RP-positive unit, with and without its member_path."""
+        for named in (True, False):
+            with self.subTest(member_path=named):
+                docs = te.build_good("ST002747")
+                changes = {"ion_mode": "positive"} if named else {"ion_mode": "positive", "member_path": None}
+                move_row(docs, INF25, "AN004457", "AN004456", **changes)
+                for unit in ("AN004454", "AN004455"):
+                    for e in docs[unit]["excluded_rows"]:
+                        if e["raw_file"] == INF25:
+                            e["belongs_to_unit"] = "AN004456"
+                report, _ = self.run_validator("ST002747", docs)
+                tokens = messages(report, "T-TOKEN", "AN004456")
+                self.assertTrue(any(f"{INF25_RAW} says negative, the triage says positive" in m for m in tokens), tokens)
+                self.assertEqual(report.unit_verdict("AN004456"), "error")
+
+    def test_a_ready_unit_cannot_drop_a_row_for_a_reason_its_own_state_contradicts(self) -> None:
+        """ST004606: AN007766's row 0 dropped by every (ready) unit for a reason none of them can have."""
+        for reason in ("needs_person", "no_signal_abstained", "polarity_switching", "out_of_scope_ms1_only", "requires_conversion"):
+            with self.subTest(reason=reason):
+                docs = te.build_good("ST004606")
+                row = docs["AN007766"]["rows"].pop(0)
+                for d in docs.values():
+                    d["excluded_rows"] = [e for e in d["excluded_rows"] if e["raw_file"] != row["raw_file"]]
+                    d["excluded_rows"].append({"row_index": row["row_index"], "sample_id": row["sample_id"], "raw_file": row["raw_file"],
+                                               "member_path": row["member_path"], "reason": reason, "belongs_to_unit": None, "detail": "dropped"})
+                report, _ = self.run_validator("ST004606", docs)
+                self.assertEqual(report.verdict, "error")
+                for unit in docs:
+                    excl = messages(report, "T-EXCL", unit)
+                    self.assertTrue(any(f"excluded as {reason}" in m for m in excl), (unit, excl))
+
+    def test_requires_conversion_is_checked_against_the_listing_for_a_raw_file_only_row(self) -> None:
+        docs = te.build_good("ST004606")
+        row = docs["AN007766"]["rows"].pop(0)
+        docs["AN007766"]["excluded_rows"].append({"row_index": row["row_index"], "sample_id": row["sample_id"], "raw_file": row["raw_file"],
+                                                  "member_path": None, "reason": "requires_conversion", "belongs_to_unit": None, "detail": "said mzXML"})
+        report, _ = self.run_validator("ST004606", docs)
+        self.assertTrue(any("data/20250128_FK_1-1.mzML, which MS-DIAL reads" in m for m in messages(report, "T-EXCL", "AN007766")))
+        # An mzXML member excluded as requires_conversion is right (ST002747's good triage does it 78 times),
+        # and an mzML member excluded so is not.
+        docs = te.build_good("ST002747")
+        report, _ = self.run_validator("ST002747", docs)
+        self.assertEqual(report.verdict, "pass")
+        mzxml = next(e for e in docs["AN004454"]["excluded_members"] if e["reason"] == "requires_conversion")
+        docs["AN004454"]["excluded_members"].append(dict(mzxml, member_path=INF25_RAW))
+        report, _ = self.run_validator("ST002747", docs)
+        self.assertTrue(any(f"member {INF25_RAW} is excluded as requires_conversion" in m for m in messages(report, "T-EXCL", "AN004454")))
+
+    def test_a_flagged_and_answered_unit_may_exclude_for_its_flag(self) -> None:
+        """ST003128: AN005128 carries polarity_switching and ms1_only; AN005129 only ms1_only."""
+        docs = te.build_good("ST003128")
+        own = docs["AN005128"]["excluded_rows"]
+        own[0]["reason"], own[0]["belongs_to_unit"] = "polarity_switching", None
+        own[1]["reason"], own[1]["belongs_to_unit"] = "out_of_scope_ms1_only", None
+        theirs = docs["AN005129"]["excluded_rows"]
+        theirs[0]["reason"], theirs[0]["belongs_to_unit"] = "out_of_scope_ms1_only", None
+        report, _ = self.run_validator("ST003128", docs)
+        self.assertEqual(messages(report, "T-EXCL", "AN005128"), [])
+        self.assertEqual(messages(report, "T-EXCL", "AN005129"), [])
+        theirs[1]["reason"], theirs[1]["belongs_to_unit"] = "polarity_switching", None
+        report, _ = self.run_validator("ST003128", docs)
+        self.assertTrue(any("without a polarity_switching flag" in m for m in messages(report, "T-EXCL", "AN005129")))
+
+    def test_one_acquisition_is_not_kept_twice_as_vendor_file_and_mzml_copy(self) -> None:
+        """ST003964: the mzml/ folder holds an mzML copy of every Thermo .raw."""
+        for unit in ("AN006515", "AN006516"):
+            with self.subTest(unit=unit):
+                docs = te.build_good("ST003964")
+                d = docs[unit]
+                raw = d["rows"][0]
+                copy_path = "mzml/" + raw["member_path"].rsplit("/", 1)[-1][: -len(".raw")] + ".mzML"
+                d["added_members"].append({k: raw[k] for k in ("archive", "role", "ion_mode", "chromatography", "acquisition_mode", "basis", "evidence")}
+                                          | {"member_path": copy_path})
+                report, _ = self.run_validator("ST003964", docs)
+                self.assertEqual(report.unit_verdict(unit), "error")
+                self.assertTrue(any("kept twice, in 2 formats" in m and copy_path in m for m in messages(report, "T-UNIQ", unit)))
+                listed_as_copy = any(e["member_path"] == copy_path for e in d["excluded_members"])
+                self.assertEqual(listed_as_copy, unit == "AN006515")
+                both = [m for m in messages(report, "T-EXCL", unit) if "and also kept" in m]
+                self.assertEqual(bool(both), listed_as_copy, both)
+
+    def test_an_excluded_member_said_to_be_another_units_is_checked_against_that_unit(self) -> None:
+        """ST002283: AN003728 drops its blank as AN003729's, which does not keep it."""
+        blank = "AB_Human_Bone/Human_Hilic_Pos/Blank_Hilic_Pos.mzML"
+        docs = te.build_good("ST002283")
+        pos = docs["AN003728"]
+        member = next(m for m in pos["added_members"] if m["member_path"] == blank)
+        pos["added_members"].remove(member)
+        pos["excluded_members"].append({"member_path": blank, "archive": member["archive"], "reason": "belongs_to_other_unit",
+                                        "belongs_to_unit": "AN003729", "detail": "said to be AN003729's"})
+        report, _ = self.run_validator("ST002283", docs)
+        self.assertNotEqual(report.unit_verdict("AN003728"), "pass")
+        self.assertIn(f"member {blank} is said to belong to AN003729, but AN003729 does not keep that file",
+                      messages(report, "T-EXCL", "AN003728", "hold"))
+        pos["excluded_members"][-1]["belongs_to_unit"] = None
+        report, _ = self.run_validator("ST002283", docs)
+        self.assertTrue(any("without naming the unit" in m for m in messages(report, "T-EXCL", "AN003728")))
+        # Kept by the unit it is said to belong to, the exclusion stands.
+        pos["excluded_members"][-1]["belongs_to_unit"] = "AN003729"
+        docs["AN003729"]["added_members"].append(member)
+        report, _ = self.run_validator("ST002283", docs)
+        self.assertEqual(messages(report, "T-EXCL", "AN003728", "hold") + messages(report, "T-EXCL", "AN003728"), [])
+
+    def test_the_catalog_putting_the_unit_in_another_accession_is_an_error(self) -> None:
+        docs = te.build_good("ST004606")
+        docs["AN007766"]["accession"] = "ST000001"
+        report, _ = self.run_validator("ST004606", docs)
+        self.assertIn("the Catalog puts unit AN007766 in ST004606, the triage in ST000001", messages(report, "T-COVER", "AN007766"))
+
+    def test_a_raw_file_only_row_that_resolves_to_mzxml_is_refused(self) -> None:
+        """ST002747 with only the Lipids/Neg mzXML of Inf1_infected_NA_1__025 in the listing."""
+        docs = te.build_good("ST002747")
+        row = next(r for r in docs["AN004457"]["rows"] if r["raw_file"] == INF25)
+        row["member_path"] = None
+        _, _, listing_path = te.load("ST002747")
+        listing = [m for m in vt.read_listing(listing_path) if vt.stem(m.path) != INF25 or m.path.endswith("Lipids/Neg/" + INF25 + ".mzXML")]
+        report = vt.validate(te.write(docs, self.tmp / "mzxml-only"), vt.read_catalog(te.fixture_dir("ST002747") / "catalog.json"), listing)
+        formats = messages(report, "T-FORMAT", "AN004457")
+        self.assertTrue(any(m.startswith(f"{INF25} (VIAH002_003_WorkbenchUpload/Lipids/Neg/{INF25}.mzXML) is mzXML") for m in formats), formats)
+
+    def test_a_row_the_index_cannot_resolve_joins_each_same_stem_member_without_merging_them(self) -> None:
+        """Without a listing, an mzML copy beside the .raw makes the bare name Inf1_infected_NA_1__025 ambiguous."""
+        copy_path = f"VIAH002_003_WorkbenchUpload/Other/{INF25}.mzML"
+        docs = te.build_good("ST002747")
+        next(r for r in docs["AN004457"]["rows"] if r["raw_file"] == INF25)["member_path"] = None
+        raw_row = te.build_good("ST002747")["AN004457"]["rows"]
+        raw_row = next(r for r in raw_row if r["raw_file"] == INF25)
+        fields = {k: raw_row[k] for k in ("archive", "role", "ion_mode", "chromatography", "acquisition_mode", "basis", "evidence")}
+        docs["AN004456"]["added_members"].append(fields | {"member_path": INF25_RAW})
+        docs["AN004454"]["excluded_members"].append({"member_path": copy_path, "archive": "ST002747_rawdata.zip",
+                                                    "reason": "alternative_format_copy", "belongs_to_unit": None, "detail": "test copy"})
+        report, _ = self.run_validator("ST002747", docs, listing=False)
+        uniq = [f.message for f in report.findings if f.check == "T-UNIQ"]
+        self.assertTrue(any("kept by both AN004456 and AN004457" in m for m in uniq), uniq)
+        # The copy kept by a third unit: the unresolved row may be either file, the two members are not one.
+        docs["AN004454"]["excluded_members"].pop()
+        docs["AN004455"]["added_members"].append(fields | {"member_path": copy_path})
+        report, _ = self.run_validator("ST002747", docs, listing=False)
+        uniq = [f.message for f in report.findings if f.check == "T-UNIQ"]
+        self.assertTrue(any("kept by both AN004455 and AN004457" in m for m in uniq), uniq)
+        self.assertTrue(any("kept by both AN004456 and AN004457" in m for m in uniq), uniq)
+        self.assertFalse(any("kept by both AN004455 and AN004456" in m for m in uniq), uniq)
 
 
 if __name__ == "__main__":

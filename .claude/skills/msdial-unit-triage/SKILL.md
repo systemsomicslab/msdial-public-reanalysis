@@ -178,11 +178,17 @@ or without `--archive-listing`, every unit holds. It checks:
   handoff sha256 is the one triaged;
 - that no file is in two units without `shared_with` on both, and names every set of units that keep an
   identical file set (the stage3b failure). A row named only by `raw_file` is the same file as the member
-  it names;
+  it names, and its name tokens and format are read from that member's path. No unit keeps one
+  acquisition twice (a vendor file and its mzML copy), or keeps a member it also lists in
+  `excluded_members`;
 - CRC32-and-size twins: a kept file with a byte-identical twin anywhere in the listing is an error unless
   `shared_content` is flagged and the unit waits for a person;
 - that `not_in_archive` and `duplicate_content` exclusions agree with the listing, and that a
-  `belongs_to_other_unit` row is kept by that unit (by file, not row index);
+  `belongs_to_other_unit` row or member is kept by that unit (by file, not row index);
+- that no exclusion reason contradicts the unit: `needs_person` only with a question open and the unit not
+  `ready`, `no_signal_abstained` only in an abstained unit (or one asking `no_signal`),
+  `polarity_switching` and `out_of_scope_ms1_only` only with their flag, and `requires_conversion` only for
+  a file that is mzXML or mzData (a row named only by `raw_file` is read through the listing);
 - polarity and chromatography of every kept file against its unit, child, declared settings and name
   tokens, children's polarity against the unit's, and raw-header evidence against the row;
 - that no unit outside `out_of_scope` keeps mzXML or mzData;

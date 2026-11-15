@@ -24,13 +24,14 @@ handoff), and without --archive-listing every unit holds (byte-identical content
 
 A kept row may name its file by member_path or only by raw_file. Both resolve to one key (the listing, or
 without one the member paths the triage files name, by exact name, then stem), so the same file is the
-same file in every check.
+same file in every check, and its name tokens and format are read from the member it resolves to.
 
 Levels:
 - error: the triage file breaks the contract (schema, coverage, a file in two units, byte-identical content
   settled by name, polarity or chromatography that disagrees with its unit or child, an unflagged MS1-only or
-  mixed acquisition, a kept mzXML or mzData file, an exclusion reason the listing contradicts, ...). The
-  triage must be redone; nothing may be planned from it.
+  mixed acquisition, a kept mzXML or mzData file, one acquisition kept twice in two formats, a member both
+  kept and excluded, an exclusion reason the listing or the unit's own status and flags contradict, ...).
+  The triage must be redone; nothing may be planned from it.
 - hold: the file is valid but something waits for a person: a unit that needs a person, abstained or is out
   of scope, flagged shared content, a member nobody accounted for, a check that could not run.
 - pass: every unit is ready and nothing waits.
@@ -369,6 +370,7 @@ class Resolver:
 
     def __init__(self, members: Iterable[str]):
         self.members: set[str] = set()
+        self.original: dict[str, str] = {}  # key -> the member path as the listing or triage spells it
         self.by_name: dict[str, set[str]] = defaultdict(set)
         self.by_stem: dict[str, set[str]] = defaultdict(set)
         for path in members:
@@ -376,6 +378,9 @@ class Resolver:
                 continue
             key = member_key(path)
             self.members.add(key)
+            norm = _norm_path(path)
+            folder = VENDOR_FOLDER.match(norm)
+            self.original.setdefault(key, folder.group(1) if folder else norm)
             self.by_name[basename(key)].add(key)
             self.by_stem[stem(key).casefold()].add(key)
 
@@ -411,6 +416,7 @@ class Kept:
     item: dict[str, Any]
     is_row: bool
     resolved: bool = True  # False: a row with no member_path whose raw_file names no single member
+    member: str | None = None  # the member path the file resolves to (None when unresolved)
 
     @property
     def stem(self) -> str:
@@ -421,12 +427,13 @@ def _kept(unit: str, triage: dict[str, Any], resolver: Resolver) -> list[Kept]:
     out = []
     for row in triage.get("rows", []):
         if row.get("member_path"):
-            out.append(Kept(unit, member_key(row["member_path"]), row["member_path"], row, True))
+            out.append(Kept(unit, member_key(row["member_path"]), row["member_path"], row, True, True, row["member_path"]))
         else:
             key, resolved = resolver.key(row.get("raw_file") or "")
-            out.append(Kept(unit, key, row.get("raw_file") or "", row, True, resolved))
+            member = resolver.original.get(key, key) if resolved else None
+            out.append(Kept(unit, key, row.get("raw_file") or "", row, True, resolved, member))
     for member in triage.get("added_members", []):
-        out.append(Kept(unit, member_key(member["member_path"]), member["member_path"], member, False))
+        out.append(Kept(unit, member_key(member["member_path"]), member["member_path"], member, False, True, member["member_path"]))
     return out
 
 
@@ -436,6 +443,33 @@ def same_file(kept: Kept, path: str, resolver: Resolver) -> bool:
     if key == kept.key:
         return True
     return (not resolved or not kept.resolved) and _key_stem(key) == kept.stem
+
+
+def _extension(key: str) -> str:
+    m = re.search(r"(?i)\.(raw|mzml|mzxml|mzdata|wiff2?|d|lcd|cdf)$", key)
+    return m.group(1).casefold() if m else ""
+
+
+def _runnable_form(item: dict[str, Any], resolver: Resolver) -> str | None:
+    """For an exclusion as requires_conversion: the form of the file MS-DIAL reads as it is, or None.
+
+    A member path is read as it is named. A row named only by raw_file is read through the index: the
+    member it resolves to (which prefers a vendor or mzML form over mzXML and mzData), else every member of
+    its name or stem, else the raw_file's own extension.
+    """
+    def runnable(path: str) -> bool:
+        return is_raw_like(path) and not _norm_path(path).casefold().endswith(CONVERSION_EXTENSIONS)
+
+    if item.get("member_path"):
+        return item["member_path"] if runnable(item["member_path"]) else None
+    name = item.get("raw_file") or ""
+    key = resolver.resolve(name)
+    if key is not None:
+        return resolver.original.get(key, key) if runnable(key) else None
+    hits = resolver.hits(name)
+    if hits:
+        return None if any(not runnable(h) for h in hits) else resolver.original.get(min(hits), min(hits))
+    return name if runnable(name) else None
 
 
 def _triage_member_paths(triages: dict[str, dict[str, Any]]) -> list[str]:
@@ -583,22 +617,58 @@ def _check_unit(
             if declared_ion in ("positive", "negative") and unit_ion != declared_ion and not disputed:
                 report.add("error", "T-DECL", unit, f"unit ion mode {unit_ion} differs from the Catalog's {cu.declared.get('ion_mode')!r} without a declared_technical_disputed flag")
 
-    # T-EXCL: an exclusion that points at another unit must point at a real one.
-    for item in t["excluded_rows"]:
+    # T-EXCL: an exclusion that points at another unit must point at a real one that keeps the file, whether
+    # the exclusion is of a Catalog row or of an archive member.
+    for item in t["excluded_rows"] + t.get("excluded_members", []):
         target = item.get("belongs_to_unit")
+        is_row = "row_index" in item
+        what = f"row {item['row_index']} ({item['sample_id']}, {item['raw_file']})" if is_row else f"member {item['member_path']}"
         if item["reason"] == "belongs_to_other_unit":
             if not target:
-                report.add("error", "T-EXCL", unit, f"row {item['row_index']} is excluded as another unit's without naming the unit")
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as another unit's without naming the unit")
             elif target == unit:
-                report.add("error", "T-EXCL", unit, f"row {item['row_index']} is excluded as belonging to this same unit")
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as belonging to this same unit")
             elif target not in triages:
-                report.add("hold", "T-EXCL", unit, f"row {item['row_index']} is said to belong to {target}, which has no triage file here")
+                report.add("hold", "T-EXCL", unit, f"{what} is said to belong to {target}, which has no triage file here")
             else:
                 # Row indexes belong to each unit's own handoff, so the target is checked by file, not by index.
                 path = item.get("member_path") or item["raw_file"]
                 theirs = _kept(target, triages[target], resolver)
-                if not any((k.is_row and k.item["sample_id"] == item["sample_id"] and k.item["raw_file"] == item["raw_file"]) or same_file(k, path, resolver) for k in theirs):
-                    report.add("hold", "T-EXCL", unit, f"row {item['row_index']} ({item['sample_id']}, {item['raw_file']}) is said to belong to {target}, but {target} does not keep that file")
+                same_row = (lambda k: k.is_row and k.item["sample_id"] == item["sample_id"] and k.item["raw_file"] == item["raw_file"]) if is_row else (lambda k: False)
+                if not any(same_row(k) or same_file(k, path, resolver) for k in theirs):
+                    report.add("hold", "T-EXCL", unit, f"{what} is said to belong to {target}, but {target} does not keep that file")
+
+    # T-EXCL: a reason that contradicts the unit's own state drops a file with nobody asked.
+    questions = {q["code"] for q in t["needs_person"]}
+    for item in t["excluded_rows"] + t.get("excluded_members", []):
+        reason = item["reason"]
+        what = f"row {item['row_index']} ({item['sample_id']}, {item['raw_file']})" if "row_index" in item else f"member {item['member_path']}"
+        if reason == "needs_person" and (status == "ready" or not t["needs_person"]):
+            report.add("error", "T-EXCL", unit, f"{what} is excluded as needs_person, but the unit is {status} with {len(t['needs_person'])} question(s) for a person; ask the question or give the real reason")
+        elif reason == "no_signal_abstained" and (status == "ready" or (status != "abstained" and "no_signal" not in questions)):
+            report.add("error", "T-EXCL", unit, f"{what} is excluded as no_signal_abstained, but the unit is {status} with no no_signal question")
+        elif reason == "polarity_switching" and "polarity_switching" not in flags:
+            report.add("error", "T-EXCL", unit, f"{what} is excluded as polarity_switching without a polarity_switching flag")
+        elif reason == "out_of_scope_ms1_only" and "ms1_only" not in flags:
+            report.add("error", "T-EXCL", unit, f"{what} is excluded as out_of_scope_ms1_only without an ms1_only flag")
+        elif reason == "requires_conversion":
+            runnable = _runnable_form(item, resolver)
+            if runnable:
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as requires_conversion, but it is {runnable}, which MS-DIAL reads (requires_conversion is for mzXML and mzData)")
+
+    # A file is kept or excluded by a unit, not both; and one acquisition is not kept twice in two formats.
+    for e in t.get("excluded_members", []):
+        both = [k for k in kept if same_file(k, e["member_path"], resolver)]
+        if both:
+            report.add("error", "T-EXCL", unit, f"{e['member_path']} is in excluded_members ({e['reason']}) and also kept ({both[0].path})")
+    formats: dict[str, dict[str, str]] = defaultdict(dict)
+    for k in kept:
+        if k.resolved:
+            formats[k.stem].setdefault(_extension(k.key), k.member or k.path)
+    for paths in formats.values():
+        if len(paths) > 1:
+            shown_paths = sorted(paths.values())
+            report.add("error", "T-UNIQ", unit, f"one acquisition is kept twice, in {len(paths)} formats: {', '.join(shown_paths)}; keep one and exclude the others as alternative_format_copy")
 
     # T-STATUS
     if status == "needs_person" and not t["needs_person"]:
@@ -660,8 +730,11 @@ def _check_unit(
         label = k.path
         ion = item["ion_mode"]
         child = child_for(k)
+        # A row named only by raw_file is read through the member it resolves to: its folder and extension count.
+        names = [label] + ([k.member] if k.member and k.member != label else [])
+        shown = label if len(names) == 1 else f"{label} ({k.member})"
         if status != "out_of_scope" and any(x.casefold().endswith(CONVERSION_EXTENSIONS) for x in (k.path, k.key)):
-            report.add("error", "T-FORMAT", unit, f"{label} is mzXML or mzData, which MS-DIAL does not read; exclude it as requires_conversion (a reviewed conversion to mzML is a separate step)")
+            report.add("error", "T-FORMAT", unit, f"{shown} is mzXML or mzData, which MS-DIAL does not read; exclude it as requires_conversion (a reviewed conversion to mzML is a separate step)")
         expected_ion = child["ion_mode"] if child else unit_ion
         if ion == "switching" and "polarity_switching" not in flags:
             report.add("error", "T-POL", unit, f"{label} is polarity switching without a polarity_switching flag")
@@ -688,12 +761,16 @@ def _check_unit(
             report.add("error", "T-EVID", unit, f"{label} is kept on size or timestamp alone; abstain instead of guessing")
 
         if "name_token_disputed" not in flags:
-            tok_ion = token_polarity(label)
-            if tok_ion and ion in ("positive", "negative") and tok_ion != ion:
-                report.add("error", "T-TOKEN", unit, f"{label}: its name says {tok_ion}, the triage says {ion} (flag name_token_disputed and ask a person if that is meant)")
-            tok_chrom = token_chromatography(label)
-            if tok_chrom and chrom in ("HILIC", "RP") and tok_chrom != chrom:
-                report.add("error", "T-TOKEN", unit, f"{label}: its name says {tok_chrom}, the triage says {chrom} (flag name_token_disputed and ask a person if that is meant)")
+            for name in names:
+                tok_ion = token_polarity(name)
+                if tok_ion and ion in ("positive", "negative") and tok_ion != ion:
+                    report.add("error", "T-TOKEN", unit, f"{shown}: {name} says {tok_ion}, the triage says {ion} (flag name_token_disputed and ask a person if that is meant)")
+                    break
+            for name in names:
+                tok_chrom = token_chromatography(name)
+                if tok_chrom and chrom in ("HILIC", "RP") and tok_chrom != chrom:
+                    report.add("error", "T-TOKEN", unit, f"{shown}: {name} says {tok_chrom}, the triage says {chrom} (flag name_token_disputed and ask a person if that is meant)")
+                    break
 
         for e in item["evidence"]:
             if e["source"] != "raw_header":
@@ -750,26 +827,23 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
         for k in _kept(unit, t, resolver):
             owners[k.key].append(k)
 
-    # One group per file: a row the index could not resolve ("raw:<stem>") is the same file as any kept
-    # member of that stem, so a file named by member path in one unit and by raw_file in another is one file.
-    group_of = {key: key for key in owners}
-
-    def find(key: str) -> str:
-        while group_of[key] != key:
-            group_of[key] = group_of[group_of[key]]
-            key = group_of[key]
-        return key
-
-    by_stem: dict[str, list[str]] = defaultdict(list)
+    # One group per file. A row the index could not resolve ("raw:<stem>") may be any kept member of that
+    # stem, so it joins the group of each of them; the members themselves stay distinct files (two units
+    # keeping batch1/x.mzML and batch2/x.mzML do not share a file because a third names only "x").
+    members_of_stem: dict[str, list[str]] = defaultdict(list)
     for key in owners:
-        by_stem[_key_stem(key)].append(key)
-    for key in owners:
-        if key.startswith("raw:"):
-            for other in by_stem[_key_stem(key)]:
-                group_of[find(other)] = find(key)
+        if not key.startswith("raw:"):
+            members_of_stem[_key_stem(key)].append(key)
     files: dict[str, list[Kept]] = defaultdict(list)
     for key, holders in owners.items():
-        files[find(key)] += holders
+        targets = members_of_stem.get(_key_stem(key), []) if key.startswith("raw:") else [key]
+        for target in targets or [key]:
+            files[target] += holders
+
+    def canonical(key: str) -> str:
+        """The one kept member an unresolved name can mean, if there is exactly one."""
+        targets = members_of_stem.get(_key_stem(key), []) if key.startswith("raw:") else []
+        return targets[0] if len(targets) == 1 else key
 
     def declared_share(a: str, b: str, holders: list[Kept]) -> bool:
         def has(x: str, y: str) -> bool:
@@ -794,7 +868,7 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
     # Identical kept file sets (the stage3b failure) are named once, on top of the per-file errors.
     sets: dict[frozenset[str], list[str]] = defaultdict(list)
     for unit, t in triages.items():
-        keys = frozenset(find(k.key) for k in _kept(unit, t, resolver))
+        keys = frozenset(canonical(k.key) for k in _kept(unit, t, resolver))
         if keys:
             sets[keys].append(unit)
     for keys, units in sets.items():
