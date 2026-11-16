@@ -754,6 +754,51 @@ class BcIntervalTests(unittest.TestCase):
 
 
 @unittest.skipUnless(D5, "D5 env only")
+class AnchorPilotTests(unittest.TestCase):
+    """Anchor selection (cap per direct parent, structure required, seed-fixed) and the sizing rule."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.AN = _import("mncal.anchors")
+
+    def _frames(self):
+        import pandas as pd
+
+        blocks = pd.DataFrame({"block": [f"B{i:03d}" for i in range(300)],
+                               "structure_ok": [i % 10 != 0 for i in range(300)],
+                               "direct_parent": ["Lipid" if i < 250 else (None if i % 2 else "Other") for i in range(300)],
+                               "is_lipid": [int(i < 250) for i in range(300)]})
+        reps = pd.DataFrame({"rep_id": [f"r{i}" for i in range(600)], "block": [f"B{i // 2:03d}" for i in range(600)],
+                             "adduct": ["[M+H]+"] * 600, "instrument_class": ["QTOF"] * 600})
+        return reps, blocks
+
+    def test_cap_per_parent_structure_and_determinism(self):
+        reps, blocks = self._frames()
+        rows = self.AN.select_anchors(reps, blocks, 1000, 7, max_per_parent=200)
+        info = blocks.set_index("block")
+        chosen = reps.iloc[rows]
+        self.assertTrue(chosen["block"].map(info["structure_ok"]).all())
+        parents = chosen["block"].map(info["direct_parent"]).fillna("unknown")
+        self.assertEqual(int((parents == "Lipid").sum()), 200)          # 450 eligible lipid reps, capped
+        self.assertEqual(len(set(rows)), len(rows))
+        again = self.AN.select_anchors(reps, blocks, 1000, 7, max_per_parent=200)
+        self.assertEqual(list(rows), list(again))
+        other = self.AN.select_anchors(reps, blocks, 1000, 8, max_per_parent=200)
+        self.assertNotEqual(list(rows), list(other))
+        first = self.AN.select_anchors(reps, blocks, 50, 7, max_per_parent=200)
+        self.assertEqual(list(first), list(rows[:50]))                   # n takes the lowest hashes
+
+    def test_summary_rule(self):
+        res = [{"pairs_u": 100, "pairs_pass": 80, "pairs_scored": 4, "t_prefilter": 0.01, "t_prepare": 0.5,
+                "t_kernel": {"k1": 0.002, "k2": 0.002}} for _ in range(10)]
+        s = self.AN.summarise(res, ["k1", "k2"], wall_hours=8.0, workers=16)
+        self.assertAlmostEqual(s["t_pair_seconds_all_kernels"], 0.001)
+        self.assertAlmostEqual(s["seconds_per_anchor_single_worker"], 80 * 0.001 + 0.01)
+        self.assertEqual(s["anchors_max_within_rule"], int(8 * 3600 * 16 / 0.09))
+        self.assertAlmostEqual(s["prefilter_pass_share"], 0.8)
+
+
+@unittest.skipUnless(D5, "D5 env only")
 class HomologueTruthTests(unittest.TestCase):
     """homologue_rules_v1: PFAS CF2 series, alkyl and lipid CH2 series, C2H4O series, and non-homologues."""
 

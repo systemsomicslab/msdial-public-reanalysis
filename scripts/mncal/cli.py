@@ -315,6 +315,51 @@ def _load_sample(data: Path, mode: str, kept):
     return sample
 
 
+def cmd_anchor_pilot(args) -> int:
+    """Pilot of A anchors per ion mode (Design §2, Sizing): pairs in U and after the prefilter per anchor, and the
+    kernel seconds per scored pair on a seed-fixed fraction, giving the A that keeps a run within 8 h per mode."""
+    import pandas as pd
+
+    from . import anchors as AN
+
+    run = Path(args.run)
+    data = _data_dir(run)
+    free = C.free_ram_gb()
+    if free is not None and free < args.min_free_ram_gb:
+        print(f"free RAM {free:.0f} GB < {args.min_free_ram_gb} GB; not starting (C8)", file=sys.stderr)
+        return 3
+    summary = {}
+    for mode in args.modes:
+        t0 = time.time()
+        reps = pd.read_parquet(data / f"reps_{mode}.parquet",
+                               columns=["rep_id", "block", "adduct", "instrument_class"])
+        blocks = pd.read_parquet(data / f"blocks_{mode}.parquet",
+                                 columns=["block", "structure_ok", "direct_parent", "is_lipid"])
+        rows = AN.select_anchors(reps, blocks, args.anchors, args.seed)
+        chosen = reps.iloc[rows]
+        results = AN.run_pilot(data / f"reps_{mode}.parquet", rows, chosen["adduct"].to_numpy(), args.kernels,
+                               seed=args.seed, score_fraction=args.score_fraction, workers=args.workers,
+                               progress=lambda m: print(f"{mode} {m}", flush=True))
+        entry = AN.summarise(results, args.kernels, workers=args.workers)
+        lipid = chosen["block"].map(blocks.set_index("block")["is_lipid"]).fillna(0).astype(int)
+        entry["composition"] = {
+            "by_adduct": {k: int(v) for k, v in chosen["adduct"].value_counts().sort_index().items()},
+            "by_instrument_class": {str(k): int(v) for k, v in
+                                    chosen["instrument_class"].fillna("unknown").value_counts().sort_index().items()},
+            "direct_parents": int(chosen["block"].map(blocks.set_index("block")["direct_parent"]).nunique()),
+            "lipid_anchor_share": float(lipid.mean()) if len(lipid) else None,
+            "representatives": int(len(reps)),
+        }
+        entry["wall_seconds"] = round(time.time() - t0, 1)
+        summary[mode] = entry
+        print(f"anchor-pilot {mode}: {entry}", flush=True)
+    _update_run(run, "anchor-pilot", {"kernels": args.kernels, "anchors_requested": args.anchors,
+                                      "score_fraction": args.score_fraction, "seed": args.seed,
+                                      "workers": args.workers, "max_per_parent": AN.MAX_PER_PARENT,
+                                      "priority_class": C.priority_class(), "summary": summary})
+    return 0
+
+
 def cmd_homologue_truth(args) -> int:
     """Per block: the repeat-unit skeleton and unit counts (homologue_rules_v1); per mode: the relation counts
     over the MCES sample. A private run keeps the block table (it holds structure-derived SMILES) local."""
@@ -635,6 +680,17 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["mces3", "mces2", "mces5", "mces3_homologue", "tanimoto07", "same_parent"],
                    help="recompute only these truths (a truth new to the table is added)")
     p.set_defaults(func=cmd_calibrate)
+
+    p = sub.add_parser("anchor-pilot", help="Size an anchor run: pairs per anchor and seconds per pair")
+    p.add_argument("--run", required=True)
+    p.add_argument("--modes", nargs="+", default=["pos", "neg"])
+    p.add_argument("--anchors", type=int, default=500)
+    p.add_argument("--kernels", nargs="+", default=["primary", "bonanza", "moddot", "pow05", "entropy"])
+    p.add_argument("--score-fraction", type=float, default=0.05)
+    p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--seed", type=int, default=20261113)
+    p.add_argument("--min-free-ram-gb", type=float, default=24.0)
+    p.set_defaults(func=cmd_anchor_pilot)
 
     p = sub.add_parser("homologue-truth", help="Repeat-unit skeletons per block and the homologue relation")
     p.add_argument("--run", required=True)
