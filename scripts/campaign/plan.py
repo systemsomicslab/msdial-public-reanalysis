@@ -86,6 +86,8 @@ and archive listing the agent read (<accession>\\inputs\\), and the unit is furt
 - triage_missing / triage_unreadable: no triage file for it, or one that is not a triage of it;
 - triage_not_pass: the validator holds or errors on its accession (the validator's findings are the detail);
 - triage_member_unresolved: a kept row names no archive member, which Interactive needs to declare the input;
+- triage_record_mismatch: the triage's decision record names another payload, or an archive listing it binds is
+  missing or holds other bytes (Interactive would refuse it, curated_selection_record_mismatch);
 - class_contrast_lost_after_triage: the approved Class, cut to the kept rows, loses a side of its contrast.
 
 A planned unit carries curated_selection (the triage path and sha256, its decision record's and the review log head's
@@ -2327,7 +2329,6 @@ def _plan_from_triage(
     passes, every kept row names an archive member, and its approved Class keeps its contrast once cut to the kept
     rows. Everything else is excluded with its reason and the validator's own words."""
     accessions: dict[str, dict[str, Any]] = {}
-    listings: dict[str, dict[str, curated.Listing]] = {}
     sources: dict[str, Path | None] = {}
     kept: list[dict[str, Any]] = []
     entries_of: dict[str, list[dict[str, Any]]] = {}
@@ -2340,13 +2341,14 @@ def _plan_from_triage(
         if accession not in accessions:
             validation = curated.run_validator(folder)
             accessions[accession] = validation
-            catalog, listing_paths = curated.accession_sources(folder)
+            catalog, _listing_paths = curated.accession_sources(folder)
             sources[accession] = catalog
-            listings[accession] = curated.read_listings(listing_paths)
             say(f"triage {accession}: validate-triage.py says {validation['verdict']}")
+        # The selection's crc32 and size come from the listing(s) the unit's decision record binds, as Interactive
+        # reads them (WS0 decision 1), never from whatever TSV the accession folder holds.
         entries, reason, detail = curated.unit_entries(
             accession_dir=folder, triage_root=triage_dir, unit_id=str(unit["unit_id"]),
-            validation=accessions[accession], listing=listings[accession], catalog=sources[accession])
+            validation=accessions[accession], catalog=sources[accession])
         if reason:
             excluded.append(_exclusion(unit, [reason], detail=detail))
             continue
@@ -2365,6 +2367,7 @@ def _plan_from_triage(
         "directory": str(triage_dir.resolve()),
         "validator": {"path": "scripts/validate-triage.py", "sha256": curated.validator_sha256()},
         "selection_schema": curated.SELECTION_SCHEMA,
+        "selection_canonical_form": curated.SELECTION_CANONICAL_FORM,
         "accessions": {
             accession: {**{key: validation.get(key) for key in ("verdict", "exit_code", "report_sha256", "catalog_source", "listings")},
                         **({"problem": validation["problem"]} if validation.get("problem") else {})}
@@ -2700,6 +2703,8 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
             "members_added": chosen.get("members_added"), "rows_dropped_by_reason": chosen.get("rows_dropped_by_reason"),
             "kept_by_basis": chosen.get("kept_by_basis"), "kept_by_confidence": chosen.get("kept_by_confidence"),
             "flags": chosen.get("flags"), "selection_sha256": chosen.get("selection_sha256"),
+            "selection_canonical_form": chosen.get("selection_canonical_form"),
+            "selection_listings": chosen.get("selection_listings"),
             "analysis_inputs_sha256": chosen.get("analysis_inputs_sha256"),
         }, key))
         events.append(("triage_validated", {

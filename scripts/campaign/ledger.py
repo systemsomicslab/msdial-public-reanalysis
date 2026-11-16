@@ -1156,7 +1156,14 @@ class Ledger:
 
     # ---- operator requests -------------------------------------------------------------------------
 
-    def add_request(self, action: str, unit_key: str, reason: str, by: str, now: str) -> int:
+    def add_request(self, action: str, unit_key: str, reason: str, by: str, now: str, question_code: str = "") -> int:
+        """Record an operator's request. With `question_code` (the code of the question the triage or a gate raised,
+        which the reason answers in the named person's words) a request_question event is written in the same
+        transaction, which makes the request a person_answer when the runner acts on it (WS0 decision 8); it needs a
+        named person."""
+        code = str(question_code or "").strip()
+        if code and not str(by or "").strip():
+            raise LedgerError("A request that answers a question names the person who answered it (--by).")
         with self.transaction() as db:
             if db.execute("SELECT 1 FROM unit WHERE unit_key = ?", (unit_key,)).fetchone() is None:
                 raise LedgerError(f"Unknown unit {unit_key}.")
@@ -1164,7 +1171,11 @@ class Ledger:
                 "INSERT INTO request(at, action, unit_key, reason, requested_by) VALUES (?, ?, ?, ?, ?)",
                 (now, action, unit_key, reason, by),
             )
-            return int(cursor.lastrowid)
+            request_id = int(cursor.lastrowid)
+            if code:
+                db.execute("INSERT INTO campaign_event(at, kind, unit_key, detail_json) VALUES (?, ?, ?, ?)",
+                           (now, "request_question", unit_key, _json({"request_id": request_id, "question_code": code})))
+            return request_id
 
     def pending_requests(self) -> list[dict[str, Any]]:
         return [

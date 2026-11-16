@@ -159,28 +159,40 @@ Whether a unit is curated, and its workspace, are what the approval recorded in 
 approval's transaction), so a manifest that later cannot be read or changed never turns a curated unit into a plain
 one: before each step that reads the selection, a lock that may pass waits, a unit with no raw data ends
 stopped_policy_drift, and one past its download is held with its raw data (contract_held), both
-manifest_digest_changed (_curated_guard). At
-the handoff the triage is copied beside the handoff copy (handoffs\\<unit_key>\\triage.json) and must hash to the
-manifest's triage_sha256 (else stopped_policy_drift, triage_digest_changed); the Catalog handoff the triage was made
-from must be the one taken now, byte for byte or row for row (the [sample_id, raw_file] rows a row_index names; else
-triage_handoff_rows_changed). The download passes Interactive curated_selection_path and original_handoff_sha256 as
-required arguments, so an Interactive that cannot apply the selection refuses (a contract hold) instead of running
-the unit on its whole study's files; a child of a triaged unit passes its child key, and a reopened unit its own
-workspace (<unit_key>@<campaign_id>), so the outputs of the run it replaces are never written into. After the
-download the unit manifest must record the selection Interactive applied, with the same triage sha256 (else
-contract_held). A refusal no retry can change (policy.not_retryable: the attribution coverage gate, a curated
-selection Interactive refuses, the cross-unit check) ends the unit failed, terminal reason attribution_refused,
-with no retry counted. The units of one download group that carry a selection wait at preflighted until every
-sibling still on its way has been preflighted; then Interactive's cross-unit check runs once over their manifests
-(rules P, C and D) and each refused unit ends so. A unit that reaches the check after the group was judged (a retry,
-or one held before its download) is checked after the units that already passed, so rule D refuses it and never a
-unit that already ran; and where a verdict refuses a unit that already passed, the newcomers are refused in its
-place. A header that disagrees with the triage is Interactive's disposition hold (triage_header_disagreement), which
-waits for a person as every disposition hold does; a unit Interactive recorded no header reconciliation for is not
-run (contract_held, curated_selection_reconciliation_not_recorded). Each comparison, and each request a person makes
-on a curated unit (person_answer: who, why, what it did), is appended to the accession's review log. Each of these
-steps is a campaign event in the decision ledger (curated.DECISION_KINDS, each with its standing), which
-campaign-runner.py decisions exports, append only and hash chained.
+manifest_digest_changed (_curated_guard), with a terminal_refusal in the decision ledger for a unit that ends so.
+At the handoff the triage is copied beside the handoff copy as handoffs\\<unit_key>\\<unit_id>.json, its decision
+record as <unit_id>.record.json beside it (the layout Interactive looks for, WS0 decision 2), and each must hash to
+what the manifest names (else stopped_policy_drift, triage_digest_changed or triage_record_digest_changed). The
+Catalog handoff taken now must be the triaged one byte for byte (triage.catalog_handoff_sha256); one whose bytes
+changed is held for a person (contract_held, triage_handoff_changed), never passed on its rows (WS0 decision 7). The
+download passes Interactive curated_selection_path (the copy), decision_record_path (the original record, beside the
+inputs\\ it binds), original_handoff_sha256 (the triaged handoff's), original_handoff_path (the Catalog's bytes as
+taken, kept beside the copy) and curated_selection_validator, so an Interactive that cannot apply the selection refuses
+(a contract hold) instead of running the unit on its whole study's files; a child of a triaged unit passes its child
+key, and a unit whose workspace is not its Catalog unit id (a child, or a reopened unit <unit_key>@<campaign_id>)
+passes workspace_unit_key (WS0 decision 5), so the outputs of the run it replaces are never written into. After the
+download the unit manifest must record, under project.repository_metadata.curated_selection (WS0 decision 4; the top
+level is read too), the selection Interactive applied with the same triage sha256, and Interactive's selection_sha256
+(msdial-selection-canonical.v1) must equal the plan's (else contract_held, curated_selection_not_recorded or
+curated_selection_selection_mismatch); curated_selection_applied records both and whether they are equal. A refusal no
+retry can change (policy.not_retryable: the attribution coverage gate, a curated selection Interactive refuses, the
+cross-unit check) ends the unit failed, terminal reason attribution_refused, with no retry counted. The units of one
+download group that carry a selection wait at preflighted until every sibling still on its way has been preflighted;
+then Interactive's msdial_repository_cross_unit_check runs once over their manifests (rules P, C, S and D), read by
+its own keys (verdict "passed" or "refused", reasons; WS0 decision 3) and by position, and each refused unit ends so.
+A group with a single surviving member is not sent: the verdict is not_applicable, single_member (WS0 decision 6). A
+unit that reaches the check after the group was judged (a retry, or one held before its download) is checked after
+the units that already passed, so rule D refuses it and never a unit that already ran; and where a verdict refuses a
+unit that already passed, the newcomers are refused in its place. A header that disagrees with the triage is
+Interactive's disposition hold (triage_header_disagreement), which waits for a person as every disposition hold does;
+a unit Interactive recorded no header reconciliation for is not run (contract_held,
+curated_selection_reconciliation_not_recorded). Interactive's reconciliation items are copied into the ledger's
+header_reconciliation event, never into the review log. A request on a curated unit that answers a question
+(--question-code, with the named person in --by) is that person's person_answer, in the ledger and in the accession's
+review log with only the fields section 2.4 names (by, question_code, answer, channel); any other request is an
+operator_request event (WS0 decision 8). Each decision step is a campaign event in the decision ledger
+(curated.DECISION_KINDS, each with its standing, with workspace-relative paths only), which campaign-runner.py
+decisions exports, append only and hash chained.
 """
 
 from __future__ import annotations
@@ -599,7 +611,16 @@ class Runner:
         self.ledger.pause(kind, str(self.redact(reason)), self.stamp())
 
     def _event(self, kind: str, detail: Mapping[str, Any], unit_key: str | None = None) -> None:
-        self.ledger.event(kind, self.stamp(), self.redact(dict(detail)), unit_key=unit_key)
+        self.ledger.event(kind, self.stamp(), self._event_detail(kind, detail), unit_key=unit_key)
+
+    def _event_detail(self, kind: str, detail: Mapping[str, Any]) -> dict[str, Any]:
+        """An event's detail as recorded: redacted, and for a decision-ledger kind (curated.DECISION_KINDS) with every
+        absolute path made relative to the workspace root or reduced to <external>/<name>, since the decision ledger is
+        released as it is and its hash chain forbids rewriting it later (WS0 decision 8)."""
+        recorded = self.redact(dict(detail))
+        if kind in curated.DECISION_KINDS:
+            recorded = curated.portable(recorded, self.campaign["workspace_root"])
+        return recorded
 
     def _workspace(self, unit: Mapping[str, Any]) -> Path:
         if unit.get("workspace"):
@@ -701,10 +722,8 @@ class Runner:
         else:
             problem = self._planned_problem
         if unit["state"] in self._BEFORE_DOWNLOAD:
-            self._release_shared_claims(unit, "stopped_policy_drift")
-            self._move(unit, "stopped_policy_drift", terminal_reason="manifest_digest_changed",
-                       terminal_detail=json.dumps({"detail": problem}), detail={"step": unit["state"], "detail": problem})
-            return True
+            return self._curated_stop(unit, "manifest_digest_changed", {"detail": problem}, step=unit["state"],
+                                      is_curated=expected is not None)
         return self._contract_hold(unit, step=unit["state"], problem="manifest_digest_changed", resume_state=unit["state"],
                                    detail={"detail": problem, "triage_sha256": (expected or {}).get("triage_sha256")})
 
@@ -714,78 +733,116 @@ class Runner:
         return dict(chosen) if isinstance(chosen, Mapping) else None
 
     def _triage_copy(self, unit: Mapping[str, Any]) -> Path:
-        return self.directory / "handoffs" / unit["unit_key"] / "triage.json"
+        """handoffs\\<unit_key>\\<unit_id>.json: the layout Interactive looks for beside a triage it is given, with the
+        record copy <unit_id>.record.json beside it (WS0 decision 2)."""
+        return self.directory / "handoffs" / unit["unit_key"] / f"{unit['catalog_unit_id']}.json"
+
+    def _relative(self, path: Any) -> str:
+        """A path as a decision-ledger event holds it: relative to the workspace root (WS0 decision 8)."""
+        return curated.portable_path(str(path), self.campaign["workspace_root"])
 
     def _check_triage(self, unit: Mapping[str, Any], selection: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
-        """Copy the unit's triage beside its handoff copy and check it is what was approved, and that the handoff taken
-        now is the one the triage was made from: {"refused": bool, "reason", ...}."""
+        """Copy the unit's triage (and its decision record) beside its handoff copy and check each is what was approved,
+        and that the Catalog handoff taken now is the triaged one byte for byte: {"refused": bool, "hold": bool,
+        "reason", ...}. A handoff whose bytes changed is a hold for a person, never a pass on its rows (WS0 decision 7):
+        Interactive binds the copy to the triaged bytes and would refuse it for good."""
         copy = self._triage_copy(unit)
-        out: dict[str, Any] = {"triage_sha256": selection.get("triage_sha256"), "copy_path": str(copy),
+        out: dict[str, Any] = {"triage_sha256": selection.get("triage_sha256"), "copy_path": self._relative(copy),
                                "selection_sha256": selection.get("selection_sha256")}
         source = Path(str(selection.get("triage_path") or ""))
         try:
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, copy)
         except OSError as error:
-            return {**out, "refused": True, "reason": "triage_digest_changed", "detail": f"the triage file cannot be copied: {error}"}
+            return {**out, "refused": True, "hold": False, "reason": "triage_digest_changed",
+                    "detail": f"the triage file cannot be copied: {type(error).__name__}"}
         found = curated.sha256_file(copy)
         if found != selection.get("triage_sha256"):
-            return {**out, "refused": True, "reason": "triage_digest_changed", "found_sha256": found,
+            return {**out, "refused": True, "hold": False, "reason": "triage_digest_changed", "found_sha256": found,
                     "detail": "the triage file is not the one the approved manifest names"}
         expected_record = selection.get("triage_record_sha256")
         if expected_record:
-            record_copy = copy.with_name("triage.record.json")
+            record_copy = copy.with_name(f"{unit['catalog_unit_id']}.record.json")
             try:
                 shutil.copyfile(curated.record_path(source), record_copy)
                 found_record = curated.sha256_file(record_copy)
             except OSError as error:
-                found_record = f"unreadable: {error}"
+                found_record = f"unreadable: {type(error).__name__}"
             if found_record != expected_record:
-                return {**out, "refused": True, "reason": "triage_record_digest_changed", "found_sha256": found_record,
+                return {**out, "refused": True, "hold": False, "reason": "triage_record_digest_changed",
+                        "found_sha256": found_record,
                         "detail": "the triage's decision record is not the one the approved manifest names"}
-            out["record_copy_path"] = str(record_copy)
+            out["record_copy_path"] = self._relative(record_copy)
         original = str(record.get("original_sha256") or "")
-        if original and original == selection.get("catalog_handoff_sha256"):
-            identity = "handoff_identical"
-        else:
+        triaged = str(selection.get("catalog_handoff_sha256") or "")
+        if not triaged or original != triaged:
+            rows = None
             try:
-                rows = curated.handoff_rows(Path(str(record.get("copy_path") or "")))
-            except (OSError, ValueError) as error:
-                rows = None
-                out["rows_problem"] = f"{type(error).__name__}: {error}"
-            now = curated.rows_sha256(rows)
-            if not selection.get("catalog_rows_sha256") or now != selection.get("catalog_rows_sha256"):
-                return {**out, "refused": True, "reason": "triage_handoff_rows_changed", "original_handoff_sha256": original,
-                        "triaged_handoff_sha256": selection.get("catalog_handoff_sha256"), "rows_sha256": now,
-                        "triaged_rows_sha256": selection.get("catalog_rows_sha256"),
-                        "detail": "the Catalog handoff taken now is not the one the triage was made from, row for row"}
-            identity = "rows_identical"
-        return {**out, "refused": False, "handoff_identity": identity, "original_handoff_sha256": original}
+                rows = curated.rows_sha256(curated.handoff_rows(Path(str(record.get("copy_path") or ""))))
+            except (OSError, ValueError):
+                pass
+            return {**out, "refused": True, "hold": True, "reason": "triage_handoff_changed",
+                    "original_handoff_sha256": original, "triaged_handoff_sha256": triaged or None,
+                    "rows_identical": bool(rows and rows == selection.get("catalog_rows_sha256")),
+                    "detail": "the Catalog handoff taken now is not, byte for byte, the one the triage was made from; "
+                              "Interactive binds the run to the triaged handoff, so a person re-triages the unit or "
+                              "restores the handoff"}
+        return {**out, "refused": False, "hold": False, "handoff_identity": "handoff_identical",
+                "original_handoff_sha256": original}
 
-    def _original_handoff_sha256(self, unit: Mapping[str, Any]) -> str:
-        """The sha256 of the Catalog handoff as the unit's last handoff step took it (before the campaign's copy)."""
+    def _handoff_copy_record(self, unit: Mapping[str, Any]) -> dict[str, Any]:
+        """What the unit's last handoff step recorded of its copy (ports.copy_handoff)."""
         for attempt in reversed(self.ledger.attempts(unit["unit_key"])):
             if attempt["step"] == "handoff" and attempt["outcome"] == "ok":
-                return str((_loads(attempt["detail_json"]).get("copy") or {}).get("original_sha256") or "")
-        return ""
+                return dict(_loads(attempt["detail_json"]).get("copy") or {})
+        return {}
 
     def _curated_arguments(self, unit: Mapping[str, Any], selection: Mapping[str, Any]) -> dict[str, Any] | str:
-        """The download's curated selection arguments, or why the unit cannot pass them (the copy changed)."""
+        """The download's curated selection arguments (Interactive 0.5.69), or why the unit cannot pass them (a copy
+        changed since the handoff)."""
         copy = self._triage_copy(unit)
         try:
             found = curated.sha256_file(copy)
         except OSError as error:
-            return f"the triage copy {copy} cannot be read: {error}"
+            return f"the triage copy {copy.name} cannot be read: {type(error).__name__}"
         if found != selection.get("triage_sha256"):
-            return f"the triage copy {copy} hashes to {found}, not the approved {selection.get('triage_sha256')}"
-        arguments: dict[str, Any] = {"curated_selection_path": str(copy),
-                                     "original_handoff_sha256": self._original_handoff_sha256(unit)}
+            return f"the triage copy {copy.name} hashes to {found}, not the approved {selection.get('triage_sha256')}"
+        triaged = str(selection.get("catalog_handoff_sha256") or "")
+        arguments: dict[str, Any] = {"curated_selection_path": str(copy), "original_handoff_sha256": triaged}
+        kept = str(self._handoff_copy_record(unit).get("original_copy_path") or "")
+        if kept:
+            try:
+                if curated.sha256_file(Path(kept)) != triaged:
+                    return "the Catalog handoff kept at the handoff step no longer hashes to the triaged handoff"
+            except OSError as error:
+                return f"the Catalog handoff kept at the handoff step cannot be read: {type(error).__name__}"
+            arguments["original_handoff_path"] = kept
+        if selection.get("triage_record_sha256"):
+            # The original record, where the inputs\ it binds are (Interactive resolves them beside the record).
+            arguments["decision_record_path"] = str(curated.record_path(Path(str(selection.get("triage_path") or ""))))
+        if isinstance(selection.get("validator"), Mapping):
+            arguments["curated_selection_validator"] = dict(selection["validator"])
         if selection.get("child_key"):
             arguments["curated_selection_child_key"] = str(selection["child_key"])
         name = self._workspace_name(unit)
         if name and name != unit["catalog_unit_id"]:
             arguments["workspace_unit_key"] = name
         return arguments
+
+    def _curated_stop(self, unit: dict[str, Any], reason: str, detail: Mapping[str, Any], *, step: str,
+                      is_curated: bool = True, **move: Any) -> bool:
+        """End a unit with no raw data as stopped_policy_drift for `reason`, and, for a curated unit, record why in the
+        decision ledger (terminal_refusal), so the released ledger never shows a triage approved and then nothing."""
+        self._release_shared_claims(unit, "stopped_policy_drift")
+        if "close_attempt" not in move:
+            move["detail"] = {"step": step, **dict(detail)}
+        self._move(unit, "stopped_policy_drift", terminal_reason=reason,
+                   terminal_detail=json.dumps(dict(detail), ensure_ascii=False, sort_keys=True), **move)
+        if is_curated:
+            self._event("terminal_refusal", {"standing": curated.DETERMINISTIC_CHECK, "reason": "policy_drift",
+                                             "reason_code": reason, "retryable": False, "source": "runner", "step": step},
+                        unit["unit_key"])
+        return True
 
     def _terminal_refusal(
         self, unit: dict[str, Any], refusal: Mapping[str, Any], detail: Mapping[str, Any], *, step: str = "download",
@@ -1287,16 +1344,30 @@ class Runner:
             handled = True
         return handled
 
+    def _question_code(self, request: Mapping[str, Any]) -> str:
+        """The question a request answers (its request_question event, written with it by Ledger.add_request), or ""."""
+        for event in self.ledger.events("request_question"):
+            detail = _loads(event["detail_json"])
+            if detail.get("request_id") == request["request_id"]:
+                return str(detail.get("question_code") or "")
+        return ""
+
     def _person_answer(self, request: Mapping[str, Any], unit: Mapping[str, Any], before: str, result: str) -> None:
-        """A person's request on a curated unit (above all one Interactive's disposition holds for a header that
-        disagrees with its triage) as a person_answer: in the decision ledger and in the accession's review log, with
-        who asked, why, and what it did (second review of PR #60, finding 4)."""
+        """A request on a curated unit, recorded (WS0 decision 8). Only one that carries a question code and a named
+        person is a person_answer: in the decision ledger (with what it did) and in the accession's review log with the
+        fields section 2.4 names (by, question_code, answer verbatim, channel). Any other request is the operator's
+        (operator_request), kept in the campaign's events and never presented as a person's answer."""
         after = self.ledger.unit(unit["unit_key"])["state"]
-        answer = {"by": request["requested_by"], "reason": request["reason"], "action": request["action"],
-                  "request_id": request["request_id"], "requested_at": request["at"], "state_before": before,
-                  "state_after": after, "result": result}
-        self._event("person_answer", {"standing": curated.PERSON_ANSWER, **answer}, unit["unit_key"])
-        self._review_log(unit, self._selection(unit), "person_answer", standing=curated.PERSON_ANSWER, **answer)
+        code = self._question_code(request)
+        by = str(request["requested_by"] or "").strip()
+        acted = {"action": request["action"], "request_id": request["request_id"], "requested_at": request["at"],
+                 "state_before": before, "state_after": after, "result": result}
+        if not (code and by):
+            self._event("operator_request", {"by": by, "reason": request["reason"], **acted}, unit["unit_key"])
+            return
+        answer = {"by": by, "question_code": code, "answer": request["reason"], "channel": curated.PERSON_ANSWER_CHANNEL}
+        self._event("person_answer", {"standing": curated.PERSON_ANSWER, **answer, **acted}, unit["unit_key"])
+        self._review_log(unit, self._selection(unit), "person_answer", **answer)
 
     def _request(self, request: Mapping[str, Any], unit: dict[str, Any], state: str) -> str:
         """Act on one operator request: what was done, for the request's record."""
@@ -1479,15 +1550,20 @@ class Runner:
         if selection is not None:
             checked = self._check_triage(unit, selection, record)
             self._event("triage_checked", {"standing": curated.DETERMINISTIC_CHECK,
-                                           "verdict": "refused" if checked["refused"] else "pass",
-                                           **{key: value for key, value in checked.items() if key != "refused"}},
+                                           "verdict": ("held" if checked["hold"] else "refused") if checked["refused"] else "pass",
+                                           **{key: value for key, value in checked.items() if key not in ("refused", "hold")}},
                         unit["unit_key"])
+            if checked["refused"] and checked["hold"]:
+                # A handoff whose bytes changed since the triage: held for a person, with nothing downloaded; a
+                # recheck takes the handoff again (WS0 decision 7).
+                return self._contract_hold(unit, step="handoff", problem=checked["reason"], resume_state="class_settled",
+                                           attempt_id=attempt, detail={key: value for key, value in checked.items()
+                                                                       if key not in ("refused", "hold")})
             if checked["refused"]:
-                self._release_shared_claims(unit, "stopped_policy_drift")
-                self._move(unit, "stopped_policy_drift", terminal_reason=checked["reason"],
-                           terminal_detail=json.dumps(checked, ensure_ascii=False, sort_keys=True),
-                           close_attempt=(attempt, "refused", False, {"copy": record, "curated_selection": checked}))
-                return True
+                return self._curated_stop(unit, checked["reason"], {key: value for key, value in checked.items()
+                                                                    if key not in ("refused", "hold")},
+                                          step="handoff", close_attempt=(attempt, "refused", False,
+                                                                         {"copy": record, "curated_selection": checked}))
         workspace = self._workspace(unit)
         copy = workspace / "provenance" / "campaign-authorization.json"
         copy.parent.mkdir(parents=True, exist_ok=True)
@@ -1534,10 +1610,7 @@ class Runner:
         if selection is not None:
             extra = self._curated_arguments(unit, selection)
             if isinstance(extra, str):
-                self._release_shared_claims(unit, "stopped_policy_drift")
-                self._move(unit, "stopped_policy_drift", terminal_reason="triage_digest_changed",
-                           terminal_detail=json.dumps({"detail": extra}), detail={"step": "download_start"})
-                return True
+                return self._curated_stop(unit, "triage_digest_changed", {"detail": extra}, step="download_start")
             arguments.update(extra)
         self._require("1")
         self._claim_shared_downloads(unit)
@@ -1681,7 +1754,7 @@ class Runner:
     def _event_once(self, kind: str, detail: Mapping[str, Any], unit_key: str) -> bool:
         """An event, unless the unit already has one of this kind that says the same: a step made again after a crash
         or a retry writes it once. True where it was written now."""
-        recorded = self.redact(dict(detail))
+        recorded = json.loads(json.dumps(self._event_detail(kind, detail)))
         if not any(row["unit_key"] == unit_key and _loads(row["detail_json"]) == recorded for row in self.ledger.events(kind)):
             self._event(kind, detail, unit_key)
             return True
@@ -2023,57 +2096,76 @@ class Runner:
                 )
                 self._cancel(unit, job_id, "disk")
 
+    def _applied_block(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The curated selection block Interactive recorded in the unit manifest: project.repository_metadata, where
+        0.5.69 writes it (WS0 decision 4), else the top-level repository_metadata an earlier draft used."""
+        manifest = self._manifest(unit) or {}
+        project = manifest.get("project") if isinstance(manifest.get("project"), Mapping) else {}
+        for metadata in (project.get("repository_metadata"), manifest.get("repository_metadata")):
+            block = metadata.get("curated_selection") if isinstance(metadata, Mapping) else None
+            if isinstance(block, Mapping):
+                return dict(block)
+        return None
+
     def _applied_selection(self, unit: Mapping[str, Any], selection: Mapping[str, Any]) -> dict[str, Any] | None:
         """The curated selection Interactive recorded in the unit manifest, where it is the approved one, else None."""
-        manifest = self._manifest(unit) or {}
-        applied = (manifest.get("repository_metadata") or {}).get("curated_selection")
-        if not isinstance(applied, Mapping):
+        applied = self._applied_block(unit)
+        if applied is None:
             return None
         recorded = applied.get("triage_sha256") or applied.get("sha256")
-        return dict(applied) if recorded == selection.get("triage_sha256") else None
+        return applied if recorded == selection.get("triage_sha256") else None
 
     def _review_log(self, unit: Mapping[str, Any], selection: Mapping[str, Any] | None, kind: str, **fields: Any) -> None:
         """Append an entry to the review log of the unit's accession (<triage dir>\\<accession>\\review-log.jsonl, hash
-        chained), beside its triage: what the runner found or a person answered. The ledger's event is the record; a
-        log that cannot be written is an event, and changes nothing the unit does."""
+        chained), beside its triage, with only the fields section 2.4 names for the kind (curated.REVIEW_LOG_KINDS). The
+        ledger's event is the record; a log that cannot be written is an event, and changes nothing the unit does."""
         if not selection or not selection.get("triage_path"):
             self._event("review_log_not_appended", {"kind": kind, "detail": "the approved manifest names no triage file"},
                         unit["unit_key"])
             return
         try:
             curated.append_review_log(Path(str(selection["triage_path"])).parent, kind, selection.get("triage_sha256"),
-                                      self.stamp(), **self.redact({"unit_key": unit["unit_key"],
-                                                                   "campaign_id": self.campaign["campaign_id"], **fields}))
-        except OSError as error:
+                                      self.stamp(), **self.redact(dict(fields)))
+        except (OSError, curated.TriageError) as error:
             self._event("review_log_not_appended", {"kind": kind, "detail": f"{type(error).__name__}: {error}"}, unit["unit_key"])
 
+    # The summary fields of a reconciliation's disagreements (doc section 6: header disagreements by field).
+    _DISAGREEMENT_FIELDS = ("ion_mode", "acquisition_mode", "not_in_selection", "header_unread_for_inferred_row")
+
     def _reconciliation(self, unit: Mapping[str, Any], record: Mapping[str, Any], selection: Mapping[str, Any]) -> bool:
-        """A header_reconciliation event: Interactive's comparison of each admitted input's header with the triage
-        (the contract's A4), from the disposition record or the unit manifest; "not_recorded" where it gave none.
-        Each comparison (file, field, triage value, header value, verdict) goes to the accession's review log too, once.
-        True where Interactive recorded a comparison of at least one file."""
+        """A header_reconciliation event: Interactive's comparison of each admitted input's header with the triage, from
+        the disposition record or the unit manifest, read in Interactive 0.5.69's shape (WS0 decision 3): {verdict,
+        inspected, agree, disagree, files: [{file, member_path, row_index, basis, outcome, ion_mode: {triage,
+        triage_basis, header, result}, acquisition_mode: {...}, result, reasons}]}; "not_recorded" where it gave none.
+        The event copies the items (doc section 6) and counts the disagreements by field; nothing goes to the review
+        log, which holds no gate or header verdict (section 2.4). True where Interactive compared at least one file."""
         manifest = self._manifest(unit) or {}
         disposition = manifest.get("campaign_disposition") if isinstance(manifest.get("campaign_disposition"), Mapping) else {}
         block = (record.get("curated_selection_reconciliation")
                  or disposition.get("curated_selection_reconciliation")
-                 or manifest.get("curated_selection_reconciliation")
-                 or ((manifest.get("repository_metadata") or {}).get("curated_selection") or {}).get("reconciliation"))
-        files = [item for item in (block or {}).get("files") or [] if isinstance(item, Mapping)] if isinstance(block, Mapping) else []
-        disagree = [item for item in files if str(item.get("verdict") or item.get("result") or "") in ("disagree", "unreadable")]
-        written = self._event_once("header_reconciliation", {
+                 or manifest.get("curated_selection_reconciliation"))
+        block = block if isinstance(block, Mapping) else {}
+        files = [dict(item) for item in block.get("files") or [] if isinstance(item, Mapping)]
+        disagree = [item for item in files if str(item.get("result") or "") == "disagree"]
+        by_field: dict[str, int] = {}
+        for item in disagree:
+            reasons = [str(code) for code in item.get("reasons") or [item.get("reason")] if code]
+            for code in reasons:
+                name = "ion_mode" if code == "polarity" else code
+                by_field[name] = by_field.get(name, 0) + 1
+        verdict = str(block.get("verdict") or "") if files else "not_recorded"
+        self._event_once("header_reconciliation", {
             "standing": curated.DETERMINISTIC_CHECK,
-            "verdict": str(block.get("verdict")) if isinstance(block, Mapping) and files else "not_recorded",
-            "files": len(files), "disagreements": len(disagree),
-            "fields": sorted({str(item.get("field")) for item in disagree if item.get("field")}),
-            "disagreeing_files": [{key: item.get(key) for key in ("member_path", "field", "triage_value", "header_value", "verdict")}
-                                  for item in disagree[:20]],
+            "schema": block.get("schema"), "verdict": verdict, "reason": block.get("reason") or "",
+            "triage_sha256": block.get("triage_sha256") or selection.get("triage_sha256"),
+            "analysis_unit_key": block.get("analysis_unit_key"),
+            "inspected": block.get("inspected", len(files)), "agree": block.get("agree"),
+            "disagree": block.get("disagree", len(disagree)),
+            "disagreements_by_field": {name: by_field[name] for name in self._DISAGREEMENT_FIELDS if name in by_field},
+            "kept_rows_not_inspected": list(block.get("kept_rows_not_inspected") or []),
+            "files": files,
         }, unit["unit_key"])
-        if written:
-            for item in files:
-                self._review_log(unit, selection, "header_reconciliation", standing=curated.DETERMINISTIC_CHECK,
-                                 **{key: item.get(key) for key in ("member_path", "field", "triage_value", "header_value")},
-                                 verdict=str(item.get("verdict") or item.get("result") or ""))
-        return bool(files)
+        return bool(files) and verdict in ("agree", "disagree")
 
     def _state_downloaded(self, unit: dict[str, Any]) -> bool:
         """The raw-header preflight; then Interactive's campaign_disposition says what the unit does."""
@@ -2087,14 +2179,29 @@ class Runner:
                     "detail": "the unit manifest records no curated selection with the approved triage sha256; Interactive did "
                               "not apply it, so the unit is not preflighted on whatever it downloaded",
                     "triage_sha256": selection.get("triage_sha256")})
+            planned = selection.get("selection_sha256")
+            recorded = applied.get("selection_sha256")
+            equal = bool(planned) and planned == recorded
             self._event_once("curated_selection_applied", {
                 "standing": curated.ACCEPTED_DECISION, "checked_by": "runner", "triage_sha256": selection.get("triage_sha256"),
-                "selection_sha256": selection.get("selection_sha256"), "child_key": selection.get("child_key"),
-                "recorded": {key: applied.get(key) for key in ("selection_sha256", "manifest_digest", "standing", "child_key")
+                "child_key": selection.get("child_key"),
+                "selection_canonical_form": applied.get("selection_canonical_form"),
+                "plan_selection_sha256": planned, "interactive_selection_sha256": recorded, "selection_sha256_equal": equal,
+                "recorded": {key: applied.get(key) for key in ("manifest_digest", "standing", "child_key", "analysis_unit_key",
+                                                                "catalog_handoff_verification", "triage_record_sha256")
                              if key in applied},
-                "rows_kept": len(applied.get("rows_kept") or []) if isinstance(applied.get("rows_kept"), list) else applied.get("rows_kept"),
-                "rows_dropped": len(applied.get("rows_dropped") or []) if isinstance(applied.get("rows_dropped"), list) else applied.get("rows_dropped"),
+                "rows_kept": applied.get("rows_kept_count", len(applied.get("rows_kept") or [])
+                                         if isinstance(applied.get("rows_kept"), list) else applied.get("rows_kept")),
+                "rows_dropped": applied.get("rows_dropped_count", len(applied.get("rows_dropped") or [])
+                                            if isinstance(applied.get("rows_dropped"), list) else applied.get("rows_dropped")),
             }, unit["unit_key"])
+            if not equal:
+                # Section 2.5: the selection Interactive applied must be the one the person approved (the same
+                # msdial-selection-canonical.v1 value); a unit whose two differ is held, not run.
+                return self._contract_hold(unit, step="preflight", problem="curated_selection_selection_mismatch", detail={
+                    "detail": "the selection_sha256 Interactive recorded is not the one the approved manifest names",
+                    "plan_selection_sha256": planned, "interactive_selection_sha256": recorded,
+                    "triage_sha256": selection.get("triage_sha256")})
         extractor = str((self.pins.get("extractor") or {}).get("path") or "")
         attempt = self.ledger.open_attempt(unit["unit_key"], "preflight", self.stamp(), tool="msdial_repository_raw_metadata_preflight")
         # The pinned Console, the one that will run the unit: Interactive 0.5.34 decides a multi-energy AIF unit
@@ -2344,11 +2451,19 @@ class Runner:
     # States a unit of a download group is still on its way to its preflight in (where a waiting unit resumes).
     _BEFORE_PREFLIGHT = frozenset({"pending", "class_settled", "handoff_ready", "downloading", "downloaded"})
 
+    # Interactive's cross-unit refusal codes and the rule each is (msdial_repository_cross_unit_check, 0.5.69).
+    _CROSS_UNIT_RULES = {
+        "cross_unit_polarity_contradiction": "P", "cross_unit_inputs_indistinguishable_chromatography": "C",
+        "cross_unit_inputs_contained": "S", "cross_unit_duplicate_inputs": "D",
+    }
+
     def _cross_unit_gate(self, unit: dict[str, Any]) -> bool | None:
         """For a unit with a curated selection in a download group of several such units: wait until every sibling still
         on its way is preflighted (the unit leaves the hand meanwhile, uncounted), then have Interactive's cross-unit
-        check judge the group's manifests once (rules P, C and D) and end a refused unit with no retry. None where the
-        unit goes on to its metadata."""
+        check judge the group's manifests once (rules P, C, S and D) and end a refused unit with no retry. A group with a
+        single surviving member is not sent to the tool, which compares two or more: the verdict is not_applicable,
+        single_member (WS0 decision 6). The reply is read by its own keys (WS0 decision 3): units[i] is the i-th
+        manifest sent, its verdict "passed" or "refused", its codes in reasons. None where the unit goes on."""
         if not self._is_curated(unit) or unit["role"] == "split_part":
             return None
         siblings = [item for item in self._group_members(unit) if self._is_curated(item)]
@@ -2363,7 +2478,7 @@ class Runner:
             if detail.get("group") == group:
                 last = detail
                 passed |= set(detail.get("units") or []) - set(detail.get("refused") or {})
-        if last is not None and unit["manifest_path"] in (last.get("manifest_paths") or []):
+        if last is not None and unit["unit_key"] in (last.get("units") or []):
             verdict = last
         if verdict is None:
             waiting = []
@@ -2384,6 +2499,12 @@ class Runner:
             # already ran (second review of PR #60, finding 2).
             others = [item for item in siblings if item["manifest_path"] and Path(str(item["manifest_path"])).is_file()
                       and (item["state"] not in ledger_module.TERMINAL_STATES or item["state"] == "done")]
+            if not others:
+                verdict = {"standing": curated.DETERMINISTIC_CHECK, "group": group, "units": [unit["unit_key"]],
+                           "verdict": "not_applicable", "reason": "single_member", "refused": {},
+                           "detail": "every sibling ended before its manifest held inputs; nothing to compare with"}
+                self._event("cross_unit_verdict", verdict, unit["unit_key"])
+                return None
             members = sorted([unit] + others, key=lambda item: (item["unit_key"] not in passed, item["order_index"], item["unit_key"]))
             paths = [str(item["manifest_path"]) for item in members]
             attempt = self.ledger.open_attempt(unit["unit_key"], "cross_unit_check", self.stamp(),
@@ -2392,16 +2513,37 @@ class Runner:
             if result.get("ok") is False:
                 self._fail(unit, step="cross_unit_check", result=result, retry_state="preflighted", attempt_id=attempt)
                 return True
-            by_path = {str(item["manifest_path"]): item["unit_key"] for item in members}
+            replies = [item for item in result.get("units") or [] if isinstance(item, Mapping)]
+            if len(replies) != len(members) or result.get("verdict") not in ("passed", "refused") or any(
+                    item.get("verdict") not in ("passed", "refused") for item in replies):
+                # A reply this runner cannot read is never a pass: the unit is held until Interactive answers in the
+                # agreed shape.
+                return self._contract_hold(unit, step="cross_unit_check", problem="cross_unit_reply_unreadable",
+                                           resume_state="preflighted", attempt_id=attempt,
+                                           detail={"verdict": result.get("verdict"), "units": len(replies), "sent": len(paths)})
+            key_of = {}
+            for position, (item, member) in enumerate(zip(replies, members)):
+                index = item.get("index")
+                owner = members[index] if isinstance(index, int) and 0 <= index < len(members) else member
+                key_of[position] = owner["unit_key"]
+                if item.get("analysis_unit_id"):
+                    key_of[str(item["analysis_unit_id"])] = owner["unit_key"]
             refused: dict[str, dict[str, Any]] = {}
-            for item in list(result.get("units") or []) + list(result.get("refused") or []):
-                if not isinstance(item, Mapping):
+            units_said = []
+            for position, item in enumerate(replies):
+                key = key_of[position]
+                reasons = [str(code) for code in item.get("reasons") or [] if code] or (
+                    [str(item["reason"])] if item.get("reason") else [])
+                units_said.append({"unit_key": key, "verdict": item["verdict"], "reasons": reasons,
+                                   "warnings": list(item.get("warnings") or []),
+                                   "prior_refusal_stands": bool(item.get("prior_refusal_stands"))})
+                if item["verdict"] != "refused":
                     continue
-                said = str(item.get("verdict") or ("refused" if item.get("reason_code") else "pass"))
-                key = by_path.get(str(item.get("manifest_path") or "")) or str(item.get("unit_key") or "")
-                if said != "pass" and key:
-                    refused[key] = {"reason_code": str(item.get("reason_code") or "cross_unit_refused"),
-                                    "rule": item.get("rule"), "with": item.get("with") or item.get("duplicate_of")}
+                code = reasons[0] if reasons else "cross_unit_refused"
+                against = [key_of.get(str(other), str(other)) for other in item.get("refused_against") or []]
+                refused[key] = {"reason_code": code, "reasons": reasons, "rule": self._CROSS_UNIT_RULES.get(code),
+                                "with": against[0] if against else None, "refused_against": against,
+                                **({"prior_refusal_stands": True} if item.get("prior_refusal_stands") else {})}
             # A unit an earlier check passed may already have run, so a refusal of it now cannot be acted on: the
             # units new to this check, whose arrival changed the verdict, are refused in its place.
             late = sorted(key for key in refused if key in passed)
@@ -2409,11 +2551,17 @@ class Runner:
                 partner = refused[late[0]]
                 for item in members:
                     if item["unit_key"] not in passed and item["unit_key"] not in refused:
-                        refused[item["unit_key"]] = {"reason_code": partner["reason_code"], "rule": partner["rule"],
-                                                     "with": late[0], "partner_already_passed": True}
-            verdict = {"standing": curated.DETERMINISTIC_CHECK, "group": group, "manifest_paths": paths,
-                       "units": sorted(by_path.values()), "verdict": "refused" if refused else "pass", "refused": refused,
-                       "interactive_verdict": result.get("verdict")}
+                        refused[item["unit_key"]] = {"reason_code": partner["reason_code"], "reasons": partner["reasons"],
+                                                     "rule": partner["rule"], "with": late[0], "refused_against": [late[0]],
+                                                     "partner_already_passed": True}
+            verdict = {"standing": curated.DETERMINISTIC_CHECK, "group": group,
+                       "manifest_paths": [self._relative(path) for path in paths],
+                       "units": [item["unit_key"] for item in members], "verdict": "refused" if refused else "passed",
+                       "refused": refused, "unit_verdicts": units_said,
+                       "interactive": {"verdict": result.get("verdict"), "rule": result.get("rule"),
+                                       "schema": result.get("schema"), "overlaps": list(result.get("overlaps") or []),
+                                       "version": self.pins.get("interactive", {}).get("version")
+                                       if isinstance(self.pins.get("interactive"), Mapping) else None}}
             self.ledger.close_attempt(attempt, "ok", self.stamp(), detail=self.redact({"verdict": verdict["verdict"], "refused": refused}))
             self._event("cross_unit_verdict", verdict, unit["unit_key"])
         mine = (verdict.get("refused") or {}).get(unit["unit_key"])

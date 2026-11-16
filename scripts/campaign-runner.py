@@ -39,6 +39,13 @@ THE ORDER OF USE
         Console: with Interactive 0.5.34 and a pinned Console that has MsdialWorkbench #825 the unit then runs as
         AIF (multi_ce_aif_with_console_825).
         Every request is acted on by the runner that holds the campaign; with none running, by the next run.
+        skip, retry and release-held take --question-code CODE where --reason is a named person's answer, verbatim,
+        to the question of that code (a triage flag, triage_header_disagreement): it needs --by naming that person,
+        and the runner records the request as their person_answer in the decision ledger and, for a curated unit, in
+        the accession's review log (WS0 decision 8). Any other request is the operator's, never a person's answer.
+    python scripts/campaign-runner.py release --campaign ID --out <empty folder>
+        write the release bundle replay-campaign.py replays (section 5.3): the release projection of the campaign
+        manifest and of each unit's run manifest, the triage directory, the decision ledger and release-index.json.
     python scripts/campaign-runner.py decisions --campaign ID
         export the decision ledger (<campaign dir>\\decision-ledger.jsonl): the campaign's triage, validation,
         approval, reopening, curated selection, header reconciliation, cross-unit and terminal refusal events, each
@@ -574,15 +581,20 @@ def _log_digest_approval(manifest: dict, digest: str, approval: dict) -> None:
     if triage is None:
         return
     root = Path(str(triage.get("directory") or ""))
+    written: set[tuple[str, str]] = set()
     for unit in manifest.get("units") or []:
         chosen = unit.get("curated_selection")
         if not isinstance(chosen, dict):
             continue
         folder = root / Path(str(chosen.get("triage_relative_path") or "")).parent
+        # One entry per decision (the children of one triage share it), with only the fields section 2.4 names.
+        key = (str(folder), str(chosen.get("triage_sha256")))
+        if key in written:
+            continue
+        written.add(key)
         try:
             curated.append_review_log(folder, "digest_approval", chosen.get("triage_sha256"), approval["approved_at"],
-                                      manifest_digest=digest, approval_id=approval["approval_id"], by=approval["approved_by"],
-                                      unit_key=unit.get("unit_key", unit["unit_id"]))
+                                      manifest_digest=digest, approval_id=approval["approval_id"], by=approval["approved_by"])
         except OSError as error:
             print(f"The approval is recorded; the review log of {folder.name} could not be appended: {error}", file=sys.stderr)
 
@@ -602,6 +614,32 @@ def command_decisions(args: argparse.Namespace) -> int:
     problems = curated.verify_decision_ledger(directory / curated.DECISION_LEDGER)
     _print({**record, "chain_problems": problems})
     return EXIT_REFUSED if problems else EXIT_OK
+
+
+def command_release(args: argparse.Namespace) -> int:
+    """Write the release bundle (docs/llm-assisted-curation.md section 5.3) that scripts/replay-campaign.py replays: the
+    release projections of the campaign manifest and of each unit's run manifest, the triage directory, the decision
+    ledger and release-index.json. Export the decision ledger first (decisions)."""
+    from campaign import curated
+
+    directory = _campaign_directory(args.workspace_root, args.campaign)
+    with _open(args) as book:
+        campaign = book.campaign()
+        units = [(unit["unit_key"], Path(str(unit["manifest_path"])), Path(str(unit["workspace"])))
+                 for unit in book.units() if unit.get("manifest_path") and unit.get("workspace")]
+    manifest = json.loads((directory / "campaign-manifest.json").read_text(encoding="utf-8-sig"))
+    libraries = {str(item.get("name")): str(item.get("sha256")) for item in (manifest.get("pins") or {}).get("libraries") or []
+                 if isinstance(item, dict) and item.get("name") and item.get("sha256")}
+    try:
+        index = curated.write_release(campaign_dir=directory, out=Path(args.out), workspace_root=args.workspace_root,
+                                      approved_digest=str(campaign["manifest_digest"]), run_manifests=units,
+                                      libraries=libraries)
+    except (OSError, ValueError, curated.TriageError) as error:
+        print(f"The release bundle was not written: {error}", file=sys.stderr)
+        return EXIT_REFUSED
+    _print({"out": str(args.out), "manifests": len(index["manifests"]),
+            "approved_manifest_digest": index["approved_manifest_digest"]})
+    return EXIT_OK
 
 
 # ---- the environment -----------------------------------------------------------------------------------
@@ -935,10 +973,20 @@ def _runner_note(book: Any) -> str:
 
 
 def command_request(args: argparse.Namespace) -> int:
+    """An operator's request. With --question-code the reason is a named person's answer (verbatim) to the question of
+    that code, and the request is recorded as their person_answer when the runner acts on it (WS0 decision 8); it then
+    needs --by. Without it the request is the operator's, never a person's answer."""
+    from campaign import ledger
+
     action = getattr(args, "action", None) or args.command
-    with _open(args) as book:
-        request_id = book.add_request(action, args.unit, args.reason, args.by or "", _now())
-        note = _runner_note(book)
+    try:
+        with _open(args) as book:
+            request_id = book.add_request(action, args.unit, args.reason, args.by or "", _now(),
+                                          question_code=getattr(args, "question_code", "") or "")
+            note = _runner_note(book)
+    except ledger.LedgerError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_REFUSED
     print(f"Request {request_id} ({action} {args.unit}) recorded; {note}.")
     return EXIT_OK
 
@@ -1225,6 +1273,12 @@ def parser() -> argparse.ArgumentParser:
     decisions.add_argument("--campaign", required=True)
     decisions.set_defaults(handler=command_decisions)
 
+    release = commands.add_parser("release", help="write the release bundle (release projections, triage, decision ledger, "
+                                                  "release-index.json) that replay-campaign.py replays")
+    release.add_argument("--campaign", required=True)
+    release.add_argument("--out", required=True, help="an empty or new folder")
+    release.set_defaults(handler=command_release)
+
     for name, handler in (("pause", command_pause), ("resume", command_resume)):
         command = commands.add_parser(name)
         command.add_argument("--campaign", required=True)
@@ -1241,6 +1295,9 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--unit", required=True)
         command.add_argument("--reason", required=True)
         command.add_argument("--by", default="")
+        command.add_argument("--question-code", default="",
+                             help="the code of the question the reason answers, in the words of the person named by --by "
+                                  "(required with it); the request is then recorded as that person's answer")
         command.set_defaults(handler=command_request, action=action)
 
     recheck = commands.add_parser(

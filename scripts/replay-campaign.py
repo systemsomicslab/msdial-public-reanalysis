@@ -1,39 +1,49 @@
 """Replay a campaign's curated selections from its frozen decision files, without any language model.
 
 A campaign that planned from triage files (campaign-runner.py plan --triage-dir) carries, per unit, the triage file's
-sha256, the validator's verdict and the sha256 of the selection and of the analysis inputs Interactive declares from
-it (scripts/campaign/curated.py). This script recomputes them from the released files alone, as a third party would,
-and says where they are equal (docs/llm-assisted-curation.md, section 3). Nothing here runs or imports a model client
-(tests/test_campaign_curated_selection.py asserts it): the LLM's part is its frozen output, kept as data.
+sha256, the validator's verdict and the sha256 of the selection (msdial-selection-canonical.v1) and of the analysis
+inputs Interactive declares from it (scripts/campaign/curated.py). This script recomputes them from the released files
+alone, as a third party would, and says where they are equal (docs/llm-assisted-curation.md, section 3). Nothing here
+runs or imports a model client (tests/test_campaign_curated_selection.py asserts it): the LLM's part is its frozen
+output, kept as data.
 
-    python scripts/replay-campaign.py --bundle <campaign dir or release copy> --workspace-root <absolute path>
+    python scripts/replay-campaign.py --bundle <release bundle or campaign dir> --workspace-root <absolute path>
         --level selection | inputs | outputs  [--unit <unit key>]  [--libraries <dir>]  [--out <report>]  [--json]
 
-The bundle holds campaign-manifest.json, the digest the person approved (campaign-authorization.json, or the plan's
-campaign-manifest.summary.json), and the triage directory: <bundle>\\triage\\<accession>\\..., or the directory the
-manifest names. Levels, each including the one before:
+THE BUNDLE (section 5.3, WS0 decision 9) is the release bundle campaign-runner.py release writes: release-index.json
+lists each manifest's release projection (<name>.release.json: every path under the workspace root relative, any other
+<external>/<name>, libraries by name and sha256), the sha256 of its original (checkable only on the producing machine)
+and of the projection, and the digest the person approved; campaign-manifest.release.json; the triage directory
+(triage\\<accession>\\...); decision-ledger.jsonl; and units\\<unit key>\\run-manifest.release.json for each unit that
+ran. A campaign directory as the runner keeps it (campaign-manifest.json with campaign-authorization.json or the plan's
+campaign-manifest.summary.json) is read too, for a replay on the producing machine. Levels, each including the one
+before:
 
-- selection: the bundle only, no network and no raw data. The manifest's sha256 equals the approved digest; each
-  unit's triage file hashes to the recorded triage_sha256, and its decision record (<name>.record.json, which names
-  the model, prompt and skill that made it) to the recorded triage_record_sha256; the accession's review log is one
-  unbroken hash chain that holds the head the plan recorded (review_log_head_sha256); scripts/validate-triage.py
-  gives the recorded verdict on each accession; the selection and the analysis inputs recompute to the recorded
-  selection_sha256 and analysis_inputs_sha256. The rebuilt inputs are written to
-  <out dir>\\replay-inputs\\<unit key>.json.
+- selection: the bundle only, no network and no raw data. The approved digest is the manifest's (recomputed from a
+  campaign directory; in a release bundle the release index's original sha256 must be the approved digest and the
+  projection must hash to the sha256 the index names); each unit's triage file hashes to the recorded triage_sha256,
+  and its decision record (<name>.record.json) to the recorded triage_record_sha256; the accession's review log is one
+  unbroken hash chain that holds the head the plan recorded; scripts/validate-triage.py gives the recorded verdict;
+  the selection (over the archive listing the record binds) and the analysis inputs recompute to the recorded
+  selection_sha256 and analysis_inputs_sha256. The rebuilt inputs are written to <out dir>\\replay-inputs\\<key>.json.
 - inputs: the raw archives' members, which the third party downloaded and extracted under
   <workspace root>\\<repository>\\<accession>\\: each selected member is found and checked against the listing's size
-  and CRC32; and where the bundle keeps the unit's run manifest (units\\<unit key>\\run-manifest.json), the
-  analysis_csv.canonical_sha256, parameter_file_sha256 and replay_projection_sha256 it records equal those of the run
-  manifest the third party's Interactive wrote for the same unit
-  (<workspace root>\\<repository>\\<accession>\\<workspace>\\provenance\\run-manifest.json), and the analysis CSV beside
-  it recomputes to its canonical sha256.
-- outputs: the MS-DIAL text outputs the bundle records (units\\<unit key>\\output-checksums.tsv: path, sha256) equal those
-  under the third party's <workspace>\\output. A unit whose pinned libraries are not all in --libraries (by sha256) is
-  not evaluable at this level (not_evaluable: private_library): the bundle names a private library by its sha256 and
-  never holds it.
+  and CRC32. Where the bundle keeps the unit's run manifest, the hashes its recorded projection schema names
+  (replay_projection.schema; msdial-replay-projection.v1: analysis_csv.canonical_sha256 and replay_projection_sha256;
+  v2 also parameter_file.canonical_sha256) are compared with those of the run manifest the third party's Interactive
+  wrote for the unit, and no other: a hash the schema does not name is not a check that could not run (section 3.2).
+  The analysis CSV beside it is recomputed in msdial-analysis-csv-canonical.v1. Interactive writes
+  replay_projection_sha256 at finalisation, after the Console run, so a replayed manifest without it is not evaluable,
+  with that reason.
+- outputs: the MS-DIAL text outputs the bundle records (units\\<unit key>\\output-checksums.tsv: path, and
+  canonical_sha256, the sha256 after the path rule of section 3.2 (section 3.3), else sha256) equal those under the
+  third party's <workspace>\\output, which only a run of the pinned Console makes (not evaluable without it).
+  A unit whose pinned libraries are not all in --libraries (by sha256) is not evaluable at this level
+  (not_evaluable: private_library): the bundle names a private library by its sha256 and never holds it.
 
 Exit status: 0 every compared value is equal, 1 something differs, 2 something could not be evaluated (never 0 for a
-check that could not run). It writes replay-report.json (one row per unit, expected and replayed value of each hash).
+check that could not run). It writes replay-report.json (one row per unit, expected and replayed value of each hash,
+and the projection schema each inputs comparison was made under).
 """
 
 from __future__ import annotations
@@ -55,6 +65,13 @@ from campaign import curated  # noqa: E402
 LEVELS = ("selection", "inputs", "outputs")
 EQUAL, DIFFERENT, NOT_EVALUABLE = "equal", "different", "not_evaluable"
 EXIT = {EQUAL: 0, DIFFERENT: 1, NOT_EVALUABLE: 2}
+RELEASE_INDEX = "release-index.json"
+# The hashes each replay projection schema names (section 3.2): exactly these are compared at the inputs level.
+PROJECTION_HASHES = {
+    "msdial-replay-projection.v1": ("analysis_csv.canonical_sha256", "replay_projection_sha256"),
+    "msdial-replay-projection.v2": ("analysis_csv.canonical_sha256", "replay_projection_sha256",
+                                    "parameter_file.canonical_sha256"),
+}
 
 
 def _sha(data: bytes) -> str:
@@ -67,6 +84,7 @@ class Row:
     def __init__(self, unit_key: str) -> None:
         self.unit_key = unit_key
         self.checks: list[dict[str, Any]] = []
+        self.projection_schema: str | None = None
 
     def compare(self, name: str, expected: Any, replayed: Any, *, why: str = "") -> None:
         if expected is None or replayed is None:
@@ -85,20 +103,68 @@ class Row:
         return DIFFERENT if DIFFERENT in results else NOT_EVALUABLE if NOT_EVALUABLE in results or not results else EQUAL
 
     def as_dict(self) -> dict[str, Any]:
-        return {"unit_key": self.unit_key, "result": self.result, "checks": self.checks}
+        return {"unit_key": self.unit_key, "result": self.result, "checks": self.checks,
+                **({"projection_schema": self.projection_schema} if self.projection_schema else {})}
+
+
+# ---- the bundle --------------------------------------------------------------------------------------------------
+
+class Bundle:
+    """A release bundle (release-index.json) or a campaign directory, read the same way."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.index: dict[str, Any] | None = None
+        index = path / RELEASE_INDEX
+        if index.is_file():
+            self.index = json.loads(index.read_text(encoding="utf-8-sig"))
+
+    @property
+    def released(self) -> bool:
+        return self.index is not None
+
+    def entry(self, name: str) -> dict[str, Any] | None:
+        for item in (self.index or {}).get("manifests") or []:
+            if isinstance(item, dict) and item.get("name") == name:
+                return item
+        return None
+
+    def campaign_manifest(self) -> tuple[dict[str, Any], bytes, dict[str, Any] | None]:
+        """(the manifest, the bytes read, its release index entry or None)."""
+        if self.released:
+            entry = self.entry("campaign-manifest.json")
+            if entry is None:
+                raise FileNotFoundError(f"{RELEASE_INDEX} names no campaign-manifest.json")
+            data = (self.path / str(entry["release"])).read_bytes()
+            return json.loads(data.decode("utf-8")), data, entry
+        data = (self.path / "campaign-manifest.json").read_bytes()
+        return json.loads(data.decode("utf-8")), data, None
+
+    def run_manifest(self, unit_key: str) -> dict[str, Any] | None:
+        for name in (f"units/{unit_key}/run-manifest.json",):
+            entry = self.entry(name) if self.released else None
+            path = self.path / str(entry["release"]) if entry else self.path / name
+            if path.is_file():
+                return json.loads(path.read_text(encoding="utf-8-sig"))
+        return None
+
+    def approved_digest(self) -> str | None:
+        if self.released:
+            return str((self.index or {}).get("approved_manifest_digest") or "") or None
+        for name, key in (("campaign-authorization.json", "manifest_digest"), ("campaign-manifest.summary.json", "manifest_digest")):
+            path = self.path / name
+            if path.is_file():
+                try:
+                    value = json.loads(path.read_text(encoding="utf-8-sig")).get(key)
+                except ValueError:
+                    continue
+                if value:
+                    return str(value)
+        return None
 
 
 def approved_digest(bundle: Path) -> str | None:
-    for name, key in (("campaign-authorization.json", "manifest_digest"), ("campaign-manifest.summary.json", "manifest_digest")):
-        path = bundle / name
-        if path.is_file():
-            try:
-                value = json.loads(path.read_text(encoding="utf-8-sig")).get(key)
-            except ValueError:
-                continue
-            if value:
-                return str(value)
-    return None
+    return Bundle(bundle).approved_digest()
 
 
 def triage_root(bundle: Path, manifest: dict[str, Any]) -> Path:
@@ -128,7 +194,7 @@ def check_record(row: Row, chosen: dict[str, Any], payload: Path) -> None:
 def check_review_log(row: Row, chosen: dict[str, Any], folder: Path) -> None:
     """The accession's review log is one unbroken chain (curated.verify_review_log), and the head the plan recorded is
     one of its lines: the entries a person could read when approving are the ones released, with only later entries
-    (the approval, the header comparisons, a person's answers) after them."""
+    (the approval, a person's answers) after them."""
     path = folder / curated.REVIEW_LOG
     expected = chosen.get("review_log_head_sha256")
     if not path.is_file():
@@ -175,15 +241,20 @@ def replay_selection(bundle: Path, manifest: dict[str, Any], units: list[dict[st
             if child is None:
                 row.not_evaluable("selection_sha256", f"the triage has no child {chosen['child_key']}")
                 continue
-        _catalog, listing_paths = curated.accession_sources(folder)
-        listing = curated.read_listings(listing_paths)
-        chosen_items = curated.selection(triage, listing, child)
+        # The listing the decision record binds, as Interactive reads it (section 3.1): a record whose listing is
+        # missing or holds other bytes cannot give the recorded selection, and says so.
+        bound = curated.bound_listing(payload, _sha(raw))
+        if bound["problem"]:
+            row.not_evaluable("selection_sha256", bound["problem"])
+            continue
+        chosen_items = curated.selection_canonical(triage, bound["listing"], child)
         inputs = curated.analysis_inputs(triage, child)
-        row.compare("selection_sha256", chosen.get("selection_sha256"), _sha(curated.canonical(chosen_items)))
+        row.compare("selection_sha256", chosen.get("selection_sha256"), _sha(curated.canonical_json(chosen_items)))
         row.compare("analysis_inputs_sha256", chosen.get("analysis_inputs_sha256"), _sha(curated.canonical(inputs)))
         target = out_dir / "replay-inputs" / f"{key}.json"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(json.dumps({"unit_key": key, "selection": chosen_items, "analysis_inputs": inputs},
+        target.write_bytes(json.dumps({"unit_key": key, "selection_canonical_form": curated.SELECTION_CANONICAL_FORM,
+                                       "selection": chosen_items, "analysis_inputs": inputs},
                                       ensure_ascii=False, indent=1, sort_keys=True).encode("utf-8"))
 
 
@@ -214,29 +285,33 @@ def _get(record: dict[str, Any], *paths: str) -> Any:
     return None
 
 
-def canonical_csv_sha256(csv_path: Path, raw_dir: Path) -> str:
-    """The analysis CSV's canonical sha256 (framework section 3): every file path rewritten relative to the unit's raw
-    directory, forward slashes, LF line endings, UTF-8 without BOM."""
-    text = csv_path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
-    prefixes = sorted({str(raw_dir), str(raw_dir).replace("\\", "/"), str(raw_dir.resolve()), str(raw_dir.resolve()).replace("\\", "/")},
-                      key=len, reverse=True)
-    out_lines = []
-    for line in text.split("\n"):
-        cells = next(csv.reader([line])) if line else []
-        fixed = []
-        for cell in cells:
-            value = cell
-            for prefix in prefixes:
-                if value.casefold().startswith(prefix.casefold()):
-                    value = value[len(prefix):].lstrip("\\/")
-                    break
-            fixed.append(value.replace("\\", "/") if value != cell else value)
-        out_lines.append(",".join(fixed) if cells else "")
-    return _sha("\n".join(out_lines).encode("utf-8"))
+def canonical_csv_sha256(csv_path: Path, raw_directory: str | Path) -> str:
+    """The analysis CSV's canonical sha256 (msdial-analysis-csv-canonical.v1, section 3.2), computed by the copy of
+    Interactive's canonical form curated.canonical_analysis_csv carries, against the manifest's raw directory."""
+    return _sha(curated.canonical_analysis_csv(csv_path.read_bytes(), str(raw_directory)))
+
+
+def canonical_output_sha256(path: Path, raw_directory: str | Path) -> str:
+    """A finalised MS-DIAL text output's sha256 after the path rule of section 3.2 (section 3.3): every tab-separated cell
+    that is an absolute path rewritten relative to the unit's raw directory (curated._canonical_cell, Interactive's
+    rule), LF line endings, UTF-8 without a byte-order mark. Lines are kept as they are otherwise."""
+    text = path.read_bytes().decode("utf-8-sig")
+    lines = ["\t".join(curated._canonical_cell(cell, str(raw_directory)) for cell in line.split("\t"))
+             for line in text.splitlines()]
+    return _sha(("\n".join(lines) + "\n").encode("utf-8"))
+
+
+def projection_schema(recorded: dict[str, Any]) -> str | None:
+    projection = recorded.get("replay_projection")
+    if isinstance(projection, dict) and projection.get("schema"):
+        return str(projection["schema"])
+    value = recorded.get("replay_projection_schema")
+    return str(value) if value else None
 
 
 def replay_inputs(bundle: Path, workspace_root: Path, manifest: dict[str, Any], units: list[dict[str, Any]],
                   out_dir: Path, rows: dict[str, Row]) -> None:
+    reader = Bundle(bundle)
     for unit in units:
         key = str(unit.get("unit_key", unit["unit_id"]))
         row = rows[key]
@@ -257,30 +332,43 @@ def replay_inputs(bundle: Path, workspace_root: Path, manifest: dict[str, Any], 
             elif item.get("crc32") and _crc32(found) != str(item["crc32"]).upper():
                 wrong.append(f"{item['member_path']}: CRC32 differs from the listing")
         if missing:
-            row.not_evaluable("members", f"{len(missing)} selected member(s) not found under {base}: {', '.join(map(str, missing[:5]))}")
+            row.not_evaluable("members", f"{len(missing)} selected member(s) not found under the replay workspace: "
+                                         f"{', '.join(map(str, missing[:5]))}")
         else:
             row.checks.append({"check": "members", "result": DIFFERENT if wrong else EQUAL, "files": len(selection),
                                **({"differences": wrong[:20]} if wrong else {})})
-        recorded_path = bundle / "units" / key / "run-manifest.json"
+        recorded = reader.run_manifest(key)
         workspace = base / str(unit.get("workspace_name") or unit["unit_id"])
         replayed_path = workspace / "provenance" / "run-manifest.json"
-        if not recorded_path.is_file():
-            row.not_evaluable("run_manifest", f"the bundle keeps no units/{key}/run-manifest.json")
+        if recorded is None:
+            row.not_evaluable("run_manifest", f"the bundle keeps no run manifest of {key}")
+            continue
+        schema = projection_schema(recorded)
+        row.projection_schema = schema
+        names = PROJECTION_HASHES.get(schema or "")
+        if names is None:
+            row.not_evaluable("projection_schema", f"the recorded run manifest names projection schema {schema or 'none'}, "
+                                                   "which this replay does not know; nothing is compared under it")
             continue
         if not replayed_path.is_file():
-            row.not_evaluable("run_manifest", f"no replayed run manifest at {replayed_path}")
+            row.not_evaluable("run_manifest", "no replayed run manifest: the third party's Interactive writes it for the "
+                                              "unit's download, preflight and analysis CSV")
             continue
-        recorded = json.loads(recorded_path.read_text(encoding="utf-8-sig"))
         replayed = json.loads(replayed_path.read_text(encoding="utf-8-sig"))
-        for name, paths in (("analysis_csv.canonical_sha256", ("analysis_csv.canonical_sha256",)),
-                            ("parameter_file_sha256", ("parameter_file_sha256", "parameter_file.canonical_sha256", "parameter_file.sha256")),
-                            ("replay_projection_sha256", ("replay_projection_sha256",))):
-            row.compare(name, _get(recorded, *paths), _get(replayed, *paths),
-                        why=f"{name} is not recorded by the Interactive that ran (0.5.69 records it)")
+        for name in names:
+            expected, found = _get(recorded, name), _get(replayed, name)
+            why = ""
+            if found is None and name == "replay_projection_sha256":
+                why = ("the replayed run manifest records no replay_projection_sha256: Interactive writes it at "
+                       "finalisation, after a Console run of the pinned build")
+            elif expected is None:
+                why = f"the recorded run manifest names {schema} but records no {name}"
+            row.compare(f"{name} ({schema})", expected, found, why=why or "not recorded by the replaying Interactive")
         csv_path = _get(replayed, "analysis_csv.path", "analysis_csv_path", "input_path")
-        if csv_path and Path(str(csv_path)).is_file():
+        raw_directory = str(replayed.get("raw_directory") or "")
+        if csv_path and Path(str(csv_path)).is_file() and raw_directory:
             row.compare("analysis_csv_recomputed", _get(recorded, "analysis_csv.canonical_sha256"),
-                        canonical_csv_sha256(Path(str(csv_path)), workspace / "raw"))
+                        canonical_csv_sha256(Path(str(csv_path)), raw_directory))
 
 
 def replay_outputs(bundle: Path, workspace_root: Path, manifest: dict[str, Any], units: list[dict[str, Any]],
@@ -302,25 +390,48 @@ def replay_outputs(bundle: Path, workspace_root: Path, manifest: dict[str, Any],
             row.not_evaluable("outputs", f"the bundle records no units/{key}/output-checksums.tsv")
             continue
         workspace = workspace_root / str(unit["repository"]) / str(unit["accession"]) / str(unit.get("workspace_name") or unit["unit_id"])
+        if not (workspace / "output").is_dir():
+            row.not_evaluable("outputs", "needs a Console run: no replayed output directory, which only a run of the "
+                                         "pinned Console build on the replayed inputs makes")
+            continue
+        replayed_manifest = workspace / "provenance" / "run-manifest.json"
+        raw_directory = ""
+        if replayed_manifest.is_file():
+            raw_directory = str(json.loads(replayed_manifest.read_text(encoding="utf-8-sig")).get("raw_directory") or "")
+        raw_directory = raw_directory or str(workspace / "raw")
         with recorded.open(encoding="utf-8", newline="") as handle:
             for line in csv.DictReader(handle, delimiter="\t"):
                 found = workspace / "output" / str(line.get("path") or "")
-                row.compare(f"output:{line.get('path')}", line.get("sha256"), _sha(found.read_bytes()) if found.is_file() else None,
-                            why="not found in the replayed output")
+                if line.get("canonical_sha256"):
+                    # Section 3.3: the finalised file after the path rule of section 3.2, so a path that differs only by
+                    # where the unit was replayed is no difference.
+                    row.compare(f"output:{line.get('path')}", line.get("canonical_sha256"),
+                                canonical_output_sha256(found, raw_directory) if found.is_file() else None,
+                                why="not found in the replayed output")
+                else:
+                    row.compare(f"output:{line.get('path')}", line.get("sha256"), _sha(found.read_bytes()) if found.is_file() else None,
+                                why="not found in the replayed output")
 
 
 def replay(bundle: Path, workspace_root: Path, level: str, unit_key: str | None = None, libraries: Path | None = None,
            out: Path | None = None) -> dict[str, Any]:
-    manifest_path = bundle / "campaign-manifest.json"
-    data = manifest_path.read_bytes()
-    manifest = json.loads(data.decode("utf-8"))
-    digest = "sha256:" + _sha(data)
+    reader = Bundle(bundle)
+    manifest, data, entry = reader.campaign_manifest()
     units = [unit for unit in manifest.get("units") or [] if isinstance(unit.get("curated_selection"), dict)
              and (unit_key is None or str(unit.get("unit_key", unit["unit_id"])) == unit_key)]
     out_dir = (out or bundle / "replay-report.json").parent
     rows = {str(unit.get("unit_key", unit["unit_id"])): Row(str(unit.get("unit_key", unit["unit_id"]))) for unit in units}
     campaign = Row("(campaign)")
-    campaign.compare("manifest_digest", approved_digest(bundle), digest, why="the bundle holds no approved digest")
+    if entry is None:
+        digest = "sha256:" + _sha(data)
+        campaign.compare("manifest_digest", reader.approved_digest(), digest, why="the bundle holds no approved digest")
+    else:
+        # A release projection: the original manifest's digest is checkable only where it was made; the index's claim
+        # must be the approved digest, and the projection must be the one the index names.
+        digest = str(entry.get("original_sha256") or "")
+        campaign.compare("manifest_digest", reader.approved_digest(), digest or None,
+                         why="the release index records no original sha256")
+        campaign.compare("release_projection_sha256", entry.get("release_sha256"), _sha(data))
     if not units:
         campaign.not_evaluable("units", "no unit of this manifest carries a curated selection" + (f" named {unit_key}" if unit_key else ""))
     replay_selection(bundle, manifest, units, out_dir, rows)
@@ -332,6 +443,7 @@ def replay(bundle: Path, workspace_root: Path, level: str, unit_key: str | None 
     results = {row.result for row in every}
     overall = DIFFERENT if DIFFERENT in results else NOT_EVALUABLE if NOT_EVALUABLE in results else EQUAL
     report = {"schema": "msdial-campaign-replay-report.v1", "level": level, "result": overall,
+              "bundle": "release" if reader.released else "campaign_directory",
               "manifest_digest": digest, "campaign_id": manifest.get("campaign_id"),
               "units": [row.as_dict() for row in every]}
     target = out or bundle / "replay-report.json"
@@ -353,8 +465,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.workspace_root.is_absolute():
         print("--workspace-root must be an absolute path.", file=sys.stderr)
         return 2
-    if not (args.bundle / "campaign-manifest.json").is_file():
-        print(f"{args.bundle} holds no campaign-manifest.json.", file=sys.stderr)
+    if not (args.bundle / RELEASE_INDEX).is_file() and not (args.bundle / "campaign-manifest.json").is_file():
+        print(f"{args.bundle} holds neither {RELEASE_INDEX} nor campaign-manifest.json.", file=sys.stderr)
         return 2
     report = replay(args.bundle, args.workspace_root, args.level, args.unit, args.libraries, args.out)
     if args.json:

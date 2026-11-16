@@ -25,6 +25,7 @@ if str(SCRIPTS) not in sys.path:
 
 from campaign import ledger as ledger_module  # noqa: E402
 from campaign import machine, plan, policy, ports  # noqa: E402
+from campaign import curated as curated_module  # noqa: E402
 
 SHA = {name: hashlib.sha256(name.encode()).hexdigest() for name in ("console", "extractor", "positive", "negative", "lbm", "auth")}
 POSITIVE_MSP = "SyntheticPositive.msp"
@@ -151,6 +152,53 @@ def unsupported_inputs_failure(unit: str, *, disposition: bool = True) -> dict[s
     return record
 
 
+# The curated selection arguments of msdial_download_repository_raw (Interactive 0.5.69) the fake records per download.
+CURATED_ARGUMENTS = ("curated_selection_path", "original_handoff_sha256", "original_handoff_path", "decision_record_path",
+                     "curated_selection_child_key", "curated_selection_validator", "workspace_unit_key")
+
+
+def reconciliation_block(applied: dict[str, Any], mode: str) -> dict[str, Any]:
+    """Interactive 0.5.69's curated_selection_reconciliation for an applied selection, every kept row's header agreeing
+    with the triage ("agree"), or the first row's polarity the other one ("disagree"), in the nested per-file shape
+    reconcile_curated_selection writes (WS0 decision 3)."""
+    technical = applied.get("applied_technical") or {}
+    rows = list(applied.get("rows_kept") or []) or [{"row_index": 0, "member_path": "Pos/S1.raw", "basis": "declared"}]
+    files = []
+    for position, row in enumerate(rows):
+        ion = str(row.get("ion_mode") or technical.get("ion_mode") or "positive")
+        acquisition = str(row.get("acquisition_mode") or technical.get("acquisition_mode") or "DDA")
+        header = ion.capitalize()
+        if mode == "disagree" and position == 0:
+            header = "Negative" if ion.casefold() == "positive" else "Positive"
+        polarity = "agree" if header.casefold() == ion.casefold() else "disagree"
+        files.append({"file": str(row.get("member_path")), "member_path": row.get("member_path"),
+                      "row_index": row.get("row_index"), "basis": row.get("basis") or "declared", "outcome": "ok",
+                      "ion_mode": {"triage": ion, "triage_basis": "row" if row.get("ion_mode") else "unit", "header": header,
+                                   "result": polarity},
+                      "acquisition_mode": {"triage": acquisition, "triage_basis": "row" if row.get("acquisition_mode") else "unit",
+                                           "header": acquisition.upper(), "result": "agree"},
+                      "result": "agree" if polarity == "agree" else "disagree",
+                      **({"reasons": ["polarity"]} if polarity != "agree" else {})})
+    disagree = sum(1 for item in files if item["result"] == "disagree")
+    return {"schema": "msdial-curated-selection-reconciliation.v1", "triage_sha256": applied.get("triage_sha256"),
+            "analysis_unit_key": applied.get("analysis_unit_key"), "verdict": "disagree" if disagree else "agree",
+            "reason": "triage_header_disagreement" if disagree else "", "inspected": len(files),
+            "agree": len(files) - disagree, "disagree": disagree, "kept_rows_not_inspected": [], "files": files,
+            "retryable": False}
+
+
+def fake_handoff(unit_id: str, class_proposal_id: str, rows: list[dict[str, Any]] | None = None,
+                 extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The handoff FakeCatalog writes for a unit (deterministic, so a test can name its sha256 in a triage)."""
+    return {"analysis_unit_id": unit_id, "class_proposal_id": class_proposal_id, **dict(extra or {}),
+            **({"sample_metadata": rows} if rows is not None else {})}
+
+
+def handoff_bytes(value: dict[str, Any]) -> bytes:
+    """The bytes _write gives a JSON value (FakeCatalog's handoff file)."""
+    return json.dumps(value, indent=1, sort_keys=True).encode("utf-8")
+
+
 def _write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=1, sort_keys=True), encoding="utf-8")
@@ -251,6 +299,8 @@ class FakeInteractive:
         self.curated_recorded = True
         # The triage sha256 the lease records as applied, where a test makes it another than the file's.
         self.curated_recorded_sha: str | None = None
+        # The selection_sha256 it records, where a test makes it another than msdial-selection-canonical.v1 gives.
+        self.curated_recorded_selection: str | None = None
         self.curated_downloads: list[dict[str, Any]] = []
         self.cross_unit_supported = True
         self.cross_unit_calls: list[list[str]] = []
@@ -372,29 +422,30 @@ class FakeInteractive:
         if script.required_bytes > maximum:
             return {"ok": False, "reason": "blocked", "blocking_reasons": ["size_limit:exceeded"],
                     "required_download_bytes": script.required_bytes, "maximum_gb": arguments["maximum_gb"]}
+        self.curated_downloads.append({key: value for key, value in arguments.items() if key in CURATED_ARGUMENTS})
+        applied: dict[str, Any] = {}
+        if arguments.get("curated_selection_path"):
+            found = self._apply_curated(arguments)
+            if found.get("ok") is False:
+                return found
+            applied = found if self.curated_recorded else {}
         job = self._job_id("dl")
         workspace = self._workspace(arguments["repository"], arguments["accession"], arguments.get("workspace_unit_key") or unit)
         manifest_path = workspace / "provenance" / "run-manifest.json"
-        applied: dict[str, Any] = {}
-        if arguments.get("curated_selection_path") and self.curated_recorded:
-            # What 0.5.69 records of the selection it applied (repository_metadata.curated_selection, the contract's A3).
-            triage = Path(arguments["curated_selection_path"])
-            applied = {"curated_selection": {
-                "path": str(triage),
-                "triage_sha256": self.curated_recorded_sha or hashlib.sha256(triage.read_bytes()).hexdigest(),
-                "original_handoff_sha256": arguments.get("original_handoff_sha256"),
-                "child_key": arguments.get("curated_selection_child_key"), "standing": "accepted_decision",
-                "rows_kept": [{"row_index": index} for index in range(3)], "rows_dropped": [{"row_index": 3, "reason": "belongs_to_other_unit"}]}}
-        self.curated_downloads.append({key: value for key, value in arguments.items() if key in (
-            "curated_selection_path", "original_handoff_sha256", "curated_selection_child_key", "workspace_unit_key")})
+        metadata: dict[str, Any] = {}
+        if applied:
+            # Where 0.5.69 records the selection it applied: project.repository_metadata.curated_selection (WS0 decision 4).
+            metadata["curated_selection"] = applied
+        if arguments.get("workspace_unit_key"):
+            metadata["workspace_unit_key"] = arguments["workspace_unit_key"]
         self.store.write(manifest_path, {
-            "status": "downloading", "project": {"analysis_unit_id": unit}, "workspace": str(workspace),
+            "status": "downloading", "project": {"analysis_unit_id": unit, **({"repository_metadata": metadata} if metadata else {})},
+            "workspace": str(workspace),
             "raw_directory": str(workspace / "raw"), "output_directory": str(workspace / "output"),
             "download_started_at": self._stamp(), "lease_owner": {"job_id": job},
             "raw_retention_policy": arguments["raw_retention_policy"],
             "campaign_authorizations": [{"boundary": 1, "job_id": job, "validated_at": self._stamp(),
                                          "entry_point": "msdial_download_repository_raw"}],
-            **({"repository_metadata": applied} if applied else {}),
         })
         self.jobs[job] = {"id": job, "kind": "download", "status": "running", "done_at": self._due(script.ticks), "received": 0,
                           "outcome": outcome, "unit": unit, "manifest_path": str(manifest_path), "maximum_bytes": maximum,
@@ -404,6 +455,63 @@ class FakeInteractive:
             # The lease's own claim, as fetch_or_reuse makes it: a pre-claim is kept as it is.
             self._claim(url, unit, "lease")
         return {"ok": True, "job_id": job}
+
+    def _apply_curated(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """What Interactive 0.5.69 records of a curated selection it applied (curated_selection.apply_curated_selection's
+        provenance, in the keys the runner reads), or its refusal (ok false, reason_code, retryable false). The handoff
+        is bound to the triaged one by sha256, the decision record is read where it is named (or beside the triage) and
+        gives the selection its listing, and the selection_sha256 is msdial-selection-canonical.v1, as Interactive
+        computes it; tests/test_campaign_interactive_integration.py runs the real code."""
+        triage_path = Path(arguments["curated_selection_path"])
+        data = triage_path.read_bytes()
+        sha = hashlib.sha256(data).hexdigest()
+        triage = json.loads(data.decode("utf-8"))
+
+        def refuse(code: str, message: str) -> dict[str, Any]:
+            return {"ok": False, "reason": code, "reason_code": code, "codes": [code], "retryable": False,
+                    "detail": f"curated_selection_refused [{code}]: {message}", "error_type": "CuratedSelectionError"}
+
+        if str(arguments.get("original_handoff_sha256") or "") != str(triage.get("catalog_handoff_sha256") or ""):
+            return refuse("curated_selection_handoff_mismatch", "the handoff is not the triaged one")
+        record = str(arguments.get("decision_record_path") or "")
+        if not record:
+            beside = [triage_path.with_name(triage_path.stem + ".record.json"),
+                      triage_path.with_name(f"{triage.get('unit_id')}.record.json")]
+            record = next((str(item) for item in beside if item.is_file()), "")
+        listing: dict[str, Any] = {}
+        record_sha = ""
+        if record:
+            bound = curated_module.record_inputs(Path(record), sha)
+            if bound["problem"]:
+                return refuse("curated_selection_record_mismatch", bound["problem"])
+            listing, record_sha = bound["listing"], bound["sha256"]
+        child_key = str(arguments.get("curated_selection_child_key") or "")
+        child = curated_module._child_of(triage, child_key) if child_key else None
+        if child_key and child is None:
+            return refuse("curated_selection_child_unknown", f"no child {child_key}")
+        allowed = None if child is None else {str(path).casefold() for path in child.get("member_paths") or []}
+        kept = [row for row in triage.get("rows") or [] if allowed is None or str(row.get("member_path")).casefold() in allowed]
+        technical = dict(triage.get("unit_technical") or {})
+        unit_id = str(triage.get("unit_id") or "")
+        return {
+            "schema": "msdial-curated-selection.v1", "path": str(triage_path),
+            "sha256": self.curated_recorded_sha or sha, "triage_sha256": self.curated_recorded_sha or sha,
+            "triage_record_sha256": record_sha, "catalog_handoff_sha256": triage.get("catalog_handoff_sha256"),
+            "catalog_handoff_verification": "original_read_and_copy_compared" if arguments.get("original_handoff_path") else "handoff_file",
+            "original_handoff_sha256": arguments.get("original_handoff_sha256"),
+            "analysis_unit_key": f"{unit_id}-{child_key}" if child_key else unit_id, "catalog_analysis_unit_id": unit_id,
+            "child_key": child_key or None, "standing": "accepted_decision",
+            "unit_technical": technical,
+            "applied_technical": {"ion_mode": str((child or {}).get("ion_mode") or technical.get("ion_mode") or ""),
+                                  "acquisition_mode": str((child or {}).get("acquisition_mode") or technical.get("acquisition_mode") or "")},
+            "validator": arguments.get("curated_selection_validator"),
+            "selection_sha256": self.curated_recorded_selection or curated_module.selection_sha256(triage, listing, child),
+            "selection_canonical_form": curated_module.SELECTION_CANONICAL_FORM, "selection_listing_entries": len(listing),
+            "rows_kept": [{key: row.get(key) for key in ("row_index", "sample_id", "member_path", "ion_mode", "acquisition_mode", "basis", "role")}
+                          for row in kept],
+            "rows_dropped": [{"row_index": row.get("row_index"), "reason": row.get("reason")} for row in triage.get("excluded_rows") or []],
+            "rows_kept_count": len(kept), "rows_dropped_count": len(triage.get("excluded_rows") or []),
+        }
 
     def _due(self, ticks: int) -> Any:
         return self.world.clock.now() + timedelta(seconds=30 * ticks)
@@ -620,16 +728,13 @@ class FakeInteractive:
                     warnings.append(policy.AIF_CE_SETS_DIFFER_RECORDED)
             disposition = "run" if ready else "aif_hold"
         reconciliation: dict[str, Any] = {}
-        curated = ((self.store.read(manifest_path) or {}).get("repository_metadata") or {}).get("curated_selection")
+        current = self.store.read(manifest_path) or {}
+        curated = ((current.get("project") or {}).get("repository_metadata") or {}).get("curated_selection")
         mode = script.reconciliation or ("agree" if curated else "")
         if mode in ("agree", "disagree"):
-            disagree = mode == "disagree"
-            reconciliation = {"curated_selection_reconciliation": {"verdict": mode, "files": [
-                {"member_path": "Pos/S1.raw", "field": "ion_mode", "triage_value": "positive",
-                 "header_value": "negative" if disagree else "positive", "verdict": mode},
-                {"member_path": "Pos/S1.raw", "field": "acquisition_mode", "triage_value": "DDA",
-                 "header_value": "DDA", "verdict": "agree"}]}}
-            if disagree:
+            block = self._reconcile(manifest_path, curated or {}, mode)
+            reconciliation = {"curated_selection_reconciliation": block}
+            if block.get("verdict") == "disagree":
                 disposition, hold_reason = "aif_hold", "triage_header_disagreement"
         hold = disposition == "aif_hold"
         if hold:
@@ -653,35 +758,50 @@ class FakeInteractive:
             self._update(manifest_path, lambda manifest: manifest.update(campaign_disposition=record, status="preflight_passed"))
         return {"completed": True, "extractor_found": True, "status": "preflight_passed"}
 
+    def _reconcile(self, manifest_path: str, applied: dict[str, Any], mode: str) -> dict[str, Any]:
+        """The unit's curated_selection_reconciliation (a subclass may compute it with Interactive's own code)."""
+        return reconciliation_block(applied, mode)
+
     def cross_unit_check(self, *, manifest_paths: list[str]) -> dict[str, Any]:
-        """msdial_repository_cross_unit_check (0.5.69): rules P, C and D over one download group's manifests."""
+        """msdial_repository_cross_unit_check (0.5.69), in its own result shape: units[i] for manifest_paths[i], each
+        verdict "passed" or "refused" with reason and reasons; two or more manifests, else a validation error. Rule D is
+        computed over the kept member paths of the triage each manifest's applied selection names."""
         self.calls.append(("cross_unit_check", {"manifest_paths": list(manifest_paths)}))
         if not self.cross_unit_supported:
             return {"ok": False, "reason": "unsupported", "detail": "Interactive has no tool msdial_repository_cross_unit_check."}
+        if len(manifest_paths) < 2:
+            return {"ok": False, "reason": "validation_error", "error_type": "ValueError",
+                    "detail": "A cross-unit check compares two or more unit manifests."}
         self.cross_unit_calls.append(list(manifest_paths))
-        computed: dict[str, tuple[str, str]] = {}
+        computed: dict[str, tuple[str, str, list[str]]] = {}
         if not self.cross_unit_refusals:
-            # Rule D as the contract states it (an identical set of Sample inputs is refused for every member after the
-            # first), over the kept member paths of the triage each manifest's applied selection names.
             seen: dict[frozenset, str] = {}
             for path in manifest_paths:
-                applied = ((self.store.read(path) or {}).get("repository_metadata") or {}).get("curated_selection") or {}
+                manifest = self.store.read(path) or {}
+                applied = ((manifest.get("project") or {}).get("repository_metadata") or {}).get("curated_selection") or {}
                 if not applied.get("path") or not Path(applied["path"]).is_file():
                     continue
                 triage = json.loads(Path(applied["path"]).read_text(encoding="utf-8"))
                 members = frozenset(str(row.get("member_path") or "").casefold() for row in triage.get("rows") or []
                                     if row.get("role") in (None, "sample") and row.get("member_path"))
                 if members and members in seen:
-                    computed[self._unit_of_manifest(path)] = ("cross_unit_duplicate_inputs", "D")
+                    computed[self._unit_of_manifest(path)] = ("cross_unit_duplicate_inputs", "D", [seen[members]])
                 elif members:
                     seen[members] = self._unit_of_manifest(path)
         units = []
-        for path in manifest_paths:
-            unit = self._unit_of_manifest(path)
-            refused = self.cross_unit_refusals.get(unit) or computed.get(unit)
-            units.append({"manifest_path": path, "analysis_unit_id": unit, "verdict": "refused" if refused else "pass",
-                          **({"reason_code": refused[0], "rule": refused[1]} if refused else {})})
-        return {"ok": True, "verdict": "refused" if any(item["verdict"] != "pass" for item in units) else "pass", "units": units}
+        ids = [self._unit_of_manifest(path) for path in manifest_paths]
+        for index, path in enumerate(manifest_paths):
+            unit = ids[index]
+            scripted = self.cross_unit_refusals.get(unit)
+            refused = (scripted[0], scripted[1], [other for other in ids if other != unit]) if scripted else computed.get(unit)
+            units.append({"index": index, "manifest_path": str(Path(path).resolve()), "label": "", "analysis_unit_id": unit,
+                          "verdict": "refused" if refused else "passed", "reason": refused[0] if refused else "",
+                          "reasons": [refused[0]] if refused else [], "refused_against": list(refused[2]) if refused else [],
+                          "warnings": [], "details": [], "retryable": False, "prior_refusal_stands": False})
+        return {"ok": True, "recorded": True, "schema": "msdial-cross-unit-attribution.v1",
+                "rule": "cross_unit_attribution_2026_11_16b", "containment_minimum": 0.5,
+                "verdict": "refused" if any(item["verdict"] == "refused" for item in units) else "passed",
+                "units": units, "overlaps": []}
 
     def classify(self, *, manifest_path: str, authorization_path: str, console_path: str = "") -> dict[str, Any]:
         """classify_preflight: the recorded preflight decided again under the approval, and applied."""
@@ -1115,9 +1235,9 @@ class FakeCatalog:
 
     def handoff(self, *, unit_id: str, class_proposal_id: str) -> dict[str, Any]:
         path = self.world.root / "catalog-data" / "handoffs" / f"{unit_id}.json"
-        rows = self.world.handoff_rows.get(unit_id)
-        _write(path, {"analysis_unit_id": unit_id, "class_proposal_id": class_proposal_id,
-                      **({"sample_metadata": rows} if rows is not None else {})})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(handoff_bytes(fake_handoff(unit_id, class_proposal_id, self.world.handoff_rows.get(unit_id),
+                                                    self.world.handoff_extra.get(unit_id))))
         return {"ok": True, "handoff_path": str(path), "blocking_reasons": []}
 
     def copy_handoff(self, response: dict[str, Any], destination: Path) -> dict[str, Any]:
@@ -1209,7 +1329,8 @@ class World:
                  library_modes: bool = False, console_version: str | None = None,
                  download_groups: dict[str, list[str]] | None = None, template_pin: bool = False,
                  console_record_matches: bool = True, manifest: dict[str, Any] | None = None,
-                 catalog_units: dict[str, str] | None = None) -> None:
+                 catalog_units: dict[str, str] | None = None, handoff_rows: dict[str, list[dict[str, Any]]] | None = None,
+                 handoff_extra: dict[str, dict[str, Any]] | None = None) -> None:
         self.root = root
         self.workspace_root = root / "analysis"
         self.directory = self.workspace_root / "_campaigns" / "test-campaign"
@@ -1332,7 +1453,9 @@ class World:
         self.groups += [{"group_id": f"group-{index}", "unit_count": 1, "known_bytes": known_bytes, "size_known": size_known}
                         for index, unit in enumerate(unit_ids) if unit not in grouped]
         # The sample rows the fake Catalog's handoff of each unit lists (sample_metadata), where a test gives them.
-        self.handoff_rows: dict[str, list[dict[str, Any]]] = {}
+        self.handoff_rows: dict[str, list[dict[str, Any]]] = dict(handoff_rows or {})
+        # Further fields of a unit's handoff (accession, repository, technical settings), where a test gives them.
+        self.handoff_extra: dict[str, dict[str, Any]] = dict(handoff_extra or {})
         self.ledger_path = self.directory / "ledger.sqlite"
         with ledger_module.Ledger(self.ledger_path, durable=False) as book:
             # A manifest that plans its units records, as approve does, the decision events of its curated selections

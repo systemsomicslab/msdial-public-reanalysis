@@ -1014,8 +1014,15 @@ def copy_handoff(response: Mapping[str, Any], destination: Path) -> dict[str, An
     """
     destination.mkdir(parents=True, exist_ok=True)
     original = Path(str(response["handoff_path"]))
-    payload = json.loads(original.read_text(encoding="utf-8-sig"))
-    record: dict[str, Any] = {"original_sha256": sha256_file(original), "sidecars": {}}
+    data = original.read_bytes()
+    payload = json.loads(data.decode("utf-8-sig"))
+    record: dict[str, Any] = {"original_sha256": hashlib.sha256(data).hexdigest(), "sidecars": {}}
+    # The Catalog's original bytes as taken now, kept beside the copy (WS0 decision 7): Interactive binds the rewritten
+    # copy to the triaged handoff by reading this file (original_handoff_path) and comparing every value but the
+    # sidecar paths, since the Catalog rewrites its own file at its next call.
+    kept = destination / "handoff.original.json"
+    kept.write_bytes(data)
+    record["original_copy_path"] = str(kept.resolve())
     for key, name in (
         ("file_manifest_path", "files.json"),
         ("sample_table_path", "samples.json"),

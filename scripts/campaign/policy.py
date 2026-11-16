@@ -753,9 +753,11 @@ NOT_RETRYABLE_REFUSALS = frozenset({
     "attribution_sample_coverage_below_minimum", "attribution_no_rows_of_the_unit_polarity",
     "attribution_admitted_another_units_inputs", "attribution_coverage_not_computed",
     "cross_unit_duplicate_inputs", "cross_unit_inputs_indistinguishable_chromatography",
-    "cross_unit_polarity_contradiction",
+    "cross_unit_polarity_contradiction", "cross_unit_inputs_contained",
     "curated_selection_not_approved", "curated_selection_member_unresolved", "curated_selection_mixed_polarity",
-    "curated_selection_class_contrast_lost",
+    "curated_selection_class_contrast_lost", "curated_selection_invalid", "curated_selection_not_ready",
+    "curated_selection_handoff_mismatch", "curated_selection_record_mismatch", "curated_selection_child_unknown",
+    "curated_selection_empty", "curated_selection_selection_mismatch",
 })
 NOT_RETRYABLE_PREFIXES = ("attribution_", "cross_unit_", "curated_selection_")
 _REFUSAL_TOKEN = re.compile(r"(?<![a-z0-9_])(?:attribution|cross_unit|curated_selection)_[a-z0-9_]+")
