@@ -17,7 +17,7 @@ source of the Methods text. Three principles carry it.
 | Who | Decides | Recorded as |
 |---|---|---|
 | LLM (skill driven) | file to unit assignment (`msdial-unit-triage`); interpretation of repository metadata (polarity, chromatography, acquisition, role, factors read from free text); Class proposal drafts; questions for the person | decision files (section 2), all with `standing: model_inference` |
-| Deterministic code | schema and contract checks (`scripts/validate-triage.py`); coverage and cross-unit attribution gates (Interactive, rules P, C and D); manifest and digest (`scripts/campaign/plan.py`); download with checksum; header preflight and its reconciliation against the triage (polarity and acquisition mode family); analysis CSV; MS-DIAL Console; mzTab-M validation; QA | verdicts in the review log and the decision ledger (section 2.4), manifests, run manifests |
+| Deterministic code | schema and contract checks (`scripts/validate-triage.py`); coverage and cross-unit attribution gates (Interactive, rules P, C, S and D, section 6); manifest and digest (`scripts/campaign/plan.py`); download with checksum; header preflight and its reconciliation against the triage (polarity and acquisition mode family); analysis CSV; MS-DIAL Console; mzTab-M validation; QA | verdicts in the review log and the decision ledger (section 2.4), manifests, run manifests |
 | Person | the six confirmation boundaries of `CLAUDE.md`; answers to `needs_person` questions and blocking flags; every disagreement between the LLM and header evidence; approval of the manifest digest, which is the only step that turns an inference into an accepted decision | `person_answer` entries, the ledger approval |
 
 The LLM never calls a tool with `confirmed=true`, never writes to the Catalog and never records a person's
@@ -38,7 +38,18 @@ answer on its own. A person's answer never edits a frozen file; it produces a re
     review-log.jsonl            append only, hash chained, one per accession
 <campaign dir>\decision-ledger.jsonl                   append only, hash chained, one per campaign (section 2.4)
 <campaign dir>\decisions\<kind>\<unit_id>.record.json   other kinds (metadata_interpretation, class_proposal, question)
+<campaign dir>\handoffs\<unit_key>\                     the runner's run-time copies (section 2.5)
+    handoff.json                the Catalog handoff copy Interactive reads, its sidecars beside it
+    handoff.original.json       the Catalog handoff's bytes exactly as taken at the handoff step
+    <unit_id>.json              a byte copy of the triage payload
+    <unit_id>.record.json       a byte copy of its decision record
 ```
+
+`<unit_key>` is the campaign's unit key: the Catalog unit id, or `<unit_id>-<child_key>` for a child. The
+unit's workspace folder is its key, or `<unit_key>@<campaign_id>` for a reopened unit (`workspace_name` in the
+manifest), so a reopened run never writes into the earlier run's folder. The copies are checked against the
+manifest's sha256 at the handoff step. The record copy is not what Interactive reads: its `inputs[]` resolve
+only beside the original record, so the runner passes the original as `decision_record_path` (section 2.5).
 
 ### 2.2 Payload: `msdial-unit-triage.v2`
 
@@ -109,6 +120,16 @@ Every input the LLM read is copied into `inputs\` and hashed, so a later change 
 change what the decision rested on; so are the rendered prompt and every tool result. Tool arguments are
 recorded with secrets removed.
 
+**Inputs the build reads.** Interactive (`curated_selection.read_decision_record`) and the runner
+(`curated.record_inputs`) read two roles of `inputs[]`, resolving each `path` relative to the record file's own
+directory. Interactive checks every `archive_listing` and `catalog_handoff` input against its `sha256`; the
+plan checks the `archive_listing` inputs. The listings are parsed as section 3.1 says and merged in record
+order, the first row of a member winning, into the listing the selection takes crc32 and size from. The
+`catalog_handoff` input is the triaged handoff, which Interactive compares the run-time handoff copy with
+(section 2.5). The record's `payload.sha256` must be the triage file's sha256. A record
+that breaks any of these refuses the unit: Interactive's code is `curated_selection_record_mismatch`, and the
+plan leaves the unit out as `triage_record_mismatch` before a person sees the digest.
+
 **Context.** Triage runs in a clean harness configuration: a working directory outside every code checkout
 that holds only the skill, no user or project `CLAUDE.md`, auto memory disabled, no hooks, and only the MCP
 servers the skill allows. `agent.context` records that configuration, with every context file the harness
@@ -135,33 +156,43 @@ line is canonical JSON and carries `prev_sha256`, the sha256 of the previous lin
 newline (`null` for the first).
 
 **`review-log.jsonl`** (one per accession, in the triage directory) records what happens to the decision
-files before and at the approval. Each entry carries `seq`, `at`, `kind`, `decision_id`, `prev_sha256` and:
+files before and at the approval, and the answers people give about them. Each entry carries `seq`
+(counting from 1), `at`, `kind`, `decision_id`, `prev_sha256` and exactly the fields of its kind:
 
 | kind | fields | written by |
 |---|---|---|
 | `validator_verdict` | `tool` (`validate-triage.py`), `code_commit`, `verdict` (pass, hold, error), `findings_sha256`, `findings` (check, level, message) | `validate-triage.py --emit-selection` |
-| `person_answer` | `by` (name or the initials the person agreed to publish), `question_code`, `answer` (verbatim), `channel` (`conversation`) | only from what a named person said in the conversation, under the rule of `scripts/record-reading.py` |
+| `person_answer` | `by` (name or the initials the person agreed to publish), `question_code`, `answer` (verbatim), `channel` (`conversation`) | the runner, from a `skip`, `retry` or `release-held` request on a curated unit that carries `--question-code` and a named `--by`; the request's `--reason` is the answer, verbatim, as that person gave it in the conversation (the rule of `scripts/record-reading.py`) |
 | `revision` | `supersedes`, `new_decision_id`, `cause` (`{kind, seq}` of a `person_answer`, a ledger `header_reconciliation` or a `validator_verdict`) | the agent |
-| `digest_approval` | `manifest_digest`, `approval_id`, `by` (copied from the ledger) | the runner |
+| `digest_approval` | `manifest_digest`, `approval_id`, `by` (copied from the ledger's `manifest_approved`) | `campaign-runner.py approve`, one entry per decision the approved manifest covers (the children of one triage share it) |
+
+The runner's writer (`curated.append_review_log`) refuses any other kind and any field outside its kind's
+row, and refuses a `person_answer` without `by` and `question_code`. The CLI refuses `--question-code`
+without `--by`. A request that carries no question code, or names no person, is the operator's: it is an
+`operator_request` campaign event, kept in the campaign's `ledger.sqlite`, never a `person_answer`, and not
+exported to the decision ledger. Gate and header verdicts never enter the review log.
 
 **`decision-ledger.jsonl`** (one per campaign, in the campaign directory) is exported by
-`campaign-runner.py decisions` from the campaign's events. Each line is `{seq, event_seq, at, kind,
-unit_key, standing, detail, prev_sha256}`, where `standing` is one of `source_fact`, `model_inference`,
-`deterministic_check`, `accepted_decision` and `person_answer`. The gate and header verdicts are recorded
-here, not in the review log:
+`campaign-runner.py decisions --campaign <id>` from the campaign's events, appending only: it refuses, and
+writes nothing, when a line already on disk is not the one the events give. Each line is `{seq, event_seq,
+at, kind, unit_key, standing, detail, prev_sha256}`, where `standing` is one of `source_fact`,
+`model_inference`, `deterministic_check`, `accepted_decision` and `person_answer`. Every path in `detail` is
+relative to the workspace root, or `<external>/<file name>` outside it; a ledger line never holds an absolute
+path, because the file is released as it is and its chain forbids a later rewrite. The gate and header
+verdicts are recorded here, not in the review log:
 
-| ledger kind | standing | records |
-|---|---|---|
-| `triage_recorded` | model_inference | the triage and record sha256, rows kept, members added, rows dropped by reason, `selection_sha256` |
-| `triage_validated` | deterministic_check | the validator's sha256 and verdict, `review_log_head_sha256` |
-| `manifest_approved` | accepted_decision | `manifest_digest`, `approval_id`, `approved_by`, the selections it covers |
-| `unit_reopened` | accepted_decision | the reason code and the evidence sha256 |
-| `triage_checked` | deterministic_check | the runner's sha256 check of the triage against the manifest at `copy_handoff` |
-| `curated_selection_applied` | accepted_decision | the `selection_sha256` the plan recorded, the one Interactive recorded, and whether they are equal |
-| `header_reconciliation` | deterministic_check | Interactive's reconciliation verdict and its per file items (section 6) |
-| `cross_unit_verdict` | deterministic_check | the cross-unit attribution gate, rule P, C or D, and the Interactive version |
-| `terminal_refusal` | deterministic_check | a refusal that ends the unit (attribution coverage, `attribution_refused`, policy drift) |
-| `person_answer` | person_answer | a person's answer that bears on a running unit |
+| ledger kind | standing | written by | records |
+|---|---|---|---|
+| `triage_recorded` | model_inference | the approval (`plan.py`) | `triage_relative_path`, `triage_sha256`, `triage_record_sha256`, `catalog_handoff_sha256`, `catalog_rows_sha256`, `archive_listings`, `selection_listings`, rows kept, members added, rows dropped by reason, kept by basis and confidence, flags, `selection_sha256`, `selection_canonical_form`, `analysis_inputs_sha256`, `workspace_name` |
+| `triage_validated` | deterministic_check | the approval | `validator_sha256`, `verdict`, `report_sha256`, `review_log_head_sha256` |
+| `manifest_approved` | accepted_decision | the approval | `manifest_digest`, `approval_id`, `approved_by`, `covers`, `selections` (unit key to `selection_sha256`), `validator_sha256` |
+| `unit_reopened` | accepted_decision | the approval | `reason_code`, `evidence_sha256`, the evidence file name, the new workspaces |
+| `triage_checked` | deterministic_check | the runner, at the handoff step | `verdict` (`pass`, `refused`, `held`), the reason (`triage_digest_changed`, `triage_record_digest_changed`, `triage_handoff_changed` with `rows_identical`), the copies' paths and the handoff hashes |
+| `curated_selection_applied` | accepted_decision | the runner, after the download | `plan_selection_sha256`, `interactive_selection_sha256`, `selection_sha256_equal`, `selection_canonical_form`, rows kept and dropped, and what Interactive recorded (`manifest_digest`, `standing`, `child_key`, `analysis_unit_key`, `catalog_handoff_verification`, `triage_record_sha256`) |
+| `header_reconciliation` | deterministic_check | the runner, after the preflight | Interactive's reconciliation block (section 6): `schema`, `verdict` (or `not_recorded`), `reason`, `inspected`, `agree`, `disagree`, `kept_rows_not_inspected`, `disagreements_by_field`, and every per file item copied whole |
+| `cross_unit_verdict` | deterministic_check | the runner, once per download group | `group`, `units`, `manifest_paths`, `verdict` (`passed`, `refused`, or `not_applicable` with reason `single_member`), `refused` (per unit `reason_code`, `reasons`, `rule` P, C, S or D, `refused_against`), `unit_verdicts`, and `interactive` (`verdict`, `rule`, the rule id such as `cross_unit_attribution_2026_11_16b`, `schema`, `overlaps`, `version`) |
+| `terminal_refusal` | deterministic_check | the runner | a refusal that ends the unit: attribution coverage, `attribution_refused` (a curated selection Interactive refuses, the cross-unit check), and policy drift (`reason: policy_drift` with the code, for a unit stopped on a changed manifest, triage, record or handoff) |
+| `person_answer` | person_answer | the runner | `by`, `question_code`, `answer`, `channel`, and what the request did (`action`, `request_id`, `requested_at`, `state_before`, `state_after`, `result`) |
 
 `scripts/verify-decision-log.py <campaign dir>` walks every review log and the ledger. It refuses a broken
 link; a `decision_id` without its payload; a revision whose `cause` names no entry of the stated kind; a
@@ -171,55 +202,192 @@ revision that removes a blocking flag without a `person_answer` of the matching 
 
 ### 2.5 Manifest and run manifest
 
-The plan (`scripts/campaign/plan.py`) adds per unit: `triage_path`, `triage_sha256`, `triage_record_sha256`,
-`review_log_head_sha256`, `rows_kept`, `rows_dropped`, `selection_sha256` (section 3.1). The digest a person
-approves therefore covers the frozen decisions and every review entry before it. The runner refuses at
-`copy_handoff` a triage whose sha256 differs from the manifest.
+**The plan.** `campaign-runner.py plan --triage-dir <dir>` (`scripts/campaign/plan.py`,
+`curated.unit_entries`) writes one manifest entry per unit, or one per child keyed `<unit_id>-<child_key>`.
+Each entry has a `curated_selection` block:
+- the triage: `schema`, `triage_path`, `triage_relative_path`, `triage_sha256` (also as `sha256`),
+  `triage_record_sha256`, `review_log_head_sha256`, `catalog_handoff_sha256`, `catalog_rows_sha256`;
+- the validator: `validator` (`script_sha256`, `verdict`, `report_sha256`);
+- the selection: `selection_listings` (path, sha256 and entry count of each listing the record binds),
+  `selection_canonical_form`, `selection_count`, `selection_sha256` (section 3.1, over the record's listing),
+  `analysis_inputs_sha256`;
+- the rows: `child_key`, `rows_kept`, `members_added`, `rows_dropped`, `rows_dropped_by_reason`.
 
-Interactive records in `provenance\run-manifest.json` under `repository_metadata.curated_selection`:
-`triage_sha256`, `triage_record_sha256`, `catalog_handoff_sha256`, `manifest_digest`, `selection_sha256`,
-rows kept and dropped with reasons, and per input `selected_by: curated_selection`. It also writes
-`analysis_csv.canonical_sha256` and `replay_projection_sha256` (section 3.2). At preflight the runner
-compares the `selection_sha256` Interactive recorded with the one in the manifest and holds the unit when
-they differ (`curated_selection_applied` records both).
+The digest a person approves therefore covers the frozen decisions and every review entry before it. The
+plan leaves a unit out, with its reason, when its triage is `triage_missing`, `triage_unreadable`,
+`triage_not_pass`, `triage_member_unresolved`, `triage_record_mismatch` or
+`class_contrast_lost_after_triage`.
+
+**The handoff step.** The runner copies the Catalog handoff and the triage into `handoffs\<unit_key>\`
+(section 2.1). The triage copy must hash to `triage_sha256` and the record copy to `triage_record_sha256`.
+If either does not, the unit ends `stopped_policy_drift` (`triage_digest_changed`,
+`triage_record_digest_changed`) and nothing is downloaded. The Catalog handoff taken now must be the triaged
+one byte for byte (`catalog_handoff_sha256`). A handoff whose bytes changed is held for a person
+(`contract_held`, `triage_handoff_changed`). It is never passed because its rows look the same.
+
+**The download.** The runner calls `msdial_download_repository_raw` with:
+
+| argument | value |
+|---|---|
+| `analysis_unit_handoff_path` | `handoffs\<unit_key>\handoff.json` |
+| `curated_selection_path` | `handoffs\<unit_key>\<unit_id>.json` |
+| `decision_record_path` | the original `<campaign dir>\triage\<accession>\<unit_id>.record.json`, beside the `inputs\` it binds |
+| `original_handoff_sha256` | the triage's `catalog_handoff_sha256` |
+| `original_handoff_path` | `handoffs\<unit_key>\handoff.original.json` |
+| `curated_selection_validator` | the manifest's `validator` block, recorded as given |
+| `curated_selection_child_key` | the child's key, for a child |
+| `workspace_unit_key` | the workspace folder, when it is not the Catalog unit id (a child named otherwise, a reopened unit) |
+| `campaign_authorization_path` | the campaign's approval |
+
+`msdial_repository_reanalysis_plan` takes the same arguments. `msdial_repository_batch_plan` takes them per
+unit, in `curated_selection_paths` and `workspace_unit_keys`. Without `decision_record_path`, Interactive
+reads `<triage file stem>.record.json` beside the triage. For a stem that is neither the unit id nor a
+revision `<unit_id>.r<N>`, it then tries `<unit_id>.record.json`. A named record that does not exist refuses
+the unit.
+
+`workspace_unit_key` sets only the folder `<root>\<repository>\<accession>\<key>`. Its rules:
+- it matches `[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}`;
+- it holds no `..` and does not end in `.`;
+- it is not a name the workspace keeps for itself;
+- it equals the Catalog unit id, or starts with it followed by one of `- _ . @ +`.
+
+Interactive records the key as `project.repository_metadata.workspace_unit_key`. The analysis unit id
+(`<unit_id>` or `<unit_id>-<child_key>`), campaign coverage and store claims are unchanged. A refusal recorded
+in an earlier workspace is not carried into a reopened one.
+
+**What Interactive checks before any byte moves.**
+- **The record** (section 2.3).
+- **The handoff identity.** When the copy's bytes hash to `original_handoff_sha256`, verification is
+  `handoff_file`. Otherwise Interactive reads the triaged bytes from `original_handoff_path`, else from the
+  record's `catalog_handoff` input, whose recorded sha256 must be the asserted one. It compares them with the
+  copy (`verify_handoff_copy`). Every key except `file_manifest_path`, `sample_table_path` and
+  `analysis_input_manifest_path` must be equal, and so must the sidecar contents. Verification is then
+  `original_read_and_copy_compared`. With nothing to compare against, the unit is refused.
+- **The approval.** Under a campaign approval, the manifest entry is matched by `unit_key` or `unit_id`. It
+  must carry the same `triage_sha256`, and the same `triage_record_sha256` and `selection_sha256` where it
+  names them. A `selection_sha256` that differs from Interactive's own value refuses the unit with
+  `curated_selection_selection_mismatch`.
+
+Every refusal is `retryable: false`. The codes are `curated_selection_invalid`, `_not_ready`,
+`_handoff_mismatch`, `_not_approved`, `_record_mismatch`, `_selection_mismatch`, `_child_unknown`,
+`_mixed_polarity`, `_member_unresolved`, `_empty` and `_class_contrast_lost` (each after the prefix
+`curated_selection`), and `triage_header_disagreement` (section 6).
+
+**What Interactive records.** In `provenance\run-manifest.json`, under
+`project.repository_metadata.curated_selection` (`msdial-curated-selection.v1`), Interactive records:
+- the triage: `triage_schema`, `path`, `sha256`, `triage_sha256`, `triage_record_sha256` and `triage_record`
+  (`name`, `path`, `sha256`, `decision_id`, `located` (`explicit` or `beside_triage`), `archive_listings`,
+  `catalog_handoff_input`);
+- the handoff: `catalog_handoff_sha256`, `catalog_handoff_verification`, `original_handoff` (only when
+  compared), `original_handoff_sha256` and `copy_handoff_sha256`;
+- the unit: `analysis_unit_key`, `catalog_analysis_unit_id`, `child_key`, `phase`, `decided_by`,
+  `decided_at`, `purpose`, `unit_technical`, `applied_technical` and `validator`;
+- under an approval: `approval_id`, `manifest_digest` and `manifest_selection_sha256`;
+- the selection: `selection_sha256`, `selection_canonical_form`, `selection_listing_entries` and
+  `selection_sha256_matches_manifest` (null when the manifest names no value);
+- the rows: `rows_kept`, `rows_dropped` and their counts, `added_members_not_admitted`, `flags` and
+  `rationale`;
+- `standing` (`accepted_decision` under an approval, else `model_inference`) and `applied_by`.
+
+Each admitted input's lineage row carries `selected_by: curated_selection`, `triage_row_index` and
+`triage_member_path`. Interactive writes `analysis_csv.canonical_sha256` together with the analysis CSV. It
+writes `replay_projection` and `replay_projection_sha256` only at finalisation (section 3.2). Readers take the
+block from `project.repository_metadata`, and fall back to an older top-level `curated_selection`.
+
+**The preflight.** The runner holds a unit whose manifest records no curated selection with the approved
+`triage_sha256` (`contract_held`, `curated_selection_not_recorded`). It also compares the `selection_sha256`
+Interactive recorded with the one in the approved manifest, and holds the unit when they differ
+(`contract_held`, `curated_selection_selection_mismatch`). The ledger's `curated_selection_applied` records
+both values.
 
 ## 3. Replay without any LLM
 
-A replay starts from the released bundle (section 5) and pinned code: the reanalysis repository commit, the
-Interactive and Catalog versions and commits, the Console commit and binary sha256, and the raw metadata
-extractor pin, all already in the manifest.
+A replay starts from the release bundle (section 5.3) and pinned code. The pinned code is the reanalysis
+repository commit, the Interactive and Catalog versions and commits, the Console commit and binary sha256,
+and the raw metadata extractor pin. All of these are already in the manifest.
 
 ```text
-<python> scripts/replay-campaign.py --bundle <release dir> --workspace-root <absolute path>
-    --level selection | inputs | outputs   [--unit <unit key>] [--json]
+<python> scripts/replay-campaign.py --bundle <release bundle or campaign dir> --workspace-root <absolute path>
+    --level selection | inputs | outputs   [--unit <unit key>] [--libraries <dir>] [--out <report>] [--json]
 ```
 
-Exit status 0 equal, 1 different, 2 not evaluable (never 0 for a check that could not run). It writes
-`replay-report.json`, one row per unit with the expected and replayed value of every compared hash and the
-schema each was taken under. The replay module imports no agent or model client; a test asserts this.
+`--bundle` is the release bundle (it holds `release-index.json`). It can also be a campaign directory as the
+runner keeps it, for a replay on the producing machine. The exit status is 0 for equal, 1 for different and
+2 for not evaluable; a check that could not run never gives 0. The script writes `replay-report.json`
+(`msdial-campaign-replay-report.v1`):
+- the report fields: `level`, `result`, `bundle` (`release` or `campaign_directory`), `manifest_digest` and
+  `campaign_id`;
+- one row per unit, with a first row `(campaign)` for the digest;
+- per row, its `checks` (`check`, `result`, `expected`, `replayed`, and `why` where a check is not equal) and
+  the `projection_schema` it compared under.
+
+The selection it rebuilds is written to `replay-inputs\<unit key>.json`. The replay module imports no agent or
+model client; a test asserts this. Each level includes the one before it.
 
 | Level | Needs | Recomputes | Equal when |
 |---|---|---|---|
-| `selection` | the bundle only; no network, no raw data | validator verdicts; the selection (section 3.1) | `selection_sha256` and every validator verdict equal the recorded ones; the manifest digest recomputes |
-| `inputs` | the raw archives, downloaded by the third party and checked against the listing's CRC32 and size | header preflight, reconciliation, analysis CSV, parameter file | every hash the recorded projection schema names is equal (section 3.2) |
-| `outputs` | the pinned Console and the same libraries | MS-DIAL run and its finalisation | the canonical sha256 of each retained MS-DIAL text output is equal (section 3.3) |
+| `selection` | the bundle and `validate-triage.py` at its commit; no network, no raw data, no Console | per unit: `triage_sha256`, `triage_record_sha256`, the review log chain and the head the plan recorded, the validator's verdict and sha256, `selection_sha256` over the listing the record binds (section 3.1), `analysis_inputs_sha256`; for the campaign: the manifest digest as described below | every recomputed value equals the recorded one |
+| `inputs` | the raw archive members, downloaded and extracted by the third party under `<workspace root>\<repository>\<accession>\`; for the run manifest hashes, the third party's own Interactive run of the unit through finalisation, which needs a Console run (below) | each selected member's size and CRC32 against the listing; the hashes the recorded projection schema names, read from the third party's `provenance\run-manifest.json`; the analysis CSV's canonical sha256 | the members are equal and every hash the schema names is equal (section 3.2) |
+| `outputs` | the pinned Console; the same libraries (`--libraries`, matched by sha256); the bundle's `units/<unit key>/output-checksums.tsv` | the canonical sha256 of each finalised MS-DIAL text output under the unit workspace's `output\` | every output the checksum file lists is equal (section 3.3) |
+
+**The manifest digest.** From a campaign directory, the replay recomputes the digest from the bytes of
+`campaign-manifest.json` and compares it with `campaign-authorization.json`, or with the plan's
+`campaign-manifest.summary.json`. A release bundle does not hold the original manifest, because the original
+carries absolute paths (`workspace_root`, `triage.directory`, `triage_path`). From a release bundle, the replay
+checks two things. The index's `original_sha256` must be its `approved_manifest_digest`, the value the
+ledger's `manifest_approved` also records. And the released projection must hash to the index's
+`release_sha256`. The original's sha256 itself can be recomputed only on the producing machine.
+
+**What needs a Console run.** No level before `outputs` runs MS-DIAL on purpose, but two values at the
+`inputs` level exist only after a Console run:
+- **`members` and `analysis_csv.canonical_sha256`.** These need the raw archives and Interactive's download,
+  preflight and analysis CSV steps, and no Console.
+- **`replay_projection_sha256`.** Interactive writes it only at finalisation (`finalize_download_lease`).
+  That step comes after the zero-threshold diagnostic, the production run of the pinned Console with its
+  libraries, and the mzTab-M validation. The v1 projection also holds the accepted peak height from that
+  diagnostic and the `curated_selection.manifest_digest` of the approval the unit ran under. Interactive
+  takes that digest only from an approval whose named manifest still hashes to it.
+
+So outside the producing machine, `replay_projection_sha256` is `not_evaluable` when the third party's
+manifest has no projection. A finalised run there gives `different`, because it cannot run under the
+original approval. A third party's `inputs` row is therefore not evaluable as a whole. Its `members` and
+`analysis_csv.canonical_sha256` checks are still reported one by one, and the Methods count those (section
+5.1). The levels report `not_evaluable` with these reasons:
+- **`selection`:** no triage file, no decision record, or a listing the record binds is missing or changed.
+- **`inputs`:** members not found; no recorded or replayed run manifest; a projection schema the replay does
+  not know; or no `replay_projection_sha256`, because Interactive writes it at finalisation, after a Console
+  run.
+- **`outputs`:** `private_library`; no `output-checksums.tsv` in the bundle; or no replayed `output\`
+  directory (needs a Console run).
 
 ### 3.1 The selection (`msdial-selection-canonical.v1`)
 
 The selection is the triage's decision: every file the payload keeps, its `rows[]` and its
 `added_members[]`, whether or not a given Interactive version admits added members (0.5.69 records them
 under `added_members_not_admitted`; what was analysed is fixed by `analysis_csv.canonical_sha256`). The
-definition is normative; the plan, the runner, Interactive and `replay-campaign.py` import or vendor this
-function unchanged and give the same value for the same unit.
+definition is normative. Every implementation gives the same value for the same unit:
+- **Interactive** (0.5.69) implements it in `msdial_app.curated_selection`, which exposes
+  `selection_canonical` (alias `selection_entries`), `selection_sha256`, `parse_archive_listing` and
+  `SELECTION_CANONICAL_FORM` (`"msdial-selection-canonical.v1"`).
+- **The runner** and `replay-campaign.py` carry an unchanged copy in `scripts/campaign/curated.py`, so a replay
+  runs without Interactive. Their tests assert that the copy gives Interactive's value on every eval fixture,
+  with and without a listing and per child, and gives the two hashes of the worked example below.
+
+The implementations also accept a child's `child_key` string in place of the child; an unknown key raises
+`ValueError`, and a string passed as the listing raises `TypeError`.
 
 - **Fields.** `unit_id` is the Catalog unit id, bare, also for a child; `child_key` is the child's key or
   `null`; `member_path` is the triage's own, with `\` turned into `/` and leading and trailing `/` removed,
   case kept; `archive_name` is the triage item's `archive`, else the listing's; `sample_row_index` is the
   row's `row_index`, `null` for an added member.
-- **Sources.** `crc32` and `size` come from the archive listing the decision record binds (its `inputs[]`
-  item with `role: archive_listing`, columns `archive`, `path`, `size`, `crc32`, matched on the case folded
-  member path), never from the triage and never from a download. Without such a listing, or without a
-  match, both are `null`. A reader holding a listing whose sha256 differs from the record's refuses.
+- **Sources.** `crc32` and `size` come from the archive listing the decision record binds, never from the
+  triage and never from a download. That listing is every `inputs[]` item with `role: archive_listing`,
+  parsed by `parse_archive_listing` (a TSV with columns `archive`, `path`, `size` and `crc32`, others ignored;
+  keyed on the case folded member path; the first row of a path wins; a size that is not a whole number
+  refuses) and merged in record order. Without such a listing, or without a match, both are `null`. A reader
+  holding a listing whose sha256 differs from the record's refuses. The plan and Interactive therefore build
+  the same listing from the same record, and Interactive refuses a unit whose approved `selection_sha256`
+  differs from its own (`curated_selection_selection_mismatch`).
 - **Children.** A child keeps the items whose member path is in its `member_paths`.
 - **Order.** Sorted by `unit_id`, `child_key` (null as empty), `member_path`, `sample_row_index` (null as
   -1), then by the entry's canonical JSON.
@@ -228,8 +396,12 @@ function unchanged and give the same value for the same unit.
 
 ```python
 # msdial-selection-canonical.v1 reference implementation
+import csv
 import hashlib
+import io
 import json
+
+SELECTION_CANONICAL_FORM = "msdial-selection-canonical.v1"
 
 
 def canonical_json(value):
@@ -240,9 +412,28 @@ def _member(path):
     return str(path or "").replace("\\", "/").strip().strip("/")
 
 
-def selection_entries(triage, listing, child=None):
-    """listing: {case folded member path: {"archive", "crc32", "size"}} from the record's archive_listing input,
-    {} when it binds none. child: one item of triage["children"], or None for the whole unit."""
+def parse_archive_listing(data, listing=None):
+    """An archive listing TSV (bytes) as the selection reads it, merged into `listing` when given."""
+    found = listing if listing is not None else {}
+    for record in csv.DictReader(io.StringIO(data.decode("utf-8-sig")), delimiter="\t"):
+        member = _member(record.get("path"))
+        if not member:
+            continue
+        size = str(record.get("size") or "").strip()
+        if size and not size.isdigit():
+            raise ValueError(f"The archive listing gives size {size!r} for {member}.")
+        found.setdefault(member.casefold(), {
+            "archive": str(record.get("archive") or "").strip() or None,
+            "crc32": str(record.get("crc32") or "").strip() or None,
+            "size": int(size) if size else None,
+        })
+    return found
+
+
+def selection_canonical(triage, listing=None, child=None):
+    """listing: {case folded member path: {"archive", "crc32", "size"}} from the record's archive_listing inputs,
+    {} or None when it binds none. child: one item of triage["children"], or None for the whole unit."""
+    listing = listing or {}
     child_key = None if child is None else str(child["child_key"])
     allowed = None if child is None else {_member(p).casefold() for p in child.get("member_paths") or []}
     kept = [(item, item.get("row_index")) for item in triage.get("rows") or []]
@@ -268,8 +459,11 @@ def selection_entries(triage, listing, child=None):
                                           canonical_json(e)))
 
 
-def selection_sha256(triage, listing, child=None):
-    return hashlib.sha256(canonical_json(selection_entries(triage, listing, child))).hexdigest()
+selection_entries = selection_canonical
+
+
+def selection_sha256(triage, listing=None, child=None):
+    return hashlib.sha256(canonical_json(selection_canonical(triage, listing, child))).hexdigest()
 ```
 
 Worked example. The triage and the parsed listing:
@@ -298,18 +492,32 @@ The same triage with no listing gives `e33f229c94650c9b06bb1fa48c9180923aa029ab3
 
 - **`analysis_csv.canonical_sha256`** (`msdial-analysis-csv-canonical.v1`): the analysis CSV with every
   absolute path rewritten relative to the unit's raw directory (elsewhere in the unit workspace as
-  `../<path>`, outside it as `<external>/<file name>`), forward slashes, LF line endings, UTF-8 without BOM.
+  `../<path>`, outside it as `<external>/<file name>`), forward slashes, blank lines dropped, LF line endings,
+  UTF-8 without BOM. Interactive writes it with the analysis CSV; `curated.canonical_analysis_csv` is the
+  runner's copy of the rule.
 - **`parameter_file.canonical_sha256`** (`msdial-parameter-file-canonical.v1`): the Console parameter file
   with paths rewritten by the same rule, every library path replaced by `<library:<file name>
   sha256=<sha256>>`, trailing whitespace removed, LF line endings, UTF-8 without BOM. Interactive records it
   in the run manifest from the next free patch version after 0.5.69.
-- **`replay_projection_sha256`**: canonical JSON of a whitelist of the run manifest. Timestamps, job ids,
-  host names and absolute paths are excluded by construction. The run manifest names the projection schema.
-  - `msdial-replay-projection.v1` (Interactive 0.5.69): repository, accession, unit id,
-    `catalog_handoff_sha256`, the `curated_selection` hashes, ion mode, acquisition mode, separation, inputs
-    (member path, identity, sample id, acquisition type, header polarity), `analysis_csv.canonical_sha256`,
-    the accepted minimum peak height with its diagnostic count and step, the Interactive version. It does not
-    cover libraries, the Console identity or the parameter file.
+- **`replay_projection_sha256`**: the sha256 of the canonical JSON of `replay_projection`, a whitelist of the
+  run manifest. Timestamps, job ids, host names and absolute paths are excluded by construction. The run
+  manifest names the schema as `replay_projection.schema`. Interactive writes both at finalisation
+  (`finalize_download_lease`), after the Console run and the mzTab-M validation, whatever the validation's
+  result. Nothing writes them earlier, so this hash needs a Console run (section 3).
+  - `msdial-replay-projection.v1` (Interactive 0.5.69, `curated_selection.replay_projection`):
+    - the unit: `schema`, `repository`, `accession`, `analysis_unit_id` and `catalog_handoff_sha256`;
+    - `curated_selection`: `triage_sha256`, `triage_record_sha256`, `selection_sha256`, `manifest_digest` and
+      `child_key`;
+    - the settings: `ion_mode`, `acquisition_mode` and `separation`;
+    - `inputs`, sorted by member: `member`, `converted_to` for an mzML converted from an mzXML member,
+      `identity`, `identity_basis`, `sample_id`, `acquisition_type` and `header_polarity`;
+    - `analysis_csv_canonical_sha256`;
+    - `peak_height` from the zero-threshold diagnostic: `minimum_peak_height`, `diagnostic_peak_count`,
+      `threshold_step` and `method`;
+    - `msdial_interactive_version`.
+
+    It does not cover libraries, the Console identity or the parameter file. Because it holds the
+    approval's `manifest_digest`, it is equal only for a run under an approval of the same manifest.
   - `msdial-replay-projection.v2` (next Interactive patch version): v1 plus Class per input,
     `parameter_file.canonical_sha256`, libraries by file name and sha256, and the Console commit and binary
     sha256.
@@ -330,6 +538,13 @@ validation: each raw location relative to the unit workspace (`raw/...`), a priv
 with a `custom` line naming it by file name and sha256 (`msdial_app/run_finalisation.py`). The outputs level
 compares the finalised files after the path rule of section 3.2 is applied to any remaining absolute path.
 The local only record of the original values that finalisation keeps is never released.
+
+The bundle records the expected values in `units/<unit key>/output-checksums.tsv`, with the columns `path`
+(relative to the unit workspace's `output\`) and `canonical_sha256`, or `sha256` where no canonical value
+was recorded. The canonical value is the sha256 after every tab separated cell that is an absolute path is
+rewritten by the rule of section 3.2, with LF line endings and UTF-8 without BOM. `campaign-runner.py
+release` does not write this file yet. Until finalisation records canonical output hashes and the release
+writes them, every unit is `not_evaluable` at `outputs`, and the Methods make no outputs claim.
 
 A unit run with a private library replays at `outputs` only with a file of the same sha256, which the bundle
 names but does not contain (`not_evaluable: private_library`).
@@ -409,7 +624,14 @@ header reconciliation establishes ground truth in production may be added to the
 > (Supplementary Table {t}).
 
 Fill the braces from `replay-report.json`, `rederivation/agreement.json`, `supplementary/llm-summary.json`
-and `tests/triage_eval.py`.
+and `tests/triage_eval.py`. Two of them need a definition:
+- `{n_selection_equal}` counts the units whose `selection` level row is `equal`.
+- `{n_inputs_equal}` counts the units whose `members` and `analysis_csv.canonical_sha256` checks are both
+  `equal` at the `inputs` level. These two checks need no Console run. The row as a whole also needs
+  `replay_projection_sha256`, which a third party cannot make equal (section 3).
+
+Each projection schema a count rests on is stated beside it. No outputs claim is made while every unit is
+`not_evaluable` at `outputs` (section 3.3).
 
 ### 5.2 Supplementary table: `supplementary/llm-decisions.tsv`
 
@@ -421,61 +643,171 @@ decided_at, n_rows_kept, n_rows_excluded, n_members_added, n_declared, n_inferre
 validator_verdict, validator_commit, gate_verdicts, n_header_disagreements, person_review (none, answered,
 revised), reviewer, approved_manifest_digest, final_state (accepted, revised, excluded, withdrawn),
 rederivation_sampled, rederivation_agreement, replay_selection_equal, replay_inputs_equal,
-replay_projection_schema`
+replay_projection_equal, replay_projection_schema`
+
+`replay_inputs_equal` is the `{n_inputs_equal}` criterion of section 5.1, the `members` and
+`analysis_csv.canonical_sha256` checks. `replay_projection_equal` is the `replay_projection_sha256` check:
+`equal`, `different` or `not_evaluable`, with the reason.
 
 ### 5.3 What is released (Zenodo, with the paper)
 
-Released: the skill, prompt templates, schemas, validators, the wrapper and replay scripts at their commits;
-the eval set with its versions; every decision file, envelope, `inputs\` directory (rendered prompts and tool
-results included), review log and the decision ledger; the release projection of every campaign and run
-manifest; `replay-report.json`; the re-derivation sample and agreement; the redacted transcripts of clean
-configuration runs.
+**The campaign bundle.** First `campaign-runner.py decisions --campaign <id>` exports the ledger. Then
+`campaign-runner.py release --campaign <id> --out <empty folder>` (`curated.write_release`) writes the files
+`replay-campaign.py` reads:
 
-**Release projection.** A manifest is released as `<name>.release.json`: canonical JSON with every absolute
-path under the workspace root made relative to the unit directory, any other path reduced to
-`<external>/<file name>`, and every library named by file name and sha256. `release-index.json` lists, per
-manifest, the sha256 of the original (checkable only on the producing machine) and of the projection. The
-replay compares `replay_projection_sha256` and the canonical hashes, which do not depend on paths, so the
-projection loses nothing the replay needs.
+```text
+<bundle>\
+    release-index.json                          msdial-release-index.v1
+    campaign-manifest.release.json              the campaign manifest's release projection
+    units\<unit key>\run-manifest.release.json  each unit's run manifest's release projection, for units that ran
+    triage\<accession>\...                      the triage directory the manifest names, copied whole (section 2.1)
+    decision-ledger.jsonl                       as exported, byte for byte
+```
 
-Not released: private library content (VS20/VS21 MSP, laboratory LBM2), named only by file name and sha256,
-never by any path; raw data, referenced by accession, archive name, size and CRC32; finalisation's local
-only record of original mzTab-M values; transcripts of runs outside the clean configuration.
+`release-index.json` is `{schema, approved_manifest_digest, manifests: [{name, release, original_sha256,
+release_sha256}]}`. `name` is the original's path in the campaign (`campaign-manifest.json`,
+`units/<unit key>/run-manifest.json`) and `release` the projection's path in the bundle. `original_sha256`
+(`sha256:` prefixed, as the approval writes a digest) is the hash of the original's bytes, which can be
+checked only on the producing machine. `release_sha256` is the hash of the projection's bytes. The replay
+checks the digest from these released bytes as section 3 says.
+
+The rest of the release is added beside the campaign bundle:
+- the skill, prompt templates, schemas, validators, the wrapper and the replay scripts, at their commits;
+- the eval set with its versions;
+- `replay-report.json`;
+- the re-derivation sample and agreement;
+- the redacted transcripts of clean configuration runs.
+
+The release command does not write `units\<unit key>\output-checksums.tsv` yet (section 3.3).
+
+**Release projection.** A manifest is released as `<name>.release.json` (`curated.release_projection`):
+- the canonical JSON of the manifest;
+- every absolute path under the workspace root made relative to the unit's workspace (for the campaign
+  manifest, to the campaign directory);
+- any other absolute path reduced to `<external>/<file name>`;
+- every path to a library the manifest pins replaced by `<library:<file name> sha256=<sha256>>`.
+
+The replay compares the triage files, the canonical hashes and `replay_projection_sha256`, none of which
+depends on paths, so the projection loses nothing the replay compares. The one thing it loses is the
+manifest digest's recomputation, which only the producing machine can do.
+
+Not released:
+- private library content (VS20/VS21 MSP, laboratory LBM2), named only by file name and sha256, never by
+  any path;
+- raw data, referenced by accession, archive name, size and CRC32;
+- finalisation's local only record of original mzTab-M values;
+- the original manifests, `campaign-authorization.json` and the campaign's `ledger.sqlite` (with its
+  `operator_request` events);
+- transcripts of runs outside the clean configuration.
+
 `scripts/check-release-redaction.py <bundle>` runs over every file of the bundle, redistributed MS-DIAL
-outputs included, and refuses a private library name with a path; a drive letter path; a UNC path
-(`\\host\share`); a user profile path; and in a transcript, any block the harness inserts from a context
-file or memory.
+outputs included. It refuses:
+- a private library name with a path;
+- a drive letter path;
+- a UNC path (`\\host\share`);
+- a user profile path;
+- in a transcript, any block the harness inserts from a context file or memory.
 
 ## 6. Failure handling
 
-- **LLM against header evidence.** After download, Interactive reconciles each inspected file's raw header
-  against the triage's kept row: polarity, and acquisition mode family (DDA, the DIA family of DIA, SWATH and
-  AIF, MS1 against full scan). MS levels, DIA window signature and run end time are not compared. Each per
-  file item is `{file, member_path, row_index, basis, outcome, ion_mode: {triage, header, result},
-  acquisition_mode: {triage, header, result}, result, reasons}`, each result `agree`, `disagree`,
-  `unresolved` or `not_compared`. A file in no kept row (`not_in_selection`), or an unread header for an
-  inferred row (`header_unread_for_inferred_row`), is a disagreement too. A disagreement holds the unit with
-  reason `triage_header_disagreement` and the ledger's `header_reconciliation` entry copies the items.
-  Neither side wins silently: the person accepts the header, accepts the triage or excludes the file, and a
-  `revision` citing that entry is logged when the selection changes.
+- **LLM against header evidence.** After download, Interactive's preflight
+  (`msdial_repository_raw_metadata_preflight`, `curated_selection.reconcile_curated_selection`) reconciles
+  each inspected file's raw header against the triage's kept row. It compares polarity and acquisition mode
+  family (DDA; the DIA family of DIA, SWATH and AIF; MS1 against full scan). MS levels, DIA window signature
+  and run end time are not compared.
+
+  The result is `curated_selection_reconciliation`, on the run manifest and on the campaign disposition. It
+  holds:
+  - `schema`: `msdial-curated-selection-reconciliation.v1`;
+  - `triage_sha256` and `analysis_unit_key`;
+  - `verdict`: `agree`, `disagree` or `not_evaluated`;
+  - `reason`: `triage_header_disagreement` or empty;
+  - `inspected`, `agree`, `disagree` and `kept_rows_not_inspected` (member paths);
+  - `files`, and `retryable: false`.
+
+  Each item of `files` for a kept row is `{file, member_path, row_index, basis, outcome,
+  ion_mode: {triage, triage_basis, header, result}, acquisition_mode: {triage, triage_basis, header, result},
+  result, reasons}`. In it:
+  - `file` is a portable path;
+  - `triage_basis` is `row` or `unit`;
+  - each per field `result` is `agree`, `disagree`, `unresolved`, `not_compared` or `not_read`;
+  - the item's `result` is `agree` or `disagree`;
+  - `reasons` is present only on a disagreement, and holds `polarity`, `acquisition_mode` or
+    `header_unread_for_inferred_row`.
+
+  A file in no kept row is `{file, member_path: null, result: "disagree", reason: "not_in_selection",
+  reasons: ["not_in_selection"]}`.
+
+  A disagreement is Interactive's disposition hold (`triage_header_disagreement`), which waits for a person
+  as every disposition hold does. A unit for which Interactive recorded no reconciliation is not run
+  (`contract_held`, `curated_selection_reconciliation_not_recorded`). The runner copies every item, whole,
+  into the ledger's `header_reconciliation` entry, with `disagreements_by_field`; there, `polarity` counts as
+  `ion_mode`. Nothing goes to the review log.
+
+  Neither side wins silently. The person accepts the header, accepts the triage or excludes the file. Their
+  answer reaches the record only as a `person_answer`: a `skip`, `retry` or `release-held` request with
+  `--question-code triage_header_disagreement`, `--by` naming them, and their words as `--reason`. A
+  `revision` whose `cause` is that ledger entry (`{kind: "header_reconciliation", seq}`) is logged when the
+  selection changes.
 - **Validator error.** The triage is regenerated as `<unit_id>.r<N>.json` with its own envelope; the revision
   entry cites the `validator_verdict` as its cause. The errored payload stays in the bundle with its verdict,
   and the regeneration count per unit is reported.
-- **Gate refusal** (rules P, C, D). The unit ends `attribution_refused`, is not retried, and its done outputs,
-  if any, are withdrawn from redistribution.
+- **Handoff, record or selection that changed.** Each case stops or holds the unit before or right after
+  download:
+  - **A triage or record copy that no longer hashes to the manifest** ends the unit
+    `stopped_policy_drift`, with a `terminal_refusal` in the ledger.
+  - **A Catalog handoff whose bytes changed since the triage** is held (`contract_held`,
+    `triage_handoff_changed`). A person re-triages the unit or restores the handoff.
+  - **A `selection_sha256` that differs between the plan and Interactive** is refused by Interactive before
+    download, or held by the runner after it (`curated_selection_selection_mismatch`).
+- **Gate refusal** (rules P, C, S, D). The units of one download group that carry a curated selection wait
+  until every sibling still on its way has been preflighted. Then `msdial_repository_cross_unit_check` judges
+  their run manifests once (`msdial-cross-unit-attribution.v1`, rule id `cross_unit_attribution_2026_11_16b`,
+  `containment_minimum` 0.5).
+
+  Each unit's admitted Sample inputs are identified by a declared checksum, else by the store object and
+  archive member path (`basis: identity`), else by the listed content's CRC32 and size
+  (`listed_content_crc32_size`), never by a bare name. QC, reference and blank injections
+  (`shared_reference_name`) are not compared. The rules are applied in order:
+  - **P** (`cross_unit_polarity_contradiction`): a header polarity contradicts the unit's.
+  - **C** (`cross_unit_inputs_indistinguishable_chromatography`): a set is shared at a containment of 0.5 or
+    more across different chromatographies.
+  - **S** (`cross_unit_inputs_contained`): at one polarity, and with a chromatography that does not tell the
+    units apart, a set is contained at 0.5 or more in a different set. Both units are refused.
+  - **D** (`cross_unit_duplicate_inputs`): a set is identical to an earlier unit's; the earlier unit keeps
+    it.
+
+  The runner reads the reply by its own keys: `verdict` `passed` or `refused` overall and per unit, the
+  codes in `reasons`, and `refused_against`. A reply in any other shape holds the unit (`contract_held`,
+  `cross_unit_reply_unreadable`) and is never read as a pass. A group with a single surviving member is not
+  sent; the ledger records `not_applicable` with reason `single_member`. Units an earlier check passed are
+  sent first, so a unit that arrives late is the one rule D refuses, and never a unit that already ran.
+
+  A refused unit ends `attribution_refused`, is not retried, and its done outputs, if any, are withdrawn from
+  redistribution. The refusal is sticky. A re-lease of the same workspace and the parts of a split carry it.
+  Only a later check that passes the unit over a group holding every unit in `refused_against` lifts it; a
+  check that leaves one out reports `prior_refusal_stands`.
 - **Counts reported.** `scripts/export-llm-decisions.py --summary` writes `supplementary/llm-summary.json`:
   units triaged; units by status; files kept, excluded and abstained; validator errors and holds by check;
   regenerations after a validator error, and the units they affected; person queue size by question code;
   header disagreements by field (`ion_mode`, `acquisition_mode`, `not_in_selection`,
-  `header_unread_for_inferred_row`) and by resolution; revisions by cause; units withdrawn. The Methods and
-  Figure {x} cite these numbers only.
+  `header_unread_for_inferred_row`) and by resolution; revisions by cause; cross-unit refusals by rule;
+  units withdrawn. The Methods and Figure {x} cite these numbers only.
 
 ## 7. Build order
 
-Schemas and skill 1.1.0; `run-triage-agent.py` (clean configuration, envelope from the harness transcript);
-`validate-triage.py` (v2, envelope hashes, review log answers, `--emit-selection`, log append);
-`verify-decision-log.py`, `compare-triage.py`, `export-llm-decisions.py` and `check-release-redaction.py`;
-the plan and runner fields with the section 3.1 function and the preflight comparison of `selection_sha256`;
-Interactive `curated_selection` with the section 3.1 function and the listing as its crc32 and size source,
-then `parameter_file.canonical_sha256` and projection v2 (next free patch versions); `replay-campaign.py`
-with a synthetic fixture test per level.
+Built:
+- **Interactive 0.5.69** (PR #102): `curated_selection`, with the section 3.1 function and the listing as its
+  crc32 and size source; the download arguments and checks of section 2.5; reconciliation; the cross-unit
+  check; `replay_projection` v1.
+- **The runner** (PR #60): the plan and runner fields; the run-time copies; the preflight comparison of
+  `selection_sha256`; the review log writer and the decision ledger; `campaign-runner.py release`;
+  `replay-campaign.py`, with a synthetic fixture test per level and an integration test against Interactive.
+
+To build:
+- schemas and skill 1.1.0;
+- `run-triage-agent.py` (clean configuration, envelope from the harness transcript);
+- `validate-triage.py` (v2, envelope hashes, review log answers, `--emit-selection`, log append);
+- `verify-decision-log.py`, `compare-triage.py`, `export-llm-decisions.py` and `check-release-redaction.py`;
+- canonical output hashes at finalisation and `output-checksums.tsv` in the release bundle;
+- in Interactive, `parameter_file.canonical_sha256` and projection v2 (next free patch versions).
