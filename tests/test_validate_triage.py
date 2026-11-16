@@ -443,6 +443,33 @@ class ContractTest(TriageCase):
         report = vt.validate(directory)
         self.assertIn("T-SET", self.checks(report, unit="AN007766"))
 
+    def test_decision_records_are_not_triages_and_a_revision_supersedes_its_unit(self) -> None:
+        """The campaign layout (scripts/campaign/curated.py) keeps <unit>.record.json, the decision record, beside the
+        payload, and a revision as <unit>.r<N>.json: neither makes the set an error, and the highest revision is the one
+        judged (review of PR #60, 2026-11-16)."""
+        directory = te.write(te.build_good("ST002747"), self.tmp / "layout")
+        catalog = vt.read_catalog(te.fixture_dir("ST002747") / "catalog.json")
+        listing = vt.read_listing(te.load("ST002747")[2])
+        (directory / "AN004454.record.json").write_text(json.dumps({"schema": "msdial-llm-decision-record.v1"}), encoding="utf-8")
+        revised = json.loads((directory / "AN004455.json").read_text(encoding="utf-8"))
+        revised["notes"] = "revision 2: the same files, a reworded note"
+        (directory / "AN004455.r2.json").write_text(json.dumps(revised), encoding="utf-8")
+        (directory / "AN004455.r2.record.json").write_text("{}", encoding="utf-8")
+        report = vt.validate(directory, catalog, listing)
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+        self.assertEqual(sorted(report.units), ["AN004454", "AN004455", "AN004456", "AN004457"])
+        self.assertEqual([path.name for path in vt.current_triage_files(directory) if path.name.startswith("AN004455")],
+                         ["AN004455.r2.json"])
+        # The revision is what is judged: a broken r3 errors although the base and r2 are good.
+        broken = dict(revised, rows=revised["rows"][:-1])
+        (directory / "AN004455.r3.json").write_text(json.dumps(broken), encoding="utf-8")
+        report = vt.validate(directory, catalog, listing)
+        self.assertIn("T-COVER", self.checks(report, unit="AN004455"))
+        # A revision that holds another unit is still misnamed.
+        (directory / "AN004455.r3.json").unlink()
+        (directory / "AN004457.r2.json").write_text((directory / "AN004456.json").read_text(encoding="utf-8"), encoding="utf-8")
+        self.assertIn("T-SET", self.checks(vt.validate(directory, catalog, listing)))
+
     def test_command_line_exit_codes(self) -> None:
         def run(accession: str, docs: dict, *extra: str) -> tuple[int, str]:
             directory = te.write(docs, self.tmp / f"cli-{accession}-{len(extra)}-{id(docs)}")

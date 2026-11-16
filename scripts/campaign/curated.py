@@ -481,6 +481,28 @@ def append_review_log(accession_dir: Path, kind: str, decision_id: str | None, a
     return entry
 
 
+def verify_review_log(path: Path) -> tuple[list[str], list[str]]:
+    """(why the review log's chain does not hold, the sha256 of each of its lines): each line parses, its seq counts up
+    from 1, and its prev_sha256 is the sha256 of the line before it (null for the first)."""
+    problems: list[str] = []
+    shas: list[str] = []
+    previous = None
+    for index, line in enumerate([item for item in Path(path).read_bytes().split(b"\n") if item.strip()], start=1):
+        try:
+            entry = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            entry = None
+            problems.append(f"line {index} does not parse")
+        if isinstance(entry, dict):
+            if entry.get("seq") != index:
+                problems.append(f"line {index} has seq {entry.get('seq')}")
+            if entry.get("prev_sha256") != previous:
+                problems.append(f"line {index} does not chain to line {index - 1}")
+        previous = sha256_bytes(line)
+        shas.append(previous)
+    return problems, shas
+
+
 # ---- the decision ledger export -----------------------------------------------------------------------------------
 
 def decision_lines(events: Iterable[Mapping[str, Any]]) -> list[bytes]:

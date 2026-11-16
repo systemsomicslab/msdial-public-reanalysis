@@ -154,7 +154,12 @@ in the unit manifest and adopted.
 
 A CURATED SELECTION (the integration contract's B, 2026-11-16). A unit planned from a triage file (plan --triage-dir)
 carries its curated_selection in the approved manifest, which the runner reads from campaign-manifest.json once its
-sha256 is the approved digest (a manifest that is not stops each unit at its handoff, manifest_digest_changed). At
+sha256 is the approved digest (a manifest that is not stops each unit at its handoff, manifest_digest_changed).
+Whether a unit is curated, and its workspace, are what the approval recorded in the ledger (triage_recorded, in the
+approval's transaction), so a manifest that later cannot be read or changed never turns a curated unit into a plain
+one: before each step that reads the selection, a lock that may pass waits, a unit with no raw data ends
+stopped_policy_drift, and one past its download is held with its raw data (contract_held), both
+manifest_digest_changed (_curated_guard). At
 the handoff the triage is copied beside the handoff copy (handoffs\\<unit_key>\\triage.json) and must hash to the
 manifest's triage_sha256 (else stopped_policy_drift, triage_digest_changed); the Catalog handoff the triage was made
 from must be the one taken now, byte for byte or row for row (the [sample_id, raw_file] rows a row_index names; else
@@ -167,9 +172,14 @@ contract_held). A refusal no retry can change (policy.not_retryable: the attribu
 selection Interactive refuses, the cross-unit check) ends the unit failed, terminal reason attribution_refused,
 with no retry counted. The units of one download group that carry a selection wait at preflighted until every
 sibling still on its way has been preflighted; then Interactive's cross-unit check runs once over their manifests
-(rules P, C and D) and each refused unit ends so. A header that disagrees with the triage is Interactive's
-disposition hold (triage_header_disagreement), which waits for a person as every disposition hold does. Each of
-these steps is a campaign event in the decision ledger (curated.DECISION_KINDS, each with its standing), which
+(rules P, C and D) and each refused unit ends so. A unit that reaches the check after the group was judged (a retry,
+or one held before its download) is checked after the units that already passed, so rule D refuses it and never a
+unit that already ran; and where a verdict refuses a unit that already passed, the newcomers are refused in its
+place. A header that disagrees with the triage is Interactive's disposition hold (triage_header_disagreement), which
+waits for a person as every disposition hold does; a unit Interactive recorded no header reconciliation for is not
+run (contract_held, curated_selection_reconciliation_not_recorded). Each comparison, and each request a person makes
+on a curated unit (person_answer: who, why, what it did), is appended to the accession's review log. Each of these
+steps is a campaign event in the decision ledger (curated.DECISION_KINDS, each with its standing), which
 campaign-runner.py decisions exports, append only and hash chained.
 """
 
@@ -565,9 +575,13 @@ class Runner:
         # Whether this process has brought forward the recheck of every held unit (HELD_STATES): a runner that
         # starts makes each one's step again first (_held_units_recheck).
         self._held_units_rechecked = False
-        # The approved manifest's units by unit key, read once (_planned_units); None until read.
+        # The approved manifest's units by unit key, kept once read from the approved bytes (_planned_units); None
+        # until then. A read that failed is made again at the next call; _planned_transient says whether it may pass.
         self._planned: dict[str, dict[str, Any]] | None = None
         self._planned_problem = ""
+        self._planned_transient = False
+        # What the approval recorded of each curated unit in the ledger (its triage_recorded event), by unit key.
+        self._approved: dict[str, dict[str, Any]] | None = None
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -592,40 +606,107 @@ class Runner:
             return Path(unit["workspace"])
         root = Path(self.campaign["workspace_root"])
         # A child of a triaged unit (<unit_id>-<child_key>) and a reopened unit (<unit_key>@<campaign_id>) have
-        # workspaces of their own, as the approved manifest names them.
-        name = str(((self._planned_units() or {}).get(unit["unit_key"]) or {}).get("workspace_name") or unit["catalog_unit_id"])
-        return root / unit["repository"] / unit["accession"] / name
+        # workspaces of their own, as the approval recorded them.
+        return root / unit["repository"] / unit["accession"] / self._workspace_name(unit)
+
+    def _workspace_name(self, unit: Mapping[str, Any]) -> str:
+        """The name of the unit's workspace folder: as the approval recorded it in the ledger (triage_recorded), else
+        as the approved manifest names it, else the Catalog unit id."""
+        recorded = (self._approved_curated(unit) or {}).get("workspace_name")
+        planned = ((self._planned_units() or {}).get(unit["unit_key"]) or {}).get("workspace_name")
+        return str(recorded or planned or unit["catalog_unit_id"])
 
     # ---- the approved manifest and its curated selections -------------------------------------------------
 
+    def _read_manifest_bytes(self, path: Path) -> bytes:
+        return path.read_bytes()
+
     def _planned_units(self) -> dict[str, dict[str, Any]] | None:
-        """The approved manifest's units by unit key, or None where the file is not the approved one (missing, or
-        hashing to another digest): a curated selection is read only from the bytes a person approved."""
-        if self._planned is None:
-            path = Path(self.campaign["manifest_path"])
-            try:
-                data = path.read_bytes()
-            except OSError as error:
-                self._planned_problem = f"the approved manifest {path} cannot be read: {error}"
-                self._planned = {}
-                return None
-            digest = "sha256:" + hashlib.sha256(data).hexdigest()
-            if digest != self.campaign["manifest_digest"]:
-                self._planned_problem = f"the manifest {path} hashes to {digest}, not the approved {self.campaign['manifest_digest']}"
-                self._planned = {}
-                return None
-            try:
-                manifest = json.loads(data.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError) as error:
-                self._planned_problem = f"the approved manifest does not parse: {error}"
-                self._planned = {}
-                return None
-            self._planned = {
-                str(item.get("unit_key") or item.get("unit_id")): dict(item)
-                for item in (manifest.get("units") or []) if isinstance(item, Mapping)
-            }
-            self._planned_problem = ""
-        return None if self._planned_problem else self._planned
+        """The approved manifest's units by unit key, or None where the file is not the approved one (missing,
+        unreadable, or hashing to another digest): a curated selection is read only from the bytes a person approved.
+
+        Only a read of the approved bytes is kept for the life of the process; a failed read is made again at the next
+        call, and one that may pass (an OSError other than a missing file: a lock held by a backup or a virus scan)
+        sets _planned_transient, so the unit waits instead of stopping (_curated_guard)."""
+        if self._planned is not None:
+            return self._planned
+        path = Path(self.campaign["manifest_path"])
+        self._planned_transient = False
+        try:
+            data = self._read_manifest_bytes(path)
+        except FileNotFoundError as error:
+            self._planned_problem = f"the approved manifest {path} is not there: {error}"
+            return None
+        except OSError as error:
+            self._planned_problem = f"the approved manifest {path} cannot be read now: {error}"
+            self._planned_transient = True
+            return None
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        if digest != self.campaign["manifest_digest"]:
+            self._planned_problem = f"the manifest {path} hashes to {digest}, not the approved {self.campaign['manifest_digest']}"
+            return None
+        try:
+            manifest = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            self._planned_problem = f"the approved manifest does not parse: {error}"
+            return None
+        self._planned = {
+            str(item.get("unit_key") or item.get("unit_id")): dict(item)
+            for item in (manifest.get("units") or []) if isinstance(item, Mapping)
+        }
+        self._planned_problem = ""
+        return self._planned
+
+    def _approved_curated(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """What the approval recorded of the unit's curated selection (its triage_recorded event, written in the
+        approval's own transaction: the triage sha256, the selection sha256 and the workspace name), or None for a unit
+        approved without one. Read from the ledger, so a manifest file that later cannot be read, or changed, can never
+        turn a curated unit into a plain one (second review of PR #60, finding 1)."""
+        if self._approved is None:
+            self._approved = {str(event["unit_key"]): _loads(event["detail_json"])
+                              for event in self.ledger.events("triage_recorded") if event["unit_key"]}
+        return self._approved.get(unit["unit_key"])
+
+    def _is_curated(self, unit: Mapping[str, Any]) -> bool:
+        return self._approved_curated(unit) is not None or self._selection(unit) is not None
+
+    # Where a unit stopped by its manifest has no raw data yet, and ends; past these it is held with its raw data.
+    _BEFORE_DOWNLOAD = frozenset({"pending", "class_settled", "handoff_ready"})
+
+    def _curated_guard(self, unit: dict[str, Any], *, every_unit: bool = False) -> bool:
+        """Before a step that reads the unit's curated selection: True where the unit was moved because the approved
+        manifest cannot give the selection the approval recorded. A read that may pass waits (waiting_retry, back to
+        this step after poll_seconds, nothing counted). Otherwise a unit with no raw data yet ends stopped_policy_drift
+        (manifest_digest_changed), and one past its download is held with its raw data (contract_held,
+        manifest_digest_changed) until the approved bytes are back. `every_unit` stops a plain unit too (the handoff,
+        where whether a unit is curated is first acted on)."""
+        planned = self._planned_units()
+        expected = self._approved_curated(unit)
+        if planned is not None:
+            if expected is None:
+                return False
+            chosen = (planned.get(unit["unit_key"]) or {}).get("curated_selection")
+            found = chosen.get("triage_sha256") if isinstance(chosen, Mapping) else None
+            if found == expected.get("triage_sha256"):
+                return False
+            problem = (f"the approval recorded triage {expected.get('triage_sha256')} for {unit['unit_key']}; the approved "
+                       f"manifest names {found or 'no curated selection'}")
+        elif expected is None and not every_unit:
+            return False
+        elif self._planned_transient:
+            due = self.now() + timedelta(seconds=float(self.policy.poll_seconds))
+            self._move(unit, "waiting_retry", resume_state=unit["state"], next_attempt_at=policy.iso(due),
+                       detail={"manifest_unreadable": self._planned_problem})
+            return True
+        else:
+            problem = self._planned_problem
+        if unit["state"] in self._BEFORE_DOWNLOAD:
+            self._release_shared_claims(unit, "stopped_policy_drift")
+            self._move(unit, "stopped_policy_drift", terminal_reason="manifest_digest_changed",
+                       terminal_detail=json.dumps({"detail": problem}), detail={"step": unit["state"], "detail": problem})
+            return True
+        return self._contract_hold(unit, step=unit["state"], problem="manifest_digest_changed", resume_state=unit["state"],
+                                   detail={"detail": problem, "triage_sha256": (expected or {}).get("triage_sha256")})
 
     def _selection(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
         """The unit's curated_selection as the approved manifest records it, or None for a unit planned without one."""
@@ -701,7 +782,7 @@ class Runner:
                                      "original_handoff_sha256": self._original_handoff_sha256(unit)}
         if selection.get("child_key"):
             arguments["curated_selection_child_key"] = str(selection["child_key"])
-        name = str(((self._planned_units() or {}).get(unit["unit_key"]) or {}).get("workspace_name") or "")
+        name = self._workspace_name(unit)
         if name and name != unit["catalog_unit_id"]:
             arguments["workspace_unit_key"] = name
         return arguments
@@ -1199,72 +1280,90 @@ class Runner:
         for request in self.ledger.pending_requests():
             unit = self.ledger.unit(request["unit_key"])
             state = unit["state"]
-            if request["action"] == "skip":
-                if state in ledger_module.TERMINAL_STATES or state == "discarding":
-                    detail = f"not skipped: the unit is already {state}"
-                elif state in END_STATES or (state == "waiting_retry" and unit["resume_state"] in END_STATES):
-                    # Already ending - failed, skipped or excluded, or with its outputs produced: what it ends as
-                    # is not relabelled.
-                    detail = f"not skipped: the unit is ending ({unit['pending_terminal'] or unit['resume_state'] or state})"
-                elif state in IN_FLIGHT:
-                    self._cancel(unit, unit[JOB_COLUMN[state]], "skip")
-                    detail = "cancel requested; the unit is skipped when its job ends"
-                elif state == "split_parent":
-                    detail = "not skipped: skip the split parts one by one"
-                else:
-                    # An operator's skip of a unit Interactive's disposition holds is the explicit decision that
-                    # lifts the hold (the agreed contract of 2026-10-07): its discard, and its split parent's
-                    # release, pass release_disposition_hold, which nothing else here ever does. The unit need not
-                    # be disposition_held at that moment: a recheck whose preflight never answered moves it to
-                    # waiting_retry or contract_held while Interactive's hold stands (review r10-32 of PR #32).
-                    released = state == DISPOSITION_HELD or _held_by_disposition(unit)
-                    self._move(
-                        unit, "discarding", pending_terminal="skipped",
-                        terminal_detail=json.dumps({"reason": "operator_skip", "detail": request["reason"],
-                                                    **({RELEASE_HOLD: True} if released else {})}),
-                        detail={"request_id": request["request_id"], **({RELEASE_HOLD: True} if released else {})},
-                        end_console_run=self._open_console_end(unit, "skipped"),
-                    )
-                    detail = "skipped; the disposition hold is released (operator_skip)" if released else "skipped"
-            elif request["action"] == "release_held":
-                # Only the unit's raw data, under boundary 5, through Interactive's own deletion: the unit keeps
-                # how it ended. A retry would run it again from its Class decision.
-                if unit["raw_disposition"] != "held" or state not in ledger_module.TERMINAL_STATES:
-                    detail = f"nothing held: the unit is {state}, its raw data {unit['raw_disposition']}"
-                elif self._pin_check_failed():
-                    detail = "not released: the pinned identities changed since the approval"
-                else:
-                    raw, why = self._release_held(unit)
-                    detail = f"released ({raw}): {why}" if raw in ("released", "discarded") else f"still held: {why}"
-            elif request["action"] == "recheck_held":
-                # The step a held unit was held at, made again now: for gate_held, the before-production gate; for
-                # disposition_held, the preflight, which only this request (or a retry) brings.
-                if state in HELD_STATES or state == DISPOSITION_HELD:
-                    detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
-                else:
-                    detail = f"nothing held for a recheck: the unit is {state}"
-            else:
-                if state == "waiting_retry":
-                    self._move(unit, "waiting_retry", resume_state=unit["resume_state"], next_attempt_at=self.stamp(),
-                               pending_terminal=unit.get("pending_terminal"), terminal_detail=unit.get("terminal_detail"),
-                               detail={"request_id": request["request_id"]})
-                    detail = "retry brought forward"
-                elif state in HELD_STATES or state == DISPOSITION_HELD:
-                    detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
-                elif state == "deferred_disk":
-                    self._move(unit, unit["resume_state"] or "handoff_ready", detail={"request_id": request["request_id"]})
-                    detail = "disk deferral lifted"
-                elif state in ("failed", "excluded", "skipped", "stopped_no_approval", "stopped_policy_drift") and unit["role"] == "run":
-                    self._move(
-                        unit, "pending", failures=0, interruptions=0, outputs_produced=0,
-                        detail={"request_id": request["request_id"], "retry_of": state},
-                    )
-                    detail = "the unit starts again from its Class decision"
-                else:
-                    detail = f"not retried: nothing to retry in state {state}"
+            detail = self._request(request, unit, state)
+            if self._is_curated(unit):
+                self._person_answer(request, unit, state, detail)
             self.ledger.handle_request(request["request_id"], detail, self.stamp())
             handled = True
         return handled
+
+    def _person_answer(self, request: Mapping[str, Any], unit: Mapping[str, Any], before: str, result: str) -> None:
+        """A person's request on a curated unit (above all one Interactive's disposition holds for a header that
+        disagrees with its triage) as a person_answer: in the decision ledger and in the accession's review log, with
+        who asked, why, and what it did (second review of PR #60, finding 4)."""
+        after = self.ledger.unit(unit["unit_key"])["state"]
+        answer = {"by": request["requested_by"], "reason": request["reason"], "action": request["action"],
+                  "request_id": request["request_id"], "requested_at": request["at"], "state_before": before,
+                  "state_after": after, "result": result}
+        self._event("person_answer", {"standing": curated.PERSON_ANSWER, **answer}, unit["unit_key"])
+        self._review_log(unit, self._selection(unit), "person_answer", standing=curated.PERSON_ANSWER, **answer)
+
+    def _request(self, request: Mapping[str, Any], unit: dict[str, Any], state: str) -> str:
+        """Act on one operator request: what was done, for the request's record."""
+        if request["action"] == "skip":
+            if state in ledger_module.TERMINAL_STATES or state == "discarding":
+                detail = f"not skipped: the unit is already {state}"
+            elif state in END_STATES or (state == "waiting_retry" and unit["resume_state"] in END_STATES):
+                # Already ending - failed, skipped or excluded, or with its outputs produced: what it ends as
+                # is not relabelled.
+                detail = f"not skipped: the unit is ending ({unit['pending_terminal'] or unit['resume_state'] or state})"
+            elif state in IN_FLIGHT:
+                self._cancel(unit, unit[JOB_COLUMN[state]], "skip")
+                detail = "cancel requested; the unit is skipped when its job ends"
+            elif state == "split_parent":
+                detail = "not skipped: skip the split parts one by one"
+            else:
+                # An operator's skip of a unit Interactive's disposition holds is the explicit decision that
+                # lifts the hold (the agreed contract of 2026-10-07): its discard, and its split parent's
+                # release, pass release_disposition_hold, which nothing else here ever does. The unit need not
+                # be disposition_held at that moment: a recheck whose preflight never answered moves it to
+                # waiting_retry or contract_held while Interactive's hold stands (review r10-32 of PR #32).
+                released = state == DISPOSITION_HELD or _held_by_disposition(unit)
+                self._move(
+                    unit, "discarding", pending_terminal="skipped",
+                    terminal_detail=json.dumps({"reason": "operator_skip", "detail": request["reason"],
+                                                **({RELEASE_HOLD: True} if released else {})}),
+                    detail={"request_id": request["request_id"], **({RELEASE_HOLD: True} if released else {})},
+                    end_console_run=self._open_console_end(unit, "skipped"),
+                )
+                detail = "skipped; the disposition hold is released (operator_skip)" if released else "skipped"
+        elif request["action"] == "release_held":
+            # Only the unit's raw data, under boundary 5, through Interactive's own deletion: the unit keeps
+            # how it ended. A retry would run it again from its Class decision.
+            if unit["raw_disposition"] != "held" or state not in ledger_module.TERMINAL_STATES:
+                detail = f"nothing held: the unit is {state}, its raw data {unit['raw_disposition']}"
+            elif self._pin_check_failed():
+                detail = "not released: the pinned identities changed since the approval"
+            else:
+                raw, why = self._release_held(unit)
+                detail = f"released ({raw}): {why}" if raw in ("released", "discarded") else f"still held: {why}"
+        elif request["action"] == "recheck_held":
+            # The step a held unit was held at, made again now: for gate_held, the before-production gate; for
+            # disposition_held, the preflight, which only this request (or a retry) brings.
+            if state in HELD_STATES or state == DISPOSITION_HELD:
+                detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
+            else:
+                detail = f"nothing held for a recheck: the unit is {state}"
+        else:
+            if state == "waiting_retry":
+                self._move(unit, "waiting_retry", resume_state=unit["resume_state"], next_attempt_at=self.stamp(),
+                           pending_terminal=unit.get("pending_terminal"), terminal_detail=unit.get("terminal_detail"),
+                           detail={"request_id": request["request_id"]})
+                detail = "retry brought forward"
+            elif state in HELD_STATES or state == DISPOSITION_HELD:
+                detail = self._bring_recheck_forward(unit, "operator", request["request_id"])
+            elif state == "deferred_disk":
+                self._move(unit, unit["resume_state"] or "handoff_ready", detail={"request_id": request["request_id"]})
+                detail = "disk deferral lifted"
+            elif state in ("failed", "excluded", "skipped", "stopped_no_approval", "stopped_policy_drift") and unit["role"] == "run":
+                self._move(
+                    unit, "pending", failures=0, interruptions=0, outputs_produced=0,
+                    detail={"request_id": request["request_id"], "retry_of": state},
+                )
+                detail = "the unit starts again from its Class decision"
+            else:
+                detail = f"not retried: nothing to retry in state {state}"
+        return detail
 
     # ---- pins, backend, disk --------------------------------------------------------------------------
 
@@ -1365,14 +1464,11 @@ class Runner:
     def _state_class_settled(self, unit: dict[str, Any]) -> bool:
         """Take the Catalog's handoff and keep the campaign's own copy of it; for a unit planned from a triage file,
         copy the triage beside it and check both against what was approved."""
-        attempt = self.ledger.open_attempt(unit["unit_key"], "handoff", self.stamp(), tool="msdial_catalog_reanalysis_handoff")
-        if self._planned_units() is None:
-            # Whether the unit runs a curated selection is read from the approved manifest alone.
-            self._release_shared_claims(unit, "stopped_policy_drift")
-            self._move(unit, "stopped_policy_drift", terminal_reason="manifest_digest_changed",
-                       terminal_detail=json.dumps({"detail": self._planned_problem}),
-                       close_attempt=(attempt, "refused", False, {"detail": self._planned_problem}))
+        # The approved manifest must be readable for every unit here, curated or not: whether a unit runs a curated
+        # selection is first acted on at this step.
+        if self._curated_guard(unit, every_unit=True):
             return True
+        attempt = self.ledger.open_attempt(unit["unit_key"], "handoff", self.stamp(), tool="msdial_catalog_reanalysis_handoff")
         result = self.ports.catalog.handoff(unit_id=unit["catalog_unit_id"], class_proposal_id=unit["class_proposal_id"])
         if result.get("ok") is False:
             self._fail(unit, step="handoff", result=result, retry_state="class_settled", attempt_id=attempt)
@@ -1406,6 +1502,8 @@ class Runner:
 
     def _state_handoff_ready(self, unit: dict[str, Any]) -> bool:
         """The disk guard, then the download (boundary 1)."""
+        if self._curated_guard(unit):
+            return True
         verdict = self._disk_verdict(unit)
         values = {"volume": self.campaign["workspace_root"], "free": verdict.free, "reserve": verdict.reserve,
                   "need": verdict.need, "unit_key": unit["unit_key"]}
@@ -1580,12 +1678,14 @@ class Runner:
                 "ending": ending, "release_reason": reason, "approval_passed": deletes,
                 **{key: result.get(key) for key in ("released", "collected", "kept", "refused")}}, unit["unit_key"])
 
-    def _event_once(self, kind: str, detail: Mapping[str, Any], unit_key: str) -> None:
+    def _event_once(self, kind: str, detail: Mapping[str, Any], unit_key: str) -> bool:
         """An event, unless the unit already has one of this kind that says the same: a step made again after a crash
-        or a retry writes it once."""
+        or a retry writes it once. True where it was written now."""
         recorded = self.redact(dict(detail))
         if not any(row["unit_key"] == unit_key and _loads(row["detail_json"]) == recorded for row in self.ledger.events(kind)):
             self._event(kind, detail, unit_key)
+            return True
+        return False
 
     def _download_failed(
         self, unit: dict[str, Any], *, result: dict[str, Any], outcome: str = "failed",
@@ -1932,9 +2032,26 @@ class Runner:
         recorded = applied.get("triage_sha256") or applied.get("sha256")
         return dict(applied) if recorded == selection.get("triage_sha256") else None
 
-    def _reconciliation(self, unit: Mapping[str, Any], record: Mapping[str, Any]) -> None:
+    def _review_log(self, unit: Mapping[str, Any], selection: Mapping[str, Any] | None, kind: str, **fields: Any) -> None:
+        """Append an entry to the review log of the unit's accession (<triage dir>\\<accession>\\review-log.jsonl, hash
+        chained), beside its triage: what the runner found or a person answered. The ledger's event is the record; a
+        log that cannot be written is an event, and changes nothing the unit does."""
+        if not selection or not selection.get("triage_path"):
+            self._event("review_log_not_appended", {"kind": kind, "detail": "the approved manifest names no triage file"},
+                        unit["unit_key"])
+            return
+        try:
+            curated.append_review_log(Path(str(selection["triage_path"])).parent, kind, selection.get("triage_sha256"),
+                                      self.stamp(), **self.redact({"unit_key": unit["unit_key"],
+                                                                   "campaign_id": self.campaign["campaign_id"], **fields}))
+        except OSError as error:
+            self._event("review_log_not_appended", {"kind": kind, "detail": f"{type(error).__name__}: {error}"}, unit["unit_key"])
+
+    def _reconciliation(self, unit: Mapping[str, Any], record: Mapping[str, Any], selection: Mapping[str, Any]) -> bool:
         """A header_reconciliation event: Interactive's comparison of each admitted input's header with the triage
-        (the contract's A4), from the disposition record or the unit manifest; "not_recorded" where it gave none."""
+        (the contract's A4), from the disposition record or the unit manifest; "not_recorded" where it gave none.
+        Each comparison (file, field, triage value, header value, verdict) goes to the accession's review log too, once.
+        True where Interactive recorded a comparison of at least one file."""
         manifest = self._manifest(unit) or {}
         disposition = manifest.get("campaign_disposition") if isinstance(manifest.get("campaign_disposition"), Mapping) else {}
         block = (record.get("curated_selection_reconciliation")
@@ -1943,17 +2060,25 @@ class Runner:
                  or ((manifest.get("repository_metadata") or {}).get("curated_selection") or {}).get("reconciliation"))
         files = [item for item in (block or {}).get("files") or [] if isinstance(item, Mapping)] if isinstance(block, Mapping) else []
         disagree = [item for item in files if str(item.get("verdict") or item.get("result") or "") in ("disagree", "unreadable")]
-        self._event_once("header_reconciliation", {
+        written = self._event_once("header_reconciliation", {
             "standing": curated.DETERMINISTIC_CHECK,
-            "verdict": str(block.get("verdict")) if isinstance(block, Mapping) else "not_recorded",
+            "verdict": str(block.get("verdict")) if isinstance(block, Mapping) and files else "not_recorded",
             "files": len(files), "disagreements": len(disagree),
             "fields": sorted({str(item.get("field")) for item in disagree if item.get("field")}),
             "disagreeing_files": [{key: item.get(key) for key in ("member_path", "field", "triage_value", "header_value", "verdict")}
                                   for item in disagree[:20]],
         }, unit["unit_key"])
+        if written:
+            for item in files:
+                self._review_log(unit, selection, "header_reconciliation", standing=curated.DETERMINISTIC_CHECK,
+                                 **{key: item.get(key) for key in ("member_path", "field", "triage_value", "header_value")},
+                                 verdict=str(item.get("verdict") or item.get("result") or ""))
+        return bool(files)
 
     def _state_downloaded(self, unit: dict[str, Any]) -> bool:
         """The raw-header preflight; then Interactive's campaign_disposition says what the unit does."""
+        if self._curated_guard(unit):
+            return True
         selection = self._selection(unit)
         if selection is not None:
             applied = self._applied_selection(unit, selection)
@@ -2043,7 +2168,16 @@ class Runner:
             )
         record = disposition.as_dict()
         if selection is not None:
-            self._reconciliation(unit, record)
+            recorded = self._reconciliation(unit, record, selection)
+            if not recorded and not disposition.held and disposition.disposition in ("run", "split"):
+                # The approved summary says the headers are reconciled against the triage after download and a
+                # disagreement holds the unit: one Interactive did not reconcile is not run (second review, finding 3).
+                return self._contract_hold(
+                    unit, step="preflight", problem="curated_selection_reconciliation_not_recorded", attempt_id=attempt,
+                    detail={"detail": "Interactive recorded no comparison of the admitted inputs' headers with the unit's "
+                                      "triage (curated_selection_reconciliation), so a polarity or acquisition the triage "
+                                      "got wrong would go unchecked; the unit is not run",
+                            "triage_sha256": selection.get("triage_sha256"), "disposition": disposition.disposition})
         close = (attempt, "ok", False, {"disposition": disposition.disposition, "reasons": list(disposition.reasons),
                                         "warnings": list(disposition.warnings),
                                         **({"aif_multi_ce_run": dict(disposition.aif_multi_ce_run)}
@@ -2215,18 +2349,20 @@ class Runner:
         on its way is preflighted (the unit leaves the hand meanwhile, uncounted), then have Interactive's cross-unit
         check judge the group's manifests once (rules P, C and D) and end a refused unit with no retry. None where the
         unit goes on to its metadata."""
-        if self._selection(unit) is None or unit["role"] == "split_part":
+        if not self._is_curated(unit) or unit["role"] == "split_part":
             return None
-        siblings = [item for item in self._group_members(unit) if self._selection(item) is not None]
+        siblings = [item for item in self._group_members(unit) if self._is_curated(item)]
         if not siblings:
             return None
         group = _group(unit)
         verdict = None
         last = None
+        passed: set[str] = set()
         for event in self.ledger.events("cross_unit_verdict"):
             detail = _loads(event["detail_json"])
             if detail.get("group") == group:
                 last = detail
+                passed |= set(detail.get("units") or []) - set(detail.get("refused") or {})
         if last is not None and unit["manifest_path"] in (last.get("manifest_paths") or []):
             verdict = last
         if verdict is None:
@@ -2242,9 +2378,13 @@ class Runner:
                            detail={"waiting_for_group_preflight": sorted(waiting), "group": group})
                 return True
             # The siblings that hold a unit manifest and did not end without outputs: the held ones among them, whose
-            # files are the group's all the same.
-            members = [unit] + [item for item in siblings if item["manifest_path"] and Path(str(item["manifest_path"])).is_file()
-                                and (item["state"] not in ledger_module.TERMINAL_STATES or item["state"] == "done")]
+            # files are the group's all the same. The units an earlier check of the group passed come first, then the
+            # rest in plan order: under rule D (an identical input set is refused for every member after the first) a
+            # unit that arrives late (a retry, or one held before its download) is the one refused, never a unit that
+            # already ran (second review of PR #60, finding 2).
+            others = [item for item in siblings if item["manifest_path"] and Path(str(item["manifest_path"])).is_file()
+                      and (item["state"] not in ledger_module.TERMINAL_STATES or item["state"] == "done")]
+            members = sorted([unit] + others, key=lambda item: (item["unit_key"] not in passed, item["order_index"], item["unit_key"]))
             paths = [str(item["manifest_path"]) for item in members]
             attempt = self.ledger.open_attempt(unit["unit_key"], "cross_unit_check", self.stamp(),
                                                tool="msdial_repository_cross_unit_check", arguments={"manifest_paths": paths})
@@ -2262,6 +2402,15 @@ class Runner:
                 if said != "pass" and key:
                     refused[key] = {"reason_code": str(item.get("reason_code") or "cross_unit_refused"),
                                     "rule": item.get("rule"), "with": item.get("with") or item.get("duplicate_of")}
+            # A unit an earlier check passed may already have run, so a refusal of it now cannot be acted on: the
+            # units new to this check, whose arrival changed the verdict, are refused in its place.
+            late = sorted(key for key in refused if key in passed)
+            if late:
+                partner = refused[late[0]]
+                for item in members:
+                    if item["unit_key"] not in passed and item["unit_key"] not in refused:
+                        refused[item["unit_key"]] = {"reason_code": partner["reason_code"], "rule": partner["rule"],
+                                                     "with": late[0], "partner_already_passed": True}
             verdict = {"standing": curated.DETERMINISTIC_CHECK, "group": group, "manifest_paths": paths,
                        "units": sorted(by_path.values()), "verdict": "refused" if refused else "pass", "refused": refused,
                        "interactive_verdict": result.get("verdict")}
@@ -2277,6 +2426,8 @@ class Runner:
         """The analysis CSV and the reviewed metadata, with the approved Class applied (boundary 3). A DDA unit
         deposited as both .wiff2 and .wiff is first switched to its .wiff (_wiff_first), once. A unit with a curated
         selection first passes the cross-unit check of its download group (_cross_unit_gate)."""
+        if self._curated_guard(unit):
+            return True
         gated = self._cross_unit_gate(unit)
         if gated is not None:
             return gated

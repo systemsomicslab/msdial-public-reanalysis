@@ -24,7 +24,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from campaign import ledger as ledger_module  # noqa: E402
-from campaign import machine, policy, ports  # noqa: E402
+from campaign import machine, plan, policy, ports  # noqa: E402
 
 SHA = {name: hashlib.sha256(name.encode()).hexdigest() for name in ("console", "extractor", "positive", "negative", "lbm", "auth")}
 POSITIVE_MSP = "SyntheticPositive.msp"
@@ -118,7 +118,9 @@ class UnitScript:
     wiff_downloaded: bool = True
     wiff_header: str = "ok"
     # Interactive 0.5.69's comparison of each admitted input's header with the unit's triage (the integration
-    # contract's A4): "" for none, "agree", or "disagree" (a skip with hold true, triage_header_disagreement).
+    # contract's A4): "" for what 0.5.69 records by default ("agree" for a unit whose lease applied a curated
+    # selection, nothing for any other), "agree", "disagree" (a skip with hold true, triage_header_disagreement), or
+    # "none" for an Interactive that records no reconciliation at all.
     reconciliation: str = ""
 
 
@@ -247,6 +249,8 @@ class FakeInteractive:
         # cross-unit check, each check's manifests, and the units it refuses there (unit: (reason code, rule)).
         self.curated_supported = True
         self.curated_recorded = True
+        # The triage sha256 the lease records as applied, where a test makes it another than the file's.
+        self.curated_recorded_sha: str | None = None
         self.curated_downloads: list[dict[str, Any]] = []
         self.cross_unit_supported = True
         self.cross_unit_calls: list[list[str]] = []
@@ -376,7 +380,8 @@ class FakeInteractive:
             # What 0.5.69 records of the selection it applied (repository_metadata.curated_selection, the contract's A3).
             triage = Path(arguments["curated_selection_path"])
             applied = {"curated_selection": {
-                "path": str(triage), "triage_sha256": hashlib.sha256(triage.read_bytes()).hexdigest(),
+                "path": str(triage),
+                "triage_sha256": self.curated_recorded_sha or hashlib.sha256(triage.read_bytes()).hexdigest(),
                 "original_handoff_sha256": arguments.get("original_handoff_sha256"),
                 "child_key": arguments.get("curated_selection_child_key"), "standing": "accepted_decision",
                 "rows_kept": [{"row_index": index} for index in range(3)], "rows_dropped": [{"row_index": 3, "reason": "belongs_to_other_unit"}]}}
@@ -615,11 +620,15 @@ class FakeInteractive:
                     warnings.append(policy.AIF_CE_SETS_DIFFER_RECORDED)
             disposition = "run" if ready else "aif_hold"
         reconciliation: dict[str, Any] = {}
-        if script.reconciliation:
-            disagree = script.reconciliation == "disagree"
-            reconciliation = {"curated_selection_reconciliation": {"verdict": script.reconciliation, "files": [
+        curated = ((self.store.read(manifest_path) or {}).get("repository_metadata") or {}).get("curated_selection")
+        mode = script.reconciliation or ("agree" if curated else "")
+        if mode in ("agree", "disagree"):
+            disagree = mode == "disagree"
+            reconciliation = {"curated_selection_reconciliation": {"verdict": mode, "files": [
                 {"member_path": "Pos/S1.raw", "field": "ion_mode", "triage_value": "positive",
-                 "header_value": "negative" if disagree else "positive", "verdict": script.reconciliation}]}}
+                 "header_value": "negative" if disagree else "positive", "verdict": mode},
+                {"member_path": "Pos/S1.raw", "field": "acquisition_mode", "triage_value": "DDA",
+                 "header_value": "DDA", "verdict": "agree"}]}}
             if disagree:
                 disposition, hold_reason = "aif_hold", "triage_header_disagreement"
         hold = disposition == "aif_hold"
@@ -1326,7 +1335,10 @@ class World:
         self.handoff_rows: dict[str, list[dict[str, Any]]] = {}
         self.ledger_path = self.directory / "ledger.sqlite"
         with ledger_module.Ledger(self.ledger_path, durable=False) as book:
-            book.create(self.campaign, self.approval, self.units, self.groups, "2026-10-01T00:00:00+00:00")
+            # A manifest that plans its units records, as approve does, the decision events of its curated selections
+            # (plan.decision_events) in the approval's own transaction.
+            book.create(self.campaign, self.approval, self.units, self.groups, "2026-10-01T00:00:00+00:00",
+                        events=plan.decision_events(manifest, self.digest, self.approval) if manifest is not None else ())
         self.interactive = FakeInteractive(self)
         self.catalog = FakeCatalog(self)
         self.gate = FakeGate()

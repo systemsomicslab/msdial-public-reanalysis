@@ -81,7 +81,7 @@ listed with its reason:
 A PLAN FROM TRIAGE FILES (plan --triage-dir, 2026-11-16). After stage3b ran every unit of a multi-unit accession on the
 whole study's files (stopped 2026-11-15), a unit may be planned from its frozen triage file (the msdial-unit-triage
 skill's, scripts/campaign/curated.py). scripts/validate-triage.py judges each accession's set against the Catalog rows
-and archive listing the agent read (<accession>\inputs\), and the unit is further left out as:
+and archive listing the agent read (<accession>\\inputs\\), and the unit is further left out as:
 
 - triage_missing / triage_unreadable: no triage file for it, or one that is not a triage of it;
 - triage_not_pass: the validator holds or errors on its accession (the validator's findings are the detail);
@@ -2690,6 +2690,9 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
         events.append(("triage_recorded", {
             "standing": curated.MODEL_INFERENCE, "accession": unit["accession"], "unit_id": unit["unit_id"],
             "child_key": chosen.get("child_key"), "decided_by": chosen.get("decided_by"), "phase": chosen.get("phase"),
+            # The runner reads whether a unit is curated, and its workspace, from this event in the ledger, never again
+            # from the manifest file (machine.Runner._approved_curated).
+            "workspace_name": unit.get("workspace_name"),
             "triage_relative_path": chosen.get("triage_relative_path"), "triage_sha256": chosen.get("triage_sha256"),
             "triage_record_sha256": chosen.get("triage_record_sha256"),
             "catalog_handoff_sha256": chosen.get("catalog_handoff_sha256"), "catalog_rows_sha256": chosen.get("catalog_rows_sha256"),

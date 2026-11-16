@@ -12,7 +12,10 @@ files of one accession as a set and returns pass, hold or error.
         [--json]
 
 The triage directory holds one <unit_id>.json per unit, all of one accession (in a campaign,
-<campaign dir>/triage/<accession>/). --catalog takes either the campaign's handoffs directory
+<campaign dir>/triage/<accession>/). A unit redone is kept as a revision, <unit_id>.r<N>.json, and the highest
+N is the one checked (it supersedes <unit_id>.json and every earlier revision); a decision record beside a
+triage (<name>.record.json, the envelope naming the model and prompt) is not a triage and is not read here.
+--catalog takes either the campaign's handoffs directory
 (<unit_id>/handoff.json and samples.json, as msdial_catalog_reanalysis_handoff writes them; it may span many
 accessions, and only the units of the triaged accession are checked) or a catalog.json with
 {"accession", "units": [{"unit_id", "declared", "rows": [{"sample_id", "raw_file"}]}]}, the shape the eval
@@ -491,6 +494,31 @@ def _flag_codes(triage: dict[str, Any]) -> set[str]:
     return {f["code"] for f in triage.get("flags", [])}
 
 
+_REVISION = re.compile(r"^(?P<unit>.+)\.r(?P<n>[0-9]+)$")
+RECORD_SUFFIX = ".record.json"
+
+
+def triage_file_unit(path: Path) -> str:
+    """The unit a triage file is named for: <unit>.json, or a revision <unit>.r<N>.json."""
+    match = _REVISION.match(path.stem)
+    return match.group("unit") if match else path.stem
+
+
+def current_triage_files(triage_dir: Path) -> list[Path]:
+    """The triage files of a directory as the campaign keeps them (scripts/campaign/curated.py): every *.json but
+    index.json and the decision records (<name>.record.json, the envelope beside a payload), and of a unit with
+    revisions (<unit>.r<N>.json) only the highest, which supersedes <unit>.json and every earlier revision."""
+    current: dict[str, tuple[int, Path]] = {}
+    for path in sorted(triage_dir.glob("*.json")):
+        if path.name == "index.json" or path.name.endswith(RECORD_SUFFIX):
+            continue
+        match = _REVISION.match(path.stem)
+        unit, number = (match.group("unit"), int(match.group("n"))) if match else (path.stem, 0)
+        if unit not in current or number > current[unit][0]:
+            current[unit] = (number, path)
+    return sorted(path for _number, path in current.values())
+
+
 def validate(
     triage_dir: Path,
     catalog: dict[str, CatalogUnit] | None = None,
@@ -499,7 +527,7 @@ def validate(
     report = Report()
     schema = load_schema()
     triages: dict[str, dict[str, Any]] = {}
-    files = sorted(p for p in triage_dir.glob("*.json") if p.name != "index.json")
+    files = current_triage_files(triage_dir)
     if not files:
         report.add("error", "T-SET", None, f"no triage files in {triage_dir}")
         return report
@@ -510,7 +538,7 @@ def validate(
             report.add("error", "T-SCHEMA", path.stem, f"{path.name} is not readable JSON: {exc}")
             continue
         unit = data.get("unit_id") if isinstance(data, dict) else None
-        unit = unit if isinstance(unit, str) and unit else path.stem
+        unit = unit if isinstance(unit, str) and unit else triage_file_unit(path)
         if unit in triages:
             report.add("error", "T-SET", unit, f"unit {unit} is triaged twice")
             continue
@@ -522,8 +550,8 @@ def validate(
             if len(problems) > 20:
                 report.add("error", "T-SCHEMA", unit, f"{path.name}: {len(problems) - 20} more schema problem(s)")
             continue
-        if path.stem != unit:
-            report.add("error", "T-SET", unit, f"{path.name} holds unit {unit}; name the file {unit}.json")
+        if triage_file_unit(path) != unit:
+            report.add("error", "T-SET", unit, f"{path.name} holds unit {unit}; name the file {unit}.json (or {unit}.r<N>.json)")
         triages[unit] = data
         report.unit_status[unit] = data["status"]
 

@@ -14,9 +14,12 @@ campaign-manifest.summary.json), and the triage directory: <bundle>\\triage\\<ac
 manifest names. Levels, each including the one before:
 
 - selection: the bundle only, no network and no raw data. The manifest's sha256 equals the approved digest; each
-  unit's triage file hashes to the recorded triage_sha256; scripts/validate-triage.py gives the recorded verdict on
-  each accession; the selection and the analysis inputs recompute to the recorded selection_sha256 and
-  analysis_inputs_sha256. The rebuilt inputs are written to <out dir>\\replay-inputs\\<unit key>.json.
+  unit's triage file hashes to the recorded triage_sha256, and its decision record (<name>.record.json, which names
+  the model, prompt and skill that made it) to the recorded triage_record_sha256; the accession's review log is one
+  unbroken hash chain that holds the head the plan recorded (review_log_head_sha256); scripts/validate-triage.py
+  gives the recorded verdict on each accession; the selection and the analysis inputs recompute to the recorded
+  selection_sha256 and analysis_inputs_sha256. The rebuilt inputs are written to
+  <out dir>\\replay-inputs\\<unit key>.json.
 - inputs: the raw archives' members, which the third party downloaded and extracted under
   <workspace root>\\<repository>\\<accession>\\: each selected member is found and checked against the listing's size
   and CRC32; and where the bundle keeps the unit's run manifest (units\\<unit key>\\run-manifest.json), the
@@ -105,6 +108,43 @@ def triage_root(bundle: Path, manifest: dict[str, Any]) -> Path:
     return Path(str((manifest.get("triage") or {}).get("directory") or local))
 
 
+def check_record(row: Row, chosen: dict[str, Any], payload: Path) -> None:
+    """The decision record beside the triage is the one the person approved: its sha256 equals the manifest's
+    triage_record_sha256. None approved and none released is equal; one approved and not released is not evaluable;
+    one released that was not approved, or another one, differs."""
+    record = curated.record_path(payload)
+    expected = chosen.get("triage_record_sha256")
+    found = _sha(record.read_bytes()) if record.is_file() else None
+    if expected is None and found is None:
+        row.checks.append({"check": "triage_record_sha256", "result": EQUAL, "expected": None, "replayed": None,
+                           "why": "no decision record was approved, and the bundle holds none"})
+    elif found is None:
+        row.not_evaluable("triage_record_sha256", f"the bundle holds no {record.name}")
+    else:
+        row.checks.append({"check": "triage_record_sha256", "result": EQUAL if expected == found else DIFFERENT,
+                           "expected": expected, "replayed": found})
+
+
+def check_review_log(row: Row, chosen: dict[str, Any], folder: Path) -> None:
+    """The accession's review log is one unbroken chain (curated.verify_review_log), and the head the plan recorded is
+    one of its lines: the entries a person could read when approving are the ones released, with only later entries
+    (the approval, the header comparisons, a person's answers) after them."""
+    path = folder / curated.REVIEW_LOG
+    expected = chosen.get("review_log_head_sha256")
+    if not path.is_file():
+        if expected is None:
+            row.checks.append({"check": "review_log_chain", "result": EQUAL, "expected": None, "replayed": None,
+                               "why": "the plan recorded no review log, and the bundle holds none"})
+        else:
+            row.not_evaluable("review_log_chain", f"the bundle holds no {curated.REVIEW_LOG} for {folder.name}")
+        return
+    problems, line_sha256 = curated.verify_review_log(path)
+    if expected is not None and expected not in line_sha256:
+        problems.append(f"the head the plan recorded ({str(expected)[:12]}) is no line of the chain")
+    row.checks.append({"check": "review_log_chain", "result": DIFFERENT if problems else EQUAL, "expected": expected,
+                       "replayed": line_sha256[-1] if line_sha256 else None, **({"why": "; ".join(problems[:5])} if problems else {})})
+
+
 def replay_selection(bundle: Path, manifest: dict[str, Any], units: list[dict[str, Any]], out_dir: Path,
                      rows: dict[str, Row]) -> None:
     root = triage_root(bundle, manifest)
@@ -120,6 +160,8 @@ def replay_selection(bundle: Path, manifest: dict[str, Any], units: list[dict[st
         raw = payload.read_bytes()
         row.compare("triage_sha256", chosen.get("triage_sha256"), _sha(raw))
         folder = payload.parent
+        check_record(row, chosen, payload)
+        check_review_log(row, chosen, folder)
         accession = folder.name
         if accession not in verdicts:
             verdicts[accession] = curated.run_validator(folder)

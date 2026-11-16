@@ -345,7 +345,8 @@ class ChildrenTests(_Root):
 # ---- the runner -----------------------------------------------------------------------------------------------------
 
 def curated_world(root: Path, units: dict[str, dict], *, groups: dict | None = None) -> campaign_fakes.World:
-    """A World whose approved manifest plans `units` (unit key: {catalog, child, workspace}) from triage files."""
+    """A World whose approved manifest plans `units` (unit key: {catalog, child, workspace, folder, record}) from triage
+    files; record writes the triage's decision record (<unit_id>.record.json) beside it, as the framework does."""
     folder = root / "triage" / "ACC1"
     folder.mkdir(parents=True, exist_ok=True)
     planned = []
@@ -357,11 +358,16 @@ def curated_world(root: Path, units: dict[str, dict], *, groups: dict | None = N
                 {"row_index": 0, "sample_id": f"{catalog_id}-S1", "member_path": f"{item.get('folder', catalog_id)}/S1.raw", "role": "sample"},
                 {"row_index": 1, "sample_id": f"{catalog_id}-S2", "member_path": f"{item.get('folder', catalog_id)}/S2.raw", "role": "sample"}]}),
                 encoding="utf-8")
+        record = curated.record_path(path)
+        if item.get("record"):
+            record.write_text(json.dumps({"schema": "msdial-llm-decision-record.v1", "unit_id": catalog_id,
+                                          "model": "synthetic-model", "prompt_sha256": "1" * 64}), encoding="utf-8")
         planned.append({
             "unit_id": catalog_id, "unit_key": key, "accession": "ACC1", "workspace_name": item.get("workspace", key),
             "curated_selection": {
                 "triage_path": str(path), "triage_relative_path": f"ACC1/{path.name}",
-                "triage_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "triage_record_sha256": None,
+                "triage_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "triage_record_sha256": hashlib.sha256(record.read_bytes()).hexdigest() if item.get("record") else None,
                 "catalog_handoff_sha256": "0" * 64, "catalog_rows_sha256": item.get("rows_sha256", curated.rows_sha256([])),
                 "child_key": item.get("child"), "selection_sha256": "5" * 64,
             },
@@ -404,6 +410,11 @@ class RunnerTests(_Root):
         unit = unit_row(world, "u1")
         self.assertEqual((unit["state"], unit["terminal_reason"]), ("stopped_policy_drift", "triage_digest_changed"))
         self.assertEqual(world.interactive.download_starts, [])
+        # Refused at the copy itself, not only by the recheck at download start: the unit never reached handoff_ready.
+        checked = events(world, "triage_checked")[0]["detail"]
+        self.assertEqual((checked["verdict"], checked["reason"]), ("refused", "triage_digest_changed"))
+        with world.open() as book:
+            self.assertNotIn("handoff_ready", [row["to_state"] for row in book.transitions("u1")])
 
     def test_a_handoff_whose_rows_changed_stops_the_unit(self) -> None:
         world = curated_world(self.root, {"u1": {"rows_sha256": "f" * 64}})
@@ -573,6 +584,225 @@ class RunnerTests(_Root):
         self.assertEqual(curated.review_log_head(folder), hashlib.sha256(lines[1]).hexdigest())
 
 
+# ---- the second review of PR #60 (2026-11-16) -------------------------------------------------------------------------
+
+def run_until(world: campaign_fakes.World, key: str, state: str, limit: int = 400) -> None:
+    """One runner process that stops as soon as `key` reaches `state` (a runner that stops there and is started again)."""
+    with world.open() as book:
+        runner = world.runner(book)
+        # The step of `state` is not made: the process ends with the unit there.
+        setattr(runner, "_state_" + state, lambda _unit: False)
+        runner.reconcile()
+        for _ in range(limit):
+            if book.unit(key)["state"] == state:
+                return
+            if not runner.iterate():
+                world.clock.sleep(31)
+        raise AssertionError(f"{key} never reached {state}: {book.unit(key)['state']}")
+
+
+def request(world: campaign_fakes.World, action: str, key: str, reason: str, by: str) -> None:
+    with world.open() as book:
+        book.add_request(action, key, reason, by, world.runner(book).stamp())
+
+
+class ApprovedSelectionIsDurableTests(_Root):
+    """Whether a unit runs a curated selection is what the approval recorded in the ledger, not what a later read of
+    campaign-manifest.json happens to give (finding 1 of the second review)."""
+
+    def test_a_manifest_changed_after_the_handoff_never_lets_the_unit_download_as_a_plain_one(self) -> None:
+        world = curated_world(self.root, {"u1": {"workspace": "u1@c2"}})
+        run_until(world, "u1", "handoff_ready")
+        Path(world.campaign["manifest_path"]).write_text('{"units": []}', encoding="utf-8")
+        world.run()
+        unit = unit_row(world, "u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"]), ("stopped_policy_drift", "manifest_digest_changed"))
+        self.assertEqual(world.interactive.download_starts, [], "never downloaded without its selection")
+        self.assertEqual(world.interactive.curated_downloads, [])
+
+    def test_a_manifest_changed_after_the_download_holds_the_unit_with_its_raw_data(self) -> None:
+        world = curated_world(self.root, {"u1": {}})
+        run_until(world, "u1", "downloaded")
+        approved = Path(world.campaign["manifest_path"]).read_bytes()
+        Path(world.campaign["manifest_path"]).write_text('{"units": []}', encoding="utf-8")
+        with world.open() as book:
+            world.runner(book).run(max_iterations=60)
+        self.assertEqual(unit_row(world, "u1")["state"], "contract_held")
+        self.assertEqual(events(world, "contract_held")[-1]["detail"]["contract"], "manifest_digest_changed")
+        self.assertFalse([call for call in world.interactive.calls if call[0] == "preflight"])
+        # The approved bytes back, and the recheck runs the unit on its selection.
+        Path(world.campaign["manifest_path"]).write_bytes(approved)
+        request(world, "recheck_held", "u1", "the approved manifest is restored", "Test Person")
+        world.run()
+        self.assertEqual(unit_row(world, "u1")["state"], "done")
+
+    def test_an_edited_manifest_naming_the_same_triage_is_not_the_approved_one(self) -> None:
+        # The same triage sha256, another workspace: only the digest tells it from the approved manifest.
+        world = curated_world(self.root, {"u1": {}})
+        path = Path(world.campaign["manifest_path"])
+        edited = json.loads(path.read_text(encoding="utf-8"))
+        edited["units"][0]["workspace_name"] = "u1-elsewhere"
+        path.write_bytes(policy.canonical_json(edited))
+        world.run()
+        unit = unit_row(world, "u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"]), ("stopped_policy_drift", "manifest_digest_changed"))
+        self.assertEqual(world.interactive.download_starts, [])
+
+    def test_a_manifest_that_cannot_be_read_for_a_moment_is_read_again(self) -> None:
+        world = curated_world(self.root, {"u1": {}})
+        failures = {"left": 2}
+        with world.open() as book:
+            runner = world.runner(book)
+            original = runner._read_manifest_bytes
+
+            def flaky(path: Path) -> bytes:
+                if failures["left"]:
+                    failures["left"] -= 1
+                    raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+                return original(path)
+
+            runner._read_manifest_bytes = flaky
+            runner.run(until_idle=True, max_iterations=2000)
+        self.assertEqual(unit_row(world, "u1")["state"], "done")
+        self.assertEqual(failures["left"], 0)
+        self.assertTrue(world.interactive.curated_downloads[0].get("curated_selection_path"))
+        with world.open() as book:
+            waits = [json.loads(row["detail_json"]) for row in book.transitions("u1") if row["to_state"] == "waiting_retry"]
+        self.assertTrue(any("manifest_unreadable" in item for item in waits))
+
+    def test_the_approval_records_each_curated_unit_and_its_workspace(self) -> None:
+        world = curated_world(self.root, {"u1-pos": {"catalog": "u1", "child": "pos", "workspace": "u1-pos@c2"}})
+        recorded = events(world, "triage_recorded")
+        self.assertEqual([(item["unit_key"], item["detail"]["workspace_name"]) for item in recorded], [("u1-pos", "u1-pos@c2")])
+
+
+class LateSiblingTests(_Root):
+    """A unit that reaches the cross-unit check after its group was judged is checked after the units that already
+    passed it (finding 2 of the second review)."""
+
+    def world(self) -> campaign_fakes.World:
+        world = curated_world(self.root, {"u1": {"folder": "shared"}, "u2": {"folder": "shared"}}, groups={"g": ["u1", "u2"]})
+        world.scripts["u2"] = campaign_fakes.UnitScript(downloads=["fail"] * 10)
+        world.run()
+        self.assertEqual([unit_row(world, key)["state"] for key in ("u1", "u2")], ["done", "failed"])
+        world.scripts["u2"] = campaign_fakes.UnitScript(downloads=["ok"])
+        return world
+
+    def test_a_retried_sibling_with_the_same_inputs_is_refused_and_the_unit_that_ran_stands(self) -> None:
+        world = self.world()
+        request(world, "retry", "u2", "network fixed", "operator")
+        world.run()
+        u2 = unit_row(world, "u2")
+        self.assertEqual((u2["state"], u2["terminal_reason"], u2["failures"]), ("failed", policy.ATTRIBUTION_REFUSED, 0))
+        self.assertEqual(json.loads(u2["terminal_detail"])["reason_code"], "cross_unit_duplicate_inputs")
+        self.assertEqual(unit_row(world, "u1")["state"], "done")
+        self.assertNotIn(("u2", "run"), world.interactive.console_starts)
+        last = world.interactive.cross_unit_calls[-1]
+        self.assertEqual([world.interactive._unit_of_manifest(path) for path in last], ["u1", "u2"],
+                         "the unit that already ran is first")
+
+    def test_a_verdict_against_a_unit_that_already_ran_refuses_the_newcomer(self) -> None:
+        world = self.world()
+        world.interactive.cross_unit_refusals = {"u1": ("cross_unit_polarity_contradiction", "P")}
+        request(world, "retry", "u2", "network fixed", "operator")
+        world.run()
+        u2 = unit_row(world, "u2")
+        self.assertEqual((u2["state"], u2["terminal_reason"]), ("failed", policy.ATTRIBUTION_REFUSED))
+        self.assertEqual(json.loads(u2["terminal_detail"])["reason_code"], "cross_unit_polarity_contradiction")
+        self.assertNotIn(("u2", "run"), world.interactive.console_starts)
+        self.assertEqual(events(world, "cross_unit_verdict")[-1]["detail"]["refused"]["u2"]["with"], "u1")
+
+
+class ReconciliationAndPersonTests(_Root):
+    def test_a_curated_unit_without_a_header_reconciliation_is_held_unrun(self) -> None:
+        world = curated_world(self.root, {"u1": {}})
+        world.scripts["u1"] = campaign_fakes.UnitScript(reconciliation="none")
+        with world.open() as book:
+            world.runner(book).run(max_iterations=200)
+        self.assertEqual(unit_row(world, "u1")["state"], "contract_held")
+        self.assertEqual(events(world, "contract_held")[-1]["detail"]["contract"], "curated_selection_reconciliation_not_recorded")
+        self.assertFalse(world.interactive.console_starts)
+
+    def test_a_persons_answer_to_a_header_hold_reaches_the_ledger_and_the_review_log(self) -> None:
+        world = curated_world(self.root, {"u1": {}})
+        world.scripts["u1"] = campaign_fakes.UnitScript(reconciliation="disagree")
+        world.run()
+        self.assertEqual(unit_row(world, "u1")["state"], "disposition_held")
+        request(world, "skip", "u1", "the header is right, the triage polarity is wrong", "Test Person")
+        world.run()
+        self.assertEqual(unit_row(world, "u1")["state"], "skipped")
+        target = world.directory / curated.DECISION_LEDGER
+        with world.open() as book:
+            curated.export_decision_ledger(target, book.events())
+        lines = [json.loads(line) for line in target.read_text(encoding="utf-8").splitlines()]
+        answers = [line for line in lines if line["kind"] == "person_answer"]
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(answers[0]["standing"], curated.PERSON_ANSWER)
+        self.assertEqual({key: answers[0]["detail"][key] for key in ("by", "reason", "action", "state_before", "state_after")},
+                         {"by": "Test Person", "reason": "the header is right, the triage polarity is wrong", "action": "skip",
+                          "state_before": "disposition_held", "state_after": "discarding"})
+        self.assertEqual(curated.verify_decision_ledger(target), [])
+        log = [json.loads(line) for line in (self.root / "triage" / "ACC1" / curated.REVIEW_LOG).read_text(encoding="utf-8").splitlines()]
+        compared = [entry for entry in log if entry["kind"] == "header_reconciliation"]
+        self.assertEqual([(entry["field"], entry["triage_value"], entry["header_value"], entry["verdict"]) for entry in compared],
+                         [("ion_mode", "positive", "negative", "disagree"), ("acquisition_mode", "DDA", "DDA", "agree")])
+        self.assertEqual([entry["by"] for entry in log if entry["kind"] == "person_answer"], ["Test Person"])
+        self.assertEqual([entry["seq"] for entry in log], list(range(1, len(log) + 1)))
+        self.assertTrue(all(entry["prev_sha256"] for entry in log[1:]))
+
+
+class DecisionRecordTests(_Root):
+    def test_a_triage_with_its_decision_record_runs_and_the_record_is_checked(self) -> None:
+        world = curated_world(self.root, {"u1": {"record": True}})
+        world.run()
+        self.assertEqual(unit_row(world, "u1")["state"], "done")
+        checked = events(world, "triage_checked")[0]["detail"]
+        self.assertTrue(checked["record_copy_path"].endswith("triage.record.json"))
+
+    def test_a_decision_record_changed_after_approval_stops_the_unit(self) -> None:
+        world = curated_world(self.root, {"u1": {"record": True}})
+        (self.root / "triage" / "ACC1" / "u1.record.json").write_text('{"model": "another-model"}', encoding="utf-8")
+        world.run()
+        unit = unit_row(world, "u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"]), ("stopped_policy_drift", "triage_record_digest_changed"))
+        self.assertEqual(world.interactive.download_starts, [])
+
+    def test_a_lease_that_recorded_another_triage_holds_the_unit(self) -> None:
+        world = curated_world(self.root, {"u1": {}})
+        world.interactive.curated_recorded_sha = "f" * 64
+        with world.open() as book:
+            world.runner(book).run(max_iterations=60)
+        self.assertEqual(unit_row(world, "u1")["state"], "contract_held")
+        self.assertEqual(events(world, "contract_held")[0]["detail"]["contract"], "curated_selection_not_recorded")
+
+
+class PlanContrastTests(_Root):
+    def test_a_unit_whose_contrast_loses_a_side_is_not_planned(self) -> None:
+        triage_root = write_triage(self.root)
+        docs = te.build_good(ACCESSION)
+        remaining = [{"unit_id": key, "accession": ACCESSION, "repository": "metabolomics_workbench"} for key in UNITS]
+        decisions = {key: {"kind": "abstention", "assignments": [[row["sample_id"], "All"] for row in docs[key]["rows"]]}
+                     for key in UNITS}
+        # AN004454's Class contrasts its kept samples with samples the triage dropped: the cut leaves one side.
+        decisions["AN004454"] = {"kind": "proposal", "assignments": [[row["sample_id"], "Treated"] for row in docs["AN004454"]["rows"]]
+                                 + [["dropped-sample-1", "Control"], ["dropped-sample-2", "Control"]]}
+        excluded: list[dict] = []
+        kept, _entries, record = plan._plan_from_triage(triage_root, remaining, decisions, excluded, lambda _message: None)
+        self.assertEqual(sorted(unit["unit_id"] for unit in kept), ["AN004455", "AN004456", "AN004457"])
+        reasons = {item["unit_id"]: item for item in excluded}
+        self.assertEqual(reasons["AN004454"]["reason"], curated.CLASS_CONTRAST_LOST)
+        self.assertIn("Control", reasons["AN004454"]["detail"])
+        self.assertEqual(record["accessions"][ACCESSION]["verdict"], "pass")
+
+
+class PlanSourceTests(unittest.TestCase):
+    def test_plan_compiles_with_warnings_as_errors(self) -> None:
+        done = subprocess.run([sys.executable, "-I", "-W", "error", "-c",
+                               "import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'), sys.argv[1], 'exec')",
+                               str(SCRIPTS / "campaign" / "plan.py")], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+
 # ---- end to end, and the replay ---------------------------------------------------------------------------------------
 
 @unittest.skipUnless(contract.AVAILABLE, "the Interactive and Catalog checkouts are not where this test looks")
@@ -610,10 +840,7 @@ class EndToEndTests(_Root):
         world = campaign_fakes.World(self.root / "run", keys, manifest=manifest, download_groups={"g": keys})
         fixture = json.loads((te.fixture_dir(ACCESSION) / "catalog.json").read_text(encoding="utf-8"))
         world.handoff_rows = {unit["unit_id"]: unit["rows"] for unit in fixture["units"]}
-        digest = world.digest
-        with world.open() as book:
-            for kind, detail, key in plan.decision_events(manifest, digest, world.approval):
-                book.event(kind, "2026-10-01T00:00:00+00:00", detail, unit_key=key)
+        digest = world.digest  # the World records plan.decision_events at its approval, as approve does
         world.run()
         self.assertEqual({unit_row(world, key)["state"] for key in keys}, {"done"})
         self.assertEqual(len(world.interactive.cross_unit_calls), 1)
@@ -655,6 +882,81 @@ class EndToEndTests(_Root):
             shutil.copyfile(triage_root / ACCESSION / "AN004457.json", bundle / "triage" / ACCESSION / "AN004457.json")
             self.assertEqual(replay_cli.main(["--bundle", str(bundle), "--workspace-root", str(self.root / "w"), "--level", "inputs",
                                               "--out", str(self.root / "r3.json")]), 2)
+
+    def test_records_and_revisions_are_planned_and_replayed_with_their_review_log(self) -> None:
+        triage_root = write_triage(self.root)
+        folder = triage_root / ACCESSION
+        record = folder / "AN004454.record.json"
+        record.write_text(json.dumps({"schema": "msdial-llm-decision-record.v1", "model": "synthetic-model",
+                                      "prompt_sha256": "1" * 64}), encoding="utf-8")
+        revised = json.loads((folder / "AN004455.json").read_text(encoding="utf-8"))
+        revised["notes"] = "revision 2: the same files, a reworded note"
+        (folder / "AN004455.r2.json").write_text(json.dumps(revised), encoding="utf-8")
+        curated.append_review_log(folder, "triage_recorded", "a" * 64, "2026-11-16T00:00:00+00:00", unit_key="AN004454")
+        head = curated.review_log_head(folder)
+        catalog = ports.read_only_catalog(self.database)
+        try:
+            manifest = plan.build_manifest(
+                catalog, pool="declared", campaign_id="test-campaign", analysis_purpose="annotation",
+                workspace_root=self.workspace_root, raw_retention_policy="keep",
+                pins={"catalog": {"version": "0.6.1"}, "libraries": [], "interactive": {"version": "0.5.69"}},
+                profile=None, campaign_policy=policy.CampaignPolicy(),
+                class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, "annotation"),
+                catalog_database=str(self.database), triage_dir=triage_root)
+        finally:
+            catalog.close()
+        units = {unit["unit_key"]: unit["curated_selection"] for unit in manifest["units"]}
+        self.assertEqual(sorted(units), list(UNITS), json.dumps(manifest["exclusions"], indent=1))
+        self.assertEqual(units["AN004454"]["triage_record_sha256"], hashlib.sha256(record.read_bytes()).hexdigest())
+        self.assertEqual(units["AN004455"]["triage_relative_path"], f"{ACCESSION}/AN004455.r2.json")
+        self.assertEqual(units["AN004456"]["review_log_head_sha256"], head)
+        # The approval's entry follows the head the plan recorded.
+        curated.append_review_log(folder, "digest_approval", units["AN004454"]["triage_sha256"], "2026-11-16T00:00:01+00:00",
+                                  manifest_digest="sha256:" + "1" * 64, approval_id="A1", by="Synthetic Person")
+        bundle = self.root / "bundle"
+        bundle.mkdir()
+        data = plan.canonical_bytes(manifest)
+        (bundle / "campaign-manifest.json").write_bytes(data)
+        (bundle / "campaign-manifest.summary.json").write_text(json.dumps({"manifest_digest": plan.digest_of(data)}), encoding="utf-8")
+        shutil.copytree(triage_root, bundle / "triage")
+        released = bundle / "triage" / ACCESSION
+
+        def replayed() -> dict:
+            return replay_cli.replay(bundle, self.root / "w", "selection", out=self.root / "r.json")
+
+        def results(report: dict, unit: str) -> dict:
+            return {item["check"]: item["result"] for row in report["units"] if row["unit_key"] == unit for item in row["checks"]}
+
+        report = replayed()
+        self.assertEqual(report["result"], replay_cli.EQUAL, json.dumps(report, indent=1))
+        self.assertEqual(results(report, "AN004454")["triage_record_sha256"], replay_cli.EQUAL)
+        self.assertEqual(results(report, "AN004454")["review_log_chain"], replay_cli.EQUAL)
+        # A rationale-only edit changes no selection, and the replay still finds it.
+        original = (released / "AN004456.json").read_bytes()
+        edited = json.loads(original.decode("utf-8"))
+        edited["notes"] = "an edited rationale"
+        (released / "AN004456.json").write_text(json.dumps(edited), encoding="utf-8")
+        report = replayed()
+        self.assertEqual(report["result"], replay_cli.DIFFERENT)
+        self.assertEqual({check for check, result in results(report, "AN004456").items() if result != replay_cli.EQUAL},
+                         {"triage_sha256"})
+        (released / "AN004456.json").write_bytes(original)
+        # A decision record that names another model is not the one approved.
+        kept = record.read_bytes()
+        (released / "AN004454.record.json").write_text(json.dumps({"model": "another-model"}), encoding="utf-8")
+        report = replayed()
+        self.assertEqual(results(report, "AN004454")["triage_record_sha256"], replay_cli.DIFFERENT)
+        (released / "AN004454.record.json").unlink()
+        self.assertEqual(results(replayed(), "AN004454")["triage_record_sha256"], replay_cli.NOT_EVALUABLE)
+        (released / "AN004454.record.json").write_bytes(kept)
+        # A review log whose entry the plan recorded was rewritten breaks the chain.
+        log = released / curated.REVIEW_LOG
+        lines = log.read_bytes().split(b"\n")
+        lines[0] = lines[0].replace(b"AN004454", b"AN004457")
+        log.write_bytes(b"\n".join(lines))
+        report = replayed()
+        self.assertEqual(report["result"], replay_cli.DIFFERENT)
+        self.assertEqual(results(report, "AN004456")["review_log_chain"], replay_cli.DIFFERENT)
 
     def test_a_whole_study_selection_that_reached_the_runner_is_refused_by_rule_d(self) -> None:
         """Defence in depth: the stage3b-style selection of ST002283 (every unit keeps the same rows) never passes the
