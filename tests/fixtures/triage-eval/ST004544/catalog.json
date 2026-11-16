@@ -1,0 +1,556 @@
+{
+ "accession": "ST004544",
+ "repository": "metabolomics_workbench",
+ "units": [
+  {
+   "unit_id": "AN007633",
+   "source_subrecord_id": "AN007633",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Positive",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "QC1_2_1",
+     "raw_file": "QC1_2_1.mzML"
+    },
+    {
+     "sample_id": "QC1_2_2",
+     "raw_file": "QC1_2_2.mzML"
+    },
+    {
+     "sample_id": "QC1_2_3",
+     "raw_file": "QC1_2_3.mzML"
+    },
+    {
+     "sample_id": "QC1_2_4",
+     "raw_file": "QC1_2_4.mzML"
+    },
+    {
+     "sample_id": "QC1_2_5",
+     "raw_file": "QC1_2_5.mzML"
+    },
+    {
+     "sample_id": "QC1_2_6",
+     "raw_file": "QC1_2_6.mzML"
+    },
+    {
+     "sample_id": "QC2_2_1",
+     "raw_file": "QC2_2_1.mzML"
+    },
+    {
+     "sample_id": "QC2_2_2",
+     "raw_file": "QC2_2_2.mzML"
+    },
+    {
+     "sample_id": "QC2_2_3",
+     "raw_file": "QC2_2_3.mzML"
+    },
+    {
+     "sample_id": "QC2_2_4",
+     "raw_file": "QC2_2_4.mzML"
+    },
+    {
+     "sample_id": "QC2_2_5",
+     "raw_file": "QC2_2_5.mzML"
+    },
+    {
+     "sample_id": "QC2_2_6",
+     "raw_file": "QC2_2_6.mzML"
+    },
+    {
+     "sample_id": "Sample_11_1",
+     "raw_file": "Sample_11_1.mzML"
+    },
+    {
+     "sample_id": "Sample_11_2",
+     "raw_file": "Sample_11_2.mzML"
+    },
+    {
+     "sample_id": "Sample_11_3",
+     "raw_file": "Sample_11_3.mzML"
+    },
+    {
+     "sample_id": "Sample_11_4",
+     "raw_file": "Sample_11_4.mzML"
+    },
+    {
+     "sample_id": "Sample_11_5",
+     "raw_file": "Sample_11_5.mzML"
+    },
+    {
+     "sample_id": "Sample_11_6",
+     "raw_file": "Sample_11_6.mzML"
+    },
+    {
+     "sample_id": "Sample_12_1",
+     "raw_file": "Sample_12_1.mzML"
+    },
+    {
+     "sample_id": "Sample_12_2",
+     "raw_file": "Sample_12_2.mzML"
+    },
+    {
+     "sample_id": "Sample_12_3",
+     "raw_file": "Sample_12_3.mzML"
+    },
+    {
+     "sample_id": "Sample_12_4",
+     "raw_file": "Sample_12_4.mzML"
+    },
+    {
+     "sample_id": "Sample_12_5",
+     "raw_file": "Sample_12_5.mzML"
+    },
+    {
+     "sample_id": "Sample_12_6",
+     "raw_file": "Sample_12_6.mzML"
+    },
+    {
+     "sample_id": "Sample_13_1",
+     "raw_file": "Sample_13_1.mzML"
+    },
+    {
+     "sample_id": "Sample_13_2",
+     "raw_file": "Sample_13_2.mzML"
+    },
+    {
+     "sample_id": "Sample_13_3",
+     "raw_file": "Sample_13_3.mzML"
+    },
+    {
+     "sample_id": "Sample_13_4",
+     "raw_file": "Sample_13_4.mzML"
+    },
+    {
+     "sample_id": "Sample_13_5",
+     "raw_file": "Sample_13_5.mzML"
+    },
+    {
+     "sample_id": "Sample_13_6",
+     "raw_file": "Sample_13_6.mzML"
+    },
+    {
+     "sample_id": "Sample_14_1",
+     "raw_file": "Sample_14_1.mzML"
+    },
+    {
+     "sample_id": "Sample_14_2",
+     "raw_file": "Sample_14_2.mzML"
+    },
+    {
+     "sample_id": "Sample_14_3",
+     "raw_file": "Sample_14_3.mzML"
+    },
+    {
+     "sample_id": "Sample_14_4",
+     "raw_file": "Sample_14_4.mzML"
+    },
+    {
+     "sample_id": "Sample_14_5",
+     "raw_file": "Sample_14_5.mzML"
+    },
+    {
+     "sample_id": "Sample_14_6",
+     "raw_file": "Sample_14_6.mzML"
+    },
+    {
+     "sample_id": "Sample_15_1",
+     "raw_file": "Sample_15_1.mzML"
+    },
+    {
+     "sample_id": "Sample_15_2",
+     "raw_file": "Sample_15_2.mzML"
+    },
+    {
+     "sample_id": "Sample_15_3",
+     "raw_file": "Sample_15_3.mzML"
+    },
+    {
+     "sample_id": "Sample_15_4",
+     "raw_file": "Sample_15_4.mzML"
+    },
+    {
+     "sample_id": "Sample_15_5",
+     "raw_file": "Sample_15_5.mzML"
+    },
+    {
+     "sample_id": "Sample_15_6",
+     "raw_file": "Sample_15_6.mzML"
+    },
+    {
+     "sample_id": "Sample_17_1",
+     "raw_file": "Sample_17_1.mzML"
+    },
+    {
+     "sample_id": "Sample_17_2",
+     "raw_file": "Sample_17_2.mzML"
+    },
+    {
+     "sample_id": "Sample_17_3",
+     "raw_file": "Sample_17_3.mzML"
+    },
+    {
+     "sample_id": "Sample_17_4",
+     "raw_file": "Sample_17_4.mzML"
+    },
+    {
+     "sample_id": "Sample_17_5",
+     "raw_file": "Sample_17_5.mzML"
+    },
+    {
+     "sample_id": "Sample_17_6",
+     "raw_file": "Sample_17_6.mzML"
+    },
+    {
+     "sample_id": "Sample_18_1",
+     "raw_file": "Sample_18_1.mzML"
+    },
+    {
+     "sample_id": "Sample_18_2",
+     "raw_file": "Sample_18_2.mzML"
+    },
+    {
+     "sample_id": "Sample_18_3",
+     "raw_file": "Sample_18_3.mzML"
+    },
+    {
+     "sample_id": "Sample_18_4",
+     "raw_file": "Sample_18_4.mzML"
+    },
+    {
+     "sample_id": "Sample_18_5",
+     "raw_file": "Sample_18_5.mzML"
+    },
+    {
+     "sample_id": "Sample_18_6",
+     "raw_file": "Sample_18_6.mzML"
+    },
+    {
+     "sample_id": "Sample_8_1",
+     "raw_file": "Sample_8_1.mzML"
+    },
+    {
+     "sample_id": "Sample_8_2",
+     "raw_file": "Sample_8_2.mzML"
+    },
+    {
+     "sample_id": "Sample_8_3",
+     "raw_file": "Sample_8_3.mzML"
+    },
+    {
+     "sample_id": "Sample_8_4",
+     "raw_file": "Sample_8_4.mzML"
+    },
+    {
+     "sample_id": "Sample_8_5",
+     "raw_file": "Sample_8_5.mzML"
+    },
+    {
+     "sample_id": "Sample_8_6",
+     "raw_file": "Sample_8_6.mzML"
+    },
+    {
+     "sample_id": "Sample_9_1",
+     "raw_file": "Sample_9_1.mzML"
+    },
+    {
+     "sample_id": "Sample_9_2",
+     "raw_file": "Sample_9_2.mzML"
+    },
+    {
+     "sample_id": "Sample_9_3",
+     "raw_file": "Sample_9_3.mzML"
+    },
+    {
+     "sample_id": "Sample_9_4",
+     "raw_file": "Sample_9_4.mzML"
+    },
+    {
+     "sample_id": "Sample_9_5",
+     "raw_file": "Sample_9_5.mzML"
+    },
+    {
+     "sample_id": "Sample_9_6",
+     "raw_file": "Sample_9_6.mzML"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN007634",
+   "source_subrecord_id": "AN007634",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Negative",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "QC1_2_1",
+     "raw_file": "QC1_2_1.mzML"
+    },
+    {
+     "sample_id": "QC1_2_2",
+     "raw_file": "QC1_2_2.mzML"
+    },
+    {
+     "sample_id": "QC1_2_3",
+     "raw_file": "QC1_2_3.mzML"
+    },
+    {
+     "sample_id": "QC1_2_4",
+     "raw_file": "QC1_2_4.mzML"
+    },
+    {
+     "sample_id": "QC1_2_5",
+     "raw_file": "QC1_2_5.mzML"
+    },
+    {
+     "sample_id": "QC1_2_6",
+     "raw_file": "QC1_2_6.mzML"
+    },
+    {
+     "sample_id": "QC2_2_1",
+     "raw_file": "QC2_2_1.mzML"
+    },
+    {
+     "sample_id": "QC2_2_2",
+     "raw_file": "QC2_2_2.mzML"
+    },
+    {
+     "sample_id": "QC2_2_3",
+     "raw_file": "QC2_2_3.mzML"
+    },
+    {
+     "sample_id": "QC2_2_4",
+     "raw_file": "QC2_2_4.mzML"
+    },
+    {
+     "sample_id": "QC2_2_5",
+     "raw_file": "QC2_2_5.mzML"
+    },
+    {
+     "sample_id": "QC2_2_6",
+     "raw_file": "QC2_2_6.mzML"
+    },
+    {
+     "sample_id": "Sample_11_1",
+     "raw_file": "Sample_11_1.mzML"
+    },
+    {
+     "sample_id": "Sample_11_2",
+     "raw_file": "Sample_11_2.mzML"
+    },
+    {
+     "sample_id": "Sample_11_3",
+     "raw_file": "Sample_11_3.mzML"
+    },
+    {
+     "sample_id": "Sample_11_4",
+     "raw_file": "Sample_11_4.mzML"
+    },
+    {
+     "sample_id": "Sample_11_5",
+     "raw_file": "Sample_11_5.mzML"
+    },
+    {
+     "sample_id": "Sample_11_6",
+     "raw_file": "Sample_11_6.mzML"
+    },
+    {
+     "sample_id": "Sample_12_1",
+     "raw_file": "Sample_12_1.mzML"
+    },
+    {
+     "sample_id": "Sample_12_2",
+     "raw_file": "Sample_12_2.mzML"
+    },
+    {
+     "sample_id": "Sample_12_3",
+     "raw_file": "Sample_12_3.mzML"
+    },
+    {
+     "sample_id": "Sample_12_4",
+     "raw_file": "Sample_12_4.mzML"
+    },
+    {
+     "sample_id": "Sample_12_5",
+     "raw_file": "Sample_12_5.mzML"
+    },
+    {
+     "sample_id": "Sample_12_6",
+     "raw_file": "Sample_12_6.mzML"
+    },
+    {
+     "sample_id": "Sample_13_1",
+     "raw_file": "Sample_13_1.mzML"
+    },
+    {
+     "sample_id": "Sample_13_2",
+     "raw_file": "Sample_13_2.mzML"
+    },
+    {
+     "sample_id": "Sample_13_3",
+     "raw_file": "Sample_13_3.mzML"
+    },
+    {
+     "sample_id": "Sample_13_4",
+     "raw_file": "Sample_13_4.mzML"
+    },
+    {
+     "sample_id": "Sample_13_5",
+     "raw_file": "Sample_13_5.mzML"
+    },
+    {
+     "sample_id": "Sample_13_6",
+     "raw_file": "Sample_13_6.mzML"
+    },
+    {
+     "sample_id": "Sample_14_1",
+     "raw_file": "Sample_14_1.mzML"
+    },
+    {
+     "sample_id": "Sample_14_2",
+     "raw_file": "Sample_14_2.mzML"
+    },
+    {
+     "sample_id": "Sample_14_3",
+     "raw_file": "Sample_14_3.mzML"
+    },
+    {
+     "sample_id": "Sample_14_4",
+     "raw_file": "Sample_14_4.mzML"
+    },
+    {
+     "sample_id": "Sample_14_5",
+     "raw_file": "Sample_14_5.mzML"
+    },
+    {
+     "sample_id": "Sample_14_6",
+     "raw_file": "Sample_14_6.mzML"
+    },
+    {
+     "sample_id": "Sample_15_1",
+     "raw_file": "Sample_15_1.mzML"
+    },
+    {
+     "sample_id": "Sample_15_2",
+     "raw_file": "Sample_15_2.mzML"
+    },
+    {
+     "sample_id": "Sample_15_3",
+     "raw_file": "Sample_15_3.mzML"
+    },
+    {
+     "sample_id": "Sample_15_4",
+     "raw_file": "Sample_15_4.mzML"
+    },
+    {
+     "sample_id": "Sample_15_5",
+     "raw_file": "Sample_15_5.mzML"
+    },
+    {
+     "sample_id": "Sample_15_6",
+     "raw_file": "Sample_15_6.mzML"
+    },
+    {
+     "sample_id": "Sample_17_1",
+     "raw_file": "Sample_17_1.mzML"
+    },
+    {
+     "sample_id": "Sample_17_2",
+     "raw_file": "Sample_17_2.mzML"
+    },
+    {
+     "sample_id": "Sample_17_3",
+     "raw_file": "Sample_17_3.mzML"
+    },
+    {
+     "sample_id": "Sample_17_4",
+     "raw_file": "Sample_17_4.mzML"
+    },
+    {
+     "sample_id": "Sample_17_5",
+     "raw_file": "Sample_17_5.mzML"
+    },
+    {
+     "sample_id": "Sample_17_6",
+     "raw_file": "Sample_17_6.mzML"
+    },
+    {
+     "sample_id": "Sample_18_1",
+     "raw_file": "Sample_18_1.mzML"
+    },
+    {
+     "sample_id": "Sample_18_2",
+     "raw_file": "Sample_18_2.mzML"
+    },
+    {
+     "sample_id": "Sample_18_3",
+     "raw_file": "Sample_18_3.mzML"
+    },
+    {
+     "sample_id": "Sample_18_4",
+     "raw_file": "Sample_18_4.mzML"
+    },
+    {
+     "sample_id": "Sample_18_5",
+     "raw_file": "Sample_18_5.mzML"
+    },
+    {
+     "sample_id": "Sample_18_6",
+     "raw_file": "Sample_18_6.mzML"
+    },
+    {
+     "sample_id": "Sample_8_1",
+     "raw_file": "Sample_8_1.mzML"
+    },
+    {
+     "sample_id": "Sample_8_2",
+     "raw_file": "Sample_8_2.mzML"
+    },
+    {
+     "sample_id": "Sample_8_3",
+     "raw_file": "Sample_8_3.mzML"
+    },
+    {
+     "sample_id": "Sample_8_4",
+     "raw_file": "Sample_8_4.mzML"
+    },
+    {
+     "sample_id": "Sample_8_5",
+     "raw_file": "Sample_8_5.mzML"
+    },
+    {
+     "sample_id": "Sample_8_6",
+     "raw_file": "Sample_8_6.mzML"
+    },
+    {
+     "sample_id": "Sample_9_1",
+     "raw_file": "Sample_9_1.mzML"
+    },
+    {
+     "sample_id": "Sample_9_2",
+     "raw_file": "Sample_9_2.mzML"
+    },
+    {
+     "sample_id": "Sample_9_3",
+     "raw_file": "Sample_9_3.mzML"
+    },
+    {
+     "sample_id": "Sample_9_4",
+     "raw_file": "Sample_9_4.mzML"
+    },
+    {
+     "sample_id": "Sample_9_5",
+     "raw_file": "Sample_9_5.mzML"
+    },
+    {
+     "sample_id": "Sample_9_6",
+     "raw_file": "Sample_9_6.mzML"
+    }
+   ]
+  }
+ ]
+}

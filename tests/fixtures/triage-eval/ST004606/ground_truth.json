@@ -1,0 +1,1572 @@
+{
+ "accession": "ST004606",
+ "repository": "metabolomics_workbench",
+ "basis": "Ground truth from the 2026-11-15 prototype checker agents (raw-header preflight, mzML source paths, elution order, mwTab), recorded here as public accession, analysis and file names only.",
+ "checker_verdict_on_prototype_triage": "triage_right",
+ "note": "Date prefix plus the submitter factor Chromatography ion mode; header polarity and elution pattern agree for all 216 files.",
+ "row_member_overrides": {},
+ "units": [
+  {
+   "unit_id": "AN007766",
+   "chromatography": "HILIC",
+   "ion_mode": "positive",
+   "acquisition_mode": "AIF",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-10.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-11.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-12.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-13.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-14.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-15.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-16.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-17.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-18.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-19.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-2.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-20.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-21.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-22.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-23.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-24.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-25.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-26.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-27.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-28.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-29.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-30.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-31.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-32.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-33.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-34.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-35.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-36.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-4.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-6.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-7.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_1-9.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-10.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-11.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-12.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-13.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-14.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-15.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-16.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-18.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-19.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-2.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-20.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-23.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-24.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-4.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-6.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-7.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-8.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250128_FK_2-9.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN007767",
+   "chromatography": "RP",
+   "ion_mode": "positive",
+   "acquisition_mode": "AIF",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-10.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-11.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-12.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-13.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-14.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-15.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-16.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-17.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-18.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-20.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-21.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-22.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-23.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-24.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-25.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-26.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-27.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-28.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-29.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-30.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-31.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-32.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-33.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-34.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-35.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-36.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-4.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-6.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-7.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_1-9.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-1.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-10.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-11.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-12.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-13.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-14.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-15.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-16.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-18.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-19.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-2.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-20.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-24.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-3.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-4.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-5.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-6.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-7.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-8.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250604_FK_POS_2-9.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN007768",
+   "chromatography": "HILIC",
+   "ion_mode": "negative",
+   "acquisition_mode": "AIF",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-1.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-10.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-11.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-12.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-13.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-14.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-15.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-16.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-17.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-18.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-19.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-20.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-21.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-22.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-23.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-24.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-25.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-26.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-27.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-28.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-29.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-3.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-30.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-31.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-32.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-33.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-34.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-35.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-36.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-5.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-7.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_1-9.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-1.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-10.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-11.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-12.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-13.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-14.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-15.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-16.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-18.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-19.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-20.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-23.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-24.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-3.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-5.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-7.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-8.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250319_FK_2-9.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN007769",
+   "chromatography": "RP",
+   "ion_mode": "negative",
+   "acquisition_mode": "AIF",
+   "expected_status_pre_download": "ready",
+   "expected_status_after_preflight": "ready",
+   "expected_needs_person": [],
+   "expected_flags": [],
+   "members": [
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-1.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-10.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-11.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-12.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-13.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-14.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-15.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-16.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-17.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-18.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-20.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-21.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-22.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-23.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-24.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-25.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-26.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-27.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-28.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-29.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-30.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-31.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-32.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-33.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-34.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-35.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-36.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-5.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-7.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_1-9.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-1.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-10.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-11.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-12.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-13.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-14.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-15.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-16.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-18.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-19.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-2.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-20.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-24.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-3.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-4.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-5.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-6.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-7.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-8.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    },
+    {
+     "archive": "ST004606_Rawfiles.zip",
+     "path": "data/20250611_FK_NEG_2-9.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "AIF",
+     "role": "sample"
+    }
+   ]
+  }
+ ],
+ "excluded_members": [],
+ "unchecked_members": []
+}

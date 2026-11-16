@@ -1,0 +1,882 @@
+{
+ "accession": "ST002747",
+ "repository": "metabolomics_workbench",
+ "units": [
+  {
+   "unit_id": "AN004454",
+   "source_subrecord_id": "AN004454",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Positive",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "Inf1_infected_NA_1__024",
+     "raw_file": "Inf1_infected_NA_1__024"
+    },
+    {
+     "sample_id": "Inf1_infected_NA_1__025",
+     "raw_file": "Inf1_infected_NA_1__025"
+    },
+    {
+     "sample_id": "Inf2_infected_NA_2__020",
+     "raw_file": "Inf2_infected_NA_2__020"
+    },
+    {
+     "sample_id": "Inf2_infected_NA_2__021",
+     "raw_file": "Inf2_infected_NA_2__021"
+    },
+    {
+     "sample_id": "Inf3_infected_NA_3__026",
+     "raw_file": "Inf3_infected_NA_3__026"
+    },
+    {
+     "sample_id": "Inf3_infected_NA_3__027",
+     "raw_file": "Inf3_infected_NA_3__027"
+    },
+    {
+     "sample_id": "Inf4_infected_NA_4__022",
+     "raw_file": "Inf4_infected_NA_4__022"
+    },
+    {
+     "sample_id": "Inf4_infected_NA_4__023",
+     "raw_file": "Inf4_infected_NA_4__023"
+    },
+    {
+     "sample_id": "Inf5_infected_NA_5__014",
+     "raw_file": "Inf5_infected_NA_5__014"
+    },
+    {
+     "sample_id": "Inf5_infected_NA_5__015",
+     "raw_file": "Inf5_infected_NA_5__015"
+    },
+    {
+     "sample_id": "M1_uninfected_NA_1__016",
+     "raw_file": "M1_uninfected_NA_1__016"
+    },
+    {
+     "sample_id": "M1_uninfected_NA_1__017",
+     "raw_file": "M1_uninfected_NA_1__017"
+    },
+    {
+     "sample_id": "M2_uninfected_NA_2__008",
+     "raw_file": "M2_uninfected_NA_2__008"
+    },
+    {
+     "sample_id": "M2_uninfected_NA_2__009",
+     "raw_file": "M2_uninfected_NA_2__009"
+    },
+    {
+     "sample_id": "M3_uninfected_NA_3__010",
+     "raw_file": "M3_uninfected_NA_3__010"
+    },
+    {
+     "sample_id": "M3_uninfected_NA_3__011",
+     "raw_file": "M3_uninfected_NA_3__011"
+    },
+    {
+     "sample_id": "M4_uninfected_NA_4__028",
+     "raw_file": "M4_uninfected_NA_4__028"
+    },
+    {
+     "sample_id": "M4_uninfected_NA_4__029",
+     "raw_file": "M4_uninfected_NA_4__029"
+    },
+    {
+     "sample_id": "M5_uninfected_NA_5__012",
+     "raw_file": "M5_uninfected_NA_5__012"
+    },
+    {
+     "sample_id": "M5_uninfected_NA_5__013",
+     "raw_file": "M5_uninfected_NA_5__013"
+    },
+    {
+     "sample_id": "VIAH002H_BK_1_Neg_QE2_HILIC_007",
+     "raw_file": "VIAH002H_BK_1_Neg_QE2_HILIC_007"
+    },
+    {
+     "sample_id": "VIAH002H_BK_1_Pos_QE2_HILIC_006",
+     "raw_file": "VIAH002H_BK_1_Pos_QE2_HILIC_006"
+    },
+    {
+     "sample_id": "VIAH002H_BK_2_Neg_QE2_HILIC_019",
+     "raw_file": "VIAH002H_BK_2_Neg_QE2_HILIC_019"
+    },
+    {
+     "sample_id": "VIAH002H_BK_2_Pos_QE2_HILIC_018",
+     "raw_file": "VIAH002H_BK_2_Pos_QE2_HILIC_018"
+    },
+    {
+     "sample_id": "VIAH002H_BK_3_Neg_QE2_HILIC_031",
+     "raw_file": "VIAH002H_BK_3_Neg_QE2_HILIC_031"
+    },
+    {
+     "sample_id": "VIAH002H_BK_3_Pos_QE2_HILIC_030",
+     "raw_file": "VIAH002H_BK_3_Pos_QE2_HILIC_030"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf1_QE2_HILIC_023",
+     "raw_file": "VIAH002H_Neg_Inf1_QE2_HILIC_023"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf2_QE2_HILIC_027",
+     "raw_file": "VIAH002H_Neg_Inf2_QE2_HILIC_027"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf3_QE2_HILIC_017",
+     "raw_file": "VIAH002H_Neg_Inf3_QE2_HILIC_017"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf4_QE2_HILIC_025",
+     "raw_file": "VIAH002H_Neg_Inf4_QE2_HILIC_025"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf5_QE2_HILIC_013",
+     "raw_file": "VIAH002H_Neg_Inf5_QE2_HILIC_013"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M1_QE2_HILIC_009",
+     "raw_file": "VIAH002H_Neg_M1_QE2_HILIC_009"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M2_QE2_HILIC_011",
+     "raw_file": "VIAH002H_Neg_M2_QE2_HILIC_011"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M3_QE2_HILIC_021",
+     "raw_file": "VIAH002H_Neg_M3_QE2_HILIC_021"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M4_QE2_HILIC_029",
+     "raw_file": "VIAH002H_Neg_M4_QE2_HILIC_029"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M5_QE2_HILIC_015",
+     "raw_file": "VIAH002H_Neg_M5_QE2_HILIC_015"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf1_QE2_HILIC_022",
+     "raw_file": "VIAH002H_Pos_Inf1_QE2_HILIC_022"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf2_QE2_HILIC_026",
+     "raw_file": "VIAH002H_Pos_Inf2_QE2_HILIC_026"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf3_QE2_HILIC_016",
+     "raw_file": "VIAH002H_Pos_Inf3_QE2_HILIC_016"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf4_QE2_HILIC_024",
+     "raw_file": "VIAH002H_Pos_Inf4_QE2_HILIC_024"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf5_QE2_HILIC_012",
+     "raw_file": "VIAH002H_Pos_Inf5_QE2_HILIC_012"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M1_QE2_HILIC_008",
+     "raw_file": "VIAH002H_Pos_M1_QE2_HILIC_008"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M2_QE2_HILIC_010",
+     "raw_file": "VIAH002H_Pos_M2_QE2_HILIC_010"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M3_QE2_HILIC_020",
+     "raw_file": "VIAH002H_Pos_M3_QE2_HILIC_020"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M4_QE2_HILIC_028",
+     "raw_file": "VIAH002H_Pos_M4_QE2_HILIC_028"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M5_QE2_HILIC_014",
+     "raw_file": "VIAH002H_Pos_M5_QE2_HILIC_014"
+    },
+    {
+     "sample_id": "VIAH002_BK_1_Neg_QE1_Lipids_007",
+     "raw_file": "VIAH002_BK_1_Neg_QE1_Lipids_007"
+    },
+    {
+     "sample_id": "VIAH002_BK_1_Pos_QE1_Lipids_006",
+     "raw_file": "VIAH002_BK_1_Pos_QE1_Lipids_006"
+    },
+    {
+     "sample_id": "VIAH002_BK_2_Neg_QE1_Lipids_019",
+     "raw_file": "VIAH002_BK_2_Neg_QE1_Lipids_019"
+    },
+    {
+     "sample_id": "VIAH002_BK_2_Pos_QE1_Lipids_018",
+     "raw_file": "VIAH002_BK_2_Pos_QE1_Lipids_018"
+    },
+    {
+     "sample_id": "VIAH002_BK_3_Neg_QE1_Lipids_031",
+     "raw_file": "VIAH002_BK_3_Neg_QE1_Lipids_031"
+    },
+    {
+     "sample_id": "VIAH002_BK_3_Pos_QE1_Lipids_030",
+     "raw_file": "VIAH002_BK_3_Pos_QE1_Lipids_030"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN004455",
+   "source_subrecord_id": "AN004455",
+   "declared": {
+    "chromatography": "HILIC",
+    "ion_mode": "Negative",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "Inf1_infected_NA_1__024",
+     "raw_file": "Inf1_infected_NA_1__024"
+    },
+    {
+     "sample_id": "Inf1_infected_NA_1__025",
+     "raw_file": "Inf1_infected_NA_1__025"
+    },
+    {
+     "sample_id": "Inf2_infected_NA_2__020",
+     "raw_file": "Inf2_infected_NA_2__020"
+    },
+    {
+     "sample_id": "Inf2_infected_NA_2__021",
+     "raw_file": "Inf2_infected_NA_2__021"
+    },
+    {
+     "sample_id": "Inf3_infected_NA_3__026",
+     "raw_file": "Inf3_infected_NA_3__026"
+    },
+    {
+     "sample_id": "Inf3_infected_NA_3__027",
+     "raw_file": "Inf3_infected_NA_3__027"
+    },
+    {
+     "sample_id": "Inf4_infected_NA_4__022",
+     "raw_file": "Inf4_infected_NA_4__022"
+    },
+    {
+     "sample_id": "Inf4_infected_NA_4__023",
+     "raw_file": "Inf4_infected_NA_4__023"
+    },
+    {
+     "sample_id": "Inf5_infected_NA_5__014",
+     "raw_file": "Inf5_infected_NA_5__014"
+    },
+    {
+     "sample_id": "Inf5_infected_NA_5__015",
+     "raw_file": "Inf5_infected_NA_5__015"
+    },
+    {
+     "sample_id": "M1_uninfected_NA_1__016",
+     "raw_file": "M1_uninfected_NA_1__016"
+    },
+    {
+     "sample_id": "M1_uninfected_NA_1__017",
+     "raw_file": "M1_uninfected_NA_1__017"
+    },
+    {
+     "sample_id": "M2_uninfected_NA_2__008",
+     "raw_file": "M2_uninfected_NA_2__008"
+    },
+    {
+     "sample_id": "M2_uninfected_NA_2__009",
+     "raw_file": "M2_uninfected_NA_2__009"
+    },
+    {
+     "sample_id": "M3_uninfected_NA_3__010",
+     "raw_file": "M3_uninfected_NA_3__010"
+    },
+    {
+     "sample_id": "M3_uninfected_NA_3__011",
+     "raw_file": "M3_uninfected_NA_3__011"
+    },
+    {
+     "sample_id": "M4_uninfected_NA_4__028",
+     "raw_file": "M4_uninfected_NA_4__028"
+    },
+    {
+     "sample_id": "M4_uninfected_NA_4__029",
+     "raw_file": "M4_uninfected_NA_4__029"
+    },
+    {
+     "sample_id": "M5_uninfected_NA_5__012",
+     "raw_file": "M5_uninfected_NA_5__012"
+    },
+    {
+     "sample_id": "M5_uninfected_NA_5__013",
+     "raw_file": "M5_uninfected_NA_5__013"
+    },
+    {
+     "sample_id": "VIAH002H_BK_1_Neg_QE2_HILIC_007",
+     "raw_file": "VIAH002H_BK_1_Neg_QE2_HILIC_007"
+    },
+    {
+     "sample_id": "VIAH002H_BK_1_Pos_QE2_HILIC_006",
+     "raw_file": "VIAH002H_BK_1_Pos_QE2_HILIC_006"
+    },
+    {
+     "sample_id": "VIAH002H_BK_2_Neg_QE2_HILIC_019",
+     "raw_file": "VIAH002H_BK_2_Neg_QE2_HILIC_019"
+    },
+    {
+     "sample_id": "VIAH002H_BK_2_Pos_QE2_HILIC_018",
+     "raw_file": "VIAH002H_BK_2_Pos_QE2_HILIC_018"
+    },
+    {
+     "sample_id": "VIAH002H_BK_3_Neg_QE2_HILIC_031",
+     "raw_file": "VIAH002H_BK_3_Neg_QE2_HILIC_031"
+    },
+    {
+     "sample_id": "VIAH002H_BK_3_Pos_QE2_HILIC_030",
+     "raw_file": "VIAH002H_BK_3_Pos_QE2_HILIC_030"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf1_QE2_HILIC_023",
+     "raw_file": "VIAH002H_Neg_Inf1_QE2_HILIC_023"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf2_QE2_HILIC_027",
+     "raw_file": "VIAH002H_Neg_Inf2_QE2_HILIC_027"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf3_QE2_HILIC_017",
+     "raw_file": "VIAH002H_Neg_Inf3_QE2_HILIC_017"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf4_QE2_HILIC_025",
+     "raw_file": "VIAH002H_Neg_Inf4_QE2_HILIC_025"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf5_QE2_HILIC_013",
+     "raw_file": "VIAH002H_Neg_Inf5_QE2_HILIC_013"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M1_QE2_HILIC_009",
+     "raw_file": "VIAH002H_Neg_M1_QE2_HILIC_009"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M2_QE2_HILIC_011",
+     "raw_file": "VIAH002H_Neg_M2_QE2_HILIC_011"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M3_QE2_HILIC_021",
+     "raw_file": "VIAH002H_Neg_M3_QE2_HILIC_021"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M4_QE2_HILIC_029",
+     "raw_file": "VIAH002H_Neg_M4_QE2_HILIC_029"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M5_QE2_HILIC_015",
+     "raw_file": "VIAH002H_Neg_M5_QE2_HILIC_015"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf1_QE2_HILIC_022",
+     "raw_file": "VIAH002H_Pos_Inf1_QE2_HILIC_022"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf2_QE2_HILIC_026",
+     "raw_file": "VIAH002H_Pos_Inf2_QE2_HILIC_026"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf3_QE2_HILIC_016",
+     "raw_file": "VIAH002H_Pos_Inf3_QE2_HILIC_016"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf4_QE2_HILIC_024",
+     "raw_file": "VIAH002H_Pos_Inf4_QE2_HILIC_024"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf5_QE2_HILIC_012",
+     "raw_file": "VIAH002H_Pos_Inf5_QE2_HILIC_012"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M1_QE2_HILIC_008",
+     "raw_file": "VIAH002H_Pos_M1_QE2_HILIC_008"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M2_QE2_HILIC_010",
+     "raw_file": "VIAH002H_Pos_M2_QE2_HILIC_010"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M3_QE2_HILIC_020",
+     "raw_file": "VIAH002H_Pos_M3_QE2_HILIC_020"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M4_QE2_HILIC_028",
+     "raw_file": "VIAH002H_Pos_M4_QE2_HILIC_028"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M5_QE2_HILIC_014",
+     "raw_file": "VIAH002H_Pos_M5_QE2_HILIC_014"
+    },
+    {
+     "sample_id": "VIAH002_BK_1_Neg_QE1_Lipids_007",
+     "raw_file": "VIAH002_BK_1_Neg_QE1_Lipids_007"
+    },
+    {
+     "sample_id": "VIAH002_BK_1_Pos_QE1_Lipids_006",
+     "raw_file": "VIAH002_BK_1_Pos_QE1_Lipids_006"
+    },
+    {
+     "sample_id": "VIAH002_BK_2_Neg_QE1_Lipids_019",
+     "raw_file": "VIAH002_BK_2_Neg_QE1_Lipids_019"
+    },
+    {
+     "sample_id": "VIAH002_BK_2_Pos_QE1_Lipids_018",
+     "raw_file": "VIAH002_BK_2_Pos_QE1_Lipids_018"
+    },
+    {
+     "sample_id": "VIAH002_BK_3_Neg_QE1_Lipids_031",
+     "raw_file": "VIAH002_BK_3_Neg_QE1_Lipids_031"
+    },
+    {
+     "sample_id": "VIAH002_BK_3_Pos_QE1_Lipids_030",
+     "raw_file": "VIAH002_BK_3_Pos_QE1_Lipids_030"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN004456",
+   "source_subrecord_id": "AN004456",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Positive",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "Inf1_infected_NA_1__024",
+     "raw_file": "Inf1_infected_NA_1__024"
+    },
+    {
+     "sample_id": "Inf1_infected_NA_1__025",
+     "raw_file": "Inf1_infected_NA_1__025"
+    },
+    {
+     "sample_id": "Inf2_infected_NA_2__020",
+     "raw_file": "Inf2_infected_NA_2__020"
+    },
+    {
+     "sample_id": "Inf2_infected_NA_2__021",
+     "raw_file": "Inf2_infected_NA_2__021"
+    },
+    {
+     "sample_id": "Inf3_infected_NA_3__026",
+     "raw_file": "Inf3_infected_NA_3__026"
+    },
+    {
+     "sample_id": "Inf3_infected_NA_3__027",
+     "raw_file": "Inf3_infected_NA_3__027"
+    },
+    {
+     "sample_id": "Inf4_infected_NA_4__022",
+     "raw_file": "Inf4_infected_NA_4__022"
+    },
+    {
+     "sample_id": "Inf4_infected_NA_4__023",
+     "raw_file": "Inf4_infected_NA_4__023"
+    },
+    {
+     "sample_id": "Inf5_infected_NA_5__014",
+     "raw_file": "Inf5_infected_NA_5__014"
+    },
+    {
+     "sample_id": "Inf5_infected_NA_5__015",
+     "raw_file": "Inf5_infected_NA_5__015"
+    },
+    {
+     "sample_id": "M1_uninfected_NA_1__016",
+     "raw_file": "M1_uninfected_NA_1__016"
+    },
+    {
+     "sample_id": "M1_uninfected_NA_1__017",
+     "raw_file": "M1_uninfected_NA_1__017"
+    },
+    {
+     "sample_id": "M2_uninfected_NA_2__008",
+     "raw_file": "M2_uninfected_NA_2__008"
+    },
+    {
+     "sample_id": "M2_uninfected_NA_2__009",
+     "raw_file": "M2_uninfected_NA_2__009"
+    },
+    {
+     "sample_id": "M3_uninfected_NA_3__010",
+     "raw_file": "M3_uninfected_NA_3__010"
+    },
+    {
+     "sample_id": "M3_uninfected_NA_3__011",
+     "raw_file": "M3_uninfected_NA_3__011"
+    },
+    {
+     "sample_id": "M4_uninfected_NA_4__028",
+     "raw_file": "M4_uninfected_NA_4__028"
+    },
+    {
+     "sample_id": "M4_uninfected_NA_4__029",
+     "raw_file": "M4_uninfected_NA_4__029"
+    },
+    {
+     "sample_id": "M5_uninfected_NA_5__012",
+     "raw_file": "M5_uninfected_NA_5__012"
+    },
+    {
+     "sample_id": "M5_uninfected_NA_5__013",
+     "raw_file": "M5_uninfected_NA_5__013"
+    },
+    {
+     "sample_id": "VIAH002H_BK_1_Neg_QE2_HILIC_007",
+     "raw_file": "VIAH002H_BK_1_Neg_QE2_HILIC_007"
+    },
+    {
+     "sample_id": "VIAH002H_BK_1_Pos_QE2_HILIC_006",
+     "raw_file": "VIAH002H_BK_1_Pos_QE2_HILIC_006"
+    },
+    {
+     "sample_id": "VIAH002H_BK_2_Neg_QE2_HILIC_019",
+     "raw_file": "VIAH002H_BK_2_Neg_QE2_HILIC_019"
+    },
+    {
+     "sample_id": "VIAH002H_BK_2_Pos_QE2_HILIC_018",
+     "raw_file": "VIAH002H_BK_2_Pos_QE2_HILIC_018"
+    },
+    {
+     "sample_id": "VIAH002H_BK_3_Neg_QE2_HILIC_031",
+     "raw_file": "VIAH002H_BK_3_Neg_QE2_HILIC_031"
+    },
+    {
+     "sample_id": "VIAH002H_BK_3_Pos_QE2_HILIC_030",
+     "raw_file": "VIAH002H_BK_3_Pos_QE2_HILIC_030"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf1_QE2_HILIC_023",
+     "raw_file": "VIAH002H_Neg_Inf1_QE2_HILIC_023"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf2_QE2_HILIC_027",
+     "raw_file": "VIAH002H_Neg_Inf2_QE2_HILIC_027"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf3_QE2_HILIC_017",
+     "raw_file": "VIAH002H_Neg_Inf3_QE2_HILIC_017"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf4_QE2_HILIC_025",
+     "raw_file": "VIAH002H_Neg_Inf4_QE2_HILIC_025"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf5_QE2_HILIC_013",
+     "raw_file": "VIAH002H_Neg_Inf5_QE2_HILIC_013"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M1_QE2_HILIC_009",
+     "raw_file": "VIAH002H_Neg_M1_QE2_HILIC_009"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M2_QE2_HILIC_011",
+     "raw_file": "VIAH002H_Neg_M2_QE2_HILIC_011"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M3_QE2_HILIC_021",
+     "raw_file": "VIAH002H_Neg_M3_QE2_HILIC_021"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M4_QE2_HILIC_029",
+     "raw_file": "VIAH002H_Neg_M4_QE2_HILIC_029"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M5_QE2_HILIC_015",
+     "raw_file": "VIAH002H_Neg_M5_QE2_HILIC_015"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf1_QE2_HILIC_022",
+     "raw_file": "VIAH002H_Pos_Inf1_QE2_HILIC_022"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf2_QE2_HILIC_026",
+     "raw_file": "VIAH002H_Pos_Inf2_QE2_HILIC_026"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf3_QE2_HILIC_016",
+     "raw_file": "VIAH002H_Pos_Inf3_QE2_HILIC_016"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf4_QE2_HILIC_024",
+     "raw_file": "VIAH002H_Pos_Inf4_QE2_HILIC_024"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf5_QE2_HILIC_012",
+     "raw_file": "VIAH002H_Pos_Inf5_QE2_HILIC_012"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M1_QE2_HILIC_008",
+     "raw_file": "VIAH002H_Pos_M1_QE2_HILIC_008"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M2_QE2_HILIC_010",
+     "raw_file": "VIAH002H_Pos_M2_QE2_HILIC_010"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M3_QE2_HILIC_020",
+     "raw_file": "VIAH002H_Pos_M3_QE2_HILIC_020"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M4_QE2_HILIC_028",
+     "raw_file": "VIAH002H_Pos_M4_QE2_HILIC_028"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M5_QE2_HILIC_014",
+     "raw_file": "VIAH002H_Pos_M5_QE2_HILIC_014"
+    },
+    {
+     "sample_id": "VIAH002_BK_1_Neg_QE1_Lipids_007",
+     "raw_file": "VIAH002_BK_1_Neg_QE1_Lipids_007"
+    },
+    {
+     "sample_id": "VIAH002_BK_1_Pos_QE1_Lipids_006",
+     "raw_file": "VIAH002_BK_1_Pos_QE1_Lipids_006"
+    },
+    {
+     "sample_id": "VIAH002_BK_2_Neg_QE1_Lipids_019",
+     "raw_file": "VIAH002_BK_2_Neg_QE1_Lipids_019"
+    },
+    {
+     "sample_id": "VIAH002_BK_2_Pos_QE1_Lipids_018",
+     "raw_file": "VIAH002_BK_2_Pos_QE1_Lipids_018"
+    },
+    {
+     "sample_id": "VIAH002_BK_3_Neg_QE1_Lipids_031",
+     "raw_file": "VIAH002_BK_3_Neg_QE1_Lipids_031"
+    },
+    {
+     "sample_id": "VIAH002_BK_3_Pos_QE1_Lipids_030",
+     "raw_file": "VIAH002_BK_3_Pos_QE1_Lipids_030"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN004457",
+   "source_subrecord_id": "AN004457",
+   "declared": {
+    "chromatography": "Reversed phase",
+    "ion_mode": "Negative",
+    "acquisition_mode": "DDA"
+   },
+   "rows": [
+    {
+     "sample_id": "Inf1_infected_NA_1__024",
+     "raw_file": "Inf1_infected_NA_1__024"
+    },
+    {
+     "sample_id": "Inf1_infected_NA_1__025",
+     "raw_file": "Inf1_infected_NA_1__025"
+    },
+    {
+     "sample_id": "Inf2_infected_NA_2__020",
+     "raw_file": "Inf2_infected_NA_2__020"
+    },
+    {
+     "sample_id": "Inf2_infected_NA_2__021",
+     "raw_file": "Inf2_infected_NA_2__021"
+    },
+    {
+     "sample_id": "Inf3_infected_NA_3__026",
+     "raw_file": "Inf3_infected_NA_3__026"
+    },
+    {
+     "sample_id": "Inf3_infected_NA_3__027",
+     "raw_file": "Inf3_infected_NA_3__027"
+    },
+    {
+     "sample_id": "Inf4_infected_NA_4__022",
+     "raw_file": "Inf4_infected_NA_4__022"
+    },
+    {
+     "sample_id": "Inf4_infected_NA_4__023",
+     "raw_file": "Inf4_infected_NA_4__023"
+    },
+    {
+     "sample_id": "Inf5_infected_NA_5__014",
+     "raw_file": "Inf5_infected_NA_5__014"
+    },
+    {
+     "sample_id": "Inf5_infected_NA_5__015",
+     "raw_file": "Inf5_infected_NA_5__015"
+    },
+    {
+     "sample_id": "M1_uninfected_NA_1__016",
+     "raw_file": "M1_uninfected_NA_1__016"
+    },
+    {
+     "sample_id": "M1_uninfected_NA_1__017",
+     "raw_file": "M1_uninfected_NA_1__017"
+    },
+    {
+     "sample_id": "M2_uninfected_NA_2__008",
+     "raw_file": "M2_uninfected_NA_2__008"
+    },
+    {
+     "sample_id": "M2_uninfected_NA_2__009",
+     "raw_file": "M2_uninfected_NA_2__009"
+    },
+    {
+     "sample_id": "M3_uninfected_NA_3__010",
+     "raw_file": "M3_uninfected_NA_3__010"
+    },
+    {
+     "sample_id": "M3_uninfected_NA_3__011",
+     "raw_file": "M3_uninfected_NA_3__011"
+    },
+    {
+     "sample_id": "M4_uninfected_NA_4__028",
+     "raw_file": "M4_uninfected_NA_4__028"
+    },
+    {
+     "sample_id": "M4_uninfected_NA_4__029",
+     "raw_file": "M4_uninfected_NA_4__029"
+    },
+    {
+     "sample_id": "M5_uninfected_NA_5__012",
+     "raw_file": "M5_uninfected_NA_5__012"
+    },
+    {
+     "sample_id": "M5_uninfected_NA_5__013",
+     "raw_file": "M5_uninfected_NA_5__013"
+    },
+    {
+     "sample_id": "VIAH002H_BK_1_Neg_QE2_HILIC_007",
+     "raw_file": "VIAH002H_BK_1_Neg_QE2_HILIC_007"
+    },
+    {
+     "sample_id": "VIAH002H_BK_1_Pos_QE2_HILIC_006",
+     "raw_file": "VIAH002H_BK_1_Pos_QE2_HILIC_006"
+    },
+    {
+     "sample_id": "VIAH002H_BK_2_Neg_QE2_HILIC_019",
+     "raw_file": "VIAH002H_BK_2_Neg_QE2_HILIC_019"
+    },
+    {
+     "sample_id": "VIAH002H_BK_2_Pos_QE2_HILIC_018",
+     "raw_file": "VIAH002H_BK_2_Pos_QE2_HILIC_018"
+    },
+    {
+     "sample_id": "VIAH002H_BK_3_Neg_QE2_HILIC_031",
+     "raw_file": "VIAH002H_BK_3_Neg_QE2_HILIC_031"
+    },
+    {
+     "sample_id": "VIAH002H_BK_3_Pos_QE2_HILIC_030",
+     "raw_file": "VIAH002H_BK_3_Pos_QE2_HILIC_030"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf1_QE2_HILIC_023",
+     "raw_file": "VIAH002H_Neg_Inf1_QE2_HILIC_023"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf2_QE2_HILIC_027",
+     "raw_file": "VIAH002H_Neg_Inf2_QE2_HILIC_027"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf3_QE2_HILIC_017",
+     "raw_file": "VIAH002H_Neg_Inf3_QE2_HILIC_017"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf4_QE2_HILIC_025",
+     "raw_file": "VIAH002H_Neg_Inf4_QE2_HILIC_025"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_Inf5_QE2_HILIC_013",
+     "raw_file": "VIAH002H_Neg_Inf5_QE2_HILIC_013"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M1_QE2_HILIC_009",
+     "raw_file": "VIAH002H_Neg_M1_QE2_HILIC_009"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M2_QE2_HILIC_011",
+     "raw_file": "VIAH002H_Neg_M2_QE2_HILIC_011"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M3_QE2_HILIC_021",
+     "raw_file": "VIAH002H_Neg_M3_QE2_HILIC_021"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M4_QE2_HILIC_029",
+     "raw_file": "VIAH002H_Neg_M4_QE2_HILIC_029"
+    },
+    {
+     "sample_id": "VIAH002H_Neg_M5_QE2_HILIC_015",
+     "raw_file": "VIAH002H_Neg_M5_QE2_HILIC_015"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf1_QE2_HILIC_022",
+     "raw_file": "VIAH002H_Pos_Inf1_QE2_HILIC_022"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf2_QE2_HILIC_026",
+     "raw_file": "VIAH002H_Pos_Inf2_QE2_HILIC_026"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf3_QE2_HILIC_016",
+     "raw_file": "VIAH002H_Pos_Inf3_QE2_HILIC_016"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf4_QE2_HILIC_024",
+     "raw_file": "VIAH002H_Pos_Inf4_QE2_HILIC_024"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_Inf5_QE2_HILIC_012",
+     "raw_file": "VIAH002H_Pos_Inf5_QE2_HILIC_012"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M1_QE2_HILIC_008",
+     "raw_file": "VIAH002H_Pos_M1_QE2_HILIC_008"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M2_QE2_HILIC_010",
+     "raw_file": "VIAH002H_Pos_M2_QE2_HILIC_010"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M3_QE2_HILIC_020",
+     "raw_file": "VIAH002H_Pos_M3_QE2_HILIC_020"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M4_QE2_HILIC_028",
+     "raw_file": "VIAH002H_Pos_M4_QE2_HILIC_028"
+    },
+    {
+     "sample_id": "VIAH002H_Pos_M5_QE2_HILIC_014",
+     "raw_file": "VIAH002H_Pos_M5_QE2_HILIC_014"
+    },
+    {
+     "sample_id": "VIAH002_BK_1_Neg_QE1_Lipids_007",
+     "raw_file": "VIAH002_BK_1_Neg_QE1_Lipids_007"
+    },
+    {
+     "sample_id": "VIAH002_BK_1_Pos_QE1_Lipids_006",
+     "raw_file": "VIAH002_BK_1_Pos_QE1_Lipids_006"
+    },
+    {
+     "sample_id": "VIAH002_BK_2_Neg_QE1_Lipids_019",
+     "raw_file": "VIAH002_BK_2_Neg_QE1_Lipids_019"
+    },
+    {
+     "sample_id": "VIAH002_BK_2_Pos_QE1_Lipids_018",
+     "raw_file": "VIAH002_BK_2_Pos_QE1_Lipids_018"
+    },
+    {
+     "sample_id": "VIAH002_BK_3_Neg_QE1_Lipids_031",
+     "raw_file": "VIAH002_BK_3_Neg_QE1_Lipids_031"
+    },
+    {
+     "sample_id": "VIAH002_BK_3_Pos_QE1_Lipids_030",
+     "raw_file": "VIAH002_BK_3_Pos_QE1_Lipids_030"
+    }
+   ]
+  }
+ ]
+}

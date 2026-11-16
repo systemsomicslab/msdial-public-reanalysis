@@ -1,0 +1,1592 @@
+{
+ "accession": "ST002798",
+ "repository": "metabolomics_workbench",
+ "basis": "Ground truth from the 2026-11-15 prototype checker agents (raw-header preflight, mzML source paths, elution order, mwTab), recorded here as public accession, analysis and file names only.",
+ "checker_verdict_on_prototype_triage": "triage_right",
+ "note": "Folder, name token, Mode attribute and mzML source path agree for all 220 files; MS1 dilution folders are FullScan only, the *_ms2 folders hold DDA and DIA (DIA1 and DIA2 use different window schemes, settled only by headers).",
+ "row_member_overrides": {},
+ "units": [
+  {
+   "unit_id": "AN004552",
+   "chromatography": "RP",
+   "ion_mode": "both",
+   "acquisition_mode": "mixed",
+   "expected_status_pre_download": "needs_person",
+   "expected_status_after_preflight": "needs_person",
+   "expected_needs_person": [
+    "scope_ms1_only"
+   ],
+   "expected_flags": [
+    "ms1_only",
+    "mixed_acquisition"
+   ],
+   "members": [
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SA_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SA_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SA_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SB_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SB_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SB_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SC_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SC_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SC_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SD_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SD_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SD_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SE_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SE_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SE_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SF_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SF_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SF_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SG_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SG_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SG_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SH_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SH_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SH_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SI_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SI_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SI_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SJ_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SJ_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SJ_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SK_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SK_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SK_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SL_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SL_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SL_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SM_01_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SM_02_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_NEGATIVE/SM_03_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SA_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SA_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SA_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SB_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SB_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SB_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SC_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SC_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SC_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SD_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SD_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SD_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SE_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SE_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SE_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SF_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SF_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SF_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SG_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SG_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SG_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SH_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SH_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SH_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SI_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SI_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SI_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SJ_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SJ_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SJ_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SK_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SK_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SK_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SL_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SL_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SL_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SM_01_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SM_02_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLC_POSITIVE/SM_03_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN01_NEGATIVE_RPLC.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN02_NEGATIVE_RPLC.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN03_NEGATIVE_RPLC.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN04_NEGATIVE_RPLC.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN05_NEGATIVE_RPLC.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN06_NEGATIVE_RPLC.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/URINEDDA1_1_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/URINEDDA1_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/URINEDDA2_1_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/URINEDDA2_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/URINEDDA3_1_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DDA/URINEDDA3_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DIA/DIA1/20220406_URINE_DIA_01_NEGATIVE_RPLC.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DIA/DIA1/20220406_URINE_DIA_02_NEGATIVE_RPLC.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DIA/DIA2/URINEDIA1_1_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DIA/DIA2/URINEDIA1_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DIA/DIA2/URINEDIA2_1_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DIA/DIA2/URINEDIA2_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DIA/DIA2/URINEDIA3_1_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCneg_ms2/DIA/DIA2/URINEDIA3_C18neg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN01_POSITIVE_RPLC.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN02_POSITIVE_RPLC.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN03_POSITIVE_RPLC.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN04_POSITIVE_RPLC.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN05_POSITIVE_RPLC.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/20220406_URINE_NonTargetDDMS2_SCAN06_POSITIVE_RPLC.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/URINEDDA1_1_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/URINEDDA1_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/URINEDDA2_1_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/URINEDDA2_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/URINEDDA3_1_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DDA/URINEDDA3_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DIA/DIA1/20220406_URINE_DIA_01_POSITIVE_RPLC.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DIA/DIA1/20220406_URINE_DIA_02_POSITIVE_RPLC.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DIA/DIA2/URINEDIA1_1_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DIA/DIA2/URINEDIA1_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DIA/DIA2/URINEDIA2_1_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DIA/DIA2/URINEDIA2_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DIA/DIA2/URINEDIA3_1_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "RPLCpos_ms2/DIA/DIA2/URINEDIA3_C18pos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    }
+   ]
+  },
+  {
+   "unit_id": "AN004553",
+   "chromatography": "HILIC",
+   "ion_mode": "both",
+   "acquisition_mode": "mixed",
+   "expected_status_pre_download": "needs_person",
+   "expected_status_after_preflight": "needs_person",
+   "expected_needs_person": [
+    "scope_ms1_only"
+   ],
+   "expected_flags": [
+    "ms1_only",
+    "mixed_acquisition"
+   ],
+   "members": [
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SA_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SA_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SA_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SB_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SB_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SB_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SC_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SC_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SC_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SD_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SD_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SD_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SE_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SE_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SE_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SF_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SF_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SF_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SG_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SG_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SG_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SH_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SH_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SH_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SI_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SI_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SI_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SJ_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SJ_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SJ_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SK_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SK_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SK_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SL_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SL_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SL_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SM_01_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SM_02_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_NEGATIVE/SM_03_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SA_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SA_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SA_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SB_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SB_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SB_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SC_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SC_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SC_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "qc"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SD_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SD_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SD_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SE_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SE_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SE_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SF_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SF_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SF_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SG_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SG_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SG_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SH_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SH_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SH_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SI_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SI_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SI_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SJ_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SJ_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SJ_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SK_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SK_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SK_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SL_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SL_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SL_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SM_01_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SM_02_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILIC_POSITIVE/SM_03_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DDA/20210908urineHILICDDMS_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DDA/20220413_URINE_HILIC_NonTargetedDDMS_SCAN01_NEGATIVE.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DDA/20220413_URINE_HILIC_NonTargetedDDMS_SCAN02_NEGATIVE.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DDA/20220413_URINE_HILIC_NonTargetedDDMS_SCAN03_NEGATIVE.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DDA/20220413_URINE_HILIC_NonTargetedDDMS_SCAN04_NEGATIVE.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DDA/20220413_URINE_HILIC_NonTargetedDDMS_SCAN05_NEGATIVE.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DDA/20220413_URINE_HILIC_NonTargetedDDMS_SCAN06_NEGATIVE.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DIA/DIA1/20220413_URINE_HILIC_DIA01_NEGATIVE.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DIA/DIA1/20220413_URINE_HILIC_DIA02_NEGATIVE.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DIA/DIA2/20210908urineHILICDIA1_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DIA/DIA2/20210908urineHILICDIA2_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICneg_ms2/DIA/DIA2/20210908urineHILICDIA3_HILICneg.mzML",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DDA/20210908urineHILICDDMS_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DDA/20220412_URINE_HILIC_NonTargetedDDMS_SCAN01_POS.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DDA/20220412_URINE_HILIC_NonTargetedDDMS_SCAN02_POS.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DDA/20220412_URINE_HILIC_NonTargetedDDMS_SCAN03_POS.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DDA/20220412_URINE_HILIC_NonTargetedDDMS_SCAN04_POS.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DDA/20220412_URINE_HILIC_NonTargetedDDMS_SCAN05_POS.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DDA/20220412_URINE_HILIC_NonTargetedDDMS_SCAN06_POS.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DIA/DIA1/20220412_URINE_HILIC_DIA_01_POS.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DIA/DIA1/20220412_URINE_HILIC_DIA_02_POS.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DIA/DIA2/20210908urineHILICDIA1_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DIA/DIA2/20210908urineHILICDIA2_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    },
+    {
+     "archive": "ST002798_rawdata.zip",
+     "path": "HILICpos_ms2/DIA/DIA2/20210908urineHILICDIA3_HILICpos.mzML",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA",
+     "role": "sample"
+    }
+   ]
+  }
+ ],
+ "excluded_members": [
+  {
+   "archive": "ST002798_rawdata.zip",
+   "path": "RPLC_POSITIVE/.Rhistory_C18pos",
+   "reason": "not_raw_data"
+  }
+ ],
+ "unchecked_members": []
+}
