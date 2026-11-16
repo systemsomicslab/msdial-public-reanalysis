@@ -117,6 +117,9 @@ class UnitScript:
     # what the extractor's read of each .wiff header gives: ok, or anything else for a header that refuses the switch.
     wiff_downloaded: bool = True
     wiff_header: str = "ok"
+    # Interactive 0.5.69's comparison of each admitted input's header with the unit's triage (the integration
+    # contract's A4): "" for none, "agree", or "disagree" (a skip with hold true, triage_header_disagreement).
+    reconciliation: str = ""
 
 
 def unsupported_inputs_failure(unit: str, *, disposition: bool = True) -> dict[str, Any]:
@@ -239,6 +242,15 @@ class FakeInteractive:
         self.lose_switch_reply = False
         # The extractor each switch was given to read the .wiff headers with.
         self.switch_extractors: list[str] = []
+        # Interactive 0.5.69 (the integration contract's A): whether the download takes a curated selection, whether
+        # its lease records the selection it applied, the curated arguments of each download, whether it has the
+        # cross-unit check, each check's manifests, and the units it refuses there (unit: (reason code, rule)).
+        self.curated_supported = True
+        self.curated_recorded = True
+        self.curated_downloads: list[dict[str, Any]] = []
+        self.cross_unit_supported = True
+        self.cross_unit_calls: list[list[str]] = []
+        self.cross_unit_refusals: dict[str, tuple[str, str]] = {}
 
     # ---- the download store ----
     def _claim(self, url: str, unit: str, source: str) -> dict[str, Any]:
@@ -340,16 +352,36 @@ class FakeInteractive:
         self.calls.append(("download", arguments))
         unit = Path(arguments["handoff_path"]).parent.name
         script = self.world.scripts.setdefault(unit, UnitScript())
+        if "curated_selection_path" in arguments and not self.curated_supported:
+            # An Interactive before 0.5.69: the port's call of a tool that takes no such parameter.
+            return {"ok": False, "reason": "unsupported", "tool": "msdial_download_repository_raw",
+                    "detail": "msdial_download_repository_raw takes no curated_selection_path, original_handoff_sha256; "
+                              "this Interactive predates the campaign contract."}
         outcome = self._next(unit, "download", script.downloads)
         if outcome == "blocked":
             return {"ok": False, "reason": "blocked", "blocking_reasons": ["analysis_input:container_shared_by_samples"]}
+        if outcome == "refused_curated":
+            # Interactive 0.5.69 refuses a curated selection before any byte (a ValueError of the download tool).
+            return {"ok": False, "reason": "exception", "error_type": "ValueError", "tool": "msdial_download_repository_raw",
+                    "detail": "curated_selection_not_approved: the triage's sha256 is not the one the approved manifest names"}
         maximum = int(float(arguments["maximum_gb"]) * 1000**3)
         if script.required_bytes > maximum:
             return {"ok": False, "reason": "blocked", "blocking_reasons": ["size_limit:exceeded"],
                     "required_download_bytes": script.required_bytes, "maximum_gb": arguments["maximum_gb"]}
         job = self._job_id("dl")
-        workspace = self._workspace(arguments["repository"], arguments["accession"], unit)
+        workspace = self._workspace(arguments["repository"], arguments["accession"], arguments.get("workspace_unit_key") or unit)
         manifest_path = workspace / "provenance" / "run-manifest.json"
+        applied: dict[str, Any] = {}
+        if arguments.get("curated_selection_path") and self.curated_recorded:
+            # What 0.5.69 records of the selection it applied (repository_metadata.curated_selection, the contract's A3).
+            triage = Path(arguments["curated_selection_path"])
+            applied = {"curated_selection": {
+                "path": str(triage), "triage_sha256": hashlib.sha256(triage.read_bytes()).hexdigest(),
+                "original_handoff_sha256": arguments.get("original_handoff_sha256"),
+                "child_key": arguments.get("curated_selection_child_key"), "standing": "accepted_decision",
+                "rows_kept": [{"row_index": index} for index in range(3)], "rows_dropped": [{"row_index": 3, "reason": "belongs_to_other_unit"}]}}
+        self.curated_downloads.append({key: value for key, value in arguments.items() if key in (
+            "curated_selection_path", "original_handoff_sha256", "curated_selection_child_key", "workspace_unit_key")})
         self.store.write(manifest_path, {
             "status": "downloading", "project": {"analysis_unit_id": unit}, "workspace": str(workspace),
             "raw_directory": str(workspace / "raw"), "output_directory": str(workspace / "output"),
@@ -357,6 +389,7 @@ class FakeInteractive:
             "raw_retention_policy": arguments["raw_retention_policy"],
             "campaign_authorizations": [{"boundary": 1, "job_id": job, "validated_at": self._stamp(),
                                          "entry_point": "msdial_download_repository_raw"}],
+            **({"repository_metadata": applied} if applied else {}),
         })
         self.jobs[job] = {"id": job, "kind": "download", "status": "running", "done_at": self._due(script.ticks), "received": 0,
                           "outcome": outcome, "unit": unit, "manifest_path": str(manifest_path), "maximum_bytes": maximum,
@@ -478,6 +511,13 @@ class FakeInteractive:
                 self._update(manifest_path, lambda manifest: manifest.update(
                     status="download_failed", download_failure={"reason": error, "error_type": "ValueError"}))
                 job.update(status="failed", error=error)
+            elif outcome == "coverage_refused":
+                failure = {"reason": "attribution_coverage_below_minimum: 12 of 52 sample rows attributed (0.23)",
+                           "error_type": "AttributionCoverageError", "stage": "attribute", "retryable": False,
+                           "reason_code": "attribution_coverage_below_minimum",
+                           "attribution_coverage": {"reason": "attribution_coverage_below_minimum", "coverage": 0.23}}
+                self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
+                job.update(status="failed", error=failure["reason"], download_failure=json.loads(json.dumps(failure)))
             elif outcome in ("unsupported_inputs", "unsupported_inputs_legacy"):
                 failure = unsupported_inputs_failure(job["unit"], disposition=outcome == "unsupported_inputs")
                 self._update(manifest_path, lambda manifest: manifest.update(status="download_failed", download_failure=failure))
@@ -574,6 +614,14 @@ class FakeInteractive:
                     multi["aif_collision_energies_by_input"] = {"A.mzML": [10.0, 20.0], "B.mzML": [20.0, 40.0]}
                     warnings.append(policy.AIF_CE_SETS_DIFFER_RECORDED)
             disposition = "run" if ready else "aif_hold"
+        reconciliation: dict[str, Any] = {}
+        if script.reconciliation:
+            disagree = script.reconciliation == "disagree"
+            reconciliation = {"curated_selection_reconciliation": {"verdict": script.reconciliation, "files": [
+                {"member_path": "Pos/S1.raw", "field": "ion_mode", "triage_value": "positive",
+                 "header_value": "negative" if disagree else "positive", "verdict": script.reconciliation}]}}
+            if disagree:
+                disposition, hold_reason = "aif_hold", "triage_header_disagreement"
         hold = disposition == "aif_hold"
         if hold:
             disposition = "skip"
@@ -589,11 +637,42 @@ class FakeInteractive:
                 "applied": script.applied,
                 **({"hold": True} if hold else {}),
                 **multi,
+                **reconciliation,
             }
             if disposition == "malformed":
                 record = {"schema": "other", "disposition": "maybe"}
             self._update(manifest_path, lambda manifest: manifest.update(campaign_disposition=record, status="preflight_passed"))
         return {"completed": True, "extractor_found": True, "status": "preflight_passed"}
+
+    def cross_unit_check(self, *, manifest_paths: list[str]) -> dict[str, Any]:
+        """msdial_repository_cross_unit_check (0.5.69): rules P, C and D over one download group's manifests."""
+        self.calls.append(("cross_unit_check", {"manifest_paths": list(manifest_paths)}))
+        if not self.cross_unit_supported:
+            return {"ok": False, "reason": "unsupported", "detail": "Interactive has no tool msdial_repository_cross_unit_check."}
+        self.cross_unit_calls.append(list(manifest_paths))
+        computed: dict[str, tuple[str, str]] = {}
+        if not self.cross_unit_refusals:
+            # Rule D as the contract states it (an identical set of Sample inputs is refused for every member after the
+            # first), over the kept member paths of the triage each manifest's applied selection names.
+            seen: dict[frozenset, str] = {}
+            for path in manifest_paths:
+                applied = ((self.store.read(path) or {}).get("repository_metadata") or {}).get("curated_selection") or {}
+                if not applied.get("path") or not Path(applied["path"]).is_file():
+                    continue
+                triage = json.loads(Path(applied["path"]).read_text(encoding="utf-8"))
+                members = frozenset(str(row.get("member_path") or "").casefold() for row in triage.get("rows") or []
+                                    if row.get("role") in (None, "sample") and row.get("member_path"))
+                if members and members in seen:
+                    computed[self._unit_of_manifest(path)] = ("cross_unit_duplicate_inputs", "D")
+                elif members:
+                    seen[members] = self._unit_of_manifest(path)
+        units = []
+        for path in manifest_paths:
+            unit = self._unit_of_manifest(path)
+            refused = self.cross_unit_refusals.get(unit) or computed.get(unit)
+            units.append({"manifest_path": path, "analysis_unit_id": unit, "verdict": "refused" if refused else "pass",
+                          **({"reason_code": refused[0], "rule": refused[1]} if refused else {})})
+        return {"ok": True, "verdict": "refused" if any(item["verdict"] != "pass" for item in units) else "pass", "units": units}
 
     def classify(self, *, manifest_path: str, authorization_path: str, console_path: str = "") -> dict[str, Any]:
         """classify_preflight: the recorded preflight decided again under the approval, and applied."""
@@ -1027,7 +1106,9 @@ class FakeCatalog:
 
     def handoff(self, *, unit_id: str, class_proposal_id: str) -> dict[str, Any]:
         path = self.world.root / "catalog-data" / "handoffs" / f"{unit_id}.json"
-        _write(path, {"analysis_unit_id": unit_id, "class_proposal_id": class_proposal_id})
+        rows = self.world.handoff_rows.get(unit_id)
+        _write(path, {"analysis_unit_id": unit_id, "class_proposal_id": class_proposal_id,
+                      **({"sample_metadata": rows} if rows is not None else {})})
         return {"ok": True, "handoff_path": str(path), "blocking_reasons": []}
 
     def copy_handoff(self, response: dict[str, Any], destination: Path) -> dict[str, Any]:
@@ -1118,7 +1199,8 @@ class World:
                  known_bytes: int = 10 * 1000**3, size_known: bool = True, legacy_policy: bool = False,
                  library_modes: bool = False, console_version: str | None = None,
                  download_groups: dict[str, list[str]] | None = None, template_pin: bool = False,
-                 console_record_matches: bool = True) -> None:
+                 console_record_matches: bool = True, manifest: dict[str, Any] | None = None,
+                 catalog_units: dict[str, str] | None = None) -> None:
         self.root = root
         self.workspace_root = root / "analysis"
         self.directory = self.workspace_root / "_campaigns" / "test-campaign"
@@ -1158,8 +1240,10 @@ class World:
             path.write_text("NAME: synthetic\n", encoding="utf-8")
             self.libraries[name] = str(path)
         manifest_path = self.directory / "campaign-manifest.json"
-        manifest_path.write_bytes(b"{}")
-        self.digest = "sha256:" + hashlib.sha256(b"{}").hexdigest()
+        # The approved manifest's bytes: {} unless the test plans its units (a curated selection is read from it).
+        manifest_bytes = policy.canonical_json(manifest) if manifest is not None else b"{}"
+        manifest_path.write_bytes(manifest_bytes)
+        self.digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
         authorization = self.directory / "campaign-authorization.json"
         authorization.write_text(json.dumps({"schema": "msdial-campaign-authorization.v1", "approval_id": "approval-1"}), encoding="utf-8")
         values = {"poll_seconds": 30.0, **(policy_values or {})}
@@ -1226,10 +1310,10 @@ class World:
         self.unit_objects: dict[str, list[str]] = {
             unit: [f"https://repository.example/download/{group}.tar"] for unit, group in grouped.items()}
         self.units = [
-            {"unit_key": unit, "catalog_unit_id": unit, "repository": "metabolights",
+            {"unit_key": unit, "catalog_unit_id": (catalog_units or {}).get(unit, unit), "repository": "metabolights",
              "accession": f"MTBLS{first.get(grouped.get(unit, ''), index) + 9000}",
              "order_index": index, "download_group_id": grouped.get(unit, f"group-{index}"),
-             "approved_class_digest": self.class_digest(unit),
+             "approved_class_digest": self.class_digest((catalog_units or {}).get(unit, unit)),
              "class_kind": "abstention", "known_bytes": known_bytes, "size_known": int(size_known), "has_archive": 0,
              "instrument": "Agilent 6545 Q-TOF", "ion_mode": "Positive"}
             for index, unit in enumerate(unit_ids)
@@ -1238,6 +1322,8 @@ class World:
                        for group, members in (download_groups or {}).items()]
         self.groups += [{"group_id": f"group-{index}", "unit_count": 1, "known_bytes": known_bytes, "size_known": size_known}
                         for index, unit in enumerate(unit_ids) if unit not in grouped]
+        # The sample rows the fake Catalog's handoff of each unit lists (sample_metadata), where a test gives them.
+        self.handoff_rows: dict[str, list[dict[str, Any]]] = {}
         self.ledger_path = self.directory / "ledger.sqlite"
         with ledger_module.Ledger(self.ledger_path, durable=False) as book:
             book.create(self.campaign, self.approval, self.units, self.groups, "2026-10-01T00:00:00+00:00")

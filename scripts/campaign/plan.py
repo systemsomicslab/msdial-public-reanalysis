@@ -78,6 +78,24 @@ listed with its reason:
 - class_undecided: the Catalog neither proposed a Class nor recorded an abstention;
 - not_in_pool (a pilot only): a named unit that neither pool's rules select.
 
+A PLAN FROM TRIAGE FILES (plan --triage-dir, 2026-11-16). After stage3b ran every unit of a multi-unit accession on the
+whole study's files (stopped 2026-11-15), a unit may be planned from its frozen triage file (the msdial-unit-triage
+skill's, scripts/campaign/curated.py). scripts/validate-triage.py judges each accession's set against the Catalog rows
+and archive listing the agent read (<accession>\inputs\), and the unit is further left out as:
+
+- triage_missing / triage_unreadable: no triage file for it, or one that is not a triage of it;
+- triage_not_pass: the validator holds or errors on its accession (the validator's findings are the detail);
+- triage_member_unresolved: a kept row names no archive member, which Interactive needs to declare the input;
+- class_contrast_lost_after_triage: the approved Class, cut to the kept rows, loses a side of its contrast.
+
+A planned unit carries curated_selection (the triage path and sha256, its decision record's and the review log head's
+sha256, the Catalog handoff and rows it was made from, the validator's sha256 and verdict, the rows kept and dropped by
+reason, the flags, and the sha256 of the selection and of the analysis inputs) and class_on_triaged_rows, and the
+summary prints them per unit, so the digest a person approves covers the selection. A triage with children becomes one
+unit per child (<unit_id>-<child_key>). --reopen plans named done units of a --replan-from campaign again, each with its
+reason code and evidence, into a workspace of its own (<unit_key>@<campaign_id>). Interactive 0.5.69 or later must be
+pinned (CURATED_SELECTION_INTERACTIVE); an earlier one would run each unit on its whole study's files.
+
 THE BYTES are the Catalog's download_plan (Catalog 0.6.0): distinct objects, each fetched once, with
 size_known false for an object the repository listed without a size. Such a unit's bytes are a lower
 bound, never 0, and the disk guard reserves room for it (policy.DiskPolicy).
@@ -113,6 +131,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from collections import Counter
 import importlib
 import inspect
 import json
@@ -123,7 +142,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from . import policy
+from . import curated, policy
 
 MANIFEST_SCHEMA = "msdial-campaign-manifest.v1"
 PROFILE_SCHEMA = "msdial-campaign-profile.v1"
@@ -163,6 +182,15 @@ PILOT_EXCLUSION_REASONS = ("not_in_pool",) + EXCLUSION_REASONS
 ACCESSION_WORKSPACE_PARTS = ("raw", "provenance", "output")
 # A unit a prior campaign ended in one of these, or has a job running for, is not planned again.
 NOT_REPLANNED = frozenset({"done", "split_done", "downloading", "diagnosing", "running"})
+# ...unless the plan reopens it (plan --reopen, with --replan-from its campaign and --triage-dir): a done unit whose
+# outputs were found wrong (the 79 stage3b unit/parts of 2026-11-15 that ran on the whole study's files) is planned
+# again with an explicit reason code and its evidence, into a workspace of its own, <unit_id>@<campaign_id>, so the
+# earlier outputs are never changed. A unit with a job running is never reopened.
+REOPENABLE = frozenset({"done", "split_done"})
+# Planning from triage files (plan --triage-dir) leaves a unit out for these too (curated.EXCLUSION_REASONS).
+TRIAGE_EXCLUSION_REASONS = curated.EXCLUSION_REASONS
+# The first Interactive that applies a curated selection (curated_selection_path, the integration contract's A).
+CURATED_SELECTION_INTERACTIVE = (0, 5, 69)
 ION_MOBILITY_INSTRUMENT = re.compile(r"tims|synapt|vion|6560|cyclic", re.IGNORECASE)
 # Vendor containers that cannot hold an ion-mobility separation, as the Catalog names an input's format:
 # Bruker BAF, and TSF (a timsTOF's spectra with TIMS off). Waters .raw and Agilent .d can hold either.
@@ -381,6 +409,7 @@ def legacy_accession_workspace(workspace_root: Path, repository: str, accession:
 
 def workspace_exclusion(
     unit: Mapping[str, Any], workspace_root: Path, replan: Mapping[str, Mapping[str, str]] | None = None,
+    reopen: Mapping[str, Any] | None = None,
 ) -> tuple[str | None, str]:
     """preexisting_workspace, campaign_workspace or None for this unit's workspace, with what was found.
 
@@ -403,6 +432,9 @@ def workspace_exclusion(
         return None, ""
     state = (replan or {}).get(made_by, {}).get(str(unit["unit_id"]))
     if state is not None and state not in NOT_REPLANNED:
+        return None, ""
+    if state in REOPENABLE and unit_id in (reopen or {}):
+        # Reopened with its reason: planned into a workspace of its own (reopened_workspace), never this one.
         return None, ""
     if made_by not in (replan or {}):
         return "campaign_workspace", f"made by campaign {made_by}"
@@ -551,6 +583,7 @@ def ion_mobility_reading(record: Mapping[str, Any], evidence: Callable[[Mapping[
 def exclusion_reasons(
     unit: Mapping[str, Any], workspace_root: Path, replan: Mapping[str, Mapping[str, str]] | None = None,
     ion_mobility: Mapping[str, Any] | None = None, fragmentation: Mapping[str, Any] | None = None,
+    reopen: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Every static reason this unit will not run, in EXCLUSION_REASONS order.
 
@@ -565,7 +598,7 @@ def exclusion_reasons(
         reasons.append("ion_mobility")
     if fragmentation is not None and fragmentation["excluded"]:
         reasons.append(NOT_CID_HCD)
-    workspace, _detail = workspace_exclusion(unit, workspace_root, replan)
+    workspace, _detail = workspace_exclusion(unit, workspace_root, replan, reopen)
     if workspace:
         reasons.append(workspace)
     paths = unit.get("analysis_paths") or []
@@ -2032,9 +2065,20 @@ def build_manifest(
     libraries_not_pinned: Iterable[str] = (),
     annotation_code: Any = DETECT,
     library_paths: Mapping[str, str] | None = None,
+    triage_dir: Path | None = None,
+    reopen: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The manifest for one pool, or for a pilot of named units (`unit_ids`, pool "pilot"). `catalog` is a
     read-only Catalog; nothing is written anywhere.
+
+    `triage_dir` plans from frozen triage files (<triage_dir>\\<accession>\\<unit_id>.json, the msdial-unit-triage
+    skill's): scripts/validate-triage.py judges each accession's set, a unit whose accession does not pass is left out
+    (triage_not_pass, with the validator's findings), and every planned unit carries its curated_selection (the triage
+    path and sha256, the rows kept and dropped, the selection's sha256), so the digest a person approves covers the
+    selection. A triage with children becomes one campaign unit per child, keyed <unit_id>-<child_key>.
+    `reopen` (curated.read_reopen) names the done units of a --replan-from campaign to plan again, each with its reason
+    code and evidence, into a workspace of its own (<unit_key>@<campaign_id>); it needs `triage_dir`, since a unit run
+    again without a selection would run on the same files.
 
     `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
     `ion_mobility_evidence` is the Catalog's helper, None for the fallback rule, or DETECT to look it up.
@@ -2058,6 +2102,15 @@ def build_manifest(
         # Class digests made by Catalog code older than one input per vendor container are not the
         # proposals the runner will be given (review contradiction 16).
         raise PlanError(f"Catalog {catalog_version} predates 0.6.0; its Class digests would not hold.")
+    if reopen and triage_dir is None:
+        raise PlanError("--reopen plans done units again; give their triage (--triage-dir), or they would run on the same files.")
+    if reopen and not replan:
+        raise PlanError("--reopen names done units of an earlier campaign; name that campaign with --replan-from.")
+    for key in reopen or {}:
+        states = [found.get(key) for found in (replan or {}).values() if key in found]
+        if not states or not any(state in REOPENABLE for state in states):
+            raise PlanError(f"--reopen names unit {key}, which no --replan-from campaign ended done "
+                            f"({', '.join(str(state) for state in states) or 'not there'}).")
     say = progress or (lambda _message: None)
     excluded: list[dict[str, Any]] = []
     if unit_ids is not None:
@@ -2098,9 +2151,9 @@ def build_manifest(
                 record, unit_evidence_rows(catalog.connection, unit["unit_id"]),
                 shared_of(str(record.get("study_id") or "")))
         reasons = exclusion_reasons(unit, workspace_root, replan, ion_mobility=mobility[unit["unit_id"]],
-                                    fragmentation=fragmentation[unit["unit_id"]])
+                                    fragmentation=fragmentation[unit["unit_id"]], reopen=reopen)
         if reasons:
-            _reason, found = workspace_exclusion(unit, workspace_root, replan)
+            _reason, found = workspace_exclusion(unit, workspace_root, replan, reopen)
             said = [f"ion_mobility: {mobility[unit['unit_id']]['detail']}"] if "ion_mobility" in reasons else []
             if NOT_CID_HCD in reasons:
                 said.append(f"{NOT_CID_HCD}: {fragmentation[unit['unit_id']]['detail']}")
@@ -2118,6 +2171,13 @@ def build_manifest(
         remaining.append(unit)
         if index % 250 == 0:
             say(f"Class decided for {index} of {len(candidates)} units")
+    triaged: dict[str, list[dict[str, Any]]] = {}
+    triage_record: dict[str, Any] | None = None
+    if triage_dir is not None:
+        remaining, triaged, triage_record = _plan_from_triage(Path(triage_dir), remaining, decisions, excluded, say)
+    unknown_reopen = sorted(set(reopen or {}) - {unit["unit_id"] for unit in selected})
+    if unknown_reopen:
+        raise PlanError(f"--reopen names units this plan does not select: {', '.join(unknown_reopen[:10])}.")
     download = catalog.download_plan([unit["unit_id"] for unit in remaining])
     per_unit = {item["unit_id"]: item for item in download["units"]}
     kinds: dict[str, set[str]] = {}
@@ -2178,10 +2238,14 @@ def build_manifest(
                if fragmentation[unit["unit_id"]]["signal"] or fragmentation[unit["unit_id"]]["evidence"] == "not_read"
                else {}),
         })
+        if triage_dir is not None:
+            units[-1:] = _curated_units(units[-1], triaged.get(unit["unit_id"]) or [], campaign_id, replan, reopen)
+    for order_index, unit in enumerate(units):
+        unit["order_index"] = order_index
     used_groups = []
     for group in group_order:
         item = groups[group]
-        members = [unit["unit_id"] for unit in units if unit["group_id"] == group]
+        members = [unit.get("unit_key", unit["unit_id"]) for unit in units if unit["group_id"] == group]
         used_groups.append({
             "group_id": group,
             "unit_ids": members,
@@ -2223,6 +2287,8 @@ def build_manifest(
             "fragmentation_rule": CID_HCD_ONLY_RULE,
             # The bytes per sample under which a unit of archives alone is left out (2026-11-06).
             "archive_floor_bytes_per_sample": ARCHIVE_FLOOR_BYTES_PER_SAMPLE,
+            # Planned from triage files (2026-11-16): the further reasons a unit is left out.
+            **({"triage_exclusion_reasons": list(TRIAGE_EXCLUSION_REASONS)} if triage_dir is not None else {}),
             **({"units": requested, "pools": {name: SELECTION_RULES[name] for name in POOLS}} if pool == PILOT else {}),
         },
         "policy": campaign_policy.as_dict(),
@@ -2244,7 +2310,97 @@ def build_manifest(
         # workspaces are made beside it, and it is left as it is.
         "legacy_accession_workspaces": legacy,
         **({"replanned_from": sorted(replan)} if replan else {}),
+        # The triage the units were planned from: the directory, the validator and each accession's verdict.
+        **({"triage": triage_record} if triage_record is not None else {}),
+        # The done units planned again, each with its reason and evidence (plan --reopen).
+        **({"reopened": [{"unit_key": key, **dict(item)} for key, item in sorted((reopen or {}).items())]} if reopen else {}),
     }
+
+
+def _plan_from_triage(
+    triage_dir: Path, remaining: list[dict[str, Any]], decisions: Mapping[str, Mapping[str, Any]],
+    excluded: list[dict[str, Any]], say: Callable[[str], None],
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """The units that pass their triage, the campaign unit entries of each, and the manifest's triage record.
+
+    Each accession's set is judged once by scripts/validate-triage.py; a unit is planned only where its accession
+    passes, every kept row names an archive member, and its approved Class keeps its contrast once cut to the kept
+    rows. Everything else is excluded with its reason and the validator's own words."""
+    accessions: dict[str, dict[str, Any]] = {}
+    listings: dict[str, dict[str, curated.Listing]] = {}
+    sources: dict[str, Path | None] = {}
+    kept: list[dict[str, Any]] = []
+    entries_of: dict[str, list[dict[str, Any]]] = {}
+    for unit in remaining:
+        accession = str(unit["accession"])
+        folder = triage_dir / accession
+        if not folder.is_dir():
+            excluded.append(_exclusion(unit, [curated.TRIAGE_MISSING], detail=f"no triage directory {accession}"))
+            continue
+        if accession not in accessions:
+            validation = curated.run_validator(folder)
+            accessions[accession] = validation
+            catalog, listing_paths = curated.accession_sources(folder)
+            sources[accession] = catalog
+            listings[accession] = curated.read_listings(listing_paths)
+            say(f"triage {accession}: validate-triage.py says {validation['verdict']}")
+        entries, reason, detail = curated.unit_entries(
+            accession_dir=folder, triage_root=triage_dir, unit_id=str(unit["unit_id"]),
+            validation=accessions[accession], listing=listings[accession], catalog=sources[accession])
+        if reason:
+            excluded.append(_exclusion(unit, [reason], detail=detail))
+            continue
+        lost = []
+        for entry in entries:
+            entry["class_on_triaged_rows"] = curated.class_on_rows(decisions[unit["unit_id"]], entry["triage"], entry["child"])
+            if entry["class_on_triaged_rows"].get("evaluated") and not entry["class_on_triaged_rows"]["contrast_intact"]:
+                lost.append(f"{entry['curated_selection']['child_key'] or unit['unit_id']} loses "
+                            f"{', '.join(entry['class_on_triaged_rows']['lost_classes'])}")
+        if lost:
+            excluded.append(_exclusion(unit, [curated.CLASS_CONTRAST_LOST], detail="; ".join(lost)))
+            continue
+        entries_of[str(unit["unit_id"])] = entries
+        kept.append(unit)
+    record = {
+        "directory": str(triage_dir.resolve()),
+        "validator": {"path": "scripts/validate-triage.py", "sha256": curated.validator_sha256()},
+        "selection_schema": curated.SELECTION_SCHEMA,
+        "accessions": {
+            accession: {**{key: validation.get(key) for key in ("verdict", "exit_code", "report_sha256", "catalog_source", "listings")},
+                        **({"problem": validation["problem"]} if validation.get("problem") else {})}
+            for accession, validation in sorted(accessions.items())
+        },
+    }
+    return kept, entries_of, record
+
+
+def _curated_units(
+    unit: dict[str, Any], entries: Sequence[Mapping[str, Any]], campaign_id: str,
+    replan: Mapping[str, Mapping[str, str]] | None, reopen: Mapping[str, Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """The campaign units one triaged Catalog unit becomes: itself, or one per child (<unit_id>-<child_key>), each
+    with its curated_selection, its Class cut to the kept rows, and its workspace's name. A reopened unit's workspace
+    is <unit_key>@<campaign_id>, so the outputs of the run it replaces stay as they are."""
+    out = []
+    reopened = (reopen or {}).get(str(unit["unit_id"]))
+    for entry in entries:
+        child = entry["child"]
+        key = str(unit["unit_id"]) if child is None else f"{unit['unit_id']}-{child['child_key']}"
+        item = copy.deepcopy(unit)
+        item["unit_key"] = key
+        item["workspace_name"] = f"{key}@{campaign_id}" if reopened else key
+        item["curated_selection"] = dict(entry["curated_selection"])
+        item["class_on_triaged_rows"] = dict(entry["class_on_triaged_rows"])
+        if child is not None:
+            item["ion_mode"] = str(child.get("ion_mode") or "").capitalize() or item["ion_mode"]
+            item["acquisition_mode"] = str(child.get("acquisition_mode") or "") or item["acquisition_mode"]
+        if reopened:
+            prior = (item.get("replanned_from") or {}).get("campaign_id")
+            item["reopened_from"] = {"campaign_id": prior,
+                                     "state": (replan or {}).get(prior or "", {}).get(str(unit["unit_id"])),
+                                     **dict(reopened)}
+        out.append(item)
+    return out
 
 
 def _fragmentation_entry(reading: Mapping[str, Any]) -> dict[str, Any]:
@@ -2448,6 +2604,14 @@ def approval_problems(manifest: Mapping[str, Any], covers: Iterable[str]) -> lis
             f"{extractor.get('provenance_status') or 'unknown'}, pinned {extractor.get('pinned')})"
         )
     problems.extend(policy.pin_problems(manifest.get("pins") or {}))
+    curated_units = [unit for unit in manifest.get("units") or [] if unit.get("curated_selection")]
+    version = _version(str((manifest.get("pins", {}).get("interactive") or {}).get("version") or ""))
+    if curated_units and (not version or version < CURATED_SELECTION_INTERACTIVE):
+        problems.append(
+            f"{len(curated_units)} unit(s) run a curated selection, which Interactive "
+            f"{'.'.join(str(part) for part in CURATED_SELECTION_INTERACTIVE)} or later applies; the pinned Interactive is "
+            f"{(manifest.get('pins', {}).get('interactive') or {}).get('version') or 'unstated'}, which would run each on "
+            "its whole study's files")
     if not manifest.get("units"):
         problems.append("the manifest plans no unit")
     covered = {str(item) for item in covers}
@@ -2489,7 +2653,9 @@ def authorization_record(
         "approved_at": approved_at,
         "statement": statement,
         "covers": boundaries,
-        "units": [unit["unit_id"] for unit in manifest["units"]],
+        # A child of a triaged unit (<unit_id>-<child_key>) is named beside its Catalog unit, whose Class is saved.
+        "units": list(dict.fromkeys(name for unit in manifest["units"]
+                                    for name in (unit["unit_id"], unit.get("unit_key", unit["unit_id"])))),
         "raw_retention_policy": manifest["raw_retention_policy"],
         # Each library by name and sha256, with the role it is loaded in and the ion modes whose units load it where
         # the plan recorded them (library_pins), and an MSP's library kind (acquired, or predicted for the in-silico
@@ -2504,11 +2670,66 @@ def authorization_record(
     }
 
 
+def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[str, Any]) -> list[tuple[str, dict[str, Any], str | None]]:
+    """The decision-ledger events an approval records (kind, detail, unit key), in the order a reader follows them: for
+    each unit planned from a triage file, what the agent decided (triage_recorded, a model inference) and what the
+    validator said of it (triage_validated, a deterministic check); each reopened unit (unit_reopened); and the
+    approval of the digest that makes those selections accepted decisions (manifest_approved). None for a manifest
+    planned without triage files or reopened units."""
+    events: list[tuple[str, dict[str, Any], str | None]] = []
+    triage = manifest.get("triage") if isinstance(manifest.get("triage"), Mapping) else {}
+    accessions = triage.get("accessions") or {}
+    selections: dict[str, str] = {}
+    for unit in manifest.get("units") or []:
+        chosen = unit.get("curated_selection")
+        if not isinstance(chosen, Mapping):
+            continue
+        key = str(unit.get("unit_key", unit["unit_id"]))
+        selections[key] = str(chosen.get("selection_sha256"))
+        found = accessions.get(unit["accession"]) or {}
+        events.append(("triage_recorded", {
+            "standing": curated.MODEL_INFERENCE, "accession": unit["accession"], "unit_id": unit["unit_id"],
+            "child_key": chosen.get("child_key"), "decided_by": chosen.get("decided_by"), "phase": chosen.get("phase"),
+            "triage_relative_path": chosen.get("triage_relative_path"), "triage_sha256": chosen.get("triage_sha256"),
+            "triage_record_sha256": chosen.get("triage_record_sha256"),
+            "catalog_handoff_sha256": chosen.get("catalog_handoff_sha256"), "catalog_rows_sha256": chosen.get("catalog_rows_sha256"),
+            "archive_listings": found.get("listings") or [], "rows_kept": chosen.get("rows_kept"),
+            "members_added": chosen.get("members_added"), "rows_dropped_by_reason": chosen.get("rows_dropped_by_reason"),
+            "kept_by_basis": chosen.get("kept_by_basis"), "kept_by_confidence": chosen.get("kept_by_confidence"),
+            "flags": chosen.get("flags"), "selection_sha256": chosen.get("selection_sha256"),
+            "analysis_inputs_sha256": chosen.get("analysis_inputs_sha256"),
+        }, key))
+        events.append(("triage_validated", {
+            "standing": curated.DETERMINISTIC_CHECK, "accession": unit["accession"],
+            "validator_sha256": (chosen.get("validator") or {}).get("script_sha256"),
+            "verdict": (chosen.get("validator") or {}).get("verdict"),
+            "report_sha256": (chosen.get("validator") or {}).get("report_sha256"),
+            "review_log_head_sha256": chosen.get("review_log_head_sha256"),
+            "class_on_triaged_rows": unit.get("class_on_triaged_rows"),
+        }, key))
+    for item in manifest.get("reopened") or []:
+        events.append(("unit_reopened", {
+            "standing": curated.ACCEPTED_DECISION, **{name: item.get(name) for name in ("reason_code", "evidence_sha256")},
+            "evidence": Path(str(item.get("evidence_path") or "")).name,
+            "workspaces": sorted(str(unit.get("workspace_name")) for unit in manifest.get("units") or []
+                                 if unit["unit_id"] == item.get("unit_key") and unit.get("workspace_name")),
+        }, str(item.get("unit_key"))))
+    if events:
+        events.append(("manifest_approved", {
+            "standing": curated.ACCEPTED_DECISION, "manifest_digest": digest, "approval_id": approval.get("approval_id"),
+            "approved_by": approval.get("approved_by"), "covers": list(approval.get("covers") or []),
+            "selections": dict(sorted(selections.items())),
+            "validator_sha256": (triage.get("validator") or {}).get("sha256"),
+        }, None))
+    return events
+
+
 def ledger_rows(manifest: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The ledger's unit and download_group rows for an approved manifest."""
     units = [
         {
-            "unit_key": unit["unit_id"], "catalog_unit_id": unit["unit_id"], "repository": unit["repository"],
+            "unit_key": unit.get("unit_key", unit["unit_id"]), "catalog_unit_id": unit["unit_id"],
+            "repository": unit["repository"],
             "accession": unit["accession"], "order_index": unit["order_index"], "download_group_id": unit["group_id"],
             "approved_class_digest": unit["approved_class_digest"], "class_kind": unit["class_kind"],
             "known_bytes": int(unit["known_bytes"] or 0), "size_known": int(bool(unit["size_known"])),
@@ -2650,11 +2871,53 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
         lines += [str(line) for line in annotation["statement"]]
     else:
         lines.append("  libraries and annotation: not stated (the manifest was planned before the plan stated them)")
+    lines += curated_selection_text(manifest)
     lines += template_pin_text(manifest)
     lines += correction["statement"]
     lines.append(multi_energy_aif_text((manifest.get("pins") or {}).get("console") or {}))
     lines.append(f"  manifest digest {digest}")
     return "\n".join(lines)
+
+
+def curated_selection_text(manifest: Mapping[str, Any]) -> list[str]:
+    """What the summary says of a plan from triage files: how the selection was made and checked, and per unit the rows
+    kept and dropped, by reason, with every flag, so the digest a person approves covers the triage itself."""
+    triage = manifest.get("triage")
+    reopened = manifest.get("reopened") or []
+    if not isinstance(triage, Mapping) and not reopened:
+        return []
+    lines = []
+    if isinstance(triage, Mapping):
+        verdicts = Counter(str(item.get("verdict")) for item in (triage.get("accessions") or {}).values())
+        lines += [
+            "  CURATED SELECTION (agent triage before download, decided after stage3b stopped on 2026-11-15): each unit runs "
+            "only the files its "
+            "triage file keeps. A triage file is a model inference (msdial-unit-triage); scripts/validate-triage.py "
+            f"(sha256 {str((triage.get('validator') or {}).get('sha256'))[:12]}) judged every accession's set "
+            f"({', '.join(f'{name} {count}' for name, count in sorted(verdicts.items())) or 'none'}), and only a pass is "
+            "planned. Approving this digest makes the selections below accepted decisions; the raw headers are "
+            "reconciled against them after download, and a disagreement holds the unit for a person.",
+        ]
+        for unit in manifest.get("units") or []:
+            chosen = unit.get("curated_selection")
+            if not isinstance(chosen, Mapping):
+                continue
+            dropped = ", ".join(f"{reason} {count}" for reason, count in (chosen.get("rows_dropped_by_reason") or {}).items())
+            cut = unit.get("class_on_triaged_rows") or {}
+            lines.append(
+                f"    {unit.get('unit_key', unit['unit_id'])} ({unit['accession']}): kept {chosen.get('rows_kept')} rows"
+                + (f" + {chosen['members_added']} members" if chosen.get("members_added") else "")
+                + f", dropped {chosen.get('rows_dropped')}" + (f" ({dropped})" if dropped else "")
+                + f"; {chosen.get('ion_mode')} {chosen.get('acquisition_mode')}"
+                + (f"; flags {', '.join(chosen['flags'])}" if chosen.get("flags") else "")
+                + (f"; Class after the cut {cut.get('counts_after')}" if cut.get("evaluated") else "")
+                + (f"; LOST CLASSES {', '.join(cut['lost_classes'])}" if cut.get("lost_classes") else "")
+                + f"; selection {str(chosen.get('selection_sha256'))[:12]}")
+    for item in reopened:
+        lines.append(f"  REOPENED {item.get('unit_key')}: a done unit planned again ({item.get('reason_code')}, evidence "
+                     f"{Path(str(item.get('evidence_path') or '')).name} sha256 {str(item.get('evidence_sha256'))[:12]}), into "
+                     "a workspace of its own; the earlier outputs are left as they are")
+    return lines
 
 
 def template_pin_text(manifest: Mapping[str, Any]) -> list[str]:

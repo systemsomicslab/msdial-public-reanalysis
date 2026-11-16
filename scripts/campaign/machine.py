@@ -151,6 +151,26 @@ attempt of its own (wiff_first, never counted), and a switch is said in a wiff_f
 Interactive without the rule (before 0.5.58) and an error leave the unit on its .wiff2, where the fallback above still
 answers a failure; a unit switched under either rule is never switched again. A switch whose reply was lost is found
 in the unit manifest and adopted.
+
+A CURATED SELECTION (the integration contract's B, 2026-11-16). A unit planned from a triage file (plan --triage-dir)
+carries its curated_selection in the approved manifest, which the runner reads from campaign-manifest.json once its
+sha256 is the approved digest (a manifest that is not stops each unit at its handoff, manifest_digest_changed). At
+the handoff the triage is copied beside the handoff copy (handoffs\\<unit_key>\\triage.json) and must hash to the
+manifest's triage_sha256 (else stopped_policy_drift, triage_digest_changed); the Catalog handoff the triage was made
+from must be the one taken now, byte for byte or row for row (the [sample_id, raw_file] rows a row_index names; else
+triage_handoff_rows_changed). The download passes Interactive curated_selection_path and original_handoff_sha256 as
+required arguments, so an Interactive that cannot apply the selection refuses (a contract hold) instead of running
+the unit on its whole study's files; a child of a triaged unit passes its child key, and a reopened unit its own
+workspace (<unit_key>@<campaign_id>), so the outputs of the run it replaces are never written into. After the
+download the unit manifest must record the selection Interactive applied, with the same triage sha256 (else
+contract_held). A refusal no retry can change (policy.not_retryable: the attribution coverage gate, a curated
+selection Interactive refuses, the cross-unit check) ends the unit failed, terminal reason attribution_refused,
+with no retry counted. The units of one download group that carry a selection wait at preflighted until every
+sibling still on its way has been preflighted; then Interactive's cross-unit check runs once over their manifests
+(rules P, C and D) and each refused unit ends so. A header that disagrees with the triage is Interactive's
+disposition hold (triage_header_disagreement), which waits for a person as every disposition hold does. Each of
+these steps is a campaign event in the decision ledger (curated.DECISION_KINDS, each with its standing), which
+campaign-runner.py decisions exports, append only and hash chained.
 """
 
 from __future__ import annotations
@@ -165,6 +185,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from . import curated
 from . import ledger as ledger_module
 from . import policy
 
@@ -544,6 +565,9 @@ class Runner:
         # Whether this process has brought forward the recheck of every held unit (HELD_STATES): a runner that
         # starts makes each one's step again first (_held_units_recheck).
         self._held_units_rechecked = False
+        # The approved manifest's units by unit key, read once (_planned_units); None until read.
+        self._planned: dict[str, dict[str, Any]] | None = None
+        self._planned_problem = ""
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -567,7 +591,139 @@ class Runner:
         if unit.get("workspace"):
             return Path(unit["workspace"])
         root = Path(self.campaign["workspace_root"])
-        return root / unit["repository"] / unit["accession"] / unit["catalog_unit_id"]
+        # A child of a triaged unit (<unit_id>-<child_key>) and a reopened unit (<unit_key>@<campaign_id>) have
+        # workspaces of their own, as the approved manifest names them.
+        name = str(((self._planned_units() or {}).get(unit["unit_key"]) or {}).get("workspace_name") or unit["catalog_unit_id"])
+        return root / unit["repository"] / unit["accession"] / name
+
+    # ---- the approved manifest and its curated selections -------------------------------------------------
+
+    def _planned_units(self) -> dict[str, dict[str, Any]] | None:
+        """The approved manifest's units by unit key, or None where the file is not the approved one (missing, or
+        hashing to another digest): a curated selection is read only from the bytes a person approved."""
+        if self._planned is None:
+            path = Path(self.campaign["manifest_path"])
+            try:
+                data = path.read_bytes()
+            except OSError as error:
+                self._planned_problem = f"the approved manifest {path} cannot be read: {error}"
+                self._planned = {}
+                return None
+            digest = "sha256:" + hashlib.sha256(data).hexdigest()
+            if digest != self.campaign["manifest_digest"]:
+                self._planned_problem = f"the manifest {path} hashes to {digest}, not the approved {self.campaign['manifest_digest']}"
+                self._planned = {}
+                return None
+            try:
+                manifest = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as error:
+                self._planned_problem = f"the approved manifest does not parse: {error}"
+                self._planned = {}
+                return None
+            self._planned = {
+                str(item.get("unit_key") or item.get("unit_id")): dict(item)
+                for item in (manifest.get("units") or []) if isinstance(item, Mapping)
+            }
+            self._planned_problem = ""
+        return None if self._planned_problem else self._planned
+
+    def _selection(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The unit's curated_selection as the approved manifest records it, or None for a unit planned without one."""
+        chosen = ((self._planned_units() or {}).get(unit["unit_key"]) or {}).get("curated_selection")
+        return dict(chosen) if isinstance(chosen, Mapping) else None
+
+    def _triage_copy(self, unit: Mapping[str, Any]) -> Path:
+        return self.directory / "handoffs" / unit["unit_key"] / "triage.json"
+
+    def _check_triage(self, unit: Mapping[str, Any], selection: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
+        """Copy the unit's triage beside its handoff copy and check it is what was approved, and that the handoff taken
+        now is the one the triage was made from: {"refused": bool, "reason", ...}."""
+        copy = self._triage_copy(unit)
+        out: dict[str, Any] = {"triage_sha256": selection.get("triage_sha256"), "copy_path": str(copy),
+                               "selection_sha256": selection.get("selection_sha256")}
+        source = Path(str(selection.get("triage_path") or ""))
+        try:
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, copy)
+        except OSError as error:
+            return {**out, "refused": True, "reason": "triage_digest_changed", "detail": f"the triage file cannot be copied: {error}"}
+        found = curated.sha256_file(copy)
+        if found != selection.get("triage_sha256"):
+            return {**out, "refused": True, "reason": "triage_digest_changed", "found_sha256": found,
+                    "detail": "the triage file is not the one the approved manifest names"}
+        expected_record = selection.get("triage_record_sha256")
+        if expected_record:
+            record_copy = copy.with_name("triage.record.json")
+            try:
+                shutil.copyfile(curated.record_path(source), record_copy)
+                found_record = curated.sha256_file(record_copy)
+            except OSError as error:
+                found_record = f"unreadable: {error}"
+            if found_record != expected_record:
+                return {**out, "refused": True, "reason": "triage_record_digest_changed", "found_sha256": found_record,
+                        "detail": "the triage's decision record is not the one the approved manifest names"}
+            out["record_copy_path"] = str(record_copy)
+        original = str(record.get("original_sha256") or "")
+        if original and original == selection.get("catalog_handoff_sha256"):
+            identity = "handoff_identical"
+        else:
+            try:
+                rows = curated.handoff_rows(Path(str(record.get("copy_path") or "")))
+            except (OSError, ValueError) as error:
+                rows = None
+                out["rows_problem"] = f"{type(error).__name__}: {error}"
+            now = curated.rows_sha256(rows)
+            if not selection.get("catalog_rows_sha256") or now != selection.get("catalog_rows_sha256"):
+                return {**out, "refused": True, "reason": "triage_handoff_rows_changed", "original_handoff_sha256": original,
+                        "triaged_handoff_sha256": selection.get("catalog_handoff_sha256"), "rows_sha256": now,
+                        "triaged_rows_sha256": selection.get("catalog_rows_sha256"),
+                        "detail": "the Catalog handoff taken now is not the one the triage was made from, row for row"}
+            identity = "rows_identical"
+        return {**out, "refused": False, "handoff_identity": identity, "original_handoff_sha256": original}
+
+    def _original_handoff_sha256(self, unit: Mapping[str, Any]) -> str:
+        """The sha256 of the Catalog handoff as the unit's last handoff step took it (before the campaign's copy)."""
+        for attempt in reversed(self.ledger.attempts(unit["unit_key"])):
+            if attempt["step"] == "handoff" and attempt["outcome"] == "ok":
+                return str((_loads(attempt["detail_json"]).get("copy") or {}).get("original_sha256") or "")
+        return ""
+
+    def _curated_arguments(self, unit: Mapping[str, Any], selection: Mapping[str, Any]) -> dict[str, Any] | str:
+        """The download's curated selection arguments, or why the unit cannot pass them (the copy changed)."""
+        copy = self._triage_copy(unit)
+        try:
+            found = curated.sha256_file(copy)
+        except OSError as error:
+            return f"the triage copy {copy} cannot be read: {error}"
+        if found != selection.get("triage_sha256"):
+            return f"the triage copy {copy} hashes to {found}, not the approved {selection.get('triage_sha256')}"
+        arguments: dict[str, Any] = {"curated_selection_path": str(copy),
+                                     "original_handoff_sha256": self._original_handoff_sha256(unit)}
+        if selection.get("child_key"):
+            arguments["curated_selection_child_key"] = str(selection["child_key"])
+        name = str(((self._planned_units() or {}).get(unit["unit_key"]) or {}).get("workspace_name") or "")
+        if name and name != unit["catalog_unit_id"]:
+            arguments["workspace_unit_key"] = name
+        return arguments
+
+    def _terminal_refusal(
+        self, unit: dict[str, Any], refusal: Mapping[str, Any], detail: Mapping[str, Any], *, step: str = "download",
+        attempt_id: int | None = None, job_id: str | None = None,
+    ) -> bool:
+        """Interactive refused the unit for good (policy.not_retryable): it ends failed, terminal reason
+        attribution_refused, with no retry counted and its raw data discarded under boundary 5 as for every failure."""
+        said = self.redact({**dict(detail), **dict(refusal), **({"job_id": job_id} if job_id else {})})
+        record = ({"close_attempt": (attempt_id, "refused", False, said)} if attempt_id is not None
+                  else {"new_attempt": {"step": step, "outcome": "refused", "counted": False, "detail": said}})
+        terminal = {"reason": policy.ATTRIBUTION_REFUSED, "reason_code": refusal.get("reason_code"), "retryable": False,
+                    "source": refusal.get("source"), "step": step}
+        self._progress.pop(job_id or "", None)
+        self._move(unit, "discarding", pending_terminal="failed",
+                   terminal_detail=json.dumps(terminal, ensure_ascii=False, sort_keys=True),
+                   detail={"step": step, policy.ATTRIBUTION_REFUSED: refusal.get("reason_code")}, **record)
+        self._event("terminal_refusal", {"standing": curated.DETERMINISTIC_CHECK, **terminal,
+                                         **({"rule": refusal["rule"]} if refusal.get("rule") else {})}, unit["unit_key"])
+        return True
 
     def _manifest(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
         return self.ports.interactive.read_manifest(unit.get("manifest_path") or "")
@@ -1207,13 +1363,35 @@ class Runner:
         return True
 
     def _state_class_settled(self, unit: dict[str, Any]) -> bool:
-        """Take the Catalog's handoff and keep the campaign's own copy of it."""
+        """Take the Catalog's handoff and keep the campaign's own copy of it; for a unit planned from a triage file,
+        copy the triage beside it and check both against what was approved."""
         attempt = self.ledger.open_attempt(unit["unit_key"], "handoff", self.stamp(), tool="msdial_catalog_reanalysis_handoff")
+        if self._planned_units() is None:
+            # Whether the unit runs a curated selection is read from the approved manifest alone.
+            self._release_shared_claims(unit, "stopped_policy_drift")
+            self._move(unit, "stopped_policy_drift", terminal_reason="manifest_digest_changed",
+                       terminal_detail=json.dumps({"detail": self._planned_problem}),
+                       close_attempt=(attempt, "refused", False, {"detail": self._planned_problem}))
+            return True
         result = self.ports.catalog.handoff(unit_id=unit["catalog_unit_id"], class_proposal_id=unit["class_proposal_id"])
         if result.get("ok") is False:
             self._fail(unit, step="handoff", result=result, retry_state="class_settled", attempt_id=attempt)
             return True
         record = self.ports.catalog.copy_handoff(result, self.directory / "handoffs" / unit["unit_key"])
+        selection = self._selection(unit)
+        checked: dict[str, Any] | None = None
+        if selection is not None:
+            checked = self._check_triage(unit, selection, record)
+            self._event("triage_checked", {"standing": curated.DETERMINISTIC_CHECK,
+                                           "verdict": "refused" if checked["refused"] else "pass",
+                                           **{key: value for key, value in checked.items() if key != "refused"}},
+                        unit["unit_key"])
+            if checked["refused"]:
+                self._release_shared_claims(unit, "stopped_policy_drift")
+                self._move(unit, "stopped_policy_drift", terminal_reason=checked["reason"],
+                           terminal_detail=json.dumps(checked, ensure_ascii=False, sort_keys=True),
+                           close_attempt=(attempt, "refused", False, {"copy": record, "curated_selection": checked}))
+                return True
         workspace = self._workspace(unit)
         copy = workspace / "provenance" / "campaign-authorization.json"
         copy.parent.mkdir(parents=True, exist_ok=True)
@@ -1221,7 +1399,8 @@ class Runner:
         self._move(
             unit, "handoff_ready", handoff_path=record["copy_path"], workspace=str(workspace),
             manifest_path=str(workspace / "provenance" / "run-manifest.json"), authorization_copy=str(copy),
-            close_attempt=(attempt, "ok", False, {"copy": record, "catalog_blocking_reasons": list(result.get("blocking_reasons") or [])}),
+            close_attempt=(attempt, "ok", False, {"copy": record, "catalog_blocking_reasons": list(result.get("blocking_reasons") or []),
+                                                  **({"curated_selection": checked} if checked is not None else {})}),
         )
         return True
 
@@ -1253,6 +1432,15 @@ class Runner:
             "raw_retention_policy": self.campaign["raw_retention_policy"], "handoff_path": unit["handoff_path"],
             "analysis_purpose": self.campaign["analysis_purpose"], "authorization_path": self._authorization(unit),
         }
+        selection = self._selection(unit)
+        if selection is not None:
+            extra = self._curated_arguments(unit, selection)
+            if isinstance(extra, str):
+                self._release_shared_claims(unit, "stopped_policy_drift")
+                self._move(unit, "stopped_policy_drift", terminal_reason="triage_digest_changed",
+                           terminal_detail=json.dumps({"detail": extra}), detail={"step": "download_start"})
+                return True
+            arguments.update(extra)
         self._require("1")
         self._claim_shared_downloads(unit)
         attempt = self.ledger.open_attempt(
@@ -1293,6 +1481,10 @@ class Runner:
                 close_attempt=(attempt, "blocked", False, {"blocking_reasons": blockers}),
             )
             return True
+        refusal = policy.not_retryable(result)
+        if refusal is not None:
+            # A curated selection (or another unit's inputs) Interactive refused before any byte: never retried.
+            return self._terminal_refusal(unit, refusal, result, attempt_id=attempt)
         return self._download_failed(unit, result=result, attempt_id=attempt)
 
     def _defer_for_disk(
@@ -1592,6 +1784,11 @@ class Runner:
             # and the extraction, so a download made again would end the same way. An operator's skip still ends
             # the unit as skipped, as the skip request said it would.
             return self._download_excluded(unit, exclusion, detail)
+        refusal = policy.not_retryable(detail) if reason != "skip" else None
+        if refusal is not None:
+            # The attribution coverage gate or a curated selection check refused the unit after the fetch: the same
+            # handoff, triage and code give the same answer, so it ends with no retry counted (B5).
+            return self._terminal_refusal(unit, refusal, detail, job_id=unit["download_job_id"])
         if reason == "disk":
             # Cancelled because the disk ran short: nothing the unit did. It resumes from its .part file. A size
             # known only as a lower bound is at least what arrived, kept even should the partial file go.
@@ -1726,8 +1923,53 @@ class Runner:
                 )
                 self._cancel(unit, job_id, "disk")
 
+    def _applied_selection(self, unit: Mapping[str, Any], selection: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The curated selection Interactive recorded in the unit manifest, where it is the approved one, else None."""
+        manifest = self._manifest(unit) or {}
+        applied = (manifest.get("repository_metadata") or {}).get("curated_selection")
+        if not isinstance(applied, Mapping):
+            return None
+        recorded = applied.get("triage_sha256") or applied.get("sha256")
+        return dict(applied) if recorded == selection.get("triage_sha256") else None
+
+    def _reconciliation(self, unit: Mapping[str, Any], record: Mapping[str, Any]) -> None:
+        """A header_reconciliation event: Interactive's comparison of each admitted input's header with the triage
+        (the contract's A4), from the disposition record or the unit manifest; "not_recorded" where it gave none."""
+        manifest = self._manifest(unit) or {}
+        disposition = manifest.get("campaign_disposition") if isinstance(manifest.get("campaign_disposition"), Mapping) else {}
+        block = (record.get("curated_selection_reconciliation")
+                 or disposition.get("curated_selection_reconciliation")
+                 or manifest.get("curated_selection_reconciliation")
+                 or ((manifest.get("repository_metadata") or {}).get("curated_selection") or {}).get("reconciliation"))
+        files = [item for item in (block or {}).get("files") or [] if isinstance(item, Mapping)] if isinstance(block, Mapping) else []
+        disagree = [item for item in files if str(item.get("verdict") or item.get("result") or "") in ("disagree", "unreadable")]
+        self._event_once("header_reconciliation", {
+            "standing": curated.DETERMINISTIC_CHECK,
+            "verdict": str(block.get("verdict")) if isinstance(block, Mapping) else "not_recorded",
+            "files": len(files), "disagreements": len(disagree),
+            "fields": sorted({str(item.get("field")) for item in disagree if item.get("field")}),
+            "disagreeing_files": [{key: item.get(key) for key in ("member_path", "field", "triage_value", "header_value", "verdict")}
+                                  for item in disagree[:20]],
+        }, unit["unit_key"])
+
     def _state_downloaded(self, unit: dict[str, Any]) -> bool:
         """The raw-header preflight; then Interactive's campaign_disposition says what the unit does."""
+        selection = self._selection(unit)
+        if selection is not None:
+            applied = self._applied_selection(unit, selection)
+            if applied is None:
+                return self._contract_hold(unit, step="preflight", problem="curated_selection_not_recorded", detail={
+                    "detail": "the unit manifest records no curated selection with the approved triage sha256; Interactive did "
+                              "not apply it, so the unit is not preflighted on whatever it downloaded",
+                    "triage_sha256": selection.get("triage_sha256")})
+            self._event_once("curated_selection_applied", {
+                "standing": curated.ACCEPTED_DECISION, "checked_by": "runner", "triage_sha256": selection.get("triage_sha256"),
+                "selection_sha256": selection.get("selection_sha256"), "child_key": selection.get("child_key"),
+                "recorded": {key: applied.get(key) for key in ("selection_sha256", "manifest_digest", "standing", "child_key")
+                             if key in applied},
+                "rows_kept": len(applied.get("rows_kept") or []) if isinstance(applied.get("rows_kept"), list) else applied.get("rows_kept"),
+                "rows_dropped": len(applied.get("rows_dropped") or []) if isinstance(applied.get("rows_dropped"), list) else applied.get("rows_dropped"),
+            }, unit["unit_key"])
         extractor = str((self.pins.get("extractor") or {}).get("path") or "")
         attempt = self.ledger.open_attempt(unit["unit_key"], "preflight", self.stamp(), tool="msdial_repository_raw_metadata_preflight")
         # The pinned Console, the one that will run the unit: Interactive 0.5.34 decides a multi-energy AIF unit
@@ -1800,6 +2042,8 @@ class Runner:
                                   f"not the pinned {pinned[:12]}."},
             )
         record = disposition.as_dict()
+        if selection is not None:
+            self._reconciliation(unit, record)
         close = (attempt, "ok", False, {"disposition": disposition.disposition, "reasons": list(disposition.reasons),
                                         "warnings": list(disposition.warnings),
                                         **({"aif_multi_ce_run": dict(disposition.aif_multi_ce_run)}
@@ -1963,9 +2207,79 @@ class Runner:
         raw = "kept" if policy.classify_result(result) == policy.REFUSED else "held"
         return raw, str(result.get("detail") or result.get("reason") or "not discarded"), None
 
+    # States a unit of a download group is still on its way to its preflight in (where a waiting unit resumes).
+    _BEFORE_PREFLIGHT = frozenset({"pending", "class_settled", "handoff_ready", "downloading", "downloaded"})
+
+    def _cross_unit_gate(self, unit: dict[str, Any]) -> bool | None:
+        """For a unit with a curated selection in a download group of several such units: wait until every sibling still
+        on its way is preflighted (the unit leaves the hand meanwhile, uncounted), then have Interactive's cross-unit
+        check judge the group's manifests once (rules P, C and D) and end a refused unit with no retry. None where the
+        unit goes on to its metadata."""
+        if self._selection(unit) is None or unit["role"] == "split_part":
+            return None
+        siblings = [item for item in self._group_members(unit) if self._selection(item) is not None]
+        if not siblings:
+            return None
+        group = _group(unit)
+        verdict = None
+        last = None
+        for event in self.ledger.events("cross_unit_verdict"):
+            detail = _loads(event["detail_json"])
+            if detail.get("group") == group:
+                last = detail
+        if last is not None and unit["manifest_path"] in (last.get("manifest_paths") or []):
+            verdict = last
+        if verdict is None:
+            waiting = []
+            for item in siblings:
+                state = item["resume_state"] if item["state"] in ledger_module.WAITING_STATES else item["state"]
+                held = item["state"] in ("contract_held", "gate_held", DISPOSITION_HELD)
+                if state in self._BEFORE_PREFLIGHT and item["state"] not in ledger_module.TERMINAL_STATES and not held:
+                    waiting.append(item["unit_key"])
+            if waiting:
+                due = self.now() + timedelta(seconds=float(self.policy.poll_seconds))
+                self._move(unit, "waiting_retry", resume_state="preflighted", next_attempt_at=policy.iso(due),
+                           detail={"waiting_for_group_preflight": sorted(waiting), "group": group})
+                return True
+            # The siblings that hold a unit manifest and did not end without outputs: the held ones among them, whose
+            # files are the group's all the same.
+            members = [unit] + [item for item in siblings if item["manifest_path"] and Path(str(item["manifest_path"])).is_file()
+                                and (item["state"] not in ledger_module.TERMINAL_STATES or item["state"] == "done")]
+            paths = [str(item["manifest_path"]) for item in members]
+            attempt = self.ledger.open_attempt(unit["unit_key"], "cross_unit_check", self.stamp(),
+                                               tool="msdial_repository_cross_unit_check", arguments={"manifest_paths": paths})
+            result = self.ports.interactive.cross_unit_check(manifest_paths=paths)
+            if result.get("ok") is False:
+                self._fail(unit, step="cross_unit_check", result=result, retry_state="preflighted", attempt_id=attempt)
+                return True
+            by_path = {str(item["manifest_path"]): item["unit_key"] for item in members}
+            refused: dict[str, dict[str, Any]] = {}
+            for item in list(result.get("units") or []) + list(result.get("refused") or []):
+                if not isinstance(item, Mapping):
+                    continue
+                said = str(item.get("verdict") or ("refused" if item.get("reason_code") else "pass"))
+                key = by_path.get(str(item.get("manifest_path") or "")) or str(item.get("unit_key") or "")
+                if said != "pass" and key:
+                    refused[key] = {"reason_code": str(item.get("reason_code") or "cross_unit_refused"),
+                                    "rule": item.get("rule"), "with": item.get("with") or item.get("duplicate_of")}
+            verdict = {"standing": curated.DETERMINISTIC_CHECK, "group": group, "manifest_paths": paths,
+                       "units": sorted(by_path.values()), "verdict": "refused" if refused else "pass", "refused": refused,
+                       "interactive_verdict": result.get("verdict")}
+            self.ledger.close_attempt(attempt, "ok", self.stamp(), detail=self.redact({"verdict": verdict["verdict"], "refused": refused}))
+            self._event("cross_unit_verdict", verdict, unit["unit_key"])
+        mine = (verdict.get("refused") or {}).get(unit["unit_key"])
+        if mine:
+            return self._terminal_refusal(unit, {**mine, "retryable": False, "source": "cross_unit_check"}, mine,
+                                          step="cross_unit_check")
+        return None
+
     def _state_preflighted(self, unit: dict[str, Any]) -> bool:
         """The analysis CSV and the reviewed metadata, with the approved Class applied (boundary 3). A DDA unit
-        deposited as both .wiff2 and .wiff is first switched to its .wiff (_wiff_first), once."""
+        deposited as both .wiff2 and .wiff is first switched to its .wiff (_wiff_first), once. A unit with a curated
+        selection first passes the cross-unit check of its download group (_cross_unit_gate)."""
+        gated = self._cross_unit_gate(unit)
+        if gated is not None:
+            return gated
         self._require("3")
         self._wiff_first(unit)
         attempt = self.ledger.open_attempt(unit["unit_key"], "prepare_metadata", self.stamp(), tool="msdial_prepare_repository_reanalysis")

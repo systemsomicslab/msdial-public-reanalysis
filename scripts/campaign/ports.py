@@ -387,14 +387,22 @@ class PinReader:
 # ---- Interactive -----------------------------------------------------------------------------------
 
 def _exception_result(error: BaseException, tool: str) -> dict[str, Any]:
-    """What a tool raised past its own structured-error wrapper (a RuntimeError, say), as ok:false."""
-    return {
+    """What a tool raised past its own structured-error wrapper (a RuntimeError, say), as ok:false. An error that
+    carries a reason code and whether a retry could change it (Interactive's refusals of a curated selection or of
+    another unit's inputs, raised before any byte moves) keeps both, so the runner ends such a unit instead of
+    retrying it (policy.not_retryable)."""
+    result = {
         "ok": False,
         "reason": "exception",
         "error_type": type(error).__name__,
         "detail": str(error) or type(error).__name__,
         "tool": tool,
     }
+    for name in ("reason_code", "retryable"):
+        value = getattr(error, name, None)
+        if value is not None:
+            result[name] = value
+    return result
 
 
 class _ToolRefusal(Exception):
@@ -501,13 +509,18 @@ class InteractivePort:
     def download(
         self, *, repository: str, accession: str, workspace_root: str, maximum_gb: float,
         raw_retention_policy: str, handoff_path: str, analysis_purpose: str, authorization_path: str,
+        **curated: Any,
     ) -> dict[str, Any]:
+        """The download (boundary 1). `curated` are the curated selection's arguments (curated_selection_path,
+        original_handoff_sha256, and for a child or a reopened unit curated_selection_child_key and
+        workspace_unit_key): passed as required, never optional, so an Interactive that cannot apply the selection
+        refuses the call (a contract hold) instead of running the unit on its whole study's files."""
         result = self._call(
             "msdial_download_repository_raw",
             repository=repository, accession=accession, workspace_root=workspace_root,
             maximum_gb=float(maximum_gb), raw_retention_policy=raw_retention_policy, allow_preflight=True,
             confirmed=False, analysis_unit_handoff_path=handoff_path, analysis_purpose=analysis_purpose,
-            campaign_authorization_path=authorization_path,
+            campaign_authorization_path=authorization_path, **curated,
         )
         if result.get("ok") is False:
             return result
@@ -523,6 +536,12 @@ class InteractivePort:
                 "maximum_gb": preview.get("maximum_gb"),
             }
         return {"ok": False, "reason": "not_authorized", "detail": str(result.get("message") or "The download did not start.")}
+
+    def cross_unit_check(self, *, manifest_paths: list[str]) -> dict[str, Any]:
+        """Interactive's cross-unit attribution check over the manifests of one download group (rules P, C and D of
+        the integration contract's A5), once every member is preflighted. A tool this Interactive lacks is a
+        contract mismatch (reason unsupported), never a pass."""
+        return self._call("msdial_repository_cross_unit_check", manifest_paths=list(manifest_paths))
 
     def job(self, job_id: str) -> dict[str, Any]:
         result = self._call("msdial_interactive_job", job_id=job_id, detail=True, log_lines=20)
@@ -972,6 +991,9 @@ def decide_class(catalog: Any, unit_id: str, purpose: str) -> dict[str, Any]:
         return {
             "kind": "proposal", "proposal_id": proposal.proposal_id, "selected_fields": list(proposal.selected_fields),
             "assignment_count": len(proposal.assignments), "reason": decision.get("reason", ""),
+            # Each sample's Class, for the plan to cut to a triage's kept rows (curated.class_on_rows); not written
+            # into the manifest.
+            "assignments": [[item.sample_id, item.class_label] for item in proposal.assignments],
         }
     record, decision = class_selection.abstention_record(unit, purpose)
     if record is None:
@@ -979,6 +1001,7 @@ def decide_class(catalog: Any, unit_id: str, purpose: str) -> dict[str, Any]:
     return {
         "kind": "abstention", "proposal_id": record.proposal_id, "selected_fields": [],
         "assignment_count": len(record.assignments), "reason": decision.get("reason", ""),
+        "assignments": [[item.sample_id, item.class_label] for item in record.assignments],
     }
 
 

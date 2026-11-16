@@ -621,7 +621,7 @@ class Ledger:
         groups: list[dict[str, Any]],
         now: str,
         *,
-        events: Iterable[tuple[str, Mapping[str, Any]]] = (),
+        events: Iterable[tuple[Any, ...]] = (),
     ) -> None:
         """Record the approved campaign, its approval, its download groups and its units, each unit pending.
 
@@ -676,9 +676,10 @@ class Ledger:
                     "INSERT INTO transition(unit_key, at, from_state, to_state, detail_json) VALUES (?, ?, NULL, 'pending', ?)",
                     (unit["unit_key"], now, _json({"planned": True})),
                 )
-            for kind, detail in events:
-                db.execute("INSERT INTO campaign_event(at, kind, detail_json) VALUES (?, ?, ?)",
-                           (now, kind, _json(dict(detail))))
+            for kind, detail, *unit_key in events:
+                # (kind, detail) or (kind, detail, unit_key): approve's decision events name their unit.
+                db.execute("INSERT INTO campaign_event(at, kind, unit_key, detail_json) VALUES (?, ?, ?, ?)",
+                           (now, kind, unit_key[0] if unit_key else None, _json(dict(detail))))
 
     def campaign(self) -> dict[str, Any]:
         row = self.connection.execute("SELECT * FROM campaign").fetchone()
