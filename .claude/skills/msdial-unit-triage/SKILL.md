@@ -1,12 +1,20 @@
 ---
 name: msdial-unit-triage
-description: Triage one public-repository accession before download - decide, for each Catalog analysis unit, which sample rows and archive members it keeps, from Catalog rows and attributes, mwTab sample and factor lines, folder and file-name tokens and a zip member listing; write one msdial-unit-triage.v1 file per unit and check the set with scripts/validate-triage.py. Use before planning or downloading any accession with more than one analysis unit, or any unit whose rows may mix polarity, chromatography or acquisition.
+description: Triage one public-repository accession before download - decide, for each Catalog analysis unit, which sample rows and archive members it keeps, from Catalog rows and attributes, mwTab sample and factor lines, folder and file-name tokens and a zip member listing; write one msdial-unit-triage.v2 file per unit, with a confidence and a rationale for every decision, for scripts/validate-triage.py to check. Use before planning or downloading any accession with more than one analysis unit, or any unit whose rows may mix polarity, chromatography or acquisition.
 argument-hint: "<accession> [--triage-dir <dir>]"
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Write
+  - mcp__msdial-repository-catalog__msdial_catalog_status
+  - mcp__msdial-repository-catalog__msdial_catalog_search
+  - mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit
 ---
 
 # MS-DIAL unit triage
 
-Skill version: **1.0.0** (write it as `decided_by.skill_version`).
+Skill version: **1.1.0** (write it as `decided_by.skill_version`).
 
 ## Why this exists
 
@@ -19,13 +27,14 @@ came from a single decision, made by folder name over byte-identical content. Th
 with the failure modes turned into rules. The validator then checks the result deterministically before
 anything is planned.
 
-The triage is stage A of the campaign design:
+The triage is stage A of the campaign design (docs/llm-assisted-curation.md):
 
 | Stage | Who | What |
 |---|---|---|
-| A | agent + this skill | `triage/<accession>/<unit_id>.json` per unit (msdial-unit-triage.v1) |
+| A | agent + this skill | `triage/<accession>/<unit_id>.json` per unit (msdial-unit-triage.v2) |
+| A' | the wrapper (`scripts/run-triage-agent.py`) | `<unit_id>.record.json` beside it (msdial-llm-decision-record.v1), from the harness transcript |
 | B | `scripts/validate-triage.py` | pass / hold / error for the accession |
-| C | person | answers the `needs_person` questions and B's holds |
+| C | person | answers the `needs_person` questions and B's holds (`person_answer` entries of the review log) |
 | D | plan | manifest carries the triage path and sha256; the person approves its digest |
 | F | header preflight | reconciled against the triage; disagreements go back to C |
 
@@ -33,33 +42,57 @@ Everything a triage file says is a **model inference** (`"standing": "model_infe
 accepted decision only when a person approves the manifest digest that carries it. Never describe a triage
 as decided, accepted or confirmed.
 
+## Allowed tools
+
+The triage uses only the tools in this file's `allowed-tools` list, and `scripts/validate-triage.py` refuses
+a decision record whose `tool_calls` name any other:
+
+| Tool | For |
+|---|---|
+| `Read`, `Glob`, `Grep` | this skill, the rendered task prompt and the input directory (handoffs, mwTab text, archive listings) |
+| `Write` | the triage payloads, `<unit_id>.json` (or a revision `<unit_id>.r<N>.json`), in the output directory only |
+| `msdial_catalog_status`, `msdial_catalog_search`, `msdial_catalog_get_analysis_unit` (server `msdial-repository-catalog`) | the Catalog's units, rows, files and attributes, read only |
+
+No shell, no web fetch, no other MCP server, no Catalog or Interactive tool that writes. The archive
+listing and the mwTab text are fetched before the session by the wrapper (the listing from the zip central
+directory, `msdial_list_remote_archive`), and the Catalog handoffs are made before it too; all of them
+are in the input directory, so every byte the decision rests on is hashed in the decision record. If an
+input is missing, go without it and say so (`evidence_sources`, `needs_person`); never fetch it another
+way.
+
 ## Boundaries
 
 - **Read only.** No raw-data download, no MS-DIAL run, no Catalog write (no Class proposal or abstention
-  save, no run record), no Interactive plan or download call with `confirmed=true`.
+  save, no run record, no handoff), no Interactive plan or download call, and no tool with `confirmed=true`.
 - **The Class is not the triage's.** The triage runs before any Class is saved and binds only the evidence it
   read: the Catalog's rows, files and listing, the repository's declarations, the archive listing. Never read
-  or cite the handoff's `class_proposal` (its assignments, labels, contrast, status or ratification), and never
-  bind it as a decision-record input: the Class is settled and ratified afterwards and binds through its own
-  ratification (WS0 decision F). The validator refuses a triage that cites it (`T-CLASS`).
-- **Before download means before download.** The only remote read of an archive allowed here is its zip
-  central directory by HTTP Range requests, a few hundred KB per archive at most, with a generic
-  User-Agent and no personal details, through a tool built for it. Until that tool exists, use an
-  archive-members TSV that is already on disk (and say it was written after an earlier download), or go
-  without a listing. Never download an archive to list it. Without a listing the validator holds every
-  unit, because byte-identical content cannot be ruled out; going on without one is a person's decision.
-- **Write only triage files**, into the triage directory you were given, one directory per accession (in a
-  campaign: `<campaign dir>\triage\<accession>\`). Never edit a Catalog handoff, a manifest or a ledger.
-- Use an existing Catalog handoff (the campaign's `handoffs\<unit_id>\`). If a unit has none, ask before
-  calling `msdial_catalog_reanalysis_handoff`.
-- Private MSP or LBM2 libraries play no part in triage. Never name their paths in a triage file.
-- Be gentle with public servers: one mwTab fetch per analysis, no crawling, no retries in a loop.
+  or cite the handoff's `class_proposal` (its assignments, labels, contrast, status or ratification), or the
+  `class_proposal:*` blocking reasons, and never bind it as a decision-record input: the Class is settled and
+  ratified afterwards and binds through its own ratification (WS0 decision F). Read the sample rows from the
+  handoff's `samples.json` (or its `sample_metadata`) and the files from `files.json`; read `handoff.json`
+  only for the unit, the accession and `technical_settings`. The validator refuses a triage that cites the Class (`T-CLASS`).
+- **Before download means before download.** The only archive evidence is the member listing in the input
+  directory, read remotely from the zip central directory before the session. Never download an archive to
+  list it. A listing written after an extraction is not pre-download evidence: say so in `evidence_sources`.
+  Without a listing the validator holds every unit, because byte-identical content cannot be ruled out;
+  going on without one is a person's decision.
+- **Write only triage payloads**, into the output directory you were given (in a campaign:
+  `<campaign dir>\triage\<accession>\`). A payload is immutable once written: a later change is a revision
+  `<unit_id>.r<N>.json`, never an edit. Never write a decision record, the review log, a Catalog handoff, a
+  manifest or a ledger; the wrapper and the runner write those.
+- **Clean context.** In a campaign the triage runs in a clean harness configuration: a working directory
+  that holds only this skill, no user or project `CLAUDE.md`, no memory, no hooks, and only the
+  `msdial-repository-catalog` MCP server. What you know beyond the skill, the prompt and the inputs is not
+  evidence. Do not cite it.
+- Private MSP or LBM2 libraries play no part in triage. Never name their paths, and never write an absolute
+  path, a user name or an e-mail address into a triage file: payloads are released byte for byte.
 
 ## Evidence, strongest first
 
 1. **Repository declarations** (`basis: declared`):
-   - the mwTab `MS_METABOLITE_DATA` **Samples** line of each analysis
-     (`https://www.metabolomicsworkbench.org/rest/study/analysis_id/<AN>/mwtab/txt`). When each analysis
+   - the mwTab `MS_METABOLITE_DATA` **Samples** line of each analysis (the input directory's
+     `<AN>.mwtab.txt`, from
+     `https://www.metabolomicsworkbench.org/rest/study/analysis_id/<AN>/mwtab/txt`). When each analysis
      names its own sample columns, that settles membership (ST003128: SP_, S_ and SL_ each belong to one
      analysis);
    - Catalog row attributes that state the arm: `Mode` ("C18 Negative", "HILIC Positive"),
@@ -80,13 +113,30 @@ Sizes, timestamps and parity of injection numbers describe files; they do not sa
 belongs to. Use them as support for a reading the names or declarations already give, never as its only
 basis.
 
+## Confidence and rationale
+
+Every item of `rows`, `added_members`, `excluded_rows` and `excluded_members`, and the unit itself, carries
+a `confidence` and a `rationale`:
+
+- `high`: the evidence settles it (a declaration names the file's arm, or a name token and the declared
+  settings agree and nothing in the listing contradicts them);
+- `medium`: the evidence supports it and nothing contradicts it, but no declaration settles it;
+- `low`: a reading the evidence allows but does not settle.
+
+The `rationale` is plain language, one or two sentences: what was decided and which evidence decided it
+(for example "Kept: the row's Mode attribute is C18 Negative and the member sits under RP_NEG/"). It does
+not replace `evidence`, which names the source, field and value.
+
+A kept file with `basis: inferred` and `confidence: low` cannot be `ready`: the validator holds the unit
+for a person. Rather than keep such a file in a ready unit, ask (`needs_person`) or abstain.
+
 ## Procedure
 
-1. **Purpose.** Copy the person's stated `analysis_purpose` into `purpose`, verbatim, or write `null`.
-   Never invent one.
+1. **Purpose.** Copy the `analysis_purpose` the task prompt states into `purpose`, verbatim, or write
+   `null`. Never invent one.
 2. **Enumerate** every Catalog unit of the accession. For each, record the handoff's sha256
-   (`catalog_handoff_sha256`), its row count (`catalog_row_count`) and its declared settings, copied as
-   they read, in `unit_technical.declared`.
+   (`catalog_handoff_sha256`, the sha256 of `handoff.json` as the input directory holds it), its row count
+   (`catalog_row_count`) and its declared settings, copied as they read, in `unit_technical.declared`.
 3. **Read the declarations** above, then the listing, then the names. Work out the accession's structure
    once (which folders, prefixes or tokens mark which arm), then apply it to every unit.
 4. **Every Catalog row** goes into exactly one of the unit's `rows` (kept) or `excluded_rows` (with a
@@ -104,13 +154,15 @@ basis.
    `.xlsx`, `.Rhistory`), `alternative_format_copy` (an mzML copy beside the vendor files),
    `requires_conversion` (mzXML, mzData), or `duplicate_content`.
 7. **Per kept file**, set `ion_mode`, `chromatography` (HILIC, RP, normal_phase, other, unknown),
-   `acquisition_mode` (DDA, DIA, SWATH, AIF, MS1, targeted_DDA, unknown), `role`, `basis` and at least one
-   `evidence` item `{source, field, value}`.
-8. **Flags, questions and status**, by the rules below.
-9. **Write** one `<unit_id>.json` per unit and run the validator (below). Fix every error and run it again.
-   A hold is not a failure. It is the review queue.
-10. **Report** per unit: status, rows kept and dropped, the questions for the person, and the validator's
-    verdict. Keep source facts, inferences and open decisions apart.
+   `acquisition_mode` (DDA, DIA, SWATH, AIF, MS1, targeted_DDA, unknown), `role`, `basis`, at least one
+   `evidence` item `{source, field, value}`, a `confidence` and a `rationale`.
+8. **Flags, questions and status**, by the rules below, and the unit's `confidence` and `rationale`.
+9. **Write** one `<unit_id>.json` per unit (msdial-unit-triage.v2, `schemas/msdial-unit-triage.v2.json`)
+   into the output directory. The validator runs after the session (the wrapper runs it, or the operator
+   in an interactive session); an error makes the unit a revision, a hold is the review queue, not a
+   failure.
+10. **Report** per unit: status, confidence, rows kept and dropped, the questions for the person. Keep
+    source facts, inferences and open decisions apart.
 
 ## Hard rules
 
@@ -152,14 +204,21 @@ basis.
    the Catalog.
 8. **Say where pre-download evidence came from.** A member listing written after an extraction is not
    pre-download evidence. Say so in `evidence_sources`.
-9. **Answers are a person's.** `person_answers` holds only what a named person said in the conversation,
-   with their name. The agent never writes an answer for itself.
+9. **Answers are a person's.** A v2 payload has no `person_answers`. A person's answer is a `person_answer`
+   entry of the accession's `review-log.jsonl`, written by the runner from a request that names that person
+   and carries their words verbatim; the agent never writes one, and never writes the review log. A blocking
+   flag stays on the payload; a unit is `ready` with it only once the review log holds a person's answer to
+   that flag's code for this payload or one it supersedes.
+10. **Revisions.** A revision is a new file `<unit_id>.r<N>.json`, written only when the task prompt asks for
+    one and names its cause (a `person_answer`, a header reconciliation or a validator verdict). It may drop
+    a blocking flag only when the cause is a person's answer to that flag's code. The wrapper writes its
+    decision record and the review log's `revision` entry.
 
 ## Status
 
 | status | meaning | validator |
 |---|---|---|
-| `ready` | the selection can go to the plan; no question open, no blocking flag unanswered | pass |
+| `ready` | the selection can go to the plan; no question open, no blocking flag unanswered, no kept file inferred at low confidence | pass |
 | `needs_person` | at least one question in `needs_person` | hold |
 | `abstained` | nothing assigned, because names give no signal | hold |
 | `out_of_scope` | outside the campaign (MS1 only, polarity switching, GC, SRM); a person accepts the exclusion | hold |
@@ -171,6 +230,7 @@ basis.
     --catalog <campaign handoffs dir>          (or a catalog.json in the eval-fixture shape)
     --archive-listing <archive-members.tsv>    (repeat per archive)
     [--json] [--ground-truth <ground_truth.json>]
+    [--code-root <released code>] [--release-bundle <bundle>] [--emit-selection]
 ```
 
 The handoffs directory may hold many accessions; only the triaged accession's units are checked, and one
@@ -178,7 +238,8 @@ of them with no triage file holds. Use an absolute interpreter path on this mach
 `python`. Exit status: 0 pass, 1 hold, 2 error. A check that cannot run is not passed: without `--catalog`,
 or without `--archive-listing`, every unit holds. It checks:
 
-- the schema (`schemas/msdial-unit-triage.v1.json`), one accession per directory, files named by unit;
+- the schema (`schemas/msdial-unit-triage.v1.json` or `.v2.json`, by the payload's `schema`), one accession
+  per directory, files named by unit; a v1 payload is reported `rationale_not_recorded`;
 - that every Catalog row is kept or excluded exactly once, matches the handoff row for row, and that the
   handoff sha256 is the one triaged;
 - that no file is in two units without `shared_with` on both, and names every set of units that keep an
@@ -198,10 +259,19 @@ or without `--archive-listing`, every unit holds. It checks:
   tokens, children's polarity against the unit's, and raw-header evidence against the row;
 - that no unit outside `out_of_scope` keeps mzXML or mzData;
 - that MS1-only, targeted, mixed-acquisition and polarity-switching files are flagged, that `ready` has no
-  open question or unanswered blocking flag, and that nothing ready rests on size or timestamp alone;
+  open question or unanswered blocking flag (answers from the review log for v2), that nothing ready rests
+  on size or timestamp alone, and that no kept file of a ready unit is inferred at low confidence (hold);
+- that no evidence and no decision-record input cites the Class (`T-CLASS`);
+- the decision record beside each payload (a v2 payload without one holds): `decision_id` and
+  `payload.sha256`, every input's sha256 and bytes, `SKILL.md` at `repo_commit`, the prompt template and the
+  rendered prompt, every tool result, the tool calls against this skill's `allowed-tools`, the released
+  transcript where there is one, and a clean context (else a hold);
+- that a revision drops a blocking flag only on a person's answer its review-log cause cites;
 - members that exist in the listing but that no unit kept or excluded (hold).
 
 An error means the triage must be redone. A hold goes to the person's queue with its questions.
+`--emit-selection` adds each unit's selection (`selection_sha256` over the listing its record binds) to the
+report and appends a `validator_verdict` per decision to the accession's review log.
 
 ## Eval
 

@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/systemsomicslab/msdial-public-reanalysis/schemas/msdial-llm-decision-record.v1.json",
+  "title": "MS-DIAL LLM decision record (envelope), version 1",
+  "description": "The envelope of one decision a language model agent wrote (docs/llm-assisted-curation.md section 2.3). The model writes only the payload; the wrapper that launched the agent (scripts/run-triage-agent.py) writes this record from the harness's own transcript after the session ends, so tool_calls is never a list the model reports about itself. It sits beside its payload as <payload name>.record.json, and every path in it is relative to the record's own directory except skill.path and prompt.template_path, which are relative to the reanalysis repository at skill.repo_commit. It never holds an absolute path: the release copies it byte for byte. scripts/validate-triage.py recomputes every sha256 and byte count it names.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "decision_id",
+    "kind",
+    "accession",
+    "unit_id",
+    "payload",
+    "supersedes",
+    "inputs",
+    "skill",
+    "prompt",
+    "agent",
+    "started_at",
+    "finished_at",
+    "tool_calls",
+    "transcript",
+    "rationale"
+  ],
+  "properties": {
+    "schema": {"const": "msdial-llm-decision-record.v1"},
+    "decision_id": {"description": "sha256 of the payload's bytes (equal to payload.sha256).", "$ref": "#/$defs/sha256"},
+    "kind": {"enum": ["unit_triage", "metadata_interpretation", "class_proposal", "question"]},
+    "accession": {"type": "string", "minLength": 1},
+    "unit_id": {"type": ["string", "null"], "minLength": 1},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "schema", "sha256"],
+      "properties": {
+        "path": {"description": "The payload's file name, beside this record.", "type": "string", "minLength": 1},
+        "schema": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "supersedes": {
+      "description": "The decision_id of the payload this one revises (<unit_id>.r<N>.json), or null for a first decision.",
+      "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "inputs": {
+      "description": "Every input the agent read, copied under inputs\\ and hashed, so a later change at the repository cannot change what the decision rested on.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/input"}
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "path", "sha256", "repo_commit"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "path": {"description": "SKILL.md, relative to the repository.", "type": "string", "minLength": 1},
+        "sha256": {"description": "sha256 of SKILL.md at repo_commit.", "$ref": "#/$defs/sha256"},
+        "repo_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template_path", "template_sha256", "rendered_path", "rendered_sha256"],
+      "properties": {
+        "template_path": {"description": "The template, relative to the repository (prompts/unit-triage-task.v1.md).", "type": "string", "minLength": 1},
+        "template_sha256": {"$ref": "#/$defs/sha256"},
+        "rendered_path": {"description": "The prompt the agent was given, relative to this record.", "type": "string", "minLength": 1},
+        "rendered_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "harness_version", "model_id", "sampling", "session_id", "context"],
+      "properties": {
+        "harness": {"type": "string", "minLength": 1},
+        "harness_version": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "sampling": {"type": "string", "minLength": 1},
+        "session_id": {"type": "string", "minLength": 1},
+        "context": {"$ref": "#/$defs/context"}
+      }
+    },
+    "started_at": {"type": "string", "format": "date-time", "minLength": 10},
+    "finished_at": {"type": "string", "format": "date-time", "minLength": 10},
+    "tool_calls": {
+      "description": "Every tool call the harness transcript shows, in order, with its arguments (secrets removed, paths portable) and its result stored under inputs\\<unit_id>\\calls\\<seq>.json.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/tool_call"}
+    },
+    "transcript": {
+      "anyOf": [{"type": "null"}, {"$ref": "#/$defs/transcript"}]
+    },
+    "rationale": {"description": "Plain language summary of the decision.", "type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "sha256", "bytes"],
+      "properties": {
+        "role": {
+          "enum": [
+            "catalog_handoff",
+            "catalog_samples",
+            "catalog_files",
+            "catalog_analysis_inputs",
+            "catalog_unit",
+            "archive_listing",
+            "metadata_text",
+            "repository_page",
+            "other"
+          ]
+        },
+        "path": {"description": "Relative to this record's directory.", "type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "source": {"type": "string", "minLength": 1},
+        "catalog_version": {"type": "string", "minLength": 1},
+        "retrieved_at": {"type": "string", "minLength": 10},
+        "source_url": {"type": "string", "minLength": 1},
+        "retrieval": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "tool"],
+          "properties": {
+            "method": {"enum": ["remote_central_directory", "download_store", "other"]},
+            "tool": {"type": "string", "minLength": 1},
+            "url": {"type": ["string", "null"]},
+            "archive_bytes": {"type": ["integer", "null"], "minimum": 0},
+            "etag": {"type": ["string", "null"]},
+            "last_modified": {"type": ["string", "null"]},
+            "range_bytes_read": {"type": ["integer", "null"], "minimum": 0}
+          }
+        }
+      }
+    },
+    "context": {
+      "description": "The harness configuration the agent ran in. Anything but configuration clean, an empty context_files, memory disabled and no hooks is a hold.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configuration", "working_directory", "context_files", "memory", "hooks", "mcp_servers", "harness_flags"],
+      "properties": {
+        "configuration": {"type": "string", "minLength": 1},
+        "working_directory": {"description": "A description of the directory, never an absolute path.", "type": "string", "minLength": 1},
+        "context_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256"],
+            "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+          }
+        },
+        "memory": {"type": "string", "minLength": 1},
+        "hooks": {"type": "array", "items": {"type": "string"}},
+        "mcp_servers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version"],
+            "properties": {"name": {"type": "string", "minLength": 1}, "version": {"type": ["string", "null"]}}
+          }
+        },
+        "harness_flags": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "tool", "arguments", "status", "result_path", "result_sha256"],
+      "properties": {
+        "seq": {"type": "integer", "minimum": 1},
+        "tool": {"description": "The tool's name as the harness called it (mcp__<server>__<tool>) or its bare name.", "type": "string", "minLength": 1},
+        "arguments": {"type": "object"},
+        "status": {"enum": ["ok", "error"]},
+        "result_path": {"type": ["string", "null"], "minLength": 1},
+        "result_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "released_path", "unredacted_sha256", "redaction"],
+      "properties": {
+        "sha256": {"description": "sha256 of the released redacted transcript's bytes.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "released_path": {"description": "Relative to this record, or to the release bundle's root.", "type": ["string", "null"]},
+        "unredacted_sha256": {"description": "Kept locally; not verifiable from the bundle.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "redaction": {"type": ["string", "null"]}
+      }
+    }
+  }
+}
