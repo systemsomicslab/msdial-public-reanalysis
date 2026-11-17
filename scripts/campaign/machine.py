@@ -170,11 +170,13 @@ Interactive's own value: the class_proposal, the Class-derived blocking_reasons 
 ready_for_download_planning where no other blocking reason changed). The triage runs before the Class is saved, and the
 Class binds through its own ratification: the copy's class_proposal must be the approved proposal, accepted and
 ratified under this campaign's approval (curated.class_binding; another proposal stops the unit, class_digest_changed,
-and an unratified one is held, class_not_ratified, and rechecked from pending), beside _state_pending's class-digest
-drift stop. The triaged bytes are read from the decision record's catalog_handoff input or the accession's
-inputs\\<unit_id>\\handoff.json and kept beside the copy (handoff.triaged.json); a handoff that differs in anything
-else, or whose triaged bytes are not kept, is held for a person (contract_held, triage_handoff_changed), never passed
-on its rows (WS0 decision 7). The download passes Interactive curated_selection_path (the copy), decision_record_path
+and an unratified one, or a copy with no class_proposal key at all, is held, class_not_ratified, and rechecked from
+pending), beside _state_pending's class-digest drift stop. The Class is checked in the bytes copy_handoff hashed
+(copy_sha256), and the download start hashes the copy and its sidecars again: one changed since is held
+(contract_held, handoff_copy_changed) and rechecked from class_settled, which takes the handoff again. The triaged
+bytes are read from the decision record's catalog_handoff input or the accession's inputs\\<unit_id>\\handoff.json and
+kept beside the copy (handoff.triaged.json); a handoff that differs in anything else, or whose triaged bytes are not
+kept, is held for a person (contract_held, triage_handoff_changed), never passed on its rows (WS0 decision 7). The download passes Interactive curated_selection_path (the copy), decision_record_path
 (the original record, beside the inputs\\ it binds), original_handoff_sha256 (the triaged handoff's),
 original_handoff_path (the triaged bytes: the Catalog's as taken where they are those, else handoff.triaged.json) and
 curated_selection_validator, so an Interactive that cannot apply the selection refuses
@@ -279,6 +281,9 @@ CONTRACT_HELD_WARNING = (
     "unit goes no further, its raw data are kept and nothing is counted against it. The step it was held at "
     "is made again at the runner's next start, every few hours while it runs and at an operator's recheck-held"
 )
+# The hold of a curated unit whose handoff copy (or a sidecar it names) no longer hashes to what the handoff step
+# recorded (ports.copy_handoff) and checked (curated.class_binding): the download never passes a copy nobody checked.
+HANDOFF_COPY_CHANGED = "handoff_copy_changed"
 # The flag on a failed production attempt whose Console could not select anchors for automatic RT correction,
 # and what the status export says of a unit whose later attempts therefore ran without it.
 AUTOMATIC_RT_FAILED = "automatic_rt_correction_failed"
@@ -804,10 +809,22 @@ class Runner:
         # WS0 decision F: the Class binds through its own ratification, not through the triage. The copy's Class must be
         # the approved proposal, accepted and ratified under this campaign's approval (the record _state_pending's
         # boundary-3 save wrote); checked in every case, a byte-identical handoff included.
+        # The bytes read are the ones copy_handoff hashed (copy_sha256), which the download start checks again
+        # (_handoff_copy_change): what is checked here is what Interactive is given.
         try:
-            taken = json.loads(Path(str(record.get("copy_path") or "")).read_bytes().decode("utf-8-sig"))
-        except (OSError, UnicodeDecodeError, ValueError) as error:
+            data = Path(str(record.get("copy_path") or "")).read_bytes()
+        except OSError as error:
+            data = None
             taken = {"class_proposal": None, "_unreadable": type(error).__name__}
+        if data is not None and curated.sha256_bytes(data) != str(record.get("copy_sha256") or ""):
+            return {**out, "refused": True, "hold": True, "reason": HANDOFF_COPY_CHANGED, "resume_state": "class_settled",
+                    "copy_sha256": record.get("copy_sha256"), "found_sha256": curated.sha256_bytes(data),
+                    "detail": "the handoff copy changed between its copy and its check"}
+        if data is not None:
+            try:
+                taken = json.loads(data.decode("utf-8-sig"))
+            except (UnicodeDecodeError, ValueError) as error:
+                taken = {"class_proposal": None, "_unreadable": type(error).__name__}
         bound = curated.class_binding(taken if isinstance(taken, Mapping) else {"class_proposal": None},
                                       unit_id=unit["catalog_unit_id"], approved_proposal_id=unit["approved_class_digest"],
                                       ratification=self._class_ratification(unit))
@@ -893,6 +910,35 @@ class Runner:
             if attempt["step"] == "handoff" and attempt["outcome"] == "ok":
                 return dict(_loads(attempt["detail_json"]).get("copy") or {})
         return {}
+
+    def _handoff_copy_change(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Whether the handoff copy the download passes (and the sidecars it names) still hash to what the handoff step
+        recorded (ports.copy_handoff's copy_sha256 and each sidecar's), or what differs. The handoff step checked the
+        Class in those bytes (curated.class_binding); a copy edited afterwards would reach Interactive with a Class
+        nobody checked, so the download start holds the unit instead (handoff_copy_changed) and its recheck takes the
+        handoff again. None where every file is as recorded."""
+        recorded = self._handoff_copy_record(unit)
+        path = Path(str(unit.get("handoff_path") or ""))
+        expected = str(recorded.get("copy_sha256") or "")
+        if not expected:
+            return {"file": "handoff.json", "detail": "the handoff step recorded no sha256 of the handoff copy"}
+        if str(recorded.get("copy_path") or "") and str(path) != str(recorded["copy_path"]):
+            return {"file": "handoff.json", "detail": "the unit's handoff path is not the copy the handoff step recorded"}
+        checks: list[tuple[str, Path, str]] = [("handoff.json", path, expected)]
+        for key, name in (("file_manifest_path", "files.json"), ("sample_table_path", "samples.json"),
+                          ("analysis_input_manifest_path", "inputs.json")):
+            sidecar = (recorded.get("sidecars") or {}).get(key)
+            if isinstance(sidecar, Mapping):
+                checks.append((name, path.parent / name, str(sidecar.get("copy_sha256") or "")))
+        for name, location, want in checks:
+            try:
+                found = curated.sha256_file(location)
+            except OSError as error:
+                found = f"unreadable: {type(error).__name__}"
+            if found != want:
+                return {"file": name, "copy_sha256": want, "found_sha256": found,
+                        "detail": f"the handoff copy's {name} is not the one the handoff step recorded and checked"}
+        return None
 
     def _curated_arguments(self, unit: Mapping[str, Any], selection: Mapping[str, Any]) -> dict[str, Any] | str:
         """The download's curated selection arguments (Interactive 0.5.69), or why the unit cannot pass them (a copy
@@ -1709,6 +1755,12 @@ class Runner:
         }
         selection = self._selection(unit)
         if selection is not None:
+            changed = self._handoff_copy_change(unit)
+            if changed is not None:
+                # The Class was checked in the bytes recorded at the handoff step: a copy changed since is never passed.
+                # Held, nothing downloaded; the recheck takes the handoff again and checks it again.
+                return self._contract_hold(unit, step="download_start", problem=HANDOFF_COPY_CHANGED,
+                                           resume_state="class_settled", detail=changed)
             extra = self._curated_arguments(unit, selection)
             if isinstance(extra, str):
                 return self._curated_stop(unit, "triage_digest_changed", {"detail": extra}, step="download_start")

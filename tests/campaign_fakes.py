@@ -188,10 +188,22 @@ def reconciliation_block(applied: dict[str, Any], mode: str) -> dict[str, Any]:
 
 
 def fake_handoff(unit_id: str, class_proposal_id: str, rows: list[dict[str, Any]] | None = None,
-                 extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The handoff FakeCatalog writes for a unit (deterministic, so a test can name its sha256 in a triage)."""
+                 extra: dict[str, Any] | None = None, class_proposal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The handoff FakeCatalog writes for a unit (deterministic, so a test can name its sha256 in a triage). It always
+    carries the class_proposal key, as the Catalog writes it: null before any Class is saved (the handoff a triage is
+    made from), and at run time the proposal with the ratification the runner's boundary-3 save stored
+    (fake_class_proposal)."""
     return {"analysis_unit_id": unit_id, "class_proposal_id": class_proposal_id, **dict(extra or {}),
-            **({"sample_metadata": rows} if rows is not None else {})}
+            "class_proposal": class_proposal, **({"sample_metadata": rows} if rows is not None else {})}
+
+
+def fake_class_proposal(unit_id: str, proposal_id: str, ratification: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The class_proposal FakeCatalog's plain handoff carries once save_class ratified it (catalog_ratification), in
+    the keys curated.class_binding reads; None before any save."""
+    if not ratification:
+        return None
+    return {"proposal_id": proposal_id, "unit_id": unit_id, "status": "accepted",
+            "ratified_by": ratification.get("approval_id", ""), "ratification": ratification}
 
 
 def catalog_ratification(ratification: dict[str, Any], abstention: bool, at: str) -> dict[str, Any]:
@@ -1292,6 +1304,9 @@ class FakeCatalog:
         self.class_state: dict[str, dict[str, Any]] = {}
         self.required_review: dict[str, list[str]] = {}
         self.input_issues: dict[str, list[dict[str, Any]]] = {}
+        # Units whose handoff is written with no class_proposal key at all (not the Catalog's shape, which always
+        # writes the key): the shape of a copy edited to drop the Class.
+        self.class_key_dropped: set[str] = set()
 
     def class_decision(self, unit_id: str, purpose: str) -> dict[str, Any]:
         digest = self.world.class_digest(unit_id) + ("-drifted" if unit_id in self.drift else "")
@@ -1299,9 +1314,8 @@ class FakeCatalog:
 
     def save_class(self, *, unit_id: str, purpose: str, kind: str, ratification: dict[str, Any]) -> dict[str, Any]:
         self.saved.append({"unit_id": unit_id, "kind": kind, "ratification": ratification})
-        if self.catalog_shaped:
-            self.ratifications[unit_id] = catalog_ratification(ratification, kind == "abstention",
-                                                               self.world.clock.now().isoformat())
+        self.ratifications[unit_id] = catalog_ratification(ratification, kind == "abstention",
+                                                           self.world.clock.now().isoformat())
         return {"ok": True, "proposal_id": ratification["proposal_id"]}
 
     # Catalog-shaped handoffs (WS0 decisions A and F): while set, handoff() writes what msdial_catalog_reanalysis_handoff
@@ -1320,10 +1334,18 @@ class FakeCatalog:
                                            self.world.handoff_extra.get(unit_id), status=state.get("status", "accepted"),
                                            required_review=self.required_review.get(unit_id) or (),
                                            input_issues=self.input_issues.get(unit_id) or ())
+            if unit_id in self.class_key_dropped:
+                value.pop("class_proposal", None)
             path.write_bytes(handoff_bytes(value))
             return {"ok": True, "handoff_path": str(path), "blocking_reasons": []}
-        path.write_bytes(handoff_bytes(fake_handoff(unit_id, class_proposal_id, self.world.handoff_rows.get(unit_id),
-                                                    self.world.handoff_extra.get(unit_id))))
+        # The plain handoff carries the Class as the Catalog does once the runner's boundary-3 save ratified it, so it
+        # differs from the triaged one (class_proposal null) only in what the Class decides.
+        proposal = fake_class_proposal(unit_id, class_proposal_id, self.ratifications.get(unit_id))
+        value = fake_handoff(unit_id, class_proposal_id, self.world.handoff_rows.get(unit_id),
+                             self.world.handoff_extra.get(unit_id), proposal)
+        if unit_id in self.class_key_dropped:
+            value.pop("class_proposal", None)
+        path.write_bytes(handoff_bytes(value))
         return {"ok": True, "handoff_path": str(path), "blocking_reasons": []}
 
     def copy_handoff(self, response: dict[str, Any], destination: Path) -> dict[str, Any]:

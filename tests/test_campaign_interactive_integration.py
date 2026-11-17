@@ -272,10 +272,12 @@ def triage_world(root: Path, accession: str, docs: dict[str, dict], *, record: b
                 rows[unit_id], (ratified or {}).get(unit_id), extra[unit_id], **options)
             if handoff["class_proposal"] is not None:
                 handoff["class_proposal"].update((proposal_changes or {}).get(unit_id) or {})
-            (inputs / unit_id).mkdir(parents=True, exist_ok=True)
-            (inputs / unit_id / "handoff.json").write_bytes(campaign_fakes.handoff_bytes(handoff))
         else:
+            # Made before the Class was saved (class_proposal null); the handoff taken at run time carries the Class the
+            # campaign ratified, so it is compared with these bytes in every value but what the Class decides.
             handoff = campaign_fakes.fake_handoff(unit_id, campaign_fakes.World.class_digest(unit_id), rows[unit_id], extra[unit_id])
+        (inputs / unit_id).mkdir(parents=True, exist_ok=True)
+        (inputs / unit_id / "handoff.json").write_bytes(campaign_fakes.handoff_bytes(handoff))
         doc = copy.deepcopy(doc)
         doc["catalog_handoff_sha256"] = _sha(campaign_fakes.handoff_bytes(handoff))
         path = folder / f"{unit_id}.json"
@@ -346,7 +348,7 @@ class RunnerWithInteractiveTests(cs._Root):
         # runner reads it (decision 4).
         for sent in world.interactive.curated_downloads:
             self.assertTrue(Path(sent["decision_record_path"]).parent.samefile(self.root / "triage" / "ST002747"))
-            self.assertTrue(sent["original_handoff_path"].endswith("handoff.original.json"))
+            self.assertTrue(sent["original_handoff_path"].endswith("handoff.triaged.json"))
         for key in keys:
             manifest = world.interactive.store.read(unit_row(world, key)["manifest_path"])
             block = manifest["project"]["repository_metadata"]["curated_selection"]

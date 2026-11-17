@@ -555,7 +555,10 @@ def released_catalog(bundle: Path, accession_dir: Path) -> tuple[dict[str, Any] 
     projected = released_triage_inputs(bundle)
     inputs = Path(accession_dir) / "inputs"
     handoffs = sorted(inputs.glob("*/handoff.json")) if inputs.is_dir() else []
-    named = {path: projected.get(path.relative_to(bundle).as_posix()) for path in handoffs}
+    # A triage folder outside the bundle (a campaign directory replayed with its triage kept elsewhere) holds nothing
+    # released as a projection: its handoffs are read as they are, never refused for where they are.
+    named = {path: (projected.get(path.relative_to(bundle).as_posix()) if path.is_relative_to(bundle) else None)
+             for path in handoffs}
     if not any(named.values()):
         return None, []
     units, problems = [], []
@@ -716,14 +719,15 @@ def class_binding(handoff: Mapping[str, Any], *, unit_id: str, approved_proposal
     """Whether the Class a handoff copy carries is the one this campaign ratified (WS0 decision F): the approved
     proposal (its id is the approved Class digest), saved for this unit, accepted, and ratified under this campaign's
     approval (ratified_by and the ratification record name it), a ratified abstention included. Returns {"bound",
-    "reason", "detail", "checked", ...}: reason "" where bound; "class_digest_changed" for another proposal (the drift
-    stop); "class_not_ratified" for no proposal, or the approved one saved for another unit, not accepted, or not
-    ratified under this approval. A handoff with no class_proposal key at all is not the Catalog's shape (the Catalog
-    always writes the key, null where no proposal is named): nothing is checked ("checked" false)."""
-    out: dict[str, Any] = {"bound": False, "reason": "", "detail": "", "checked": True}
+    "reason", "detail", ...}: reason "" where bound; "class_digest_changed" for another proposal (the drift stop);
+    "class_not_ratified" for no proposal, or the approved one saved for another unit, not accepted, or not ratified
+    under this approval. A handoff with no class_proposal key at all (the Catalog always writes the key, null where no
+    proposal is named) carries no Class either, so it is class_not_ratified too, never bound: a copy edited to drop the
+    key, its class_proposal:* codes and its readiness would otherwise run with no Class and no Class blocker."""
+    out: dict[str, Any] = {"bound": False, "reason": "", "detail": ""}
     if "class_proposal" not in handoff:
-        return {**out, "bound": True, "checked": False,
-                "detail": "the handoff carries no class_proposal key (not the Catalog's shape)"}
+        return {**out, "reason": "class_not_ratified", "class_proposal_key": False,
+                "detail": "the handoff carries no class_proposal key, so no Class"}
     proposal = handoff.get("class_proposal")
     if not isinstance(proposal, Mapping):
         return {**out, "reason": "class_not_ratified", "detail": "the handoff carries no Class proposal"}

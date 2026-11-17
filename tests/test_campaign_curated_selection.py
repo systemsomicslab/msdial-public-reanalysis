@@ -111,6 +111,19 @@ def aligned_docs(accession: str = ACCESSION, docs: dict | None = None, *, with_r
     return docs, rows
 
 
+def keep_triaged_handoffs(triage_root: Path, accession: str = ACCESSION, *, with_rows: bool = True) -> None:
+    """Keep, at inputs\<unit_id>\handoff.json, the handoff each aligned_docs triage was made from (class_proposal
+    null, before any Class was saved), as the framework keeps it: the handoff taken at run time carries the Class the
+    campaign ratified, and the runner compares the two in every value but what the Class decides."""
+    fixture = json.loads((te.fixture_dir(accession) / "catalog.json").read_text(encoding="utf-8"))
+    for unit in fixture["units"]:
+        handoff = campaign_fakes.fake_handoff(unit["unit_id"], campaign_fakes.World.class_digest(unit["unit_id"]),
+                                              unit["rows"] if with_rows else None)
+        folder = triage_root / accession / "inputs" / unit["unit_id"]
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "handoff.json").write_bytes(campaign_fakes.handoff_bytes(handoff))
+
+
 class _Root(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
@@ -399,9 +412,14 @@ def curated_world(root: Path, units: dict[str, dict], *, groups: dict | None = N
         rows_of[catalog_id] = rows
         handoff = campaign_fakes.fake_handoff(catalog_id, campaign_fakes.World.class_digest(catalog_id), rows)
         handoff_sha = item.get("handoff_sha256") or hashlib.sha256(campaign_fakes.handoff_bytes(handoff)).hexdigest()
-        if item.get("triaged_handoff") is not None:
+        triaged = item.get("triaged_handoff")
+        if triaged is None and not item.get("handoff_sha256"):
+            # The triage was made before the Class was saved (class_proposal null); the handoff taken at run time
+            # carries the Class the campaign ratified, so the triaged bytes are kept for the runner to compare with.
+            triaged = handoff
+        if triaged is not None:
             # The handoff the triage was made from, kept where the framework keeps it (inputs\<unit_id>\handoff.json).
-            data = campaign_fakes.handoff_bytes(item["triaged_handoff"])
+            data = campaign_fakes.handoff_bytes(triaged)
             (folder / "inputs" / catalog_id).mkdir(parents=True, exist_ok=True)
             (folder / "inputs" / catalog_id / "handoff.json").write_bytes(data)
             handoff_sha = hashlib.sha256(data).hexdigest()
@@ -461,15 +479,19 @@ class RunnerTests(_Root):
         self.assertTrue(sent["curated_selection_path"].endswith(str(Path("handoffs") / "u1" / "u1.json")))
         original = world.root / "catalog-data" / "handoffs" / "u1.json"
         triage = json.loads((self.root / "triage" / "ACC1" / "u1.json").read_text(encoding="utf-8"))
-        # WS0 decision 7: the triaged handoff's sha256, with the Catalog's bytes as taken, kept beside the copy.
+        # WS0 decisions 7 and F: the triaged handoff's sha256, with the triaged bytes kept beside the copy. The Catalog's
+        # handoff taken now carries the Class the campaign ratified, which the triaged one (made before) does not.
         self.assertEqual(sent["original_handoff_sha256"], triage["catalog_handoff_sha256"])
-        self.assertEqual(sent["original_handoff_sha256"], hashlib.sha256(original.read_bytes()).hexdigest())
-        self.assertTrue(sent["original_handoff_path"].endswith("handoff.original.json"))
+        self.assertNotEqual(sent["original_handoff_sha256"], hashlib.sha256(original.read_bytes()).hexdigest())
+        self.assertTrue(sent["original_handoff_path"].endswith("handoff.triaged.json"))
+        self.assertEqual(hashlib.sha256(Path(sent["original_handoff_path"]).read_bytes()).hexdigest(),
+                         triage["catalog_handoff_sha256"])
         self.assertEqual(sent["curated_selection_validator"]["verdict"], "pass")
         self.assertNotIn("workspace_unit_key", sent)
         self.assertNotIn("decision_record_path", sent, "no record was approved")
         checked = events(world, "triage_checked")[0]["detail"]
-        self.assertEqual((checked["verdict"], checked["handoff_identity"]), ("pass", "handoff_identical"))
+        self.assertEqual((checked["verdict"], checked["handoff_identity"]), ("pass", "class_only"))
+        self.assertTrue(checked["class_binding"]["bound"])
         self.assertFalse(Path(checked["copy_path"]).is_absolute(), "ledger paths are workspace-relative")
         applied = events(world, "curated_selection_applied")
         self.assertEqual(len(applied), 1)
@@ -998,7 +1020,7 @@ class TriageBindsEvidenceClassBindsByRatificationTests(_Root):
         self.assertEqual(checked["class"]["copy"]["class_proposal"]["ratified_by"], world.approval["approval_id"])
         self.assertEqual(checked["class"]["excluded_keys"], ["class_proposal"])
         self.assertTrue(checked["class"]["differs"])
-        self.assertEqual((checked["class_binding"]["bound"], checked["class_binding"]["checked"]), (True, True))
+        self.assertTrue(checked["class_binding"]["bound"])
         self.assertFalse(Path(checked["triaged_copy_path"]).is_absolute())
         sent = world.interactive.curated_downloads[0]
         self.assertEqual(sent["original_handoff_sha256"], hashlib.sha256(triaged).hexdigest())
@@ -1136,9 +1158,118 @@ class TriageBindsEvidenceClassBindsByRatificationTests(_Root):
                 found = curated.class_binding(handoff, unit_id="AN1", approved_proposal_id="class-1",
                                               ratification={**ratification, key: "other"})
                 self.assertEqual(found["reason"], "class_not_ratified")
+        # No class_proposal key at all is no Class: never bound (the round-6 low, probe_nokey.py).
         unshaped = curated.class_binding({"analysis_unit_id": "AN1"}, unit_id="AN1", approved_proposal_id="class-1",
                                          ratification=ratification)
-        self.assertEqual((unshaped["bound"], unshaped["checked"]), (True, False))
+        self.assertEqual((unshaped["bound"], unshaped["reason"], unshaped["class_proposal_key"]),
+                         (False, "class_not_ratified", False))
+        dropped = json.loads(json.dumps(handoff))
+        dropped.pop("class_proposal")
+        self.assertEqual(curated.class_binding(dropped, unit_id="AN1", approved_proposal_id="class-1",
+                                               ratification=ratification)["reason"], "class_not_ratified")
+
+    # ---- a copy with no Class, and a copy changed after its check (round-6 low, 2026-11-18) -------------------------
+
+    def test_a_handoff_taken_with_no_class_proposal_key_is_held_never_bound(self) -> None:
+        for label, shaped in (("plain", False), ("Catalog-shaped", True)):
+            with self.subTest(label):
+                self.root = Path(tempfile.mkdtemp(dir=self.directory.name))
+                world = self.world(None, proposal=None) if shaped else curated_world(self.root, {"u1": {}})
+                world.catalog.class_key_dropped.add("u1")
+                checked = self.held(world)
+                self.assertEqual((checked["verdict"], checked["reason"]), ("held", "class_not_ratified"))
+                self.assertEqual((checked["class_binding"]["bound"], checked["class_binding"]["class_proposal_key"]),
+                                 (False, False))
+                self.assertEqual(unit_row(world, "u1")["resume_state"], "pending")
+                self.assertEqual(world.interactive.curated_downloads, [])
+
+    def edit_copy(self, world: campaign_fakes.World, name: str = "handoff.json") -> None:
+        """What probe_nokey.py does to a handoff copy: drop the class_proposal key and its class_proposal:* codes, and
+        mark it ready. A sidecar named instead is given other rows."""
+        target = world.directory / "handoffs" / "u1" / name
+        if name != "handoff.json":
+            target.write_text(json.dumps([{"sample_id": "other"}]), encoding="utf-8")
+            return
+        value = json.loads(target.read_text(encoding="utf-8"))
+        value.pop("class_proposal")
+        value["blocking_reasons"] = [code for code in value.get("blocking_reasons") or []
+                                     if not str(code).startswith("class_proposal:")]
+        value["ready_for_download_planning"] = not value["blocking_reasons"]
+        target.write_text(json.dumps(value), encoding="utf-8")
+
+    def test_a_copy_changed_after_its_check_is_held_at_the_download_and_retaken_on_recheck(self) -> None:
+        for label, shaped, name in (("plain, the Class dropped", False, "handoff.json"),
+                                    ("Catalog-shaped, the Class dropped", True, "handoff.json"),
+                                    ("Catalog-shaped, a sidecar changed", True, "samples.json")):
+            with self.subTest(label):
+                self.root = Path(tempfile.mkdtemp(dir=self.directory.name))
+                world = self.world() if shaped else curated_world(self.root, {"u1": {}})
+                run_until(world, "u1", "handoff_ready")
+                self.edit_copy(world, name)
+                with world.open() as book:
+                    world.runner(book).run(max_iterations=60)
+                held = unit_row(world, "u1")
+                self.assertEqual((held["state"], held["resume_state"]), ("contract_held", "class_settled"))
+                self.assertEqual(world.interactive.download_starts, [], "the edited copy never reached Interactive")
+                said = events(world, "contract_held")[-1]["detail"]
+                self.assertEqual((said["contract"], said["step"], said["file"]),
+                                 (machine.HANDOFF_COPY_CHANGED, "download_start", name))
+                # The recheck takes the Catalog's handoff again, checks its Class again, and runs the unit on that copy.
+                request(world, "recheck_held", "u1", "the handoff copy is taken again", "Test Person")
+                world.run()
+                self.assertEqual(unit_row(world, "u1")["state"], "done")
+                copy = json.loads(Path(unit_row(world, "u1")["handoff_path"]).read_text(encoding="utf-8"))
+                self.assertEqual(copy["class_proposal"]["ratified_by"], world.approval["approval_id"])
+                passed = [item["detail"] for item in events(world, "triage_checked") if item["detail"]["verdict"] == "pass"]
+                self.assertEqual(len(passed), 2, "checked at the first handoff and again at the recheck")
+
+    def test_a_copy_changed_between_its_copy_and_its_check_is_held_at_the_handoff(self) -> None:
+        world = curated_world(self.root, {"u1": {}})
+        original = world.catalog.copy_handoff
+
+        def copy_then_edit(response: dict, destination: Path) -> dict:
+            record = original(response, destination)
+            self.edit_copy(world)
+            return record
+
+        world.catalog.copy_handoff = copy_then_edit
+        checked = self.held(world)
+        self.assertEqual((checked["verdict"], checked["reason"]), ("held", machine.HANDOFF_COPY_CHANGED))
+        self.assertNotIn("class_binding", checked, "the Class is read only from the bytes the handoff step recorded")
+        self.assertEqual(unit_row(world, "u1")["resume_state"], "class_settled")
+
+    @unittest.skipUnless(contract.AVAILABLE, "the Interactive and Catalog checkouts are not where this test looks")
+    def test_probe_nokey_a_catalog_copy_without_its_class_key_is_not_bound(self) -> None:
+        """probe_nokey.py as a test, on the real Catalog and Interactive: a copy of the Catalog's handoff with the
+        class_proposal key deleted, its class_proposal:* codes removed and ready_for_download_planning true. The
+        handoff comparisons leave the Class out by design (the runner's and Interactive's alike), so the runner's
+        class_binding is what refuses it: class_not_ratified, never bound."""
+        from msdial_app import curated_selection as ia
+
+        database = self.root / "c" / "catalog.sqlite"
+        database.parent.mkdir()
+        build_catalog(database)
+        port = ports.CatalogPort(database)
+        taken = port.handoff(unit_id="AN004454", class_proposal_id="")
+        record = port.copy_handoff(taken, self.root / "camp")
+        copy = json.loads(Path(record["copy_path"]).read_text(encoding="utf-8"))
+        self.assertIn("class_proposal", copy, "the Catalog always writes the key")
+        self.assertIsNone(copy["class_proposal"])
+        self.assertTrue(any(str(code).startswith("class_proposal:") for code in copy["blocking_reasons"]))
+        copy.pop("class_proposal")
+        copy["blocking_reasons"] = [code for code in copy["blocking_reasons"] if not code.startswith("class_proposal:")]
+        copy["ready_for_download_planning"] = not copy["blocking_reasons"]
+        edited = self.root / "camp" / "edited.json"
+        edited.write_text(json.dumps(copy), encoding="utf-8")
+        bound = curated.class_binding(copy, unit_id="AN004454", approved_proposal_id="x", ratification={})
+        self.assertEqual((bound["bound"], bound["reason"], bound["class_proposal_key"]),
+                         (False, "class_not_ratified", False))
+        # Both comparisons pass the edited copy, alike: only the binding stands between it and a run with no Class.
+        self.assertTrue(curated.handoff_difference(Path(taken["handoff_path"]), edited)["same"])
+        original = json.loads(Path(record["original_copy_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(curated.handoff_differing_keys(original, copy)[0], ia.handoff_differing_keys(original, copy)[0])
+        # And the copy the download would pass no longer hashes to the one the handoff step recorded.
+        self.assertNotEqual(curated.sha256_file(edited), record["copy_sha256"])
 
 
 class WorkspaceNameTests(unittest.TestCase):
@@ -1303,6 +1434,7 @@ class EndToEndTests(_Root):
 
     def test_st002747_from_triage_to_runs_ledger_and_replay(self) -> None:
         triage_root = write_triage(self.root, aligned_docs()[0])
+        keep_triaged_handoffs(triage_root)
         # 1. The validator passes the set.
         self.assertEqual(curated.run_validator(triage_root / ACCESSION)["verdict"], "pass")
         # 2. The dry-run plan: four units, each with its rows.
@@ -1333,7 +1465,7 @@ class EndToEndTests(_Root):
         self.assertEqual({item["curated_selection_path"].rsplit("handoffs", 1)[1][1:].split("\\")[0].split("/")[0]
                           for item in world.interactive.curated_downloads}, set(keys))
         checked = [item["detail"] for item in events(world, "triage_checked")]
-        self.assertEqual({item["handoff_identity"] for item in checked}, {"handoff_identical"})
+        self.assertEqual({item["handoff_identity"] for item in checked}, {"class_only"})
         # 5. The decision ledger.
         target = world.directory / curated.DECISION_LEDGER
         with world.open() as book:
@@ -1593,6 +1725,7 @@ class EndToEndTests(_Root):
         validator; were it planned anyway, the cross-unit check refuses every unit after the first."""
         docs = aligned_docs("ST002283", te.stage3b_style("ST002283"), with_rows=False)[0]
         triage_root = write_triage(self.root, docs, accession="ST002283")
+        keep_triaged_handoffs(triage_root, "ST002283", with_rows=False)
         self.assertEqual(curated.run_validator(triage_root / "ST002283")["verdict"], "error")
         planned = []
         for unit_id, doc in docs.items():
