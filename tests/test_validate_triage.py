@@ -126,6 +126,21 @@ class EvalSetTest(TriageCase):
                     else:
                         self.assertEqual((s["correct"], s["wrongly_left_out"]), (len(unit["members"]), 0))
 
+    def test_a_campaign_payload_named_by_its_catalog_unit_id_is_scored_by_its_analysis_id(self) -> None:
+        # A campaign names a payload <catalog unit id>.json and carries the public analysis id as
+        # source_subrecord_id; the ground truth names the analysis id (pilot of 2026-11-18).
+        for accession in ("ST002798", "ST002283"):
+            with self.subTest(accession=accession):
+                _, truth, _ = te.load(accession)
+                _, directory = self.run_validator(accession, te.build_good(accession))
+                expected = vt.score(directory, truth)
+                for n, path in enumerate(sorted(directory.glob("AN*.json"))):
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    data["source_subrecord_id"] = path.stem
+                    (directory / f"{n:020x}.json").write_text(json.dumps(data), encoding="utf-8")
+                    path.unlink()
+                self.assertEqual(vt.score(directory, truth), expected)
+
     def test_stage3b_style_whole_study_per_unit_is_refused_for_every_accession(self) -> None:
         for accession in te.ACCESSIONS:
             with self.subTest(accession=accession):

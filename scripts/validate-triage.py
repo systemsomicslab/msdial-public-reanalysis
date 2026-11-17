@@ -1878,7 +1878,19 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
 
 
 def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str, int]]:
-    """Per unit: correct, wrong_included, wrongly_left_out, against ground_truth.json (eval fixtures)."""
+    """Per unit: correct, wrong_included, wrongly_left_out, against ground_truth.json (eval fixtures).
+
+    A ground-truth unit is named by its public analysis id. The eval fixtures' payloads are named the same way; a
+    campaign's are named by the Catalog unit id and carry the analysis id as source_subrecord_id, so the current
+    payload whose source_subrecord_id is the analysis id is the one scored when no <analysis id>.json exists."""
+    by_subrecord: dict[str, Path] = {}
+    for current in current_triage_files(triage_dir):
+        try:
+            subrecord = json.loads(current.read_text(encoding="utf-8")).get("source_subrecord_id")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(subrecord, str) and subrecord:
+            by_subrecord.setdefault(subrecord, current)
     unchecked = {member_key(m["path"]) for m in ground_truth.get("unchecked_members", [])}
     unchecked_names = {basename(m["path"]).casefold() for m in ground_truth.get("unchecked_members", [])}
     overrides = {k: _norm_path(v) for k, v in ground_truth.get("row_member_overrides", {}).items()}
@@ -1891,6 +1903,8 @@ def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str,
             truth_by_name.setdefault(basename(m["path"]).casefold(), member_key(m["path"]))
             truth_by_name.setdefault(stem(m["path"]).casefold(), member_key(m["path"]))
         path = triage_dir / f"{uid}.json"
+        if not path.exists() and uid in by_subrecord:
+            path = by_subrecord[uid]
         kept: set[str] = set()
         other: set[str] = set()
         if path.exists():
