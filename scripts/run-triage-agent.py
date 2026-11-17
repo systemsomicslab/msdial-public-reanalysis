@@ -31,8 +31,9 @@ docs/llm-assisted-curation.md sections 2.1 to 2.3 (the "Context" paragraph and t
    transcript's init message (tools, MCP servers, plugins, skills, working directory), the debug log (hooks) and the
    ancestors of the session directory (context files); anything short of clean is written as "not clean: <why>",
    which the validator holds (T-CONTEXT). The transcript itself stays in the session's harness folder, unreleased;
-   the record names its sha256 (transcript.unredacted_sha256), and a released redacted copy waits for
-   check-release-redaction.py.
+   the record names its sha256 (transcript.unredacted_sha256). A released redacted copy is not written yet
+   (transcript.sha256 and released_path are null): the redactor that would write it, and pass it through
+   scripts/check-release-redaction.py before the record names its sha256, is still to be built.
 6. VALIDATE: scripts/validate-triage.py on the accession, with inputs\\ as the Catalog and inputs\\*.tsv as the
    listings. Its report is kept in the session's harness folder.
 

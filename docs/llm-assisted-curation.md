@@ -215,6 +215,20 @@ revision that removes a blocking flag without a `person_answer` of the matching 
 2.2); a ledger `triage_recorded` whose triage sha256 matches no payload; and a `triage_validated` whose
 `review_log_head_sha256` is not the hash of a line of that accession's review log.
 
+It reads a campaign directory (the triage directory the manifest names, else `triage\` beside it) or a release
+bundle (its `triage\`), and reports each refusal with its check: `L-CHAIN` (a review log line that does not parse,
+counts `seq` out of order or does not chain), `L-ENTRY` (a kind or a field outside section 2.4's table),
+`L-PAYLOAD` (a `decision_id`, or a revision's `supersedes` or `new_decision_id`, that is no payload of the
+accession), `L-CAUSE` (the cause is not an entry of its kind at that `seq`: a `person_answer` or
+`validator_verdict` of the same review log, before the revision and about this decision or one it supersedes, or a
+ledger `header_reconciliation` line of that `seq` about the revised unit or one of its children), `L-FLAG` (the
+blocking flag dropped without a named person's answer to its code, read as `validate-triage.py` `T-REVISION` reads
+it), `D-CHAIN` (a ledger line that does not parse, counts out of order, does not chain or has no standing),
+`D-ENTRY` (a ledger kind the export does not write), `D-PATH` (a ledger line holding an absolute path),
+`D-TRIAGE` (a `triage_recorded` whose `triage_sha256` is no payload's, or whose `triage_relative_path` names a
+file that does not hash to it) and `D-HEAD`. A `triage_validated` with a null head (the log was empty at the plan)
+passes. Exit status 0 nothing refused, 1 refused, 2 not readable.
+
 ### 2.5 Manifest and run manifest
 
 **The plan.** `campaign-runner.py plan --triage-dir <dir>` (`scripts/campaign/plan.py`,
@@ -671,8 +685,8 @@ system prompt, fixed by `harness_version`. A third party re-runs the triage in t
 (section 2.3) with any capable agent harness, for example:
 
 ```text
-<python> scripts/run-triage-agent.py --accession <accession> --triage-dir <empty dir> --model <model id>
-<python> scripts/compare-triage.py <released triage dir> <re-derived triage dir> --json
+<python> scripts/run-triage-agent.py --campaign-dir <empty dir> --accession <accession> --model <model id>
+<python> scripts/compare-triage.py <released triage dir> <empty dir>\triage\<accession> --json
 ```
 
 The wrapper renders `prompts/unit-triage-task.v1.md` (the accession, directories and boundaries; the skill
@@ -846,10 +860,22 @@ outputs included. It refuses:
 - a user profile path;
 - in a transcript, any block the harness inserts from a context file or memory.
 
-The script is still to be built (section 7). Until it exists, `campaign-runner.py release` applies its three path
-rules itself (`curated.release_redaction_findings`: drive letter, UNC and user profile paths, as text and as
-JSON escapes) to every file it wrote. A bundle with a finding is refused and gets no `release-index.json`, so
-the replay never reads it. The bundle it writes therefore passes those three rules.
+How it reads them (`check-release-redaction.py v1`, the value a record's `transcript.redaction` names):
+- every file is read as bytes, whatever its type, and each rule is reported once per file at its first match
+  (`{file, rule, at, line}`), as text and as JSON escapes;
+- `library_path`: a library file named with a path. A library file is one ending `.msp`, `.lbm`, `.lbm2` or
+  `.lbm3`, or a name the bundle itself names in a `<library:<name> sha256=<sha256>>` token, or one given with
+  `--library-name`. The name alone, `<library:...>`, `<external>/<name>` and a URL are not paths;
+- `drive_letter_path`, `unc_path` and `user_profile_path`: the three path rules;
+- `context_block`: in a transcript (a file under `transcripts\`, a `*.redacted.jsonl` or a `*transcript*.jsonl`),
+  a context file or memory shown as "Contents of ..." (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `MEMORY.md`),
+  the harness's preamble to them, or the auto memory index.
+
+Exit status 0 nothing found, 1 a finding, 2 not readable. `campaign-runner.py release` calls it on every file it
+wrote (`curated.release_redaction_findings`, with the pinned libraries' names), and decides with its three path
+rules which triage inputs it projects. A bundle with a finding is refused and gets no `release-index.json`, so
+the replay never reads it; the command's output names the script and its sha256. Run it again over the whole
+deposit after the rest of the release is added beside the bundle.
 
 ## 6. Failure handling
 
@@ -1008,13 +1034,24 @@ Built:
   against Interactive.
 - **The triage's Class boundary** (PR #60, cfb8b39): the skill never reads or cites `class_proposal`, and
   `validate-triage.py` refuses a triage whose evidence or decision record inputs cite it (`T-CLASS`).
+- **The triage agent tooling** (branch `feat/triage-agent-tooling`):
+  - `schemas/msdial-unit-triage.v2.json` and `schemas/msdial-llm-decision-record.v1.json`; skill 1.1.0 (v2
+    payloads with confidence and rationale, a clean context, payloads only, never `class_proposal`) and
+    `prompts/unit-triage-task.v1.md`;
+  - `run-triage-agent.py`: inputs prepared before the session (the Catalog handoffs, the remote central directory
+    listing, the mwTab text), the clean configuration, all or nothing acceptance, and the envelope from the
+    harness transcript;
+  - `validate-triage.py` v2: the envelope hashes (`T-RECORD`, `T-TOOLS`, `T-CONTEXT`), `T-CONFIDENCE`, review
+    log answers (`T-STATUS`, `T-REVISION`, `T-LOG`), projected inputs through the release index,
+    `--emit-selection` and its `validator_verdict` entries;
+  - `verify-decision-log.py` (section 2.4) and `check-release-redaction.py` (section 5.3), which
+    `campaign-runner.py release` calls.
 
 To build:
-- schemas and skill 1.1.0;
-- `run-triage-agent.py` (clean configuration, envelope from the harness transcript);
-- `validate-triage.py` (v2, envelope hashes, projected inputs through the release index, review log answers,
-  `--emit-selection`, log append);
-- `verify-decision-log.py`, `compare-triage.py`, `export-llm-decisions.py` and `check-release-redaction.py`;
+- `compare-triage.py` (section 4.2) and `export-llm-decisions.py` (section 5.2);
+- the released redacted transcript: `run-triage-agent.py` writes `transcript.sha256` and `released_path` as
+  null today, so the validator's comparison of `tool_calls` with the released transcript does not run yet;
+- revisions in `run-triage-agent.py` (`<unit_id>.r<N>.json` and the review log's `revision` entry);
 - canonical output hashes at finalisation and `output-checksums.tsv` in the release bundle;
 - in Interactive, `parameter_file.canonical_sha256` and projection v2 (next free patch versions).
 

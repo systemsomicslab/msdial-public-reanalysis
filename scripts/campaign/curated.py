@@ -409,36 +409,37 @@ def release_projection(manifest: Any, workspace_root: str | Path, base: str | Pa
 RELEASE_INDEX = "release-index.json"
 RELEASE_INDEX_SCHEMA = "msdial-release-index.v1"
 
-# What check-release-redaction refuses in a bundle file (docs/llm-assisted-curation.md section 5.3), as text and as JSON
-# escapes it: a drive-letter path, a UNC path, a user-profile path. A URL (https://) is no drive letter: the letter
-# before ':' must not follow another letter or digit.
-_REDACTION_RULES = (
-    ("drive_letter_path", re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\\\|\\|/)")),
-    ("unc_path", re.compile(r"(?:^|[\s\"'=(\[,])(?:\\\\\\\\|\\\\)[A-Za-z0-9._$-]+(?:\\\\|\\)[A-Za-z0-9._$-]+")),
-    ("user_profile_path", re.compile(r"(?i)(?:^|[\\/\"'\s])(?:Users|home|Documents and Settings)(?:\\\\|\\|/)[^\\/\"'\s]+(?:\\\\|\\|/)")),
-)
+# The redaction check of section 5.3 is scripts/check-release-redaction.py; the release command calls it here, on the
+# bundle it writes, and decides with its three path rules (drive letter, UNC, user profile; as text and as JSON escapes)
+# which triage inputs it projects.
+REDACTION_SCRIPT = Path(__file__).resolve().parent.parent / "check-release-redaction.py"
+_REDACTION_MODULE: Any = None
 
 
-def release_redaction_findings(bundle: Path, limit: int = 20) -> list[dict[str, Any]]:
-    """Every file of `bundle` read as text, against the path rules check-release-redaction applies (section 5.3): a
-    drive-letter, UNC or user-profile path. [{file (bundle-relative), rule, at (character offset)}], at most `limit`."""
-    findings: list[dict[str, Any]] = []
-    for path in sorted(Path(bundle).rglob("*")):
-        if not path.is_file():
-            continue
-        text = path.read_bytes().decode("utf-8", "replace")
-        for rule, pattern in _REDACTION_RULES:
-            match = pattern.search(text)
-            if match:
-                findings.append({"file": path.relative_to(bundle).as_posix(), "rule": rule, "at": match.start()})
-                if len(findings) >= limit:
-                    return findings
-    return findings
+def redaction_check() -> Any:
+    """scripts/check-release-redaction.py, loaded once as a module."""
+    global _REDACTION_MODULE
+    if _REDACTION_MODULE is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("check_release_redaction", REDACTION_SCRIPT)
+        if spec is None or spec.loader is None:
+            raise TriageError(f"{REDACTION_SCRIPT.name} cannot be loaded.")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _REDACTION_MODULE = module
+    return _REDACTION_MODULE
+
+
+def release_redaction_findings(bundle: Path, limit: int = 20, library_names: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """scripts/check-release-redaction.py over every file of `bundle` (section 5.3): a drive letter, UNC or user profile
+    path, a library file named with a path, and in a transcript a block from a context file or memory.
+    [{file (bundle-relative), rule, at (byte offset), line}], at most `limit`."""
+    return redaction_check().check_bundle(Path(bundle), library_names=library_names, limit=limit)
 
 
 def _holds_absolute_path(data: bytes) -> bool:
-    text = data.decode("utf-8", "replace")
-    return any(pattern.search(text) for _rule, pattern in _REDACTION_RULES)
+    return bool(redaction_check().holds_absolute_path(data))
 
 
 def _protected_triage_file(relative: str) -> bool:
@@ -468,8 +469,8 @@ def write_release(
     of its original bytes (the value the triage's catalog_handoff_sha256 and the decision record bind, kept with the
     original bytes on the producing machine) and of the released bytes. A payload, a decision record or the review log
     that holds an absolute path cannot be projected without breaking the hashes the replay checks, so the bundle is
-    refused. Last, the whole bundle is checked as check-release-redaction does (release_redaction_findings); a bundle
-    with a finding is refused and gets no release-index.json."""
+    refused. Last, the whole bundle is checked by scripts/check-release-redaction.py (release_redaction_findings, with the
+    pinned libraries' names); a bundle with a finding is refused and gets no release-index.json."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
@@ -523,7 +524,7 @@ def write_release(
     ledger = Path(campaign_dir) / DECISION_LEDGER
     if ledger.is_file():
         (out / DECISION_LEDGER).write_bytes(ledger.read_bytes())
-    findings = release_redaction_findings(out)
+    findings = release_redaction_findings(out, library_names=list((libraries or {}).keys()))
     if findings:
         raise TriageError("The release bundle fails the redaction check and is not complete (no release-index.json): "
                           + "; ".join(f"{item['file']} ({item['rule']})" for item in findings[:5]))
