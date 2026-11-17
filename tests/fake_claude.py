@@ -1,0 +1,124 @@
+"""A stand-in for the Claude Code CLI in headless stream-JSON mode, for tests/test_run_triage_agent.py.
+
+It takes the flags scripts/run-triage-agent.py passes, logs them (FAKE_CLAUDE_LOG), reads the prompt from stdin, emits a
+canned transcript (an init message, tool_use and tool_result blocks, a result message) on stdout, and writes the
+payloads it is given (FAKE_CLAUDE_PAYLOADS: {unit_id: document}) into the output folder, each with the sha256 of the
+handoff copy it "read" as catalog_handoff_sha256. FAKE_CLAUDE_SCENARIO picks a misbehaviour:
+
+  ok        the session as it should be
+  record    also writes <unit>.record.json into the output folder
+  fail      writes the payloads, then ends in an error result with exit status 1
+  hang      sleeps past any test timeout before writing anything
+  outside   also writes a file into its working directory
+  unclean   reports a plugin from outside the harness in its init message
+  bash      also calls Bash (refused), a tool the skill does not allow
+  nodeny    reports every server tool, as a session without --disallowedTools would
+
+Synthetic: public accession ids, no person, no real model.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+SERVER_TOOLS = ["msdial_catalog_status", "msdial_catalog_search", "msdial_catalog_get_analysis_unit",
+                "msdial_catalog_save_class_proposal", "msdial_catalog_reanalysis_handoff"]
+
+
+def value(args: list[str], flag: str) -> str | None:
+    return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else None
+
+
+def emit(message: dict) -> None:
+    sys.stdout.write(json.dumps(message, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if "--version" in args:
+        print("0.0.0-fake (Claude Code)")
+        return 0
+    scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "ok")
+    log = os.environ.get("FAKE_CLAUDE_LOG")
+    prompt = sys.stdin.buffer.read().decode("utf-8")
+    cwd = Path.cwd()
+    if log:
+        with open(log, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"argv": args, "cwd": str(cwd), "prompt_bytes": len(prompt.encode("utf-8")),
+                                     "env": {k: os.environ.get(k) for k in (
+                                         "CLAUDE_CODE_DISABLE_CLAUDE_MDS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                                         "ENABLE_CLAUDEAI_MCP_SERVERS", "CLAUDECODE")}}) + "\n")
+    session_id = value(args, "--session-id") or "no-session-id"
+    model = value(args, "--model") or "fake-model-1"
+    builtin = [t for t in (value(args, "--tools") or "").split(",") if t]
+    denied = set((value(args, "--disallowedTools") or "").split(","))
+    servers = list(json.loads(Path(value(args, "--mcp-config")).read_text(encoding="utf-8"))["mcpServers"])
+    tools = builtin + [f"mcp__{s}__{t}" for s in servers for t in SERVER_TOOLS
+                       if scenario == "nodeny" or f"mcp__{s}__{t}" not in denied]
+    plugins = [{"name": "cc-plugin-sec-default", "path": "builtin", "source": "cc-plugin-sec-default@builtin"}]
+    if scenario == "unclean":
+        plugins.append({"name": "someone-elses-plugin", "path": "plugins/x", "source": "x@marketplace"})
+    emit({"type": "system", "subtype": "init", "cwd": str(cwd), "session_id": session_id, "tools": tools,
+          "mcp_servers": [{"name": s, "status": "connected"} for s in servers], "model": model,
+          "permissionMode": "dontAsk", "slash_commands": [], "skills": [], "plugins": plugins,
+          "claude_code_version": "0.0.0-fake"})
+    if scenario == "hang":
+        time.sleep(120)
+    marker = "Triage these Catalog analysis units, and only these: "
+    units = [u.strip() for u in prompt.split(marker, 1)[1].split("\n", 1)[0].rstrip(".").split(",")]
+    payloads = json.loads(Path(os.environ["FAKE_CLAUDE_PAYLOADS"]).read_text(encoding="utf-8"))
+    out = (cwd / ".." / "out").resolve()
+    inputs = (cwd / ".." / "inputs").resolve()
+    calls: list[tuple[str, dict, object, bool]] = []
+    skill = cwd / ".claude" / "skills" / "msdial-unit-triage" / "SKILL.md"
+    calls.append(("Read", {"file_path": str(skill)},
+                  "\n".join(f"{n:>6}\t{line}" for n, line in enumerate(skill.read_text(encoding="utf-8").splitlines()[:5], 1)),
+                  False))
+    calls.append(("mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit",
+                  {"unit_id": units[0], "api_key": "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV",
+                   "database": "C:\\Users\\Quokka Operator\\catalog\\native.sqlite"},
+                  [{"type": "text", "text": json.dumps({
+                      "unit_id": units[0], "database": "D:\\catalog-data\\native.sqlite",
+                      "campaign_lock": {"approval_id": "pool-20261106-quokka"}, "contact": "someone@example.org"})}],
+                  False))
+    if scenario == "bash":
+        calls.append(("Bash", {"command": "dir"}, "No such tool available: Bash", True))
+    for unit in units:
+        handoff = inputs / unit / "handoff.json"
+        calls.append(("Read", {"file_path": str(handoff)}, handoff.read_text(encoding="utf-8")[:4000], False))
+    for unit in units:
+        document = dict(payloads[unit])
+        document["catalog_handoff_sha256"] = hashlib.sha256((inputs / unit / "handoff.json").read_bytes()).hexdigest()
+        calls.append(("Write", {"file_path": str(out / f"{unit}.json"),
+                                "content": json.dumps(document, indent=1, ensure_ascii=False)}, "File created", False))
+    if scenario == "record":
+        calls.append(("Write", {"file_path": str(out / f"{units[0]}.record.json"), "content": "{}"}, "File created", False))
+    if scenario == "outside":
+        calls.append(("Write", {"file_path": str(cwd / "notes.md"), "content": "x"}, "File created", False))
+    for seq, (name, arguments, result, error) in enumerate(calls, start=1):
+        ident = f"toolu_fake_{seq:03d}"
+        emit({"type": "assistant", "message": {"model": model, "role": "assistant", "content": [
+            {"type": "tool_use", "id": ident, "name": name, "input": arguments}]}, "session_id": session_id})
+        if name == "Write":
+            Path(arguments["file_path"]).write_text(arguments["content"], encoding="utf-8")
+        emit({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": ident, "content": result, "is_error": error}]},
+            "session_id": session_id})
+    emit({"type": "assistant", "message": {"model": model, "role": "assistant", "content": [
+        {"type": "text", "text": "Payloads written."}]}, "session_id": session_id})
+    if scenario == "fail":
+        emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": session_id})
+        return 1
+    emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session_id,
+          "result": "Payloads written.", "permission_denials": []})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
