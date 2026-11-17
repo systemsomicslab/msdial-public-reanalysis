@@ -69,8 +69,10 @@ way.
   or cite the handoff's `class_proposal` (its assignments, labels, contrast, status or ratification), or the
   `class_proposal:*` blocking reasons, and never bind it as a decision-record input: the Class is settled and
   ratified afterwards and binds through its own ratification (WS0 decision F). Read the sample rows from the
-  handoff's `samples.json` (or its `sample_metadata`) and the files from `files.json`; read `handoff.json`
-  only for the unit, the accession and `technical_settings`. The validator refuses a triage that cites the Class (`T-CLASS`).
+  handoff's `samples.json` (or its `sample_metadata`) and the files from `files.json`, the copies beside it in
+  the input directory; read `handoff.json` only for the unit, the accession and `technical_settings`. The
+  sidecar paths `handoff.json` names point outside the session: never read them. The validator refuses a triage
+  that cites the Class (`T-CLASS`).
 - **Before download means before download.** The only archive evidence is the member listing in the input
   directory, read remotely from the zip central directory before the session. Never download an archive to
   list it. A listing written after an extraction is not pre-download evidence: say so in `evidence_sources`.
@@ -83,7 +85,8 @@ way.
 - **Clean context.** In a campaign the triage runs in a clean harness configuration: a working directory
   that holds only this skill, no user or project `CLAUDE.md`, no memory, no hooks, and only the
   `msdial-repository-catalog` MCP server. What you know beyond the skill, the prompt and the inputs is not
-  evidence. Do not cite it.
+  evidence. Do not cite it. Read only the skill, the input directory and the output directory: the wrapper
+  refuses a session that reads anywhere else.
 - Private MSP or LBM2 libraries play no part in triage. Never name their paths, and never write an absolute
   path, a user name or an e-mail address into a triage file: payloads are released byte for byte.
 
@@ -135,7 +138,8 @@ for a person. Rather than keep such a file in a ready unit, ask (`needs_person`)
 1. **Purpose.** Copy the `analysis_purpose` the task prompt states into `purpose`, verbatim, or write
    `null`. Never invent one.
 2. **Enumerate** every Catalog unit of the accession. For each, record the handoff's sha256
-   (`catalog_handoff_sha256`, the sha256 of `handoff.json` as the input directory holds it), its row count
+   (`catalog_handoff_sha256`: the sha256 of `handoff.json` as the input directory holds it, which the task
+   prompt gives per unit; copy it, since none of your tools hashes a file), its row count
    (`catalog_row_count`) and its declared settings, copied as they read, in `unit_technical.declared`.
 3. **Read the declarations** above, then the listing, then the names. Work out the accession's structure
    once (which folders, prefixes or tokens mark which arm), then apply it to every unit.
@@ -205,13 +209,17 @@ for a person. Rather than keep such a file in a ready unit, ask (`needs_person`)
 8. **Say where pre-download evidence came from.** A member listing written after an extraction is not
    pre-download evidence. Say so in `evidence_sources`.
 9. **Answers are a person's.** A v2 payload has no `person_answers`. A person's answer is a `person_answer`
-   entry of the accession's `review-log.jsonl`, written by the runner from a request that names that person
-   and carries their words verbatim; the agent never writes one, and never writes the review log. A blocking
-   flag stays on the payload; a unit is `ready` with it only once the review log holds a person's answer to
-   that flag's code for this payload or one it supersedes.
+   entry of the accession's `review-log.jsonl`, written from a request that names that person and carries
+   their words verbatim (`scripts/record-person-answer.py` before the plan, the runner's requests after it);
+   the agent never writes one, and never writes the review log. A blocking flag stays on the payload; a unit
+   is `ready` with it only once the review log holds a person's answer to that flag's code for this payload or
+   one it supersedes. A kept file inferred at low confidence in a ready unit waits for an answer with the code
+   `inferred_low_confidence`.
 10. **Revisions.** A revision is a new file `<unit_id>.r<N>.json`, written only when the task prompt asks for
-    one and names its cause (a `person_answer`, a header reconciliation or a validator verdict). It may drop
-    a blocking flag only when the cause is a person's answer to that flag's code. The wrapper writes its
+    one and names its cause (a `person_answer` or a validator verdict; `run-triage-agent.py --revise`). The
+    prompt gives the current payload (`previous.json`) and the cause entry (`cause.json`). Revise only what
+    the cause settles and carry the rest over. A revision may drop a blocking flag, or answer a question,
+    only when the cause is a person's answer to that code, followed as worded. The wrapper writes its
     decision record and the review log's `revision` entry.
 
 ## Status

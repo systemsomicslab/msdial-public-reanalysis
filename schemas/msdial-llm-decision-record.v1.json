@@ -15,6 +15,7 @@
     "supersedes",
     "inputs",
     "skill",
+    "wrapper",
     "prompt",
     "agent",
     "started_at",
@@ -58,6 +59,17 @@
         "path": {"description": "SKILL.md, relative to the repository.", "type": "string", "minLength": 1},
         "sha256": {"description": "sha256 of SKILL.md at repo_commit.", "$ref": "#/$defs/sha256"},
         "repo_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "wrapper": {
+      "description": "The wrapper that wrote this record (scripts/run-triage-agent.py): its tool_calls, context, acceptance and redaction come from that code. repo_commit is null when the running file was not the one the commit holds (an edited working tree); the validator then holds.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "repo_commit"],
+      "properties": {
+        "path": {"description": "Relative to the repository.", "type": "string", "minLength": 1},
+        "sha256": {"description": "sha256 of the wrapper at repo_commit (of the running file when repo_commit is null).", "$ref": "#/$defs/sha256"},
+        "repo_commit": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]}
       }
     },
     "prompt": {
@@ -113,6 +125,8 @@
             "archive_listing",
             "metadata_text",
             "repository_page",
+            "prior_decision",
+            "review_entry",
             "other"
           ]
         },
@@ -123,6 +137,8 @@
         "catalog_version": {"type": "string", "minLength": 1},
         "retrieved_at": {"type": "string", "minLength": 10},
         "source_url": {"type": "string", "minLength": 1},
+        "original_sha256": {"description": "For a text the wrapper redacted before the session (an absolute path in a repository text): the sha256 of the bytes as retrieved. sha256 is the redacted bytes the agent read.", "$ref": "#/$defs/sha256"},
+        "redaction": {"description": "What the wrapper changed before the session, when it changed anything.", "type": "string", "minLength": 1},
         "retrieval": {
           "type": "object",
           "additionalProperties": false,

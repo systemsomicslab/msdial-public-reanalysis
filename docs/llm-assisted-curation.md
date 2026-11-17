@@ -76,14 +76,29 @@ v2 is v1 plus these changes:
 
 The evidence per decision is the existing `evidence: [{source, field, value}]` array (for example
 `{"source": "catalog_row", "field": "Mode", "value": "C18 Negative"}`) with `basis: declared|inferred`. A
-decision with `basis: inferred` and `confidence: low` cannot be `ready`; the validator makes it a hold.
+kept file with `basis: inferred` and `confidence: low` in a `ready` unit is a hold (`T-CONFIDENCE`) until the
+review log holds a person's answer about the payload with `question_code: inferred_low_confidence`.
 `validate-triage.py` accepts v1 and v2 and reports v1 files as `rationale_not_recorded`.
+
+`catalog_handoff_sha256` is the sha256 of the handoff copy the agent read (`inputs\<unit_id>\handoff.json`). The
+agent's tools cannot hash a file, so the wrapper gives each unit's value in the task prompt, and the agent copies
+it. The validator compares it with the Catalog source it is given (`T-HANDOFF`) and with the `catalog_handoff`
+input the decision record binds.
 
 For v2, `validate-triage.py <triage dir>` reads each accession's `review-log.jsonl` in place of
 `person_answers`. A `ready` unit that carries a blocking flag (T-STATUS) passes only when the log holds a
 `person_answer` whose `question_code` is that flag's code and whose `decision_id` is this payload or one it
 supersedes. A revision that removes a blocking flag the superseded payload carried passes only when its
 `cause` cites such a `person_answer` with the matching `question_code`.
+
+**Answers before the plan.** A triage that does not pass leaves its accession out of the plan, so the runner's
+requests, which act on planned units, cannot carry its answers. `scripts/record-person-answer.py <triage dir>
+--unit <unit_id>` shows the current payload's questions: its blocking flags, its `needs_person` questions, and
+`inferred_low_confidence` where it applies. With `--question-code`, `--by` (the person) and `--answer` (their
+words, verbatim), and optionally `--decision-id` (the payload they were shown), it appends one `person_answer`
+about the current payload, after that person has answered in the conversation. A `ready` unit whose blocking flag
+or low-confidence file was answered then passes. A `needs_person` unit stays `needs_person`: the answer is the
+cause of a revision (section 2.4) that makes it ready.
 
 ### 2.3 Envelope: `msdial-llm-decision-record.v1` (`schemas/msdial-llm-decision-record.v1.json`)
 
@@ -111,6 +126,7 @@ is never a list the model reports about itself.
   ],
   "skill": {"name": "msdial-unit-triage", "version": "1.1.0", "path": ".claude/skills/msdial-unit-triage/SKILL.md",
             "sha256": "...", "repo_commit": "<40 hex>"},
+  "wrapper": {"path": "scripts/run-triage-agent.py", "sha256": "...", "repo_commit": "<40 hex, or null>"},
   "prompt": {"template_path": "prompts/unit-triage-task.v1.md", "template_sha256": "...",
              "rendered_path": "inputs/AN004552/prompt.md", "rendered_sha256": "..."},
   "agent": {"harness": "claude-code", "harness_version": "...", "model_id": "claude-opus-5-5",
@@ -122,16 +138,34 @@ is never a list the model reports about itself.
   "started_at": "2026-11-16T09:12:00+09:00", "finished_at": "...",
   "tool_calls": [{"seq": 1, "tool": "msdial_catalog_get_analysis_unit", "arguments": {"unit_id": "..."},
                   "status": "ok", "result_path": "inputs/AN004552/calls/1.json", "result_sha256": "..."}],
-  "transcript": {"sha256": "<sha256 of the released redacted bytes>", "released_path": "transcripts/AN004552.redacted.jsonl",
+  "transcript": {"sha256": "<sha256 of the released redacted bytes>",
+                 "released_path": "transcripts/ST002798-<session stamp>.redacted.jsonl",
                  "unredacted_sha256": "<kept locally, not verifiable from the bundle>",
-                 "redaction": "check-release-redaction.py v1"},
+                 "redaction": "run-triage-agent.py scrubber; check-release-redaction.py v2"},
   "rationale": "Plain language summary of the unit decision."
 }
 ```
 
 Every input the LLM read is copied into `inputs\` and hashed, so a later change at the repository cannot
 change what the decision rested on; so are the rendered prompt and every tool result. Tool arguments are
-recorded with secrets removed.
+recorded with secrets removed. A repository text (an mwTab text, an archive listing) that holds an absolute
+path is made portable before the session, never after (`<external>/<file name>`), and its input names the
+retrieved bytes' sha256 as `original_sha256` with the `redaction` applied; the agent read the bytes `sha256`
+names, which are released as they are.
+
+**The released transcript.** The wrapper scrubs the harness transcript (secrets, e-mail addresses, the
+operator's names and handles, absolute paths) and builds `tool_calls` and the stored results from the scrubbed
+bytes, so the record and the transcript agree by construction. For a clean configuration it checks the scrubbed
+bytes with `check-release-redaction.py` and, when nothing is found, writes them as
+`triage\<accession>\transcripts\<accession>-<session stamp>.redacted.jsonl` and names them in `transcript`. A
+transcript of a run that was not clean, or one the check refuses, is not released, and the validator holds.
+
+**Acceptance.** The wrapper accepts a session whole or not at all. Beyond a failed or timed-out session, it
+refuses one that read outside its working directory, inputs and output folder (`Read`, `Glob`, `Grep`), wrote
+anything but the payloads it asked for, or wrote a payload holding an absolute path, an e-mail address, a secret
+or the operator's name, since a payload is released byte for byte and never rewritten. Each accepted session is
+committed all or nothing (tool results, the transcript, the records, the payloads; nothing over an existing file),
+and a lock file in the triage directory keeps two runs of one accession apart.
 
 **Inputs the build reads.** Interactive (`curated_selection.read_decision_record`) and the runner
 (`curated.record_inputs`) read two roles of `inputs[]`, resolving each `path` relative to the record file's own
@@ -148,17 +182,32 @@ that holds only the skill, no user or project `CLAUDE.md`, auto memory disabled,
 servers the skill allows. `agent.context` records that configuration, with every context file the harness
 loaded and its sha256; the list is expected to be empty. The harness's own system prompt belongs to the
 harness version and is identified by `harness_version`; it is not ours to release. A record whose
-`agent.context.configuration` is not `clean`, or whose `context_files` is not empty, is a hold.
+`agent.context.configuration` is not `clean`, or whose `context_files` is not empty, is a hold. The wrapper
+writes `clean` only from evidence: the init message must list the tools, MCP servers (each `connected`) and
+plugins, and the harness's debug log must state the hooks registered and that memory is off; `memory` is
+`disabled` only when the log says so. A missing debug log or an init without those lists is `not clean`.
 
 **What `validate-triage.py` recomputes**, refusing any mismatch: `decision_id` and `payload.sha256` from the
 payload; `sha256` and `bytes` of every `inputs[]` item; `skill.sha256` from `SKILL.md` at `repo_commit`;
-`prompt.template_sha256` and `prompt.rendered_sha256` from the stored files; every
-`tool_calls[].result_sha256` from its `result_path`; `transcript.sha256` from the released redacted
-transcript; the sha256 of each `context_files` item. In a release bundle, an `inputs[]` file released as a
-projection (section 5.3) is checked through `release-index.json` instead: its bytes must hash to the index's
-`release_sha256`, and the index's `original_sha256` must be the item's `sha256`. It also refuses a tool call not on the skill's allowed
-list, and a `tool_calls` list that differs from the tool calls the released transcript shows. It does not
-recompute `transcript.unredacted_sha256` or `session_id`, which only the producing machine can check.
+`wrapper.sha256` from the wrapper at its `repo_commit`; `prompt.template_sha256` and `prompt.rendered_sha256`
+from the stored files; every `tool_calls[].result_sha256` from its `result_path`; `transcript.sha256` from the
+released redacted transcript; the sha256 of each `context_files` item. A released code folder (`--code-root`)
+checked out with CRLF line endings is read as its commit's LF bytes. In a release bundle, an `inputs[]` file
+released as a projection (section 5.3) is checked through `release-index.json` instead: its bytes must hash to
+the index's `release_sha256`, and the index's `original_sha256` must be the item's `sha256`. Against the released
+transcript it refuses a tool call, by its server-qualified name, that is not on the skill's allowed list; a
+`tool_calls` list that differs from the tool calls the released transcript shows, in order, names, arguments or
+stored results; a `model_id` the transcript does not name; and a `session_id` other than the transcript's. The payload's
+`catalog_handoff_sha256` must be the record's own `catalog_handoff` input. It does not recompute
+`transcript.unredacted_sha256`, which only the producing machine can check.
+
+**What it holds, failing closed.** A check that could not run is a hold, never a pass: a record that names no
+released transcript or whose transcript is not there (`T-TRANSCRIPT`); a `model_id` of `unknown`; a tool call with
+no stored result; a record that binds no Catalog evidence (`catalog_handoff`, `catalog_samples` or `catalog_unit`)
+or no archive listing; a listing the record binds that is not among the `--archive-listing` files, or a listing
+given that no record binds; an MCP server the tool calls use that `agent.context.mcp_servers` does not list; empty
+`harness_flags`, or for `claude-code` flags that lack the clean configuration's; and a `wrapper.repo_commit` of
+null (the wrapper ran from an edited working tree).
 
 Other kinds use the same envelope: `metadata_interpretation` (field, source text sha256, value, evidence,
 confidence, rationale), `class_proposal` (Catalog proposal id and digest, rationale; saving stays boundary
@@ -176,10 +225,20 @@ files before and at the approval, and the answers people give about them. Each e
 
 | kind | fields | written by |
 |---|---|---|
-| `validator_verdict` | `tool` (`validate-triage.py`), `code_commit`, `verdict` (pass, hold, error), `findings_sha256`, `findings` (check, level, message) | `validate-triage.py --emit-selection` |
-| `person_answer` | `by` (name or the initials the person agreed to publish), `question_code`, `answer` (verbatim), `channel` (`conversation`) | the runner, from a `skip`, `retry` or `release-held` request on a curated unit that carries `--question-code` and a named `--by`; the request's `--reason` is the answer, verbatim, as that person gave it in the conversation (the rule of `scripts/record-reading.py`) |
-| `revision` | `supersedes`, `new_decision_id`, `cause` (`{kind, seq}` of a `person_answer`, a ledger `header_reconciliation` or a `validator_verdict`) | the agent |
+| `validator_verdict` | `tool` (`validate-triage.py`), `code_commit`, `verdict` (pass, hold, error), `findings_sha256`, `findings` (check, level, message) | `validate-triage.py --emit-selection`, which `run-triage-agent.py` runs after every session it commits |
+| `person_answer` | `by` (name or the initials the person agreed to publish), `question_code`, `answer` (verbatim), `channel` (`conversation`) | before the plan, `scripts/record-person-answer.py` (section 2.2); after it, the runner, from a `skip`, `retry` or `release-held` request on a curated unit that carries `--question-code` and a named `--by`. Either way the answer is that person's words, verbatim, as they gave them in the conversation (the rule of `scripts/record-reading.py`) |
+| `revision` | `supersedes`, `new_decision_id`, `cause` (`{kind, seq}` of a `person_answer`, a ledger `header_reconciliation` or a `validator_verdict`) | `run-triage-agent.py --revise <unit_id>=<seq>`, after it commits the revised payload and its record; never the agent |
 | `digest_approval` | `manifest_digest`, `approval_id`, `by` (copied from the ledger's `manifest_approved`) | `campaign-runner.py approve`, one entry per decision the approved manifest covers (the children of one triage share it) |
+
+**Revisions.** `run-triage-agent.py --campaign-dir <dir> --accession <accession> --revise <unit_id>=<seq>`
+revises a unit of a triaged accession because of review-log entry `<seq>`, a `person_answer` or a
+`validator_verdict` about the unit's current payload or one it supersedes; one entry causes one revision. The
+session gets the inputs the current payload's record binds, unchanged (their sha256 checked), the current payload
+as `inputs\<unit_id>\r<N>\previous.json` and the cause line as the log holds it as `cause.json`, under
+`prompts/unit-triage-revision.v1.md`. The accepted payload is `<unit_id>.r<N>.json`, its record names the current
+decision in `supersedes`, binds those inputs (roles `prior_decision` and `review_entry` for the two new ones), and
+stores its prompt and tool results under `inputs\<unit_id>\r<N>\`. Then the wrapper appends the `revision` entry
+and validates the accession. A revision byte for byte equal to the payload it would supersede is refused.
 
 The runner's writer (`curated.append_review_log`) refuses any other kind and any field outside its kind's
 row, and refuses a `person_answer` without `by` and `question_code`. The CLI refuses `--question-code`
@@ -858,18 +917,30 @@ outputs included. It refuses:
 - a drive letter path;
 - a UNC path (`\\host\share`);
 - a user profile path;
-- in a transcript, any block the harness inserts from a context file or memory.
+- in a transcript or a stored tool result, any block the harness inserts from a context file or memory;
+- an API key or token of a known form;
+- in a file the agent or the wrapper wrote, an e-mail address;
+- a name given with `--operator-term`.
 
-How it reads them (`check-release-redaction.py v1`, the value a record's `transcript.redaction` names):
+How it reads them (`check-release-redaction.py v2`, the version a record's `transcript.redaction` names):
 - every file is read as bytes, whatever its type, and each rule is reported once per file at its first match
   (`{file, rule, at, line}`), as text and as JSON escapes;
 - `library_path`: a library file named with a path. A library file is one ending `.msp`, `.lbm`, `.lbm2` or
   `.lbm3`, or a name the bundle itself names in a `<library:<name> sha256=<sha256>>` token, or one given with
   `--library-name`. The name alone, `<library:...>`, `<external>/<name>` and a URL are not paths;
 - `drive_letter_path`, `unc_path` and `user_profile_path`: the three path rules;
-- `context_block`: in a transcript (a file under `transcripts\`, a `*.redacted.jsonl` or a `*transcript*.jsonl`),
-  a context file or memory shown as "Contents of ..." (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `MEMORY.md`),
-  the harness's preamble to them, or the auto memory index.
+- `context_block`: in a transcript (a file under `transcripts\`, a `*.redacted.jsonl` or a `*transcript*.jsonl`)
+  or a stored tool result (under a triage's `inputs\<unit_id>\calls\`), a context file or memory shown as
+  "Contents of ..." (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `MEMORY.md`),
+  the harness's preamble to them, or the auto memory index;
+- `secret_token`: in any file, an API key or token of a known form (`sk-ant-...`, `gh?_...`, `AKIA...`,
+  `xox?-...`);
+- `email_address`: an e-mail address in a payload, a decision record, the review log, a stored tool result
+  (`inputs\<unit_id>\calls\`) or a transcript. The repository's own texts under `inputs\` may name their
+  submitters and are not read for it;
+- `operator_name`: a name or handle given with `--operator-term`, as a word (`jroe` in `pool-jroe-2026`, not in
+  `jroebuck`), or anywhere for a name in a script without spaces between words. The wrapper checks every
+  transcript it releases with the operator's names and handles.
 
 Exit status 0 nothing found, 1 a finding, 2 not readable. `campaign-runner.py release` calls it on every file it
 wrote (`curated.release_redaction_findings`, with the pinned libraries' names), and decides with its three path
@@ -1039,19 +1110,23 @@ Built:
     payloads with confidence and rationale, a clean context, payloads only, never `class_proposal`) and
     `prompts/unit-triage-task.v1.md`;
   - `run-triage-agent.py`: inputs prepared before the session (the Catalog handoffs, the remote central directory
-    listing, the mwTab text), the clean configuration, all or nothing acceptance, and the envelope from the
-    harness transcript;
-  - `validate-triage.py` v2: the envelope hashes (`T-RECORD`, `T-TOOLS`, `T-CONTEXT`), `T-CONFIDENCE`, review
-    log answers (`T-STATUS`, `T-REVISION`, `T-LOG`), projected inputs through the release index,
-    `--emit-selection` and its `validator_verdict` entries;
-  - `verify-decision-log.py` (section 2.4) and `check-release-redaction.py` (section 5.3), which
+    listing, the mwTab text, made portable where it holds a path), the handoff sha256 in the prompt, the clean
+    configuration checked from evidence, all or nothing acceptance (reads outside the session, payloads holding a
+    path, an e-mail address, a secret or a name) and commit, a lock per triage directory, the envelope and the
+    released redacted transcript from the harness transcript, the wrapper's own identity, revisions
+    (`--revise`, with the review log's `revision` entry), and validation with `--emit-selection`;
+  - `record-person-answer.py`: a named person's answer before the plan (section 2.2);
+  - `validate-triage.py` v2: the envelope hashes (`T-RECORD`, `T-TOOLS`, `T-CONTEXT`), the comparison with the
+    released transcript and its fail-closed holds (`T-TRANSCRIPT`), `T-CONFIDENCE` and its answer, review log
+    answers (`T-STATUS`, `T-REVISION`, `T-LOG`), projected inputs through the release index, `--emit-selection`
+    and its `validator_verdict` entries;
+  - `verify-decision-log.py` (section 2.4) and `check-release-redaction.py` v2 (section 5.3), which
     `campaign-runner.py release` calls.
 
 To build:
 - `compare-triage.py` (section 4.2) and `export-llm-decisions.py` (section 5.2);
-- the released redacted transcript: `run-triage-agent.py` writes `transcript.sha256` and `released_path` as
-  null today, so the validator's comparison of `tool_calls` with the released transcript does not run yet;
-- revisions in `run-triage-agent.py` (`<unit_id>.r<N>.json` and the review log's `revision` entry);
+- a revision caused by a ledger `header_reconciliation` entry: `run-triage-agent.py --revise` takes a review-log
+  `person_answer` or `validator_verdict` only;
 - canonical output hashes at finalisation and `output-checksums.tsv` in the release bundle;
 - in Interactive, `parameter_file.canonical_sha256` and projection v2 (next free patch versions).
 

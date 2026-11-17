@@ -33,7 +33,7 @@
     "unit_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$"},
     "source_subrecord_id": {"type": ["string", "null"]},
     "catalog_handoff_sha256": {
-      "description": "sha256 of the Catalog handoff.json the triage was made from, as the Catalog wrote it.",
+      "description": "sha256 of the Catalog handoff copy the triage was made from (inputs/<unit_id>/handoff.json, as the wrapper froze it and as its decision record binds it). The agent cannot hash a file: it copies the value the task prompt gives for the unit.",
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },

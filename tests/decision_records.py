@@ -2,17 +2,20 @@
 
 docs/llm-assisted-curation.md section 2.3: the wrapper that launched the agent writes <payload>.record.json beside each
 payload, from the harness's transcript, after the session ends. scripts/validate-triage.py recomputes every sha256 it
-names: the payload, each input under inputs\\, SKILL.md and the prompt template at repo_commit, the rendered prompt,
-each tool result and the released transcript. These helpers write a record that holds, so a test can break one thing
-at a time.
+names: the payload, each input under inputs\\, SKILL.md, the prompt template and the wrapper at repo_commit, the
+rendered prompt, each tool result and the released transcript, and compares the record's tool calls, model and session
+with that transcript. These helpers write a record that holds, so a test can break one thing at a time.
 
 Two sources of the code a record names:
 - Code.from_root(folder): a released-code folder (--code-root / validate(code_root=...)) holding the working tree's
-  SKILL.md and prompt template, for tests that call the validator directly;
+  SKILL.md, prompt templates and wrapper, for tests that call the validator directly;
 - Code.from_head(): git HEAD of this repository, for tests whose validator runs as the plan runs it (no --code-root).
   It raises unittest.SkipTest where git or HEAD's files are not available (a git archive copy of the tree).
 
-Everything here is synthetic: public accession ids only, no person, no machine path in a record.
+By default a record binds the unit's Catalog evidence (inputs/catalog.json, copied from the eval fixture of its
+accession when the folder lacks one) and a released redacted transcript (transcripts/<payload stem>.redacted.jsonl)
+that shows exactly its tool calls. Everything here is synthetic: public accession ids only, no person, no machine path
+in a record.
 """
 
 from __future__ import annotations
@@ -30,12 +33,19 @@ from typing import Any, Iterable, Mapping
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_PATH = ".claude/skills/msdial-unit-triage/SKILL.md"
 TEMPLATE_PATH = "prompts/unit-triage-task.v1.md"
+REVISION_TEMPLATE_PATH = "prompts/unit-triage-revision.v1.md"
+WRAPPER_PATH = "scripts/run-triage-agent.py"
+FIXTURES = ROOT / "tests" / "fixtures" / "triage-eval"
 CATALOG_SERVER = "msdial-repository-catalog"
 CLEAN_CONTEXT = {
     "configuration": "clean", "working_directory": "<empty directory holding only the skill>", "context_files": [],
     "memory": "disabled", "hooks": [], "mcp_servers": [{"name": CATALOG_SERVER, "version": "0.6.1"}],
     "harness_flags": ["--setting-sources none"],
 }
+MODEL = "synthetic-model"
+SESSION = "synthetic-session"
+AUTO = "auto"
+CATALOG_ROLES = ("catalog_handoff", "catalog_samples", "catalog_unit")
 
 
 def sha(data: bytes) -> str:
@@ -52,12 +62,14 @@ def _git(*args: str) -> bytes | None:
 
 @dataclass
 class Code:
-    """The skill and prompt template a record names, at its commit."""
+    """The skill, prompt templates and wrapper a record names, at its commit."""
 
     commit: str
     skill: bytes
     template: bytes
     root: Path | None = None  # the code root to hand the validator, or None for git
+    wrapper: bytes = b""
+    revision_template: bytes | None = None
 
     @property
     def skill_version(self) -> str:
@@ -68,14 +80,17 @@ class Code:
     @staticmethod
     def from_root(folder: Path, *, skill: bytes | None = None, template: bytes | None = None,
                   commit: str = "c" * 40) -> "Code":
-        """A released-code folder holding the working tree's SKILL.md and template (or the bytes given)."""
+        """A released-code folder holding the working tree's SKILL.md, templates and wrapper (or the bytes given)."""
         skill = skill if skill is not None else (ROOT / SKILL_PATH).read_bytes()
         template = template if template is not None else (ROOT / TEMPLATE_PATH).read_bytes()
-        for relative, data in ((SKILL_PATH, skill), (TEMPLATE_PATH, template)):
+        wrapper = (ROOT / WRAPPER_PATH).read_bytes()
+        revision = (ROOT / REVISION_TEMPLATE_PATH).read_bytes()
+        for relative, data in ((SKILL_PATH, skill), (TEMPLATE_PATH, template), (WRAPPER_PATH, wrapper),
+                               (REVISION_TEMPLATE_PATH, revision)):
             target = Path(folder) / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-        return Code(commit, skill, template, Path(folder))
+        return Code(commit, skill, template, Path(folder), wrapper, revision)
 
     @staticmethod
     def from_head() -> "Code":
@@ -83,9 +98,17 @@ class Code:
         commit = head.decode("ascii").strip() if head else ""
         skill = _git("show", f"{commit}:{SKILL_PATH}") if commit else None
         template = _git("show", f"{commit}:{TEMPLATE_PATH}") if commit else None
-        if not commit or skill is None or template is None:
-            raise unittest.SkipTest("git HEAD of this repository, with the skill and the prompt template, is not available")
-        return Code(commit, skill, template, None)
+        wrapper = _git("show", f"{commit}:{WRAPPER_PATH}") if commit else None
+        revision = _git("show", f"{commit}:{REVISION_TEMPLATE_PATH}") if commit else None
+        if not commit or skill is None or template is None or wrapper is None:
+            raise unittest.SkipTest("git HEAD of this repository, with the skill, the prompt template and the wrapper, "
+                                    "is not available")
+        return Code(commit, skill, template, None, wrapper, revision)
+
+    def snapshot(self, module: Any) -> Any:
+        """This code as scripts/run-triage-agent.py's CodeSnapshot (`module` is the loaded wrapper)."""
+        return module.CodeSnapshot(self.commit, self.skill, self.template, self.root, wrapper=self.wrapper,
+                                   wrapper_commit=self.commit, revision_template=self.revision_template)
 
 
 def render(template: bytes, **values: str) -> bytes:
@@ -93,6 +116,38 @@ def render(template: bytes, **values: str) -> bytes:
     for key, value in values.items():
         text = text.replace("{{" + key + "}}", value)
     return text.encode("utf-8")
+
+
+def stored_result(seq: int, tool: str, result: Any, is_error: bool = False) -> bytes:
+    """A tool result as the wrapper stores it: {tool_use_id, tool, is_error, content}."""
+    return json.dumps({"tool_use_id": f"toolu_{seq:03d}", "tool": tool, "is_error": is_error, "content": result},
+                      indent=1).encode("utf-8")
+
+
+def transcript_lines(calls: Iterable[tuple[str, Mapping[str, Any], Any]], *, model: str = MODEL,
+                     session: str = SESSION) -> bytes:
+    """A redacted stream-JSON transcript showing `calls` (tool, arguments, result) in order, as the wrapper releases it."""
+    lines = [{"type": "system", "subtype": "init", "session_id": session, "model": model, "tools": [], "mcp_servers": [],
+              "plugins": []}]
+    for seq, (tool, arguments, result) in enumerate(calls, start=1):
+        ident = f"toolu_{seq:03d}"
+        lines.append({"type": "assistant", "message": {"model": model, "content": [
+            {"type": "tool_use", "id": ident, "name": tool, "input": dict(arguments)}]}})
+        lines.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": ident, "content": result, "is_error": False}]}})
+    lines.append({"type": "result", "subtype": "success", "is_error": False, "session_id": session})
+    return ("\n".join(json.dumps(line, separators=(",", ":")) for line in lines) + "\n").encode("utf-8")
+
+
+def _catalog_input(folder: Path, accession: str) -> dict[str, Any] | None:
+    target = Path(folder) / "inputs" / "catalog.json"
+    if not target.is_file():
+        source = FIXTURES / accession / "catalog.json"
+        if not source.is_file():
+            return None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    return {"role": "catalog_unit", "path": "inputs/catalog.json"}
 
 
 def write_record(
@@ -103,13 +158,16 @@ def write_record(
     tool_calls: Iterable[tuple[str, Mapping[str, Any], Any]] = (),
     supersedes: str | None = None,
     context: Mapping[str, Any] | None = None,
-    transcript: Mapping[str, Any] | None = None,
+    transcript: Mapping[str, Any] | None | str = AUTO,
+    catalog: bool = True,
     **overrides: Any,
 ) -> Path:
     """Write <payload stem>.record.json beside `payload`, holding everything the validator recomputes.
 
     `inputs` are {role, path (relative to the payload's folder), ...}; sha256 and bytes are filled from the file unless
-    given. `tool_calls` are (tool, arguments, result): each result is stored as inputs\\<unit_id>\\calls\\<seq>.json.
+    given. Unless one of them binds Catalog evidence (or catalog=False), inputs/catalog.json is bound as catalog_unit.
+    `tool_calls` are (tool, arguments, result): each result is stored as inputs\\<unit_id>\\calls\\<seq>.json. The
+    transcript is released as transcripts/<payload stem>.redacted.jsonl unless `transcript` is given (None: none).
     `overrides` replace top-level fields of the record as written."""
     payload = Path(payload)
     folder = payload.parent
@@ -119,25 +177,38 @@ def write_record(
     unit_inputs = folder / "inputs" / unit
     unit_inputs.mkdir(parents=True, exist_ok=True)
     prompt = render(code.template, accession=triage["accession"], unit_ids=unit, input_dir="inputs",
-                    output_dir=".", analysis_purpose="null")
+                    output_dir=".", analysis_purpose="null", handoff_sha256=f"- `{unit}`: `{'0' * 64}`")
     revision = re.match(r"^.+\.(r[0-9]+)$", payload.stem)
     prompt_name = f"prompt.{revision.group(1)}.md" if revision else "prompt.md"
     (unit_inputs / prompt_name).write_bytes(prompt)
+    given = [dict(item) for item in inputs]
+    if catalog and not any(item.get("role") in CATALOG_ROLES for item in given):
+        bound_catalog = _catalog_input(folder, triage["accession"])
+        if bound_catalog is not None:
+            given.insert(0, bound_catalog)
     bound = []
-    for item in inputs:
-        entry = dict(item)
+    for entry in given:
         content = (folder / entry["path"]).read_bytes()
         entry.setdefault("sha256", sha(content))
         entry.setdefault("bytes", len(content))
         bound.append(entry)
     calls = []
-    for seq, (tool, arguments, result) in enumerate(tool_calls, start=1):
-        calls_dir = unit_inputs / "calls"
+    listed = list(tool_calls)
+    calls_name = f"calls.{revision.group(1)}" if revision else "calls"
+    for seq, (tool, arguments, result) in enumerate(listed, start=1):
+        calls_dir = unit_inputs / calls_name
         calls_dir.mkdir(parents=True, exist_ok=True)
-        stored = json.dumps(result, indent=1).encode("utf-8")
+        stored = stored_result(seq, tool, result)
         (calls_dir / f"{seq}.json").write_bytes(stored)
         calls.append({"seq": seq, "tool": tool, "arguments": dict(arguments), "status": "ok",
-                      "result_path": f"inputs/{unit}/calls/{seq}.json", "result_sha256": sha(stored)})
+                      "result_path": f"inputs/{unit}/{calls_name}/{seq}.json", "result_sha256": sha(stored)})
+    if transcript == AUTO:
+        released = f"transcripts/{payload.stem}.redacted.jsonl"
+        lines = transcript_lines(listed)
+        (folder / released).parent.mkdir(parents=True, exist_ok=True)
+        (folder / released).write_bytes(lines)
+        transcript = {"sha256": sha(lines), "released_path": released, "unredacted_sha256": "a" * 64,
+                      "redaction": "synthetic"}
     record = {
         "schema": "msdial-llm-decision-record.v1", "decision_id": sha(data), "kind": "unit_triage",
         "accession": triage["accession"], "unit_id": unit,
@@ -145,10 +216,11 @@ def write_record(
         "supersedes": supersedes, "inputs": bound,
         "skill": {"name": "msdial-unit-triage", "version": code.skill_version, "path": SKILL_PATH,
                   "sha256": sha(code.skill), "repo_commit": code.commit},
+        "wrapper": {"path": WRAPPER_PATH, "sha256": sha(code.wrapper), "repo_commit": code.commit},
         "prompt": {"template_path": TEMPLATE_PATH, "template_sha256": sha(code.template),
                    "rendered_path": f"inputs/{unit}/{prompt_name}", "rendered_sha256": sha(prompt)},
-        "agent": {"harness": "synthetic-harness", "harness_version": "0.0.0", "model_id": "synthetic-model",
-                  "sampling": "harness default, not exposed", "session_id": "synthetic-session",
+        "agent": {"harness": "synthetic-harness", "harness_version": "0.0.0", "model_id": MODEL,
+                  "sampling": "harness default, not exposed", "session_id": SESSION,
                   "context": dict(context if context is not None else CLEAN_CONTEXT)},
         "started_at": "2026-11-16T09:00:00+09:00", "finished_at": "2026-11-16T09:10:00+09:00",
         "tool_calls": calls, "transcript": dict(transcript) if transcript is not None else None,

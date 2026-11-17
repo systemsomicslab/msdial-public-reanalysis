@@ -5,45 +5,59 @@ docs/llm-assisted-curation.md sections 2.1 to 2.3 (the "Context" paragraph and t
 1. PREPARE (read only, before download). Every Catalog analysis unit of the accession gets a Catalog handoff,
    made with msdial_catalog_reanalysis_handoff without a Class proposal, copied into
    <campaign dir>\\triage\\<accession>\\inputs\\<unit_id>\\ (handoff.json with its samples.json, files.json and
-   inputs.json, the sidecar paths in the copy pointing at the copies). Every zip archive the handoffs name is listed
+   inputs.json, the sidecar paths in the copy pointing at the copies, which Interactive reads later; the session
+   reads the sidecars beside the copy, never those paths). Every zip archive the handoffs name is listed
    from its central directory (Interactive's remote_archive.list_remote_zip, the code behind
    msdial_list_remote_archive; never a download) into inputs\\<archive>.members.tsv. For a Metabolomics Workbench
-   unit, the analysis's mwTab text is fetched into inputs\\<analysis id>.mwtab.txt. A listing or an mwTab text that
-   cannot be had is left out and said so; the validator then holds.
+   unit, the analysis's mwTab text is fetched into inputs\\<analysis id>.mwtab.txt. A text that holds an absolute
+   path is made portable before the session (release_safe_text), its input naming the original's sha256. A listing
+   or an mwTab text that cannot be had is left out and said so; the validator then holds.
 2. RENDER prompts/unit-triage-task.v1.md (at git HEAD of this repository) into inputs\\<unit_id>\\prompt.md, with the
-   input and output directories relative to the session's working directory.
+   input and output directories relative to the session's working directory and the sha256 of each unit's handoff
+   copy, which the agent writes as catalog_handoff_sha256 (its tools cannot hash a file).
 3. LAUNCH the Claude Code CLI headless in a clean configuration (CLEAN_FLAGS below): a fresh working directory
    outside every code checkout holding only the skill (SKILL.md at HEAD), the inputs and an empty output folder as
    sibling directories added with --add-dir, no settings files (--restricted), CLAUDE.md and auto memory disabled,
    hooks disabled, only the MCP servers the skill's allowed-tools name (--strict-mcp-config), the built-in tools
    limited to the skill's, every other tool of those servers removed (--disallowedTools, from the server's own
    tools/list), and the transcript taken as stream JSON. The session's directory is
-   <campaign dir>\\triage-sessions\\<accession>\\<stamp>\\ (work, inputs, out, harness).
-4. ACCEPT. A session that did not end in success, timed out, wrote anything but <unit_id>.json payloads into its
-   output folder (a decision record or a review log above all: only the wrapper and the runner write those), wrote
-   outside it, or changed its inputs or working directory has no payload accepted. Otherwise each payload is copied,
-   byte for byte, to <campaign dir>\\triage\\<accession>\\<unit_id>.json (never over an existing file).
+   <campaign dir>\\triage-sessions\\<accession>\\<stamp>\\ (work, inputs, out, harness). The prompt is written on its
+   own thread, so --timeout runs from the launch. One run holds <triage dir>\\.triage.lock throughout.
+4. ACCEPT, whole or not at all. A session that did not end in success, timed out, wrote anything but the payloads it
+   was asked for into its output folder (a decision record or a review log above all: only the wrapper writes those),
+   wrote outside it, read outside its working directory, inputs and output folder, wrote a payload holding an
+   absolute path, an e-mail address, a secret or the operator's name, or changed its inputs or working directory has
+   no payload accepted.
 5. RECORD <unit_id>.record.json (msdial-llm-decision-record.v1) from the harness transcript, not from anything the
-   model says about itself: every tool call in order with its arguments (secrets, e-mail addresses and the operator's
-   names removed, paths portable), each result stored as inputs\\<unit_id>\\calls\\<seq>.json with its sha256, every
-   input offered with its sha256 and bytes, the skill and template at the commit, the rendered prompt, the harness
-   version, the model id, the flags and the configuration. What the configuration achieved is checked from the
-   transcript's init message (tools, MCP servers, plugins, skills, working directory), the debug log (hooks) and the
-   ancestors of the session directory (context files); anything short of clean is written as "not clean: <why>",
-   which the validator holds (T-CONTEXT). The transcript itself stays in the session's harness folder, unreleased;
-   the record names its sha256 (transcript.unredacted_sha256). A released redacted copy is not written yet
-   (transcript.sha256 and released_path are null): the redactor that would write it, and pass it through
-   scripts/check-release-redaction.py before the record names its sha256, is still to be built.
-6. VALIDATE: scripts/validate-triage.py on the accession, with inputs\\ as the Catalog and inputs\\*.tsv as the
-   listings. Its report is kept in the session's harness folder.
+   model says about itself. The transcript is scrubbed (secrets, e-mail addresses, the operator's names and handles
+   removed, paths portable), and every tool call in order with its arguments and its result (stored as
+   inputs\\<unit_id>\\calls\\<seq>.json) is read from the scrubbed bytes; with every input offered, the skill and
+   template at the commit, the wrapper (wrapper.repo_commit null when this file is not HEAD's), the rendered prompt,
+   the harness version, the model id, the flags and the configuration. What the configuration achieved is checked
+   from the transcript's init message (tools, MCP servers and their status, plugins, skills, working directory), the
+   debug log (hooks registered, memory off) and the ancestors of the session directory (context files); anything
+   short of clean, a missing debug log included, is written as "not clean: <why>", which the validator holds
+   (T-CONTEXT). For a clean run the scrubbed transcript, once check-release-redaction.py finds nothing in it, is
+   released as transcripts\\<accession>-<stamp>.redacted.jsonl and named in the record; the unscrubbed one stays in
+   the session's harness folder (transcript.unredacted_sha256). The tool results, the transcript, the records and the
+   payloads are committed all or nothing, never over an existing file.
+6. VALIDATE: scripts/validate-triage.py --emit-selection on the accession, with inputs\\ as the Catalog and
+   inputs\\*.tsv as the listings: its validator_verdict entries enter the review log. Its report is kept in the
+   session's harness folder; a validator that cannot run is an error verdict.
 
-The wrapper never writes a person's answer or the review log, never calls a tool with confirmed=true, never saves a
-Class, never downloads raw data and never runs MS-DIAL.
+REVISE (--revise <unit_id>=<seq>, one accession): the unit's current payload is revised because of review-log entry
+<seq> (a person_answer or a validator_verdict about it or a payload it supersedes; one entry causes one revision). The
+session gets the inputs the current record binds, the current payload and the cause line, under
+prompts/unit-triage-revision.v1.md; the accepted payload is <unit_id>.r<N>.json with a record whose supersedes is the
+current decision, and the wrapper appends the review log's revision entry.
+
+The wrapper never writes a person's answer (scripts/record-person-answer.py does, for a named person), never calls a
+tool with confirmed=true, never saves a Class, never downloads raw data and never runs MS-DIAL.
 
     python -I scripts/run-triage-agent.py --campaign-dir <dir> (--accession ST002283 ... | --accessions-file <file>)
-        [--dry-run] [--max-parallel 1] [--model <id>] [--timeout 3600] [--analysis-purpose <text>]
-        [--claude <executable>] [--mcp-config <json>] [--catalog-database <sqlite>] [--interactive-root <dir>]
-        [--session-root <dir>] [--redact-term <text>]...
+        [--revise <unit_id>=<seq>]... [--dry-run] [--max-parallel 1] [--model <id>] [--timeout 3600]
+        [--analysis-purpose <text>] [--claude <executable>] [--mcp-config <json>] [--catalog-database <sqlite>]
+        [--interactive-root <dir>] [--session-root <dir>] [--redact-term <text>]...
 
 Exit status: 0 every accession prepared (dry run) or triaged with a validator pass; 1 a validator hold; 2 a validator
 error; 3 a session or a preparation that failed or was refused.
@@ -89,6 +103,10 @@ _SPEC.loader.exec_module(validator)
 SKILL_NAME = "msdial-unit-triage"
 SKILL_PATH = ".claude/skills/msdial-unit-triage/SKILL.md"
 TEMPLATE_PATH = "prompts/unit-triage-task.v1.md"
+REVISION_TEMPLATE_PATH = "prompts/unit-triage-revision.v1.md"
+WRAPPER_PATH = "scripts/run-triage-agent.py"
+TRANSCRIPTS = "transcripts"
+LOCK_NAME = ".triage.lock"
 VALIDATOR_PATH = SCRIPTS / "validate-triage.py"
 HARNESS = "claude-code"
 RECORD_SCHEMA = "msdial-llm-decision-record.v1"
@@ -142,13 +160,22 @@ def long_path(path: Path | str) -> Path:
 
 @dataclass
 class CodeSnapshot:
-    """The skill and the prompt template a session runs with, at one commit of this repository. `root` is a released
-    code folder the validator reads in place of git (validate-triage.py --code-root), or None for git."""
+    """The skill and the prompt templates a session runs with, at one commit of this repository, and the wrapper that
+    writes the records. `root` is a released code folder the validator reads in place of git (validate-triage.py
+    --code-root), or None for git. `wrapper_commit` is the commit only when the running wrapper is the one it holds
+    (line endings aside); an edited working tree records null, and the validator holds such a record."""
 
     commit: str
     skill: bytes
     template: bytes
     root: Path | None = None
+    wrapper: bytes = b""
+    wrapper_commit: str | None = None
+    revision_template: bytes | None = None
+
+    @property
+    def wrapper_identity(self) -> dict[str, Any]:
+        return {"path": WRAPPER_PATH, "sha256": sha256_bytes(self.wrapper), "repo_commit": self.wrapper_commit}
 
     @property
     def skill_version(self) -> str:
@@ -175,16 +202,27 @@ def code_from_head(repo: Path = REPO_ROOT) -> CodeSnapshot:
 
     try:
         commit = git("rev-parse", "HEAD").decode("ascii").strip()
-        return CodeSnapshot(commit, git("show", f"{commit}:{SKILL_PATH}"), git("show", f"{commit}:{TEMPLATE_PATH}"))
+        held = git("show", f"{commit}:{WRAPPER_PATH}")
+        running = Path(__file__).read_bytes()
+        same = running.replace(b"\r\n", b"\n") == held.replace(b"\r\n", b"\n")
+        return CodeSnapshot(commit, git("show", f"{commit}:{SKILL_PATH}"), git("show", f"{commit}:{TEMPLATE_PATH}"),
+                            wrapper=held if same else running, wrapper_commit=commit if same else None,
+                            revision_template=git("show", f"{commit}:{REVISION_TEMPLATE_PATH}"))
     except (OSError, subprocess.SubprocessError) as error:
         raise WrapperError(f"git could not be run: {error}") from error
+
+
+def handoff_digests(units: Iterable[str], inputs: Path) -> str:
+    """The sha256 of each unit's handoff copy, as the prompt gives it: the agent writes it as catalog_handoff_sha256
+    and cannot hash a file itself (its tools are read, search and write)."""
+    return "\n".join(f"- `{unit}`: `{sha256_bytes((inputs / unit / 'handoff.json').read_bytes())}`" for unit in units)
 
 
 def render_prompt(template: bytes, **values: str) -> bytes:
     text = template.decode("utf-8")
     for key, value in values.items():
         text = text.replace("{{" + key + "}}", value)
-    left = sorted(set(re.findall(r"\{\{([a-z_]+)\}\}", text)))
+    left = sorted(set(re.findall(r"\{\{([a-z0-9_]+)\}\}", text)))
     if left:
         raise WrapperError(f"the prompt template has placeholders the wrapper does not fill: {', '.join(left)}")
     return text.encode("utf-8")
@@ -202,9 +240,25 @@ _SECRET_VALUES = (
 )
 _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _SEP = r"(?:\\\\|\\|/)"
-_DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:" + _SEP + r"(?:[^\\/\r\n\"'<>|*?:]*?" + _SEP + r")*"
+_DRIVE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:" + _SEP + r"(?:[^\\/\r\n\t\"'<>|*?:,;]*?" + _SEP + r")*"
                          r"[^\\/\s\"'<>|*?:,;)\]}]*")
 _UNC_PATH = re.compile(r"(?<![A-Za-z0-9:])(?:\\\\\\\\|\\\\)[A-Za-z0-9._$-]+(?:" + _SEP + r"[^\\/\s\"'<>|*?:,;)\]}]+)+")
+# A POSIX home or user profile path (/home/<name>/..., /Users/<name>/...), which the release check refuses as well.
+_PROFILE_PATH = re.compile(r"(?<![A-Za-z0-9._~-])/(?:home|Users)/[^/\s\"'<>|*?:,;)\]}]+(?:/[^/\s\"'<>|*?:,;)\]}]*)*")
+
+
+def _term_kept(term: str) -> bool:
+    """A name part long enough to mean a person: three letters in ASCII; any length in a script without spaces between
+    words (most Japanese and Chinese family and given names are one or two characters)."""
+    return len(term) >= 3 or (len(term) >= 1 and any(ord(char) > 127 for char in term))
+
+
+def _term_pattern(term: str) -> re.Pattern[str]:
+    """A name as a word: not inside a longer ASCII word (Roebuck keeps Roe), but next to digits, '_' or '-' it still
+    counts (roe2026, workshop_jroe). A non-ASCII name is matched wherever it appears."""
+    if any(ord(char) > 127 for char in term):
+        return re.compile(re.escape(term), re.IGNORECASE)
+    return re.compile(r"(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])", re.IGNORECASE)
 
 
 @dataclass
@@ -227,21 +281,41 @@ class Scrubber:
                 for variant in {prefix, prefix.replace("\\", "/"), prefix.replace("\\", "\\\\")}:
                     roots.append((variant, relative))
         roots.sort(key=lambda item: -len(item[0]))
-        cleaned = sorted({t for t in (str(x).strip() for x in terms) if len(t) >= 3}, key=lambda t: -len(t))
+        cleaned = sorted({t for t in (str(x).strip() for x in terms) if _term_kept(t)}, key=lambda t: -len(t))
         return Scrubber(roots, cleaned)
 
-    def text(self, value: str) -> str:
+    def paths(self, value: str) -> str:
+        """Only the path rule: the session's folders relative, any other absolute path <external>/<file name>."""
         out = value
-        for pattern in _SECRET_VALUES:
-            out = pattern.sub("<redacted>", out)
         for prefix, relative in self.roots:
             out = re.sub(re.escape(prefix) + r"(?=" + _SEP + r"|\b|$)", lambda _m, r=relative: r, out,
                          flags=re.IGNORECASE)
         out = _DRIVE_PATH.sub(lambda m: "<external>/" + _basename(m.group(0)), out)
         out = _UNC_PATH.sub(lambda m: "<external>/" + _basename(m.group(0)), out)
+        return _PROFILE_PATH.sub(lambda m: "<external>/" + _basename(m.group(0)), out)
+
+    def found(self, value: str) -> list[str]:
+        """What `value` holds that a released file must not: an absolute path, an e-mail address, a secret, an operator's
+        name. The kinds only, never the matched text."""
+        kinds = []
+        if curated._holds_absolute_path(value.encode("utf-8")):  # noqa: SLF001 - the release's own path rules
+            kinds.append("an absolute path")
+        if _EMAIL.search(value):
+            kinds.append("an e-mail address")
+        if any(pattern.search(value) for pattern in _SECRET_VALUES):
+            kinds.append("a secret")
+        if any(_term_pattern(term).search(value) for term in self.terms):
+            kinds.append("an operator's name")
+        return kinds
+
+    def text(self, value: str) -> str:
+        out = value
+        for pattern in _SECRET_VALUES:
+            out = pattern.sub("<redacted>", out)
+        out = self.paths(out)
         out = _EMAIL.sub("<redacted-email>", out)
         for term in self.terms:
-            out = re.sub(r"(?i)(?<![A-Za-z0-9])" + re.escape(term) + r"(?![A-Za-z0-9])", "<redacted>", out)
+            out = _term_pattern(term).sub("<redacted>", out)
         return out
 
     def value(self, value: Any, key: str | None = None) -> Any:
@@ -273,9 +347,16 @@ def operator_terms(extra: Iterable[str] = ()) -> list[str]:
         found.add(text)
         # An e-mail address is removed whole (and by its local part); its domain names an institution, not a person.
         local = text.split("@", 1)[0] if "@" in text else text
-        for part in re.split(r"[\s\\/._-]+", local):
-            if len(part) >= 3:
-                found.add(part)
+        parts = [part for part in re.split(r"[\s\\/._-]+", local) if part]
+        found.update(part for part in parts if _term_kept(part))
+        # The handles people make of a name: initial and surname (jroe), surname and initial, both run together, in
+        # either order, since a name may be written family name first.
+        words = [part for part in parts if part.isascii() and part.isalpha() and len(part) >= 2]
+        if len(words) >= 2:
+            for first, last in ((words[0], words[-1]), (words[-1], words[0])):
+                for handle in (first[0] + last, last + first[0], first + last):
+                    if len(handle) >= 4:
+                        found.add(handle)
 
     for name in ("USERNAME", "USER", "LOGNAME"):
         add(os.environ.get(name))
@@ -365,7 +446,7 @@ class Offered:
     """One file offered to the session, under the triage directory's inputs\\ (path relative to the triage dir)."""
 
     path: str
-    kind: str  # handoff, samples, files, analysis_inputs, listing, mwtab
+    kind: str  # handoff, samples, files, analysis_inputs, listing, mwtab; for a revision bound, prior_decision, review_entry
     unit: str | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
 
@@ -439,9 +520,14 @@ def prepare_inputs(accession: str, staging: Path, final_inputs: Path, catalog: A
             else:
                 try:
                     data = fetcher(url)
-                    (staging / f"{analysis}.mwtab.txt").write_bytes(data)
-                    offered.append(Offered(f"inputs/{analysis}.mwtab.txt", "mwtab", unit_id,
-                                           {"source_url": url, "retrieved_at": now()}))
+                    released, extra = release_safe_text(data)
+                    if released is None:
+                        notes.append(f"{analysis}: the mwTab text holds an absolute path that could not be made portable; "
+                                     "it is not offered")
+                    else:
+                        (staging / f"{analysis}.mwtab.txt").write_bytes(released)
+                        offered.append(Offered(f"inputs/{analysis}.mwtab.txt", "mwtab", unit_id,
+                                               {"source_url": url, "retrieved_at": now(), **extra}))
                 except Exception as error:  # noqa: BLE001
                     notes.append(f"{analysis}: the mwTab text could not be fetched ({type(error).__name__}: {error}); "
                                  "it is not offered")
@@ -457,10 +543,15 @@ def prepare_inputs(accession: str, staging: Path, final_inputs: Path, catalog: A
             continue
         stem = re.sub(r"(?i)\.zip$", "", name)
         target = staging / f"{stem}.members.tsv"
-        target.write_bytes(_listing_tsv(name, listing["members"]))
+        released, extra = release_safe_text(_listing_tsv(name, listing["members"]))
+        if released is None:
+            notes.append(f"{name}: the listing holds an absolute path that could not be made portable; it is not offered "
+                         "and the validator holds")
+            continue
+        target.write_bytes(released)
         provenance = listing.get("provenance") if isinstance(listing.get("provenance"), dict) else {}
         tool = provenance.get("tool") if isinstance(provenance.get("tool"), dict) else {}
-        offered.append(Offered(f"inputs/{target.name}", "listing", None, {"retrieval": {
+        offered.append(Offered(f"inputs/{target.name}", "listing", None, {**extra, "retrieval": {
             "method": "remote_central_directory",
             "tool": " ".join(str(x) for x in (tool.get("name") or "msdial_app.remote_archive.list_remote_zip",
                                                  tool.get("version")) if x),
@@ -473,6 +564,26 @@ def prepare_inputs(accession: str, staging: Path, final_inputs: Path, catalog: A
     if not archives:
         notes.append("the handoffs name no zip archive; no listing is offered and the validator holds")
     return Preparation(accession, units, offered, notes)
+
+
+_TEXT_REDACTION = "absolute paths replaced by <external>/<file name> before the session"
+
+
+def release_safe_text(data: bytes) -> tuple[bytes | None, dict[str, str]]:
+    """A repository text (an mwTab text, an archive listing) as the session may read it. It is released byte for byte
+    and bound by its sha256, so it is made portable before the agent reads it, never after: a drive letter, UNC or user
+    profile path a submitter wrote becomes <external>/<file name>, and the provenance names the original's sha256.
+    (None, {}) when a path is left that the rule cannot make portable."""
+    if not curated._holds_absolute_path(data):  # noqa: SLF001 - the release's own path rules
+        return data, {}
+    text = data.decode("utf-8", "replace")
+    out = _PROFILE_PATH.sub(lambda m: "<external>/" + _basename(m.group(0)),
+                            _UNC_PATH.sub(lambda m: "<external>/" + _basename(m.group(0)),
+                                          _DRIVE_PATH.sub(lambda m: "<external>/" + _basename(m.group(0)), text)))
+    released = out.encode("utf-8")
+    if curated._holds_absolute_path(released):  # noqa: SLF001
+        return None, {}
+    return released, {"original_sha256": sha256_bytes(data), "redaction": _TEXT_REDACTION}
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -620,6 +731,11 @@ def find_claude(given: str | None) -> list[str]:
     (claude, claude.cmd) is replaced by the native claude.exe beside it, so arguments are not re-parsed by cmd.exe."""
     if given:
         path = Path(given)
+        if not path.is_file():
+            found = shutil.which(given)
+            if not found:
+                raise WrapperError(f"--claude {path.name}: no such executable")
+            path = Path(found)
         if path.suffix.lower() == ".py":
             return [sys.executable, "-I", str(path)]
         return [str(path)]
@@ -773,17 +889,25 @@ def launch(session: Session, prompt: bytes, timeout: float) -> Outcome:
         process = subprocess.Popen(session.argv, cwd=str(session.work), stdin=subprocess.PIPE, stdout=stdout,
                                    stderr=stderr, env=env, **kwargs)
         timed_out = False
-        try:
-            assert process.stdin is not None
-            process.stdin.write(prompt)
-            process.stdin.close()
-        except OSError:
-            pass
+
+        def feed() -> None:
+            # The prompt goes in on its own thread: a pipe holds a few KB, and a CLI that does not read its stdin would
+            # otherwise block the write before the timeout clock below has started.
+            try:
+                assert process.stdin is not None
+                process.stdin.write(prompt)
+                process.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+        writer = threading.Thread(target=feed, daemon=True)
+        writer.start()
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
             _kill_tree(process)
+        writer.join(timeout=30)
     return Outcome(process.returncode, timed_out, started, now(), transcript_path.read_bytes())
 
 
@@ -871,6 +995,11 @@ def assess_context(transcript: Transcript, session: Session, ancestors: tuple[li
     init = transcript.init or {}
     if not transcript.init:
         problems.append("the transcript has no init message, so the tools, servers and plugins loaded are unknown")
+    else:
+        # What the init does not say was not checked, and what was not checked is not clean.
+        for key in ("tools", "mcp_servers", "plugins"):
+            if not isinstance(init.get(key), list):
+                problems.append(f"the init message does not list {key}, so they were not checked")
     allowed = set(session.allowed)
     offered_tools = [str(t) for t in init.get("tools") or []]
     extra_tools = [t for t in offered_tools if not validator.tool_allowed(t, allowed)]
@@ -881,6 +1010,10 @@ def assess_context(transcript: Transcript, session: Session, ancestors: tuple[li
     extra_servers = sorted({str(s.get("name")) for s in servers} - wanted)
     if extra_servers:
         problems.append("MCP servers the skill does not allow were loaded: " + ", ".join(extra_servers))
+    status = {str(s.get("name")): str(s.get("status") or "") for s in servers}
+    for name in sorted(wanted):
+        if transcript.init and status.get(name) != "connected":
+            problems.append(f"the MCP server {name} the skill allows was {status.get(name) or 'not loaded'}, not connected")
     plugins = [p for p in init.get("plugins") or [] if isinstance(p, dict)]
     foreign = [str(p.get("name")) for p in plugins if str(p.get("path") or "") != "builtin"]
     if foreign:
@@ -891,15 +1024,27 @@ def assess_context(transcript: Transcript, session: Session, ancestors: tuple[li
     cwd = str(init.get("cwd") or "")
     if transcript.init and cwd and long_path(cwd) != long_path(session.work):
         problems.append("the session ran in another working directory")
+    # Hooks and memory as the harness's debug log states them (CLI 2.1.318: "Registered 0 hooks from 5 plugins", and
+    # "project memory is off" from the context loader). A log that does not say is not taken as a clean answer.
     hooks: list[str] = []
-    registered = [int(n) for n in re.findall(r"Registered (\d+) hooks", debug_log)]
-    if any(registered):
+    registered = [int(n) for n in re.findall(r"Registered (\d+) hooks?\b", debug_log)]
+    if not debug_log.strip():
+        problems.append("the harness wrote no debug log, so the hooks and memory were not checked")
+    elif not registered:
+        problems.append("the debug log names no hook registration, so the hooks were not checked")
+    elif any(registered):
         hooks.append(f"{max(registered)} hook(s) registered (harness debug log)")
         problems.append("hooks were registered")
+    if re.search(r"project memory is off", debug_log):
+        memory = "disabled"
+    else:
+        memory = "not observed: the debug log does not say that memory is off"
+        if debug_log.strip():
+            problems.append("the debug log does not say that memory is off")
     context_files = ancestors[1]
     if context_files:
         problems.append(f"{len(context_files)} context file(s) lie in an ancestor of the session directory")
-    loaded = {str(s.get("name")): s for s in servers}
+    loaded = {str(s.get("name")): s for s in servers if status.get(str(s.get("name"))) == "connected"}
     mcp_servers = [{"name": s["name"], "version": s.get("version")} for s in session.servers if s["name"] in loaded]
     builtin = sorted(str(p.get("name")) for p in plugins if str(p.get("path") or "") == "builtin")
     flags = [*session.portable_flags,
@@ -910,7 +1055,7 @@ def assess_context(transcript: Transcript, session: Session, ancestors: tuple[li
         "configuration": "clean" if not problems else "not clean: " + "; ".join(problems),
         "working_directory": WORKING_DIRECTORY,
         "context_files": context_files,
-        "memory": "disabled",
+        "memory": memory,
         "hooks": hooks,
         "mcp_servers": mcp_servers,
         "harness_flags": flags,
@@ -925,9 +1070,46 @@ def tree_digest(folder: Path) -> dict[str, str]:
             for p in sorted(folder.rglob("*")) if p.is_file()}
 
 
-def acceptance_problems(session: Session, outcome: Outcome, transcript: Transcript, units: list[str],
-                        inputs_before: dict[str, str], work_before: dict[str, str]) -> tuple[list[str], dict[str, Path]]:
-    """(why nothing is accepted, the payloads that would be). A session is accepted whole or not at all."""
+_READ_TOOLS = ("Read", "Glob", "Grep", "LS", "NotebookRead")
+_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def _within(path: Path, roots: Iterable[Path]) -> bool:
+    """Whether `path` is one of `roots` or lies under one, compared as resolved long paths (case folded on Windows)."""
+    target = os.path.normcase(str(long_path(path)))
+    for root in roots:
+        base = os.path.normcase(str(long_path(root)))
+        if target == base or target.startswith(base.rstrip("\\/") + os.sep):
+            return True
+    return False
+
+
+def _read_targets(call: "Call", work: Path) -> list[tuple[str, Path]]:
+    """The paths a read or search call names: (as given, resolved against the working directory). A glob pattern counts
+    from its first wildcard back."""
+    named = [str(call.arguments.get(key) or "") for key in ("file_path", "path", "notebook_path")]
+    pattern = str(call.arguments.get("pattern") or "")
+    if validator.bare_tool(call.name) == "Glob" and pattern:
+        named.append(re.split(r"[*?\[{]", pattern, maxsplit=1)[0] or ".")
+    out = []
+    for text in named:
+        if not text.strip():
+            continue
+        try:
+            path = Path(text)
+            out.append((text, path if path.is_absolute() else work / path))
+        except (OSError, ValueError):
+            out.append((text, Path("<unreadable path>")))
+    return out
+
+
+def acceptance_problems(session: Session, outcome: Outcome, transcript: Transcript, expected: Mapping[str, str],
+                        inputs_before: dict[str, str], work_before: dict[str, str],
+                        scrub: "Scrubber | None" = None) -> tuple[list[str], dict[str, Path]]:
+    """(why nothing is accepted, the payloads that would be, by unit). `expected` maps each payload file name the session
+    may write to its unit. A session is accepted whole or not at all: a payload holding an absolute path, an e-mail
+    address, a secret or an operator's name refuses it, since a payload is released byte for byte and made immutable
+    here; so does a read outside the session's working directory, inputs and output folder."""
     problems: list[str] = []
     if outcome.timed_out:
         problems.append("the session timed out and was stopped")
@@ -943,16 +1125,29 @@ def acceptance_problems(session: Session, outcome: Outcome, transcript: Transcri
         if path.is_dir():
             continue
         relative = path.relative_to(session.out).as_posix()
-        match = PAYLOAD_NAME.match(relative)
         if relative.endswith(".record.json") or relative == curated.REVIEW_LOG:
-            problems.append(f"the model wrote {relative}; only the wrapper writes a decision record and only the runner "
-                            "the review log")
-        elif match and match.group("unit") in units:
-            payloads[match.group("unit")] = path
+            problems.append(f"the model wrote {relative}; only the wrapper writes a decision record and the review log")
+        elif relative in expected:
+            payloads[expected[relative]] = path
+            if scrub is not None:
+                try:
+                    kinds = scrub.found(path.read_bytes().decode("utf-8", "replace"))
+                except OSError as error:
+                    kinds = [f"unreadable bytes ({type(error).__name__})"]
+                if kinds:
+                    problems.append(f"the payload {relative} holds {', '.join(kinds)}; a payload is released byte for "
+                                    "byte and never rewritten")
         else:
-            problems.append(f"the model wrote {relative}, which is not the payload of a unit of this session")
+            problems.append(f"the model wrote {relative}, which is not a payload this session was asked for")
+    readable = (session.work, session.inputs, session.out)
     for call in transcript.calls:
-        if validator.bare_tool(call.name) not in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        if validator.bare_tool(call.name) in _READ_TOOLS:
+            for text, path in _read_targets(call, session.work):
+                if not _within(path, readable):
+                    problems.append(f"tool call {call.name} read outside the session's folders "
+                                    f"({_basename(text) or 'a path'}); nothing outside them is evidence")
+            continue
+        if validator.bare_tool(call.name) not in _WRITE_TOOLS:
             continue
         target = str(call.arguments.get("file_path") or call.arguments.get("notebook_path") or "")
         try:
@@ -973,14 +1168,22 @@ def acceptance_problems(session: Session, outcome: Outcome, transcript: Transcri
 
 _ROLES = {"handoff": "catalog_handoff", "samples": "catalog_samples", "files": "catalog_files",
           "analysis_inputs": "catalog_analysis_inputs"}
+TRANSCRIPT_REDACTION = "run-triage-agent.py scrubber; check-release-redaction.py v2"
+
+
+def _input_entry(item: Offered, role: str, triage_dir: Path, source: str | None = None) -> dict[str, Any]:
+    data = (triage_dir / item.path).read_bytes()
+    out: dict[str, Any] = {"role": role, "path": item.path, "sha256": sha256_bytes(data), "bytes": len(data)}
+    if source:
+        out["source"] = source
+    return out
 
 
 def record_inputs(unit_id: str, triage_dir: Path, offered: list[Offered]) -> list[dict[str, Any]]:
     """Every input offered to the session, as a record binds it: the unit's own handoff and sidecars first, then the
     listings, the unit's mwTab text, and the other units' handoffs, sidecars and mwTab texts."""
     def entry(item: Offered, role: str) -> dict[str, Any]:
-        data = (triage_dir / item.path).read_bytes()
-        out: dict[str, Any] = {"role": role, "path": item.path, "sha256": sha256_bytes(data), "bytes": len(data)}
+        out = _input_entry(item, role, triage_dir)
         if item.kind == "handoff":
             out["source"] = "msdial_catalog_reanalysis_handoff" if item.unit == unit_id else \
                 f"msdial_catalog_reanalysis_handoff (unit {item.unit})"
@@ -994,6 +1197,9 @@ def record_inputs(unit_id: str, triage_dir: Path, offered: list[Offered]) -> lis
         elif item.kind == "mwtab":
             out["source_url"] = item.provenance["source_url"]
             out["retrieved_at"] = item.provenance["retrieved_at"]
+        for key in ("original_sha256", "redaction"):
+            if item.provenance.get(key):
+                out[key] = item.provenance[key]
         return out
 
     own = [entry(i, _ROLES[i.kind]) for i in offered if i.unit == unit_id and i.kind in _ROLES]
@@ -1004,30 +1210,62 @@ def record_inputs(unit_id: str, triage_dir: Path, offered: list[Offered]) -> lis
     return [*own, *listings, *texts, *others, *other_texts]
 
 
-def store_calls(unit_id: str, triage_dir: Path, transcript: Transcript, scrub: Scrubber) -> list[dict[str, Any]]:
-    folder = triage_dir / "inputs" / unit_id / "calls"
-    calls: list[dict[str, Any]] = []
+def redact_transcript(data: bytes, scrub: Scrubber) -> bytes:
+    """The harness transcript as it may be released: every JSON line with its strings scrubbed (secrets, e-mail
+    addresses, the operator's names, absolute paths made portable), compact; a line that is not JSON scrubbed as text.
+    The record's tool_calls and stored results are read from these bytes, so they are what the released transcript
+    shows by construction."""
+    lines = []
+    for line in data.decode("utf-8-sig", "replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except ValueError:
+            lines.append(scrub.text(line))
+            continue
+        lines.append(json.dumps(scrub.value(value), ensure_ascii=False, separators=(",", ":")))
+    return ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
+
+
+def stored_calls(transcript: Transcript, calls_dir: str) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
+    """(the record's tool_calls, the result files to write under `calls_dir`, by path relative to the triage dir). Each
+    result is {tool_use_id, tool, is_error, content} as the (redacted) transcript shows it."""
+    entries: list[dict[str, Any]] = []
+    files: dict[str, bytes] = {}
     for seq, call in enumerate(transcript.calls, start=1):
-        entry: dict[str, Any] = {"seq": seq, "tool": call.name, "arguments": scrub.value(call.arguments),
+        entry: dict[str, Any] = {"seq": seq, "tool": call.name, "arguments": call.arguments,
                                  "status": "error", "result_path": None, "result_sha256": None}
         if call.result is not None:
             stored = {"tool_use_id": call.ident, "tool": call.name, "is_error": bool(call.result.get("is_error")),
-                      "content": scrub.value(call.result.get("content"))}
+                      "content": call.result.get("content")}
             data = json.dumps(stored, ensure_ascii=False, indent=1).encode("utf-8")
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / f"{seq}.json").write_bytes(data)
-            entry.update(status="error" if stored["is_error"] else "ok", result_path=f"inputs/{unit_id}/calls/{seq}.json",
-                         result_sha256=sha256_bytes(data))
-        calls.append(entry)
-    return calls
+            path = f"{calls_dir}/{seq}.json"
+            files[path] = data
+            entry.update(status="error" if stored["is_error"] else "ok", result_path=path, result_sha256=sha256_bytes(data))
+        entries.append(entry)
+    return entries, files
 
 
-def build_record(*, unit_id: str, accession: str, triage_dir: Path, data: bytes, code: CodeSnapshot,
-                 prompt: bytes, offered: list[Offered], transcript: Transcript, outcome: Outcome, session: Session,
-                 context: dict[str, Any], version: str, scrub: Scrubber) -> bytes:
-    """The record's bytes for the payload `data` (to be <unit_id>.json beside it). The tool results are stored under
-    inputs\\<unit_id>\\calls\\ here; nothing else is written. Refused (WrapperError) when the record would hold an
-    absolute path, since it is released byte for byte."""
+@dataclass
+class SessionResult:
+    """An accepted session: what every record of it shares."""
+
+    outcome: Outcome
+    transcript: Transcript  # parsed from the redacted bytes
+    payloads: dict[str, Path]
+    context: dict[str, Any]
+    scrub: Scrubber
+    version: str
+    released: dict[str, Any]  # the record's transcript block
+    transcript_file: tuple[str, bytes] | None  # (path relative to the triage dir, bytes) when released
+
+
+def build_record(*, unit_id: str, accession: str, payload_name: str, data: bytes, supersedes: str | None,
+                 inputs: list[dict[str, Any]], code: CodeSnapshot, template_path: str, template: bytes, prompt: bytes,
+                 prompt_path: str, calls: list[dict[str, Any]], session: Session, result: SessionResult) -> bytes:
+    """The record's bytes for the payload `data` (to be `payload_name` beside it). Refused (WrapperError) when the record
+    would hold an absolute path, since it is released byte for byte."""
     try:
         document = json.loads(data.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError):
@@ -1035,29 +1273,30 @@ def build_record(*, unit_id: str, accession: str, triage_dir: Path, data: bytes,
     if not isinstance(document, dict):
         document = {}
     rationale = document.get("rationale") if isinstance(document.get("rationale"), str) else ""
+    transcript = result.transcript
     record = {
         "schema": RECORD_SCHEMA,
         "decision_id": sha256_bytes(data),
         "kind": "unit_triage",
         "accession": accession,
         "unit_id": unit_id,
-        "payload": {"path": f"{unit_id}.json", "schema": str(document.get("schema") or "unknown"), "sha256": sha256_bytes(data)},
-        "supersedes": None,
-        "inputs": record_inputs(unit_id, triage_dir, offered),
+        "payload": {"path": payload_name, "schema": str(document.get("schema") or "unknown"), "sha256": sha256_bytes(data)},
+        "supersedes": supersedes,
+        "inputs": inputs,
         "skill": {"name": SKILL_NAME, "version": code.skill_version, "path": SKILL_PATH,
                   "sha256": sha256_bytes(code.skill), "repo_commit": code.commit},
-        "prompt": {"template_path": TEMPLATE_PATH, "template_sha256": sha256_bytes(code.template),
-                   "rendered_path": f"inputs/{unit_id}/prompt.md", "rendered_sha256": sha256_bytes(prompt)},
-        "agent": {"harness": HARNESS, "harness_version": version,
+        "wrapper": code.wrapper_identity,
+        "prompt": {"template_path": template_path, "template_sha256": sha256_bytes(template),
+                   "rendered_path": prompt_path, "rendered_sha256": sha256_bytes(prompt)},
+        "agent": {"harness": HARNESS, "harness_version": result.version,
                   "model_id": str((transcript.init or {}).get("model") or (transcript.models[:1] or ["unknown"])[0]),
                   "sampling": SAMPLING, "session_id": str((transcript.init or {}).get("session_id") or session.session_id),
-                  "context": context},
-        "started_at": outcome.started_at,
-        "finished_at": outcome.finished_at,
-        "tool_calls": store_calls(unit_id, triage_dir, transcript, scrub),
-        "transcript": {"sha256": None, "released_path": None, "unredacted_sha256": sha256_bytes(outcome.transcript),
-                       "redaction": None},
-        "rationale": scrub.text(rationale.strip()) or "The payload states no unit-level rationale.",
+                  "context": result.context},
+        "started_at": result.outcome.started_at,
+        "finished_at": result.outcome.finished_at,
+        "tool_calls": calls,
+        "transcript": result.released,
+        "rationale": result.scrub.text(rationale.strip()) or "The payload states no unit-level rationale.",
     }
     text = json.dumps(record, ensure_ascii=False, indent=1).encode("utf-8")
     if curated._holds_absolute_path(text):  # noqa: SLF001 - the release's own path rules
@@ -1066,11 +1305,27 @@ def build_record(*, unit_id: str, accession: str, triage_dir: Path, data: bytes,
     return text
 
 
-def commit(triage_dir: Path, unit_id: str, payload: bytes, record: bytes) -> None:
-    """The payload, byte for byte, and its record beside it; neither ever over an existing file."""
-    for name, data in ((f"{unit_id}.json", payload), (f"{unit_id}{validator.RECORD_SUFFIX}", record)):
-        with (triage_dir / name).open("xb") as handle:
-            handle.write(data)
+def commit_files(triage_dir: Path, files: list[tuple[str, bytes]]) -> None:
+    """Every file of an accepted session (tool results, the released transcript, the records, the payloads), each
+    never over an existing file, all or nothing: on any failure the files this call wrote are removed again and the
+    error is raised, so a rerun finds the accession as it was."""
+    written: list[Path] = []
+    try:
+        for relative, data in files:
+            target = triage_dir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("xb") as handle:
+                written.append(target)
+                handle.write(data)
+    except BaseException as error:
+        left = []
+        for path in reversed(written):
+            try:
+                path.unlink()
+            except OSError:
+                left.append(path.name)
+        raise WrapperError(f"the commit failed ({type(error).__name__}: {error}); nothing was kept"
+                           + (f", except {', '.join(left)}, which could not be removed" if left else "")) from error
 
 
 # ------------------------------------------------------------------------------------------------ the driver
@@ -1084,6 +1339,7 @@ class Ports:
     claude: list[str]
     code: CodeSnapshot
     probe: Callable[[Mapping[str, Any]], dict[str, Any]] = probe_mcp
+    harness: str | None = None  # `claude --version`, read once before any accession is prepared
 
 
 @dataclass
@@ -1095,9 +1351,7 @@ class Options:
     timeout: float
     analysis_purpose: str | None
     redact_terms: list[str]
-
-
-_PREPARE_LOCK = threading.Lock()
+    revise: dict[str, int] = field(default_factory=dict)  # unit id -> the review log seq that causes its revision
 
 
 def existing_payloads(triage_dir: Path) -> list[str]:
@@ -1105,15 +1359,101 @@ def existing_payloads(triage_dir: Path) -> list[str]:
                   if not p.name.endswith(validator.RECORD_SUFFIX) and p.name != "index.json")
 
 
+def existing_decisions(triage_dir: Path) -> list[str]:
+    """The payloads and the decision records of a triage directory: either one means the accession was triaged, or a
+    commit was left half done, and a fresh triage never writes beside it."""
+    return sorted(p.name for p in triage_dir.glob("*.json") if p.name != "index.json")
+
+
+class TriageLock:
+    """<triage dir>\\.triage.lock, created exclusively for one run of one accession (fresh or revision), so that two
+    runs, in one process or two, never prepare, move or commit in the same directory at once. NTFS folds case, so
+    ST002747 and st002747 are one directory and one lock."""
+
+    def __init__(self, triage_dir: Path, stamp: str) -> None:
+        self.path = triage_dir / LOCK_NAME
+        self.stamp = stamp
+        self.held = False
+
+    def __enter__(self) -> "TriageLock":
+        try:
+            handle = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as error:
+            raise WrapperError(f"another run holds {self.path.name} in this triage directory; if none is running, a "
+                               "run was stopped hard and the lock may be removed by hand") from error
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"pid": os.getpid(), "stamp": self.stamp, "at": now()}))
+        self.held = True
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self.held:
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+
+def run_session(session: Session, prompt: bytes, expected: Mapping[str, str], accession: str, stamp: str,
+                options: Options, ports: Ports, summary: dict[str, Any]) -> SessionResult | None:
+    """Launch the prepared session, accept it whole or refuse it, and make its transcript releasable. None when refused
+    (summary["problems"] and harness\\failure.json say why)."""
+    version = ports.harness or harness_version(ports.claude)
+    inputs_before, work_before = tree_digest(session.inputs), tree_digest(session.work)
+    outcome = launch(session, prompt, options.timeout)
+    raw = parse_transcript(outcome.transcript)
+    summary["exit_code"] = outcome.exit_code
+    summary["harness_version"] = version
+    reported = str((raw.init or {}).get("claude_code_version") or "")
+    if reported and reported != version:
+        summary["notes"].append(f"the transcript names harness {reported}; `--version` said {version}")
+    scrub = Scrubber.for_session(session.root, operator_terms(options.redact_terms))
+    problems, payloads = acceptance_problems(session, outcome, raw, expected, inputs_before, work_before, scrub)
+    if problems:
+        (session.harness / "failure.json").write_text(json.dumps({"problems": problems, "at": now()}, indent=1),
+                                                      encoding="utf-8")
+        summary["problems"] = problems
+        summary["status"] = "refused"
+        return None
+    debug = (session.harness / "debug.log").read_text(encoding="utf-8", errors="replace") \
+        if (session.harness / "debug.log").is_file() else ""
+    context, _notes = assess_context(raw, session, ancestor_problems(session.root), debug)
+    summary["configuration"] = context["configuration"]
+    summary["notes"] += raw.problems
+    redacted = redact_transcript(outcome.transcript, scrub)
+    transcript = parse_transcript(redacted)
+    (session.harness / "transcript.redacted.jsonl").write_bytes(redacted)
+    released: dict[str, Any] = {"sha256": None, "released_path": None,
+                                "unredacted_sha256": sha256_bytes(outcome.transcript), "redaction": None}
+    transcript_file = None
+    name = f"{TRANSCRIPTS}/{accession}-{stamp}.redacted.jsonl"
+    why = ""
+    if context["configuration"] != "clean":
+        why = "the configuration was not clean, and such a transcript is not released"
+    else:
+        findings = curated.redaction_check().check_file(session.harness / "transcript.redacted.jsonl", name, (),
+                                                        scrub.terms)
+        if findings:
+            why = "the redacted transcript fails check-release-redaction.py (" + \
+                  ", ".join(sorted({item["rule"] for item in findings})) + ")"
+    if why:
+        summary["notes"].append(f"the transcript is not released: {why}; the validator holds")
+    else:
+        released.update(sha256=sha256_bytes(redacted), released_path=name, redaction=TRANSCRIPT_REDACTION)
+        transcript_file = (name, redacted)
+    return SessionResult(outcome, transcript, payloads, context, scrub, version, released, transcript_file)
+
+
 def triage_accession(accession: str, options: Options, ports: Ports) -> dict[str, Any]:
     summary: dict[str, Any] = {"accession": accession, "status": "failed", "dry_run": options.dry_run, "notes": []}
     triage_dir = long_path(options.campaign_dir) / "triage" / accession
     summary["triage_dir"] = str(triage_dir)
-    already = existing_payloads(triage_dir) if triage_dir.is_dir() else []
-    if already:
-        summary["problems"] = [f"{accession} is already triaged ({', '.join(already[:5])}); a payload is immutable, and "
-                               "a re-triage is a revision, which this wrapper does not write"]
-        return summary
+    if not options.revise:
+        already = existing_decisions(triage_dir) if triage_dir.is_dir() else []
+        if already:
+            summary["problems"] = [f"{accession} is already triaged ({', '.join(already[:5])}); a payload is immutable: "
+                                   "a re-triage is a revision (--revise <unit_id>=<review log seq>)"]
+            return summary
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     session_root = long_path(options.session_root) / accession / stamp
     summary["session_dir"] = str(session_root)
@@ -1122,82 +1462,11 @@ def triage_accession(accession: str, options: Options, ports: Ports) -> dict[str
         summary["problems"] = ancestors[0]
         return summary
     try:
-        with _PREPARE_LOCK:
-            triage_dir.mkdir(parents=True, exist_ok=True)
-            final_inputs = triage_dir / "inputs"
-            staging = triage_dir / f".inputs-{stamp}"
-            preparation = prepare_inputs(accession, staging, final_inputs, ports.catalog, ports.lister, ports.fetcher)
-            if final_inputs.exists():
-                aside = long_path(options.session_root) / accession / f"superseded-inputs-{stamp}"
-                aside.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(final_inputs), str(aside))
-                summary["notes"].append(f"earlier inputs (no payload bound them) moved to {aside}")
-            staging.rename(final_inputs)
-        summary["notes"] += preparation.notes
-        units = [u["unit_id"] for u in preparation.units]
-        summary["units"] = units
-        prompt = render_prompt(ports.code.template, accession=accession, unit_ids=", ".join(units),
-                               input_dir="../inputs", output_dir="../out",
-                               analysis_purpose=options.analysis_purpose if options.analysis_purpose else "null")
-        for unit in units:
-            (final_inputs / unit).mkdir(parents=True, exist_ok=True)
-            (final_inputs / unit / "prompt.md").write_bytes(prompt)
-        session = build_session(session_root, ports.code, final_inputs, preparation.offered, ports.servers,
-                                ports.claude, options.model, ports.probe)
-        (session.harness / "prompt.md").write_bytes(prompt)
-        launch_plan = {"argv": session.argv, "cwd": str(session.work), "env_set": SESSION_ENV,
-                       "settings": SESSION_SETTINGS, "denied_tools": session.denied, "servers": session.servers,
-                       "skill_commit": ports.code.commit, "offered": [o.path for o in preparation.offered],
-                       "preparation_notes": preparation.notes,
-                       "handoff_original_sha256": {o.unit: o.provenance.get("original_sha256")
-                                                   for o in preparation.offered if o.kind == "handoff"}}
-        (session.harness / "launch.json").write_text(json.dumps(launch_plan, indent=1, ensure_ascii=False),
-                                                     encoding="utf-8")
-        summary["harness_flags"] = session.portable_flags
-        summary["command"] = session.argv
-        if options.dry_run:
-            summary["status"] = "prepared"
-            return summary
-        version = harness_version(ports.claude)
-        inputs_before, work_before = tree_digest(session.inputs), tree_digest(session.work)
-        outcome = launch(session, prompt, options.timeout)
-        transcript = parse_transcript(outcome.transcript)
-        summary["exit_code"] = outcome.exit_code
-        summary["harness_version"] = version
-        reported = str((transcript.init or {}).get("claude_code_version") or "")
-        if reported and reported != version:
-            summary["notes"].append(f"the transcript names harness {reported}; `--version` said {version}")
-        problems, payloads = acceptance_problems(session, outcome, transcript, units, inputs_before, work_before)
-        if problems:
-            (session.harness / "failure.json").write_text(json.dumps({"problems": problems, "at": now()}, indent=1),
-                                                          encoding="utf-8")
-            summary["problems"] = problems
-            summary["status"] = "refused"
-            return summary
-        debug = (session.harness / "debug.log").read_text(encoding="utf-8", errors="replace") \
-            if (session.harness / "debug.log").is_file() else ""
-        context, context_notes = assess_context(transcript, session, ancestor_problems(session.root), debug)
-        summary["configuration"] = context["configuration"]
-        scrub = Scrubber.for_session(session.root, operator_terms(options.redact_terms))
-        summary["notes"] += transcript.problems
-        built: dict[str, tuple[bytes, bytes]] = {}
-        for unit in units:
-            if unit not in payloads:
-                summary["notes"].append(f"{unit}: the session wrote no payload")
-                continue
-            data = payloads[unit].read_bytes()
-            built[unit] = (data, build_record(unit_id=unit, accession=accession, triage_dir=triage_dir, data=data,
-                                              code=ports.code, prompt=prompt, offered=preparation.offered,
-                                              transcript=transcript, outcome=outcome, session=session, context=context,
-                                              version=version, scrub=scrub))
-        for unit, (data, record) in built.items():
-            commit(triage_dir, unit, data, record)
-        summary["accepted"] = list(built)
-        report = run_validation(triage_dir, ports.code)
-        (session.harness / "validator.json").write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
-        summary["verdict"] = report.get("verdict")
-        summary["status"] = "triaged"
-        return summary
+        triage_dir.mkdir(parents=True, exist_ok=True)
+        with TriageLock(triage_dir, stamp):
+            if options.revise:
+                return revise_accession(accession, triage_dir, session_root, stamp, options, ports, summary)
+            return _first_triage(accession, triage_dir, session_root, stamp, options, ports, summary)
     except WrapperError as error:
         summary["problems"] = [str(error)]
         return summary
@@ -1210,16 +1479,249 @@ def triage_accession(accession: str, options: Options, ports: Ports) -> dict[str
             shutil.rmtree(leftover, ignore_errors=True)
 
 
+def _first_triage(accession: str, triage_dir: Path, session_root: Path, stamp: str, options: Options, ports: Ports,
+                  summary: dict[str, Any]) -> dict[str, Any]:
+    already = existing_decisions(triage_dir)
+    if already:
+        summary["problems"] = [f"{accession} is already triaged ({', '.join(already[:5])}); a payload is immutable: a "
+                               "re-triage is a revision (--revise <unit_id>=<review log seq>)"]
+        return summary
+    final_inputs = triage_dir / "inputs"
+    staging = triage_dir / f".inputs-{stamp}"
+    preparation = prepare_inputs(accession, staging, final_inputs, ports.catalog, ports.lister, ports.fetcher)
+    if final_inputs.exists():
+        aside = long_path(options.session_root) / accession / f"superseded-inputs-{stamp}"
+        aside.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(final_inputs), str(aside))
+        summary["notes"].append(f"earlier inputs (no payload bound them) moved to {aside}")
+    staging.rename(final_inputs)
+    summary["notes"] += preparation.notes
+    units = [u["unit_id"] for u in preparation.units]
+    summary["units"] = units
+    prompt = render_prompt(ports.code.template, accession=accession, unit_ids=", ".join(units),
+                           input_dir="../inputs", output_dir="../out",
+                           analysis_purpose=options.analysis_purpose if options.analysis_purpose else "null",
+                           handoff_sha256=handoff_digests(units, final_inputs))
+    for unit in units:
+        (final_inputs / unit).mkdir(parents=True, exist_ok=True)
+        (final_inputs / unit / "prompt.md").write_bytes(prompt)
+    session = _prepare_session(session_root, final_inputs, preparation.offered, preparation.notes, prompt, ports,
+                               options, summary)
+    if options.dry_run:
+        summary["status"] = "prepared"
+        return summary
+    result = run_session(session, prompt, {f"{unit}.json": unit for unit in units}, accession, stamp, options, ports,
+                         summary)
+    if result is None:
+        return summary
+    files: list[tuple[str, bytes]] = []
+    if result.transcript_file is not None:
+        files.append(result.transcript_file)
+    accepted = []
+    for unit in units:
+        if unit not in result.payloads:
+            summary["notes"].append(f"{unit}: the session wrote no payload")
+            continue
+        data = result.payloads[unit].read_bytes()
+        calls, call_files = stored_calls(result.transcript, f"inputs/{unit}/calls")
+        record = build_record(unit_id=unit, accession=accession, payload_name=f"{unit}.json", data=data, supersedes=None,
+                              inputs=record_inputs(unit, triage_dir, preparation.offered), code=ports.code,
+                              template_path=TEMPLATE_PATH, template=ports.code.template, prompt=prompt,
+                              prompt_path=f"inputs/{unit}/prompt.md", calls=calls, session=session, result=result)
+        files += [*call_files.items(), (f"{unit}{validator.RECORD_SUFFIX}", record), (f"{unit}.json", data)]
+        accepted.append(unit)
+    commit_files(triage_dir, files)
+    summary["accepted"] = accepted
+    return _validate_after(triage_dir, ports, session, summary)
+
+
+def _prepare_session(session_root: Path, triage_inputs: Path, offered: list[Offered], notes: list[str], prompt: bytes,
+                     ports: Ports, options: Options, summary: dict[str, Any]) -> Session:
+    session = build_session(session_root, ports.code, triage_inputs, offered, ports.servers, ports.claude, options.model,
+                            ports.probe)
+    (session.harness / "prompt.md").write_bytes(prompt)
+    launch_plan = {"argv": session.argv, "cwd": str(session.work), "env_set": SESSION_ENV,
+                   "settings": SESSION_SETTINGS, "denied_tools": session.denied, "servers": session.servers,
+                   "skill_commit": ports.code.commit, "wrapper": ports.code.wrapper_identity,
+                   "offered": [o.path for o in offered], "preparation_notes": notes,
+                   "handoff_original_sha256": {o.unit: o.provenance.get("original_sha256")
+                                               for o in offered if o.kind == "handoff"}}
+    (session.harness / "launch.json").write_text(json.dumps(launch_plan, indent=1, ensure_ascii=False), encoding="utf-8")
+    summary["harness_flags"] = session.portable_flags
+    summary["command"] = session.argv
+    return session
+
+
+def _validate_after(triage_dir: Path, ports: Ports, session: Session, summary: dict[str, Any]) -> dict[str, Any]:
+    """Validate the committed accession (with --emit-selection, so its verdicts enter the review log). The payloads are
+    already committed: a validator that fails is reported as an error verdict, never as a failed triage."""
+    report = run_validation(triage_dir, ports.code)
+    (session.harness / "validator.json").write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
+    summary["verdict"] = report.get("verdict")
+    summary["status"] = "triaged"
+    return summary
+
+
+# --------------------------------------------------------------------------------------------- revisions
+
+def _revision_number(path: Path) -> int:
+    match = re.match(r"^.+\.r(?P<n>[0-9]+)\.json$", path.name)
+    return int(match.group("n")) if match else 0
+
+
+def revise_accession(accession: str, triage_dir: Path, session_root: Path, stamp: str, options: Options, ports: Ports,
+                     summary: dict[str, Any]) -> dict[str, Any]:
+    """Revise units of a triaged accession (section 2.4): each named unit's current payload is revised in one session
+    because of one review-log entry (a person's answer, or a validator verdict), about that payload or one it
+    supersedes. The session gets the inputs the current payload's record binds, unchanged (their sha256 checked), with
+    the current payload (inputs\\<unit>\\r<N>\\previous.json) and the cause entry as the review log holds it
+    (cause.json). Accepted payloads are committed as <unit>.r<N>.json with records whose supersedes is the current
+    decision, and the review log gets one revision entry per unit, {supersedes, new_decision_id, cause: {kind, seq}}."""
+    if ports.code.revision_template is None:
+        raise WrapperError(f"the revision prompt {REVISION_TEMPLATE_PATH} is not available at the commit")
+    log, broken = validator.read_review_log(triage_dir)
+    if broken:
+        raise WrapperError(f"{curated.REVIEW_LOG}'s chain does not hold ({broken[0]}); nothing is revised")
+    lines = [line for line in (triage_dir / curated.REVIEW_LOG).read_bytes().split(b"\n") if line.strip()] if log else []
+    by_seq = {entry.get("seq"): (entry, lines[index]) for index, entry in enumerate(log)}
+    supersedes: dict[str, str | None] = {}
+    for record_file in triage_dir.glob(f"*{validator.RECORD_SUFFIX}"):
+        try:
+            named = json.loads(record_file.read_bytes().decode("utf-8-sig"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        if isinstance(named, dict) and isinstance(named.get("decision_id"), str):
+            supersedes[named["decision_id"]] = named.get("supersedes")
+    inputs_dir = triage_dir / "inputs"
+    plan: list[dict[str, Any]] = []
+    offered: dict[str, Offered] = {}
+    for unit, seq in sorted(options.revise.items()):
+        current = curated.payload_path(triage_dir, unit)
+        if current is None:
+            raise WrapperError(f"{unit} has no payload in {accession} to revise")
+        data = current.read_bytes()
+        decision = sha256_bytes(data)
+        try:
+            record = json.loads(curated.record_path(current).read_bytes().decode("utf-8-sig"))
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise WrapperError(f"{current.name} has no readable decision record ({type(error).__name__}); the inputs it "
+                               "rested on cannot be offered again") from error
+        found = by_seq.get(seq)
+        if found is None:
+            raise WrapperError(f"{curated.REVIEW_LOG} has no entry {seq}")
+        cause, cause_line = found
+        if cause.get("kind") not in ("person_answer", "validator_verdict"):
+            raise WrapperError(f"review log entry {seq} is a {cause.get('kind')}; a revision is caused by a person_answer "
+                               "or a validator_verdict")
+        lineage = validator.lineage(decision, supersedes, log)
+        if cause.get("decision_id") not in lineage:
+            raise WrapperError(f"review log entry {seq} is about another decision than {current.name} or one it supersedes")
+        used = [e for e in log if e.get("kind") == "revision" and isinstance(e.get("cause"), dict)
+                and e["cause"].get("seq") == seq and e.get("supersedes") in lineage]
+        if used:
+            raise WrapperError(f"review log entry {seq} already caused a revision of {unit} (entry {used[0].get('seq')}); "
+                               "one cause revises once")
+        number = _revision_number(current) + 1
+        if (triage_dir / f"{unit}.r{number}.json").exists():
+            raise WrapperError(f"{unit}.r{number}.json exists already")
+        folder = inputs_dir / unit / f"r{number}"
+        if folder.exists():
+            aside = long_path(options.session_root) / accession / f"superseded-{unit}-r{number}-{stamp}"
+            aside.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(folder), str(aside))
+            summary["notes"].append(f"{unit}: earlier r{number} inputs (no payload bound them) moved to {aside}")
+        for item in record.get("inputs") or []:
+            path = str(item.get("path") or "")
+            source = triage_dir / path
+            if not path.startswith("inputs/") or not source.is_file() or sha256_bytes(source.read_bytes()) != item.get("sha256"):
+                raise WrapperError(f"{current.name}'s record binds {path}, which is not there as it was bound")
+            offered.setdefault(path, Offered(path, "bound", None, {}))
+        folder.mkdir(parents=True)
+        (folder / "previous.json").write_bytes(data)
+        (folder / "cause.json").write_bytes(cause_line + b"\n")
+        prior = Offered(f"inputs/{unit}/r{number}/previous.json", "prior_decision", unit,
+                        {"source": f"{current.name} (decision {decision})"})
+        entry = Offered(f"inputs/{unit}/r{number}/cause.json", "review_entry", unit,
+                        {"source": f"{curated.REVIEW_LOG} seq {seq} ({cause.get('kind')})"})
+        offered[prior.path] = prior
+        offered[entry.path] = entry
+        plan.append({"unit": unit, "current": current, "decision": decision, "record": record, "seq": seq,
+                     "kind": cause.get("kind"), "number": number, "prior": prior, "entry": entry,
+                     "purpose": json.loads(data.decode("utf-8-sig")).get("purpose")})
+    units = [item["unit"] for item in plan]
+    summary["units"] = units
+    purpose = options.analysis_purpose or next((str(p["purpose"]) for p in plan if p["purpose"]), None)
+    bullets = "\n".join(
+        f"- `{p['unit']}`: write `../out/{p['unit']}.r{p['number']}.json`. It revises `../inputs/{p['unit']}/r{p['number']}/"
+        f"previous.json` ({p['current'].name}), because of `../inputs/{p['unit']}/r{p['number']}/cause.json` (review log "
+        f"entry {p['seq']}, a {p['kind']})." for p in plan)
+    prompt = render_prompt(ports.code.revision_template, accession=accession, unit_ids=", ".join(units),
+                           input_dir="../inputs", output_dir="../out", analysis_purpose=purpose or "null",
+                           handoff_sha256=handoff_digests(units, inputs_dir), revisions=bullets)
+    for item in plan:
+        (inputs_dir / item["unit"] / f"r{item['number']}" / "prompt.md").write_bytes(prompt)
+    session = _prepare_session(session_root, inputs_dir, list(offered.values()), [], prompt, ports, options, summary)
+    if options.dry_run:
+        summary["status"] = "prepared"
+        return summary
+    expected = {f"{p['unit']}.r{p['number']}.json": p["unit"] for p in plan}
+    result = run_session(session, prompt, expected, accession, stamp, options, ports, summary)
+    if result is None:
+        return summary
+    problems = [f"the session wrote no revision of {p['unit']}" for p in plan if p["unit"] not in result.payloads]
+    problems += [f"the revision of {p['unit']} is byte for byte the payload it would supersede" for p in plan
+                 if p["unit"] in result.payloads and sha256_bytes(result.payloads[p["unit"]].read_bytes()) == p["decision"]]
+    if problems:
+        summary["problems"] = [*problems, "a revision session is accepted whole or not at all"]
+        summary["status"] = "refused"
+        return summary
+    files: list[tuple[str, bytes]] = []
+    if result.transcript_file is not None:
+        files.append(result.transcript_file)
+    revised = []
+    for p in plan:
+        unit, number = p["unit"], p["number"]
+        data = result.payloads[unit].read_bytes()
+        own = [dict(item) for item in p["record"].get("inputs") or []]
+        own += [_input_entry(p["prior"], "prior_decision", triage_dir, p["prior"].provenance["source"]),
+                _input_entry(p["entry"], "review_entry", triage_dir, p["entry"].provenance["source"])]
+        named = {item["path"] for item in own}
+        own += [_input_entry(item, "other", triage_dir, item.provenance.get("source") or None)
+                for path, item in offered.items() if path not in named]
+        calls, call_files = stored_calls(result.transcript, f"inputs/{unit}/r{number}/calls")
+        record = build_record(unit_id=unit, accession=accession, payload_name=f"{unit}.r{number}.json", data=data,
+                              supersedes=p["decision"], inputs=own, code=ports.code,
+                              template_path=REVISION_TEMPLATE_PATH, template=ports.code.revision_template, prompt=prompt,
+                              prompt_path=f"inputs/{unit}/r{number}/prompt.md", calls=calls, session=session,
+                              result=result)
+        files += [*call_files.items(), (f"{unit}.r{number}{validator.RECORD_SUFFIX}", record),
+                  (f"{unit}.r{number}.json", data)]
+        revised.append((p, sha256_bytes(data)))
+    commit_files(triage_dir, files)
+    at = now()
+    for p, new_id in revised:
+        curated.append_review_log(triage_dir, "revision", p["decision"], at, supersedes=p["decision"],
+                                  new_decision_id=new_id, cause={"kind": p["kind"], "seq": p["seq"]})
+    summary["accepted"] = [f"{p['unit']}.r{p['number']}" for p, _ in revised]
+    return _validate_after(triage_dir, ports, session, summary)
+
+
 def run_validation(triage_dir: Path, code: CodeSnapshot) -> dict[str, Any]:
+    """scripts/validate-triage.py --json --emit-selection on the accession, with inputs\\ as the Catalog and inputs\\*.tsv
+    as the listings: its validator_verdict entries enter the review log, so the plan's review_log_head_sha256 covers
+    them. A validator that cannot run, times out or does not report is an error verdict, never a pass."""
     catalog, listings = curated.accession_sources(triage_dir)
-    command = [sys.executable, "-I", str(VALIDATOR_PATH), str(triage_dir), "--json"]
+    command = [sys.executable, "-I", str(VALIDATOR_PATH), str(triage_dir), "--json", "--emit-selection"]
     if catalog is not None:
         command += ["--catalog", str(catalog)]
     for listing in listings:
         command += ["--archive-listing", str(listing)]
     if code.root is not None:
         command += ["--code-root", str(code.root)]
-    done = subprocess.run(command, capture_output=True, timeout=900, check=False)
+    try:
+        done = subprocess.run(command, capture_output=True, timeout=900, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"verdict": "error", "exit_code": None, "problem": f"the validator did not run: {type(error).__name__}: {error}"}
     try:
         report = json.loads(done.stdout.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -1242,14 +1744,29 @@ def read_accessions(values: list[str] | None, file: Path | None) -> list[str]:
             if line:
                 found.append(line.split()[0])
     seen: list[str] = []
+    folded: set[str] = set()
     for accession in found:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", accession):
             raise SystemExit(f"not an accession: {accession!r}")
-        if accession not in seen:
+        # One accession once, whatever its case: the Catalog's search folds case, and so does NTFS.
+        if accession.casefold() not in folded:
+            folded.add(accession.casefold())
             seen.append(accession)
     if not seen:
         raise SystemExit("name at least one accession (--accession or --accessions-file)")
     return seen
+
+
+def read_revisions(values: list[str] | None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for value in values or []:
+        match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)=([1-9][0-9]*)", value.strip())
+        if not match:
+            raise SystemExit(f"--revise takes <unit_id>=<review log seq>, not {value!r}")
+        if match.group(1) in out:
+            raise SystemExit(f"--revise names {match.group(1)} twice")
+        out[match.group(1)] = int(match.group(2))
+    return out
 
 
 def default_ports(args: argparse.Namespace) -> Ports:
@@ -1273,12 +1790,16 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--campaign-dir", type=Path, required=True)
     parser.add_argument("--accession", action="append")
     parser.add_argument("--accessions-file", type=Path)
+    parser.add_argument("--revise", action="append", metavar="UNIT_ID=SEQ",
+                        help="revise this unit of the one accession named, because of this review-log entry (a "
+                             "person_answer or a validator_verdict about its current payload); repeatable")
     parser.add_argument("--dry-run", action="store_true", help="prepare the inputs, the prompt and the session; do not "
                                                                  "launch the model")
     parser.add_argument("--max-parallel", type=int, default=1)
     parser.add_argument("--model", help="model for the session (default: the CLI's default, recorded from the transcript)")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="seconds per session")
-    parser.add_argument("--analysis-purpose", help="the person's analysis_purpose, verbatim (default: null)")
+    parser.add_argument("--analysis-purpose", help="the person's analysis_purpose, verbatim (default: null; a revision "
+                                                   "keeps the revised payload's purpose)")
     parser.add_argument("--claude", help="the claude executable (default: found on PATH)")
     parser.add_argument("--mcp-config", type=Path, help='{"mcpServers": {...}} (default: ~/.claude.json user scope)')
     parser.add_argument("--catalog-database", help="the Catalog sqlite (default: the catalog server's configuration)")
@@ -1298,13 +1819,21 @@ def main(argv: list[str] | None = None, *, ports: Ports | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     args = parse_args(argv)
     accessions = read_accessions(args.accession, args.accessions_file)
+    revise = read_revisions(args.revise)
+    if revise and len(accessions) != 1:
+        raise SystemExit("--revise names units of one accession; name exactly one --accession")
     options = Options(campaign_dir=args.campaign_dir, session_root=args.session_root or args.campaign_dir / "triage-sessions",
                       dry_run=args.dry_run, model=args.model, timeout=args.timeout,
-                      analysis_purpose=args.analysis_purpose, redact_terms=list(args.redact_term))
+                      analysis_purpose=args.analysis_purpose, redact_terms=list(args.redact_term), revise=revise)
     try:
         ports = ports or default_ports(args)
+        if not options.dry_run and ports.harness is None:
+            # Once, before any accession is prepared: a harness that cannot run fails the batch here, not after every
+            # accession's Catalog handoffs, listings and mwTab texts.
+            ports.harness = harness_version(ports.claude)
     except WrapperError as error:
-        print(json.dumps({"status": "failed", "problems": [str(error)]}, ensure_ascii=False))
+        print(json.dumps([{"accession": accession, "status": "failed", "problems": [str(error)]}
+                          for accession in accessions], ensure_ascii=False))
         return 3
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_parallel) as pool:
         summaries = list(pool.map(lambda a: triage_accession(a, options, ports), accessions))

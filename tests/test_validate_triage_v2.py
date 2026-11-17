@@ -117,7 +117,8 @@ class SchemaTests(V2Case):
         record = vt.load_schema(vt.RECORD_SCHEMA_ID)
         self.assertEqual(record["properties"]["schema"], {"const": "msdial-llm-decision-record.v1"})
         self.assertEqual(set(record["required"]), {
-            "schema", "decision_id", "kind", "accession", "unit_id", "payload", "supersedes", "inputs", "skill", "prompt",
+            "schema", "decision_id", "kind", "accession", "unit_id", "payload", "supersedes", "inputs", "skill", "wrapper",
+            "prompt",
             "agent", "started_at", "finished_at", "tool_calls", "transcript", "rationale"})
         self.assertEqual(record["properties"]["kind"]["enum"],
                          ["unit_triage", "metadata_interpretation", "class_proposal", "question"])
@@ -170,10 +171,19 @@ class ConfidenceTests(V2Case):
         row = docs["AN004454"]["rows"][0]
         self.assertEqual(row["basis"], "inferred")
         row["confidence"] = "low"
-        report = self.validate(self.make(docs=docs))
+        directory = self.make(docs=docs)
+        report = self.validate(directory)
         self.assertEqual(report.unit_verdict("AN004454"), "hold")
         self.assertTrue(self.found(report, "T-CONFIDENCE", "hold", "AN004454"))
         self.assertEqual(report.unit_status["AN004454"], "ready")
+        # A person who looked releases it: a person_answer about this payload with the code inferred_low_confidence.
+        payload = sha((directory / "AN004454.json").read_bytes())
+        curated.append_review_log(directory, "person_answer", payload, AT, by="Synthetic Reviewer",
+                                  question_code=vt.LOW_CONFIDENCE_CODE, answer="The name is unambiguous; keep it.",
+                                  channel="conversation")
+        report = self.validate(directory)
+        self.assertFalse(self.found(report, "T-CONFIDENCE"))
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
 
     def test_low_confidence_alone_or_outside_a_ready_unit_does_not_hold_for_it(self) -> None:
         # Declared at low confidence: the rule is inferred and low.
@@ -291,10 +301,15 @@ class ToolTests(V2Case):
 
     def test_the_prompt_template_names_its_placeholders(self) -> None:
         text = (ROOT / records.TEMPLATE_PATH).read_text(encoding="utf-8")
-        for name in ("accession", "unit_ids", "input_dir", "output_dir", "analysis_purpose"):
+        names = ("accession", "unit_ids", "input_dir", "output_dir", "analysis_purpose", "handoff_sha256")
+        for name in names:
             self.assertIn("{{" + name + "}}", text)
         self.assertNotRegex(records.render(text.encode("utf-8"), accession="ST000001", unit_ids="AN000001", input_dir="in",
-                                           output_dir="out", analysis_purpose="null").decode("utf-8"), r"\{\{[a-z_]+\}\}")
+                                           output_dir="out", analysis_purpose="null", handoff_sha256="- x").decode("utf-8"),
+                            r"\{\{[a-z0-9_]+\}\}")
+        revision = (ROOT / records.REVISION_TEMPLATE_PATH).read_text(encoding="utf-8")
+        for name in (*names, "revisions"):
+            self.assertIn("{{" + name + "}}", revision)
 
     def test_allowed_tool_calls_pass_and_others_are_refused(self) -> None:
         allowed = [("mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit", {"unit_id": self.UNIT}, {"ok": True}),
@@ -320,42 +335,137 @@ class ToolTests(V2Case):
         self.rewrite_record(directory, self.UNIT, lambda r: r["tool_calls"].reverse())
         self.assertTrue(any("has seq" in m for m in self.found(self.validate(directory), "T-TOOLS", "error", self.UNIT)))
 
-    def _transcript(self, directory: Path, names: list[str]) -> bytes:
-        lines = [json.dumps({"type": "assistant", "message": {"content": [
-            {"type": "text", "text": "reading"}, {"type": "tool_use", "id": f"toolu_{i}", "name": name, "input": {}}]}})
-            for i, name in enumerate(names)]
-        # A harness may repeat a streamed message; one id is one call.
-        lines.append(lines[0])
-        data = ("\n".join(lines) + "\n").encode("utf-8")
-        target = directory.parent / "transcripts" / f"{directory.name}-{self.UNIT}.redacted.jsonl"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        return data
+    CALLS = [("mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit", {"unit_id": "AN004454"}, {"ok": True}),
+             ("Write", {"file_path": "AN004454.json"}, "File created")]
+
+    def _release(self, directory: Path, data: bytes) -> None:
+        """Replace the unit's released transcript with `data`, the record naming its sha256."""
+        path = directory / "transcripts" / f"{self.UNIT}.redacted.jsonl"
+        path.write_bytes(data)
+        self.rewrite_record(directory, self.UNIT, lambda r: r["transcript"].update(sha256=sha(data)))
 
     def test_the_released_transcript_is_hashed_and_its_tool_calls_compared(self) -> None:
-        calls = [("mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit", {"unit_id": self.UNIT}, {"ok": True}),
-                 ("Write", {"file_path": f"{self.UNIT}.json"}, {"ok": True})]
-        directory = self.make(tool_calls=calls)
-        names = ["mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit", "Write"]
-        data = self._transcript(directory, names)
-        released = f"../transcripts/{directory.name}-{self.UNIT}.redacted.jsonl"
-        transcript = {"sha256": sha(data), "released_path": released, "unredacted_sha256": "a" * 64,
-                      "redaction": "check-release-redaction.py v1"}
-        self.rewrite_record(directory, self.UNIT, lambda r: r.update(transcript=transcript))
+        directory = self.make(tool_calls=self.CALLS)
         report = self.validate(directory)
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
-        self.assertEqual(vt.transcript_tool_names(data), names)
-        # Another sha256, or a call the record leaves out, is refused.
+        data = (directory / "transcripts" / f"{self.UNIT}.redacted.jsonl").read_bytes()
+        self.assertEqual(vt.transcript_tool_names(data), [c[0] for c in self.CALLS])
+        # A harness may repeat a streamed message; one id is one call.
+        lines = data.decode("utf-8").splitlines()
+        self._release(directory, ("\n".join([*lines[:2], lines[1], *lines[2:]]) + "\n").encode("utf-8"))
+        self.assertEqual(self.validate(directory).verdict, "pass")
+        # Another sha256 is refused.
         self.rewrite_record(directory, self.UNIT, lambda r: r["transcript"].update(sha256="0" * 64))
         self.assertTrue(self.found(self.validate(directory), "T-RECORD", "error", self.UNIT))
-        data = self._transcript(directory, [*names, "Bash"])
-        self.rewrite_record(directory, self.UNIT, lambda r: r["transcript"].update(sha256=sha(data)))
-        self.assertTrue(any("differ from" in m for m in self.found(self.validate(directory), "T-TOOLS", "error", self.UNIT)))
-        # A transcript that is not released here is a note: what was not checked is said, and decides nothing.
+        # A call the record leaves out, and a tool the skill does not allow, are refused.
+        directory = self.make(tool_calls=self.CALLS)
+        self._release(directory, records.transcript_lines([*self.CALLS, ("Bash", {}, "refused")]))
+        errors = self.found(self.validate(directory), "T-TOOLS", "error", self.UNIT)
+        self.assertTrue(any("differ from" in m for m in errors), errors)
+        self.assertTrue(any("shows a call to Bash" in m for m in errors), errors)
+
+    def test_arguments_results_server_model_and_session_are_compared(self) -> None:
+        other_server = [("mcp__another-server__msdial_catalog_get_analysis_unit", *self.CALLS[0][1:]), self.CALLS[1]]
+        cases = {
+            "arguments": (records.transcript_lines([(self.CALLS[0][0], {"unit_id": "AN004455"}, {"ok": True}),
+                                                    self.CALLS[1]]), "T-TOOLS", "arguments"),
+            "result": (records.transcript_lines([(self.CALLS[0][0], self.CALLS[0][1], {"ok": False}), self.CALLS[1]]),
+                       "T-TOOLS", "not the result"),
+            "server": (records.transcript_lines(other_server), "T-TOOLS", "another-server"),
+            "model": (records.transcript_lines(self.CALLS, model="another-model"), "T-RECORD", "model_id"),
+            "session": (records.transcript_lines(self.CALLS, session="another-session"), "T-RECORD", "session_id"),
+        }
+        for label, (data, check, words) in cases.items():
+            with self.subTest(label):
+                directory = self.make(tool_calls=self.CALLS)
+                self._release(directory, data)
+                errors = self.found(self.validate(directory), check, "error", self.UNIT)
+                self.assertTrue(any(words in m for m in errors), (label, errors))
+
+    def test_a_record_without_a_released_transcript_holds(self) -> None:
+        # Fail closed: without the harness's own account, tool_calls and the context are only the wrapper's word.
+        for transcript in (None, {"sha256": None, "released_path": None, "unredacted_sha256": "a" * 64, "redaction": None}):
+            with self.subTest(transcript=transcript):
+                report = self.validate(self.make(tool_calls=self.CALLS, transcript=transcript))
+                self.assertTrue(self.found(report, "T-TRANSCRIPT", "hold", self.UNIT))
+                self.assertEqual(report.unit_verdict(self.UNIT), "hold")
+        directory = self.make(tool_calls=self.CALLS)
         self.rewrite_record(directory, self.UNIT, lambda r: r["transcript"].update(released_path="transcripts/elsewhere.jsonl"))
         report = self.validate(directory)
-        self.assertTrue(self.found(report, "T-TRANSCRIPT", "note", self.UNIT))
-        self.assertEqual(report.verdict, "pass")
+        self.assertTrue(self.found(report, "T-TRANSCRIPT", "hold", self.UNIT))
+        directory = self.make(tool_calls=self.CALLS)
+        self.rewrite_record(directory, self.UNIT, lambda r: r["agent"].update(model_id="unknown"))
+        self.assertTrue(self.found(self.validate(directory), "T-RECORD", "hold", self.UNIT))
+
+    def test_a_call_without_a_stored_result_holds(self) -> None:
+        directory = self.make(tool_calls=self.CALLS)
+        self.rewrite_record(directory, self.UNIT, lambda r: r["tool_calls"][0].update(
+            status="error", result_path=None, result_sha256=None))
+        report = self.validate(directory)
+        self.assertTrue(any("no stored result" in m for m in self.found(report, "T-TOOLS", "hold", self.UNIT)))
+        self.assertNotEqual(report.unit_verdict(self.UNIT), "pass")
+
+
+class EvidenceTests(V2Case):
+    UNIT = "AN004454"
+
+    def test_a_record_binding_no_evidence_holds(self) -> None:
+        directory = self.make()
+        self.rewrite_record(directory, self.UNIT, lambda r: r.update(inputs=[]))
+        messages = self.found(self.validate(directory), "T-RECORD", "hold", self.UNIT)
+        self.assertTrue(any("no Catalog evidence" in m for m in messages), messages)
+        self.assertTrue(any("no archive listing" in m for m in messages), messages)
+
+    def test_the_payload_handoff_hash_is_the_bound_copy(self) -> None:
+        directory = self.make()
+        handoff = directory / "inputs" / self.UNIT / "handoff.json"
+        handoff.write_text("{}", encoding="utf-8")
+        payload = json.loads((directory / f"{self.UNIT}.json").read_text(encoding="utf-8"))
+        bound = {"role": "catalog_handoff", "path": f"inputs/{self.UNIT}/handoff.json"}
+        listing = {"role": "archive_listing", "path": "inputs/archive-members.tsv"}
+        records.write_record(directory / f"{self.UNIT}.json", self.code, inputs=[bound, listing])
+        self.assertNotEqual(payload["catalog_handoff_sha256"], sha(b"{}"))
+        self.assertTrue(any("handoff its record binds" in m
+                            for m in self.found(self.validate(directory), "T-HANDOFF", "error", self.UNIT)))
+
+    def test_the_listings_given_are_the_ones_the_records_bind(self) -> None:
+        directory = self.make()
+        bound = directory / "inputs" / "archive-members.tsv"
+        self.assertEqual(self.validate(directory, listing_files=[bound]).verdict, "pass")
+        other = self.tmp / "other-listing.tsv"
+        other.write_bytes(bound.read_bytes() + b"\n")
+        report = self.validate(directory, listing_files=[other])
+        self.assertTrue(any("not among the --archive-listing files" in m for m in self.found(report, "T-RECORD", "hold")))
+        self.assertTrue(any("no decision record binds it" in m for m in self.found(report, "T-DUP", "hold")))
+
+    def test_the_mcp_servers_and_flags_are_stated(self) -> None:
+        directory = self.make(tool_calls=ToolTests.CALLS)
+        self.rewrite_record(directory, self.UNIT, lambda r: r["agent"]["context"].update(mcp_servers=[], harness_flags=[]))
+        messages = self.found(self.validate(directory), "T-CONTEXT", "hold", self.UNIT)
+        self.assertTrue(any("does not list" in m for m in messages), messages)
+        self.assertTrue(any("harness_flags is empty" in m for m in messages), messages)
+        directory = self.make()
+        self.rewrite_record(directory, self.UNIT, lambda r: r["agent"].update(harness="claude-code"))
+        messages = self.found(self.validate(directory), "T-CONTEXT", "hold", self.UNIT)
+        self.assertTrue(any("--strict-mcp-config" in m for m in messages), messages)
+        flags = [*vt.CLAUDE_CODE_CLEAN_FLAGS, "--model", "x"]
+        self.rewrite_record(directory, self.UNIT, lambda r: r["agent"]["context"].update(harness_flags=flags))
+        self.assertFalse(self.found(self.validate(directory), "T-CONTEXT", unit=self.UNIT))
+
+    def test_the_wrapper_is_identified_at_its_commit(self) -> None:
+        directory = self.make()
+        self.rewrite_record(directory, self.UNIT, lambda r: r["wrapper"].update(repo_commit=None))
+        self.assertTrue(any("not a commit's" in m for m in self.found(self.validate(directory), "T-RECORD", "hold", self.UNIT)))
+        self.rewrite_record(directory, self.UNIT, lambda r: r["wrapper"].update(repo_commit="c" * 40, sha256="0" * 64))
+        self.assertTrue(self.found(self.validate(directory), "T-RECORD", "error", self.UNIT))
+
+    def test_a_released_code_folder_with_crlf_line_endings_is_read_as_its_commit(self) -> None:
+        directory = self.make()
+        for relative in (records.SKILL_PATH, records.TEMPLATE_PATH, records.WRAPPER_PATH):
+            path = self.code.root / relative
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        report = self.validate(directory)
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
 
 
 class ContextTests(V2Case):

@@ -142,7 +142,9 @@ class TranscriptRuleTests(_Case):
     def test_only_transcripts_are_read_for_context_blocks(self) -> None:
         self.put("docs/note.md", "Codebase and user instructions are shown below.\n")
         self.put("triage/ST000001/session-transcript.jsonl", '{"text": "Codebase and user instructions are shown below."}\n')
-        self.assertEqual(self.rules(), [("triage/ST000001/session-transcript.jsonl", "context_block")])
+        self.put("triage/ST000001/inputs/AN000001/calls/2.json", '{"content": "Contents of x/memory/MEMORY.md (user)"}')
+        self.assertEqual(sorted(self.rules()), [("triage/ST000001/inputs/AN000001/calls/2.json", "context_block"),
+                                                ("triage/ST000001/session-transcript.jsonl", "context_block")])
         self.assertTrue(crr.is_transcript("transcripts/AN000001.jsonl"))
         self.assertTrue(crr.is_transcript("x/AN000001.redacted.jsonl"))
         self.assertFalse(crr.is_transcript("decision-ledger.jsonl"))
@@ -155,6 +157,36 @@ class TranscriptRuleTests(_Case):
         self.assertEqual(self.rules(), [])
 
 
+class IdentityRuleTests(_Case):
+    def test_a_secret_token_is_refused_anywhere(self) -> None:
+        self.put("units/AN000001/notes.txt", "token ghp_" + "A" * 36 + "\n")
+        self.put("triage/ST000001/AN000001.record.json", '{"k": "sk-ant-api03-' + "B" * 20 + '"}')
+        self.put("triage/ST000001/inputs/AN000001.mwtab.txt", "id AKIA" + "C" * 16 + "\n")
+        self.assertEqual(sorted(self.rules()), [("triage/ST000001/AN000001.record.json", "secret_token"),
+                                                ("triage/ST000001/inputs/AN000001.mwtab.txt", "secret_token"),
+                                                ("units/AN000001/notes.txt", "secret_token")])
+
+    def test_an_email_address_is_refused_in_what_the_agent_or_wrapper_wrote(self) -> None:
+        mail = "someone@example.org"
+        self.put("triage/ST000001/AN000001.json", f'{{"rationale": "asked {mail}"}}')
+        self.put("triage/ST000001/inputs/AN000001/calls/3.json", f'{{"content": "{mail}"}}')
+        self.put("transcripts/AN000001.redacted.jsonl", f'{{"text": "{mail}"}}\n')
+        # The repository's own texts may name their submitters.
+        self.put("triage/ST000001/inputs/AN000001.mwtab.txt", f"PI EMAIL\t{mail}\n")
+        self.put("triage/ST000001/inputs/AN000001/handoff.json", f'{{"contact": "{mail}"}}')
+        self.assertEqual(sorted(self.rules()), [("transcripts/AN000001.redacted.jsonl", "email_address"),
+                                                ("triage/ST000001/AN000001.json", "email_address"),
+                                                ("triage/ST000001/inputs/AN000001/calls/3.json", "email_address")])
+
+    def test_an_operator_name_given_is_refused_as_a_word(self) -> None:
+        self.put("triage/ST000001/review-log.jsonl", '{"lock": "pool-jroe-20261106"}\n')
+        self.put("ok.txt", "Roebuck and jroebuck are other words\n")
+        self.put("kanji.txt", "approved by 津川\n")
+        self.assertEqual(sorted(self.rules(operator_terms=["jroe", "津川"])),
+                         [("kanji.txt", "operator_name"), ("triage/ST000001/review-log.jsonl", "operator_name")])
+        self.assertEqual(self.rules(), [])
+
+
 class CommandLineTests(_Case):
     def test_exit_status_and_report(self) -> None:
         self.put("ok.json", "{}")
@@ -163,7 +195,7 @@ class CommandLineTests(_Case):
             self.assertEqual(crr.main([str(self.bundle), "--json"]), 0)
         report = json.loads(out.getvalue())
         self.assertEqual((report["tool"], report["version"], report["verdict"], report["files"]),
-                         ("check-release-redaction.py", "v1", "pass", 1))
+                         ("check-release-redaction.py", "v2", "pass", 1))
         self.assertEqual(report["script_sha256"], crr.script_sha256())
         self.put("bad.json", json.dumps({"p": "C:\\x"}))
         with contextlib.redirect_stdout(io.StringIO()):
@@ -218,7 +250,8 @@ class DocumentTests(unittest.TestCase):
     def test_section_5_3_names_every_rule_and_the_version(self) -> None:
         text = (ROOT / "docs" / "llm-assisted-curation.md").read_text(encoding="utf-8")
         section = text[text.index("### 5.3"):text.index("## 6.")]
-        for rule in [name for name, _pattern in crr.PATH_RULES] + ["library_path", "context_block"]:
+        for rule in [name for name, _pattern in crr.PATH_RULES] + ["library_path", "context_block", "secret_token",
+                                                                  "email_address", "operator_name"]:
             self.assertIn(f"`{rule}`", section, rule)
         self.assertIn(f"`{crr.TOOL} {crr.VERSION}`", section)
         self.assertNotIn("still to be built", section)

@@ -40,12 +40,18 @@ THE DECISION RECORD (section 2.3). Beside each payload the wrapper writes <name>
 refusing any mismatch (T-RECORD): decision_id and payload.sha256 from the payload's bytes; the sha256 and bytes of
 every inputs[] item, read relative to the record; skill.sha256 from SKILL.md at repo_commit (git show in this
 repository, or --code-root), and the skill's version; prompt.template_sha256 at repo_commit and
-prompt.rendered_sha256; every tool_calls[].result_sha256; transcript.sha256 where the released redacted transcript is
-present. It refuses a tool call that is not on the skill's allowed-tools list, and a tool_calls list that differs from
-the tool calls the released transcript shows (T-TOOLS). A context that is not clean (configuration, context_files,
-memory, hooks, an MCP server the skill does not allow) is a hold (T-CONTEXT), and so is a check that cannot run (the
-skill or the template not readable at repo_commit, a v2 payload without a record). A v1 payload may have no record;
-it is reported rationale_not_recorded (a note, which changes no verdict).
+prompt.rendered_sha256; wrapper.sha256 at its repo_commit; every tool_calls[].result_sha256; transcript.sha256 of the
+released redacted transcript. It refuses a tool call that is not on the skill's allowed-tools list, and a tool_calls
+list that differs from the calls the released transcript shows in order, server-qualified name, arguments or stored
+result (T-TOOLS); a model_id or session_id the transcript does not name (T-RECORD); and a payload whose
+catalog_handoff_sha256 is not the catalog_handoff input its record binds (T-HANDOFF). A context that is not clean
+(configuration, context_files, memory, hooks, an MCP server the skill does not allow or one the calls use unlisted,
+empty harness_flags, a claude-code session without the clean flags) is a hold (T-CONTEXT). It fails closed: a check
+that cannot run holds (the skill, the template or the wrapper not readable at repo_commit, a wrapper that was not a
+commit's, a v2 payload without a record, a record without a released transcript (T-TRANSCRIPT), a model 'unknown', a
+tool call without a stored result, a record that binds no Catalog evidence or no archive listing, a listing the record
+binds that was not given or one given that no record binds). A v1 payload may have no record; it is reported
+rationale_not_recorded (a note, which changes no verdict).
 
 THE REVIEW LOG (section 2.4). For a v2 payload, a ready unit that carries a blocking flag passes only when
 review-log.jsonl holds a person_answer whose question_code is the flag's code and whose decision_id is this payload or
@@ -68,9 +74,10 @@ Levels:
   The triage must be redone; nothing may be planned from it.
 - hold: the file is valid but something waits for a person: a unit that needs a person, abstained or is out
   of scope, flagged shared content, a member nobody accounted for, a kept file inferred at low confidence in a ready
-  unit (T-CONFIDENCE), a context that was not clean, a check that could not run.
+  unit without a person's inferred_low_confidence answer (T-CONFIDENCE), a context that was not clean, a check that
+  could not run.
 - pass: every unit is ready and nothing waits.
-- note: recorded, never a verdict (rationale_not_recorded, a transcript that is not released here).
+- note: recorded, never a verdict (rationale_not_recorded).
 
 Exit status: 0 pass, 1 hold, 2 error. The script reads only, except that --emit-selection appends validator_verdict
 entries to the accession's review-log.jsonl (through scripts/campaign/curated.append_review_log); a release bundle is
@@ -121,6 +128,18 @@ BLOCKING_FLAGS = {
     "declared_technical_disputed",
     "name_token_disputed",
 }
+# The question code of a person's answer that lets a ready unit rest on a kept file inferred at low confidence
+# (T-CONFIDENCE): the person looked at it (scripts/record-person-answer.py, section 2.2).
+LOW_CONFIDENCE_CODE = "inferred_low_confidence"
+# What a claude-code session must have run with for its context to count as clean (scripts/run-triage-agent.py
+# CLEAN_FLAGS and its environment and settings, as agent.context.harness_flags lists them).
+CLAUDE_CODE_CLEAN_FLAGS = (
+    "--restricted", "--strict-mcp-config", "--tools", "--allowedTools", "--permission-mode", "dontAsk",
+    "--disable-slash-commands", "--no-session-persistence", "env CLAUDE_CODE_DISABLE_CLAUDE_MDS=1",
+    "env CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", 'settings {"disableAllHooks":true}',
+)
+# The roles a unit triage's record binds its Catalog evidence under.
+CATALOG_ROLES = ("catalog_handoff", "catalog_samples", "catalog_unit")
 
 
 # --------------------------------------------------------------------------------------------- findings
@@ -838,6 +857,55 @@ class Provenance:
 
     code: CodeSource = field(default_factory=CodeSource)
     bundle: ReleaseBundle | None = None
+    # The sha256 of each --archive-listing file given (None when the caller gave listings without their files), and
+    # the listings the records bind, so that the listings checked are the ones the decisions rested on.
+    listing_sha256: set[str] | None = None
+    bound_listings: set[str] = field(default_factory=set)
+
+    def code_matches(self, data: bytes, expected: str) -> bool:
+        """`data` (a file the record names at its commit) hashes to `expected`; from a released code folder, also once
+        its line endings are LF, since a checkout with core.autocrlf writes CRLF where the commit holds LF."""
+        if sha256_bytes(data) == expected:
+            return True
+        return self.code.code_root is not None and sha256_bytes(data.replace(b"\r\n", b"\n")) == expected
+
+
+def transcript_events(data: bytes) -> dict[str, Any]:
+    """A harness transcript (stream JSON lines) as a record is checked against it: {init, calls: [{id, name, input,
+    result}] in order, once per id, each tool_result paired with its call, models (the init's and every assistant
+    message's)}."""
+    init: dict[str, Any] | None = None
+    calls: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    models: list[str] = []
+    for line in data.decode("utf-8-sig", "replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(message, dict):
+            continue
+        if message.get("type") == "system" and message.get("subtype") == "init" and init is None:
+            init = message
+            if message.get("model") and str(message["model"]) not in models:
+                models.append(str(message["model"]))
+        body = message.get("message") if isinstance(message.get("message"), dict) else {}
+        if message.get("type") == "assistant" and body.get("model") and str(body["model"]) not in models:
+            models.append(str(body["model"]))
+        for block in body.get("content") if isinstance(body.get("content"), list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and isinstance(block.get("id"), str):
+                if block["id"] not in calls:
+                    order.append(block["id"])
+                    calls[block["id"]] = {"id": block["id"], "name": str(block.get("name") or ""),
+                                          "input": block.get("input") if isinstance(block.get("input"), dict) else {},
+                                          "result": None}
+            elif block.get("type") == "tool_result" and block.get("tool_use_id") in calls:
+                calls[block["tool_use_id"]]["result"] = block
+    return {"init": init, "calls": [calls[i] for i in order], "models": models}
 
 
 def _file_check(report: "Report", unit: str, record: Path, label: str, path_text: Any, expected_sha: Any,
@@ -926,6 +994,43 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
         _file_check(report, unit, record_path, f"inputs[{index}] ({item['role']})", item["path"], item["sha256"],
                     item["bytes"], bundle)
 
+    # What the decision rested on must be bound: the unit's Catalog evidence and the archive listing. A record that
+    # binds neither states nothing a third party can check, so it never passes.
+    if record["kind"] == "unit_triage":
+        roles = [item["role"] for item in record["inputs"]]
+        if not set(roles) & set(CATALOG_ROLES):
+            report.add("hold", "T-RECORD", unit, f"{record_path.name} binds no Catalog evidence ({', '.join(CATALOG_ROLES)}); "
+                       "the rows the triage covers cannot be traced to what it read")
+        listings = [item for item in record["inputs"] if item["role"] == "archive_listing"]
+        if not listings:
+            report.add("hold", "T-RECORD", unit, f"{record_path.name} binds no archive listing; the selection's crc32 and "
+                       "size, and the byte-identical content check, have no bound source")
+        for item in listings:
+            provenance.bound_listings.add(str(item["sha256"]).casefold())
+            if provenance.listing_sha256 is not None and str(item["sha256"]).casefold() not in provenance.listing_sha256:
+                report.add("hold", "T-RECORD", unit, f"{record_path.name} binds the listing {item['path']}, which is not "
+                           "among the --archive-listing files given; the checks ran on listings the decision did not rest on")
+        own = [item for item in record["inputs"] if item["role"] == "catalog_handoff"
+               and str(item["path"]).replace("\\", "/") == f"inputs/{unit}/handoff.json"]
+        if own and payload.get("catalog_handoff_sha256") and own[0]["sha256"] != payload["catalog_handoff_sha256"]:
+            report.add("error", "T-HANDOFF", unit, f"{payload_path.name} names catalog_handoff_sha256 "
+                       f"{payload['catalog_handoff_sha256']}, but the handoff its record binds ({own[0]['path']}) is "
+                       f"{own[0]['sha256']}")
+
+    # The wrapper that wrote the record, at its commit: its acceptance, context and redaction rules made the record's
+    # statements about the session.
+    wrapper = record["wrapper"]
+    if wrapper["repo_commit"] is None:
+        report.add("hold", "T-RECORD", unit, f"{record_path.name}: the wrapper {wrapper['path']} that wrote it was not a "
+                   "commit's (an edited working tree), so the rules behind its tool_calls and context cannot be identified")
+    else:
+        wrapper_bytes, why = provenance.code.read(wrapper["repo_commit"], wrapper["path"])
+        if wrapper_bytes is None:
+            report.add("hold", "T-RECORD", unit, f"{record_path.name}: the wrapper cannot be read at its commit ({why})")
+        elif not provenance.code_matches(wrapper_bytes, wrapper["sha256"]):
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: {wrapper['path']} at {wrapper['repo_commit'][:12]} "
+                       f"hashes to {sha256_bytes(wrapper_bytes)}; the record names {wrapper['sha256']}")
+
     # The skill at its commit: its bytes, its version and the tools it allows.
     skill = record["skill"]
     allowed: list[str] | None = None
@@ -937,7 +1042,7 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
                    "skill and the tools it allows were not checked")
     else:
         text = skill_bytes.decode("utf-8", "replace")
-        if sha256_bytes(skill_bytes) != skill["sha256"]:
+        if not provenance.code_matches(skill_bytes, skill["sha256"]):
             report.add("error", "T-RECORD", unit, f"{record_path.name}: {skill['path']} at {skill['repo_commit'][:12]} hashes "
                        f"to {sha256_bytes(skill_bytes)}; the record names {skill['sha256']}")
         version = skill_version(text)
@@ -955,7 +1060,7 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
     template, why = provenance.code.read(skill["repo_commit"], prompt["template_path"])
     if template is None:
         report.add("hold", "T-RECORD", unit, f"{record_path.name}: the prompt template cannot be read at repo_commit ({why})")
-    elif sha256_bytes(template) != prompt["template_sha256"]:
+    elif not provenance.code_matches(template, prompt["template_sha256"]):
         report.add("error", "T-RECORD", unit, f"{record_path.name}: {prompt['template_path']} at its commit hashes to "
                    f"{sha256_bytes(template)}; the record names {prompt['template_sha256']}")
     _file_check(report, unit, record_path, "the rendered prompt", prompt["rendered_path"], prompt["rendered_sha256"], None,
@@ -973,32 +1078,35 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
         if call["result_path"] is not None or call["result_sha256"] is not None or call["status"] == "ok":
             _file_check(report, unit, record_path, f"the result of tool call {call['seq']}", call["result_path"],
                         call["result_sha256"], None, bundle, check="T-TOOLS")
+        else:
+            report.add("hold", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} ({call['tool']}) has no "
+                       "stored result; what it returned to the agent cannot be checked")
     if allowed is None and calls and skill_bytes is not None:
         report.add("hold", "T-TOOLS", unit, f"{record_path.name}: the skill at its commit lists no allowed-tools, so its "
                    f"{len(calls)} tool call(s) cannot be checked against it")
 
-    # The released redacted transcript, where there is one.
+    # The released redacted transcript: the harness's own account, which tool_calls, the model and the session must
+    # match. Without it they are the wrapper's statements, which nobody else can check, so the decision holds.
     transcript = record["transcript"] or {}
     released = transcript.get("released_path")
-    if released:
+    if not released or not transcript.get("sha256"):
+        report.add("hold", "T-TRANSCRIPT", unit, f"{record_path.name} names no released transcript; its tool_calls, model "
+                   "and session are the wrapper's statements, not checked against the harness's own record")
+    else:
         candidates = [record_path.parent / released, Path(triage_dir).parent.parent / released]
         if bundle is not None:
             candidates.append(bundle.root / released)
         found = None if _ABSOLUTE.match(str(released)) else next((p for p in candidates if p.is_file()), None)
         if found is None:
-            report.add("note", "T-TRANSCRIPT", unit, f"{record_path.name}: the redacted transcript {released} is not "
-                       "released here; its sha256 and the tool calls it shows were not checked")
+            report.add("hold", "T-TRANSCRIPT", unit, f"{record_path.name}: the redacted transcript {released} is not here; "
+                       "its sha256 and the tool calls it shows were not checked")
         else:
             data = found.read_bytes()
             if sha256_bytes(data) != str(transcript.get("sha256") or ""):
                 report.add("error", "T-RECORD", unit, f"{record_path.name}: the released transcript {released} hashes to "
                            f"{sha256_bytes(data)}; the record names {transcript.get('sha256')}")
-            shown = [bare_tool(name) for name in transcript_tool_names(data)]
-            listed = [bare_tool(call["tool"]) for call in calls]
-            if shown != listed:
-                report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool_calls ({len(listed)}: "
-                           f"{', '.join(listed[:8]) or 'none'}) differ from the {len(shown)} tool call(s) the released "
-                           f"transcript shows ({', '.join(shown[:8]) or 'none'})")
+            else:
+                compare_transcript(report, unit, record_path, record, data, allowed)
 
     # The context: clean, or a hold.
     context = record["agent"]["context"]
@@ -1024,7 +1132,80 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
         if extra:
             report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: MCP server(s) {', '.join(extra)} were loaded, which "
                        "the skill does not allow")
+    called = sorted({tool_server(str(call["tool"]).split("(", 1)[0].strip()) for call in calls} - {None})
+    unlisted = [name for name in called if name not in {item["name"] for item in context["mcp_servers"]}]
+    if unlisted:
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: tool calls use MCP server(s) {', '.join(unlisted)}, "
+                   "which agent.context.mcp_servers does not list; the servers the session ran with are not stated")
+    flags = list(context["harness_flags"])
+    if not flags:
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: agent.context.harness_flags is empty; how the session "
+                   "was made clean is not stated")
+    elif record["agent"]["harness"] == "claude-code":
+        missing = [flag for flag in CLAUDE_CODE_CLEAN_FLAGS if flag not in flags]
+        if missing:
+            report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the claude-code session's flags lack "
+                       f"{', '.join(missing)}, which a clean configuration sets")
     return record
+
+
+def compare_transcript(report: "Report", unit: str, record_path: Path, record: dict[str, Any], data: bytes,
+                       allowed: list[str] | None) -> None:
+    """The record against the released transcript: every tool call in order with its server-qualified name, its
+    arguments and its stored result; every call the transcript shows on the skill's allowed list; the model and the
+    session the transcript names."""
+    shown = transcript_events(data)
+    calls = record["tool_calls"]
+    names = [item["name"] for item in shown["calls"]]
+    listed = [str(call["tool"]) for call in calls]
+    if allowed is not None:
+        for name in sorted(set(names)):
+            if not tool_allowed(name, allowed):
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: the released transcript shows a call to {name}, "
+                           f"which the skill does not allow")
+    if names != listed:
+        report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool_calls ({len(listed)}: "
+                   f"{', '.join(bare_tool(n) for n in listed[:8]) or 'none'}) differ from the {len(names)} tool call(s) the "
+                   f"released transcript shows ({', '.join(bare_tool(n) for n in names[:8]) or 'none'})")
+    else:
+        for call, seen in zip(calls, shown["calls"]):
+            if canonical_json(call["arguments"]) != canonical_json(seen["input"]):
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: the arguments of tool call {call['seq']} are not "
+                           "the ones the released transcript shows")
+            result = seen["result"]
+            if result is None:
+                if call["result_path"] is not None:
+                    report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} has a stored result, "
+                               "but the released transcript shows none")
+                continue
+            stored = None
+            if call["result_path"] and not _ABSOLUTE.match(str(call["result_path"])):
+                try:
+                    stored = json.loads((record_path.parent / call["result_path"]).read_bytes().decode("utf-8-sig"))
+                except (OSError, UnicodeDecodeError, ValueError):
+                    stored = None
+            if not isinstance(stored, dict) or "content" not in stored:
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: the stored result of tool call {call['seq']} is "
+                           "not readable as {tool_use_id, tool, is_error, content}")
+            elif (canonical_json(stored.get("content")) != canonical_json(result.get("content"))
+                  or bool(stored.get("is_error")) != bool(result.get("is_error"))
+                  or stored.get("tool_use_id") != seen["id"]):
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: the stored result of tool call {call['seq']} is "
+                           "not the result the released transcript shows")
+            elif bool(stored.get("is_error")) != (call["status"] == "error"):
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} is {call['status']}, its "
+                           "result says otherwise")
+    agent = record["agent"]
+    if agent["model_id"] == "unknown" or not shown["models"]:
+        report.add("hold", "T-RECORD", unit, f"{record_path.name}: the model is not known (the record names "
+                   f"{agent['model_id']!r}, the transcript {', '.join(shown['models']) or 'none'})")
+    elif agent["model_id"] not in shown["models"]:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: model_id {agent['model_id']!r} is not a model the "
+                   f"released transcript names ({', '.join(shown['models'])})")
+    init_session = (shown["init"] or {}).get("session_id")
+    if init_session and str(init_session) != agent["session_id"]:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: session_id {agent['session_id']!r} is not the session "
+                   "the released transcript names")
 
 
 # ------------------------------------------------------------------------------ the review log (section 2.4)
@@ -1147,17 +1328,21 @@ def validate(
     *,
     code_root: Path | None = None,
     bundle: ReleaseBundle | None = None,
+    listing_files: Iterable[Path] | None = None,
 ) -> Report:
     """The accession's triage files as a set, with their decision records and review log.
 
     `code_root` is the released code (SKILL.md, the prompt templates) read in place of git at each record's repo_commit;
     `bundle` the release bundle the directory sits in (found on its own when <triage dir>/../../release-index.json
-    exists), through whose index projected inputs are checked."""
+    exists), through whose index projected inputs are checked. `listing_files` are the files `listings` were read from
+    (the CLI's --archive-listing): each record's archive_listing inputs must be among them, and each of them bound by a
+    record (T-RECORD, T-DUP); without them that tie is not checked."""
     report = Report()
     triage_dir = Path(triage_dir)
     if bundle is None:
         bundle = ReleaseBundle.find(triage_dir)
-    provenance = Provenance(CodeSource(code_root), bundle)
+    given = None if listing_files is None else {sha256_bytes(Path(p).read_bytes()): Path(p) for p in listing_files}
+    provenance = Provenance(CodeSource(code_root), bundle, None if given is None else set(given))
     triages: dict[str, dict[str, Any]] = {}
     files = current_triage_files(triage_dir)
     if not files:
@@ -1253,6 +1438,11 @@ def validate(
         _check_unit(report, unit, triage, triages, catalog, by_key if listed else None, resolver, answered[unit])
 
     _check_cross_unit(report, triages, listed, resolver, answered)
+    if given is not None and provenance.bound_listings:
+        for digest, path in sorted(given.items(), key=lambda item: item[1].name):
+            if digest not in provenance.bound_listings:
+                report.add("hold", "T-DUP", None, f"the listing {path.name} was given, but no decision record binds it; "
+                           "the coverage checks ran on a listing no decision rested on")
     if catalog is not None:
         missing = sorted(set(catalog) - set(triages))
         if missing and report.accession is not None:
@@ -1404,12 +1594,13 @@ def _check_unit(
                 where = (f"a person_answer in {REVIEW_LOG} with question_code {code} for this payload or one it supersedes"
                          if v2 else f"person_answers code {code}")
                 report.add("error", "T-STATUS", unit, f"flag {code} keeps the unit from being ready until a person answers it ({where})")
-        if v2:
+        if v2 and LOW_CONFIDENCE_CODE not in answered:
             for item in [*t["rows"], *t.get("added_members", [])]:
                 if item.get("basis") == "inferred" and item.get("confidence") == "low":
                     label = item.get("member_path") or item.get("raw_file")
                     report.add("hold", "T-CONFIDENCE", unit, f"{label} is kept on an inferred reading at low confidence; a "
-                               "ready unit does not rest on it until a person has looked")
+                               "ready unit does not rest on it until a person has looked (a person_answer in "
+                               f"{REVIEW_LOG} with question_code {LOW_CONFIDENCE_CODE})")
         if unit_ion == "both" and not t.get("children"):
             report.add("error", "T-POL", unit, "a ready unit with both polarities needs children, one per polarity and acquisition")
     else:
@@ -1866,7 +2057,8 @@ def main(argv: list[str] | None = None) -> int:
     listed: list[ListedMember] = []
     for path in args.archive_listing:
         listed += read_listing(path)
-    report = validate(args.triage_dir, catalog, listed, code_root=args.code_root, bundle=bundle)
+    report = validate(args.triage_dir, catalog, listed, code_root=args.code_root, bundle=bundle,
+                      listing_files=args.archive_listing)
     if args.ground_truth:
         report.score = score(args.triage_dir, json.loads(args.ground_truth.read_text(encoding="utf-8")))
     if args.emit_selection:

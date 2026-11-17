@@ -127,7 +127,7 @@ class WrapperCase(unittest.TestCase):
         self.tmp = Path(os.path.realpath(self._tmp.name))
         self.campaign = self.tmp / "campaign"
         self.code_ref = records.Code.from_root(self.tmp / "code")
-        self.code = rta.CodeSnapshot(self.code_ref.commit, self.code_ref.skill, self.code_ref.template, self.code_ref.root)
+        self.code = self.code_ref.snapshot(rta)
         self.catalog = FakeCatalog(self.tmp, self.ACCESSIONS + ["ST004606"])
         payloads: dict[str, Any] = {}
         for accession in self.ACCESSIONS + ["ST004606"]:
@@ -276,7 +276,19 @@ class SessionTests(WrapperCase):
             self.assertEqual(record["prompt"]["template_sha256"], sha(self.code.template))
             self.assertEqual(record["transcript"]["unredacted_sha256"],
                              sha((session / "harness" / "transcript.jsonl").read_bytes()))
-            self.assertIsNone(record["transcript"]["released_path"])
+            released = self.triage_dir() / record["transcript"]["released_path"]
+            self.assertTrue(record["transcript"]["released_path"].startswith("transcripts/ST002747-"))
+            self.assertEqual(record["transcript"]["sha256"], sha(released.read_bytes()))
+            self.assertFalse(curated._holds_absolute_path(released.read_bytes()), "the released transcript")
+            self.assertNotIn(b"quokka", released.read_bytes().lower())
+            self.assertNotIn(b"example.org", released.read_bytes())
+            self.assertEqual(record["wrapper"], {"path": rta.WRAPPER_PATH, "sha256": sha(self.code.wrapper),
+                                                 "repo_commit": self.code.commit})
+            handoff = self.triage_dir() / "inputs" / unit / "handoff.json"
+            self.assertEqual(json.loads(payload.read_bytes())["catalog_handoff_sha256"], sha(handoff.read_bytes()),
+                             "the agent copies the hash the prompt gives; it cannot hash a file")
+            self.assertIn(f"- `{unit}`: `{sha(handoff.read_bytes())}`",
+                          (self.triage_dir() / "inputs" / unit / "prompt.md").read_text(encoding="utf-8"))
             first = record["inputs"][0]
             self.assertEqual((first["role"], first["path"], first["source"]),
                              ("catalog_handoff", f"inputs/{unit}/handoff.json", "msdial_catalog_reanalysis_handoff"))
@@ -309,6 +321,24 @@ class SessionTests(WrapperCase):
         report = self.validate()
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings if f.level != "note"])
         self.assertTrue((session / "harness" / "validator.json").is_file())
+        # The wrapper's validation ran with --emit-selection: one validator_verdict per decision in the review log, so
+        # the plan's review_log_head_sha256 is set.
+        log, problems = vt.read_review_log(self.triage_dir())
+        self.assertEqual(problems, [])
+        self.assertEqual(sorted(e["decision_id"] for e in log if e["kind"] == "validator_verdict"),
+                         sorted(sha((self.triage_dir() / f"{u}.json").read_bytes()) for u in units))
+        self.assertIsNotNone(curated.review_log_head(self.triage_dir()))
+
+    def test_a_crlf_checkout_renders_a_prompt_the_session_reads(self) -> None:
+        # core.autocrlf=true gives the working tree's template CRLF; the unit list and hashes still parse.
+        template = self.code.template.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        self.code = rta.CodeSnapshot(self.code.commit, self.code.skill, template, self.code.root,
+                                     wrapper=self.code.wrapper, wrapper_commit=self.code.commit,
+                                     revision_template=self.code.revision_template)
+        (self.code.root / rta.TEMPLATE_PATH).write_bytes(template)
+        self.ports.code = self.code
+        code, [summary] = self.run_wrapper("ok")
+        self.assertEqual((code, summary["verdict"]), (0, "pass"), summary)
 
     def test_parallel_accessions_each_get_their_own_session(self) -> None:
         code, summaries = self.run_wrapper("ok", "--max-parallel", "2", accessions=["ST002747", "ST004606"])
@@ -382,6 +412,41 @@ class SessionTests(WrapperCase):
         self.assertIn("the harness offered tools the skill does not list", summary["configuration"])
         self.assertIn("msdial_catalog_save_class_proposal", summary["configuration"])
 
+    def test_an_mwtab_text_quoting_a_path_is_offered_portable_and_releasable(self) -> None:
+        original = b"#METABOLOMICS WORKBENCH\nMS_COMMENTS\tmethod C:\\Xcalibur\\methods\\x.meth\n"
+        self.fetch = lambda url: original  # type: ignore[method-assign]
+        self.ports.fetcher = self.fetch
+        code, [summary] = self.run_wrapper("ok")
+        self.assertEqual((code, summary["verdict"]), (0, "pass"), summary)
+        text = next((self.triage_dir() / "inputs").glob("AN*.mwtab.txt"))
+        self.assertFalse(curated._holds_absolute_path(text.read_bytes()))
+        record = json.loads((self.triage_dir() / "AN004454.record.json").read_text(encoding="utf-8"))
+        [entry] = [i for i in record["inputs"] if i["path"] == f"inputs/{text.name}"]
+        self.assertEqual(entry["original_sha256"], sha(original))
+        self.assertIn("<external>/<file name>", entry["redaction"])
+
+    def test_a_read_outside_the_session_refuses_it(self) -> None:
+        code, [summary] = self.run_wrapper("readout")
+        self.assertEqual(code, 3)
+        self.assertTrue(any("read outside the session's folders (MEMORY.md)" in p for p in summary["problems"]), summary)
+        self.assertEqual(self.payload_files(), [])
+
+    def test_a_payload_holding_an_absolute_path_refuses_the_session(self) -> None:
+        code, [summary] = self.run_wrapper("pathpay")
+        self.assertEqual(code, 3)
+        self.assertTrue(any("holds an absolute path" in p for p in summary["problems"]), summary)
+        self.assertEqual(self.payload_files(), [], "nothing immutable is written, so the accession can be triaged again")
+        code, [summary] = self.run_wrapper("ok")
+        self.assertEqual((code, summary["verdict"]), (0, "pass"), summary)
+
+    def test_without_the_debug_log_hooks_and_memory_are_not_clean(self) -> None:
+        code, [summary] = self.run_wrapper("nodebug")
+        self.assertEqual(code, 1, summary)
+        self.assertIn("the harness wrote no debug log", summary["configuration"])
+        record = json.loads((self.triage_dir() / "AN004454.record.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(record["agent"]["context"]["memory"], "disabled")
+        self.assertIsNone(record["transcript"]["released_path"], "a run that is not clean is not released")
+
     def test_a_tool_the_skill_does_not_allow_is_a_validator_error(self) -> None:
         code, [summary] = self.run_wrapper("bash")
         self.assertEqual(code, 2, summary)
@@ -391,6 +456,167 @@ class SessionTests(WrapperCase):
         self.assertEqual(bash[0]["status"], "error")
         report = self.validate()
         self.assertTrue([f for f in report.findings if f.check == "T-TOOLS" and f.level == "error" and "Bash" in f.message])
+
+
+class RobustnessTests(WrapperCase):
+    def test_two_runs_of_one_accession_never_share_its_directory(self) -> None:
+        # The same accession twice in one batch, in another case: NTFS folds case, so both are one directory. One run
+        # triages it; the other is never started (one accession once, whatever its case) or refused by the lock.
+        code, summaries = self.run_wrapper("ok", "--max-parallel", "2", accessions=["ST002747", "st002747"])
+        self.assertEqual(len(summaries), 1, "the batch names ST002747 once")
+        self.assertEqual((code, summaries[0]["verdict"]), (0, "pass"), summaries)
+        self.triage_dir().mkdir(parents=True, exist_ok=True)
+        other = self.campaign / "triage" / "ST004606"
+        other.mkdir(parents=True)
+        (other / rta.LOCK_NAME).write_text("{}", encoding="utf-8")
+        code, [summary] = self.run_wrapper("ok", accessions=["ST004606"])
+        self.assertEqual(code, 3)
+        self.assertIn("another run holds", summary["problems"][0])
+        self.assertEqual(rta.existing_payloads(other), [])
+        self.assertTrue((other / rta.LOCK_NAME).is_file(), "another run's lock is never removed")
+
+    def test_a_leftover_record_stops_the_accession_before_anything_is_prepared(self) -> None:
+        self.triage_dir().mkdir(parents=True)
+        (self.triage_dir() / "AN004455.record.json").write_text("{}", encoding="utf-8")
+        code, [summary] = self.run_wrapper("ok")
+        self.assertEqual(code, 3)
+        self.assertIn("already triaged (AN004455.record.json)", summary["problems"][0])
+        self.assertEqual((self.launches(), self.catalog.calls), ([], []))
+
+    def test_a_commit_is_all_or_nothing(self) -> None:
+        folder = self.tmp / "commit"
+        folder.mkdir()
+        (folder / "b.json").write_bytes(b"theirs")
+        with self.assertRaises(rta.WrapperError) as raised:
+            rta.commit_files(folder, [("inputs/x/calls/1.json", b"1"), ("a.json", b"a"), ("b.json", b"b"), ("c.json", b"c")])
+        self.assertIn("nothing was kept", str(raised.exception))
+        self.assertEqual(sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()), ["b.json"])
+        self.assertEqual((folder / "b.json").read_bytes(), b"theirs")
+
+    def test_a_validator_that_times_out_leaves_the_accepted_triage_as_it_is(self) -> None:
+        real = rta.subprocess.run
+
+        def run(command, *args, **kwargs):
+            if str(rta.VALIDATOR_PATH) in [str(c) for c in command]:
+                raise rta.subprocess.TimeoutExpired(command, 900)
+            return real(command, *args, **kwargs)
+
+        with mock.patch.object(rta.subprocess, "run", run):
+            code, [summary] = self.run_wrapper("ok")
+        self.assertEqual(code, 2, summary)
+        self.assertEqual((summary["status"], summary["verdict"]), ("triaged", "error"))
+        self.assertEqual(len(summary["accepted"]), 4)
+        self.assertTrue((Path(summary["session_dir"]) / "harness" / "validator.json").is_file())
+
+    def test_the_timeout_runs_while_the_prompt_is_written(self) -> None:
+        # A prompt larger than a pipe holds, to a CLI that does not read it: the timeout still stops the session.
+        started = rta.time.monotonic()
+        code, [summary] = self.run_wrapper("slowstdin", "--timeout", "3", "--analysis-purpose", "x" * 60000)
+        self.assertLess(rta.time.monotonic() - started, 20)
+        self.assertEqual(code, 3)
+        self.assertTrue(any("timed out" in p for p in summary["problems"]), summary)
+
+    def test_a_missing_harness_fails_the_batch_before_anything_is_prepared(self) -> None:
+        self.ports.claude = [str(self.tmp / "nowhere" / "claude.exe")]
+        code, summaries = self.run_wrapper("ok", accessions=["ST002747", "ST004606"])
+        self.assertEqual(code, 3)
+        self.assertEqual([s["status"] for s in summaries], ["failed", "failed"])
+        self.assertTrue(all("the harness could not be run" in s["problems"][0] for s in summaries), summaries)
+        self.assertEqual((self.catalog.calls, self.fetched), ([], []))
+        with self.assertRaises(rta.WrapperError):
+            rta.find_claude(str(self.tmp / "nowhere" / "claude.exe"))
+
+
+class RevisionTests(WrapperCase):
+    UNIT = "AN004454"
+
+    def set_payloads(self, change) -> None:
+        payloads = json.loads(self.payloads.read_text(encoding="utf-8"))
+        change(payloads[self.UNIT])
+        self.payloads.write_text(json.dumps(payloads), encoding="utf-8")
+
+    def answer(self, *extra: str) -> tuple[int, str]:
+        script = importlib.util.spec_from_file_location("record_person_answer_under_test",
+                                                        ROOT / "scripts" / "record-person-answer.py")
+        module = importlib.util.module_from_spec(script)
+        script.loader.exec_module(module)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = module.main([str(self.triage_dir()), "--unit", self.UNIT, "--json", *extra])
+        return code, out.getvalue() + err.getvalue()
+
+    def test_a_question_answered_before_the_plan_is_settled_by_a_revision(self) -> None:
+        def ask(doc):
+            doc["status"] = "needs_person"
+            doc["flags"].append({"code": "targeted_dda", "certainty": "suspected", "detail": "Inclusion-list DDA suspected."})
+            doc["needs_person"].append({"code": "scope_targeted_dda", "question": "Is tDDA in scope?"})
+        self.set_payloads(ask)
+        code, [summary] = self.run_wrapper("ok")
+        self.assertEqual((code, summary["verdict"]), (1, "hold"), summary)
+        base = sha((self.triage_dir() / f"{self.UNIT}.json").read_bytes())
+        # The question is shown; an answer without a named person, or to a question not asked, is refused.
+        code, shown = self.answer()
+        self.assertEqual(code, 0)
+        self.assertIn("targeted_dda", json.loads(shown)["questions"])
+        self.assertEqual(self.answer("--question-code", "targeted_dda", "--answer", "In scope.")[0], 2)
+        self.assertEqual(self.answer("--question-code", "ms1_only", "--by", "Synthetic Reviewer", "--answer", "x")[0], 2)
+        self.assertEqual(self.answer("--question-code", "targeted_dda", "--by", "Synthetic Reviewer", "--answer", "x",
+                                     "--decision-id", "0" * 64)[0], 2)
+        code, written = self.answer("--question-code", "targeted_dda", "--by", "Synthetic Reviewer",
+                                    "--answer", "In scope; the inclusion list is not used.", "--decision-id", base)
+        self.assertEqual(code, 0, written)
+        seq = json.loads(written)["seq"]
+        # The revision: ready, the flag kept, the question answered.
+        def settle(doc):
+            doc["status"] = "ready"
+            doc["needs_person"] = []
+            doc["rationale"] = "The person's answer puts the targeted DDA files in scope."
+        self.set_payloads(settle)
+        code, [summary] = self.run_wrapper("ok", "--revise", f"{self.UNIT}={seq}")
+        self.assertEqual((code, summary["status"], summary["verdict"]), (0, "triaged", "pass"), summary)
+        self.assertEqual(summary["accepted"], [f"{self.UNIT}.r1"])
+        revision = self.triage_dir() / f"{self.UNIT}.r1.json"
+        record = json.loads((self.triage_dir() / f"{self.UNIT}.r1.record.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["supersedes"], base)
+        self.assertEqual(record["payload"]["path"], revision.name)
+        self.assertEqual(record["prompt"]["template_path"], rta.REVISION_TEMPLATE_PATH)
+        roles = {item["role"]: item["path"] for item in record["inputs"]}
+        self.assertEqual(roles["prior_decision"], f"inputs/{self.UNIT}/r1/previous.json")
+        self.assertEqual(roles["review_entry"], f"inputs/{self.UNIT}/r1/cause.json")
+        self.assertEqual((self.triage_dir() / roles["prior_decision"]).read_bytes(),
+                         (self.triage_dir() / f"{self.UNIT}.json").read_bytes())
+        log, problems = vt.read_review_log(self.triage_dir())
+        self.assertEqual(problems, [])
+        [entry] = [e for e in log if e["kind"] == "revision"]
+        self.assertEqual((entry["supersedes"], entry["new_decision_id"], entry["cause"]),
+                         (base, sha(revision.read_bytes()), {"kind": "person_answer", "seq": seq}))
+        report = self.validate()
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings if f.level != "note"])
+        # The decision log walks: the revision's cause is the person's answer about the payload it revises.
+        verify = importlib.util.spec_from_file_location("verify_decision_log_under_test",
+                                                        ROOT / "scripts" / "verify-decision-log.py")
+        module = importlib.util.module_from_spec(verify)
+        verify.loader.exec_module(module)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(module.main([str(self.campaign)]), 0)
+        # One cause revises once.
+        code, [summary] = self.run_wrapper("ok", "--revise", f"{self.UNIT}={seq}")
+        self.assertEqual(code, 3)
+        self.assertIn("already caused a revision", summary["problems"][0])
+        self.assertFalse((self.triage_dir() / f"{self.UNIT}.r2.json").exists())
+
+    def test_a_revision_needs_a_cause_about_the_payload(self) -> None:
+        code, [summary] = self.run_wrapper("ok")
+        self.assertEqual(code, 0, summary)
+        code, [summary] = self.run_wrapper("ok", "--revise", f"{self.UNIT}=99")
+        self.assertEqual(code, 3)
+        self.assertIn("has no entry 99", summary["problems"][0])
+        log, _ = vt.read_review_log(self.triage_dir())
+        other = next(e for e in log if e["decision_id"] != sha((self.triage_dir() / f"{self.UNIT}.json").read_bytes()))
+        code, [summary] = self.run_wrapper("ok", "--revise", f"{self.UNIT}={other['seq']}")
+        self.assertIn("another decision", summary["problems"][0])
+        with self.assertRaises(SystemExit):
+            self.run_wrapper("ok", "--revise", f"{self.UNIT}=1", accessions=["ST002747", "ST004606"])
 
 
 class PartTests(unittest.TestCase):
@@ -410,6 +636,33 @@ class PartTests(unittest.TestCase):
         self.assertEqual(scrub.text("approved by roe on 11-06; Roebuck stays"), "approved by <redacted> on 11-06; Roebuck stays")
         self.assertEqual(scrub.value({"token": "abc", "nested": {"Password": "x", "n": 1}, "list": ["ok"]}),
                          {"token": "<redacted>", "nested": {"Password": "<redacted>", "n": 1}, "list": ["ok"]})
+        self.assertEqual(scrub.text("seen in /home/jane/data/x.raw"), "seen in <external>/x.raw")
+
+    def test_names_are_removed_in_the_forms_people_write_them(self) -> None:
+        with mock.patch.dict(os.environ, {"USERNAME": "Jane Roe", "USER": "", "LOGNAME": ""}):
+            terms = rta.operator_terms()
+        for handle in ("jroe", "roej", "janeroe"):
+            self.assertIn(handle, [t.casefold() for t in terms])
+        scrub = rta.Scrubber.for_session(Path("C:/s") if os.name == "nt" else Path("/s"), terms)
+        self.assertEqual(scrub.text("owner jroe; G:\\My Drive\\workshop_jroe\\a.txt; pool-roe2026; Roebuck"),
+                         "owner <redacted>; <external>/a.txt; pool-<redacted>2026; Roebuck")
+        self.assertIn("an operator's name", scrub.found("approved by roe"))
+        self.assertEqual(scrub.found("a clean rationale"), [])
+        # A name in a script without spaces between words is kept at any length.
+        with mock.patch.dict(os.environ, {"USERNAME": "津川 博", "USER": "", "LOGNAME": ""}):
+            terms = rta.operator_terms()
+        self.assertTrue({"津川", "博"} <= set(terms), terms)
+        scrub = rta.Scrubber.for_session(Path("C:/s") if os.name == "nt" else Path("/s"), terms)
+        self.assertEqual(scrub.text("lock stage3b-poola-20261106-津川; also 津川"), "lock stage3b-poola-20261106-<redacted>; "
+                         "also <redacted>")
+
+    def test_a_repository_text_with_an_absolute_path_is_made_portable_before_the_session(self) -> None:
+        text = b"#MS\nMS_COMMENTS\tmethod C:\\Xcalibur\\methods\\x.meth, data \\\\nas\\share\\run\\a.raw\n"
+        released, extra = rta.release_safe_text(text)
+        self.assertFalse(curated._holds_absolute_path(released))
+        self.assertIn(b"<external>/x.meth", released)
+        self.assertEqual(extra["original_sha256"], sha(text))
+        self.assertEqual(rta.release_safe_text(b"no path here\n"), (b"no path here\n", {}))
 
     def test_parse_transcript_pairs_results_and_counts_each_call_once(self) -> None:
         lines = [
@@ -436,14 +689,19 @@ class PartTests(unittest.TestCase):
 
     def test_find_claude_runs_a_python_fake_with_this_interpreter(self) -> None:
         self.assertEqual(rta.find_claude(str(FAKE_CLAUDE)), [sys.executable, "-I", str(FAKE_CLAUDE)])
-        self.assertEqual(rta.find_claude("C:/x/claude.exe"), [str(Path("C:/x/claude.exe"))])
+        with self.assertRaises(rta.WrapperError):
+            rta.find_claude("C:/nowhere/claude.exe")
 
     def test_accessions_from_options_and_a_file(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             listed = Path(folder) / "acc.txt"
             listed.write_text("# pool\nST002747\nST004606  first pool\n\nST002747\n", encoding="utf-8")
-            self.assertEqual(rta.read_accessions(["ST003128, ST002283"], listed),
+            self.assertEqual(rta.read_accessions(["ST003128, ST002283", "st003128"], listed),
                              ["ST003128", "ST002283", "ST002747", "ST004606"])
+            self.assertEqual(rta.read_revisions(["AN1=3", "AN2=12"]), {"AN1": 3, "AN2": 12})
+            for bad in (["AN1"], ["AN1=0"], ["AN1=2", "AN1=3"]):
+                with self.assertRaises(SystemExit):
+                    rta.read_revisions(bad)
             with self.assertRaises(SystemExit):
                 rta.read_accessions(["../x"], None)
             with self.assertRaises(SystemExit):
@@ -452,7 +710,7 @@ class PartTests(unittest.TestCase):
     def test_the_prompt_template_is_filled_whole(self) -> None:
         template = (ROOT / rta.TEMPLATE_PATH).read_bytes()
         rendered = rta.render_prompt(template, accession="ST1", unit_ids="AN1", input_dir="../inputs",
-                                     output_dir="../out", analysis_purpose="null")
+                                     output_dir="../out", analysis_purpose="null", handoff_sha256="- `AN1`: `x`")
         self.assertNotIn(b"{{", rendered)
         with self.assertRaises(rta.WrapperError):
             rta.render_prompt(template, accession="ST1")

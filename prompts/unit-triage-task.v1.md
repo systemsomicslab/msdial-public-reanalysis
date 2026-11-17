@@ -9,6 +9,8 @@ Placeholders, each written as its name in double braces below this comment and r
   input_dir         the directory holding what the agent may read (handoffs, mwTab text, archive listings)
   output_dir        the directory the agent writes its payloads into
   analysis_purpose  the person's stated analysis_purpose, verbatim, or the word null
+  handoff_sha256    one line per unit, "- `<unit_id>`: `<sha256>`", the sha256 of the unit's handoff copy
+                    (input_dir/<unit_id>/handoff.json); the agent cannot hash a file, so it copies this value
 
 Render both directories relative to the session's working directory. The rendered prompt is stored as
 inputs\<unit_id>\prompt.md and released byte for byte, so it must hold no absolute path, user name or e-mail
@@ -29,15 +31,25 @@ Triage these Catalog analysis units, and only these: {{unit_ids}}.
 Everything you may read is in `{{input_dir}}`:
 
 - `<unit_id>/handoff.json` with its `samples.json` and `files.json`: the Catalog handoff of each unit. Read
-  the sample rows and files from the sidecars and `handoff.json` only for the unit, the accession and its
-  `technical_settings`. Never read or cite its `class_proposal` or its `class_proposal:*` blocking reasons.
+  the sample rows and files from the sidecars beside it in `{{input_dir}}/<unit_id>/`, and `handoff.json` only
+  for the unit, the accession and its `technical_settings`. Its `sample_table_path`, `file_manifest_path` and
+  `analysis_input_manifest_path` point outside this session: never read those paths. Never read or cite its
+  `class_proposal` or its `class_proposal:*` blocking reasons.
 - `<analysis id>.mwtab.txt`: the repository's mwTab text of each analysis, where it could be fetched.
 - `*.members.tsv`: the member listing of each study archive (archive, path, size, crc32), read from the zip
   central directory before this session.
 
 The Catalog MCP server (`msdial-repository-catalog`) may be read with the tools the skill allows. Nothing
 else is evidence: not memory, not the web, not files outside `{{input_dir}}`. If an input you need is
-missing, go without it, say so in `evidence_sources`, and ask in `needs_person`.
+missing, go without it, say so in `evidence_sources`, and ask in `needs_person`. A read outside
+`{{input_dir}}`, the output directory and the skill refuses the whole session.
+
+## Handoff sha256
+
+Write each unit's `catalog_handoff_sha256` exactly as given here (the sha256 of its handoff copy, taken by
+the wrapper before this session):
+
+{{handoff_sha256}}
 
 ## Output
 

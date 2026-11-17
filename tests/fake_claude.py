@@ -2,8 +2,10 @@
 
 It takes the flags scripts/run-triage-agent.py passes, logs them (FAKE_CLAUDE_LOG), reads the prompt from stdin, emits a
 canned transcript (an init message, tool_use and tool_result blocks, a result message) on stdout, and writes the
-payloads it is given (FAKE_CLAUDE_PAYLOADS: {unit_id: document}) into the output folder, each with the sha256 of the
-handoff copy it "read" as catalog_handoff_sha256. FAKE_CLAUDE_SCENARIO picks a misbehaviour:
+payloads it is given (FAKE_CLAUDE_PAYLOADS: {unit_id: document}) into the output folder, each with the
+catalog_handoff_sha256 the prompt gives for its unit (as a real agent must: it cannot hash a file). A revision prompt
+names the files to write (`../out/<unit>.r<N>.json`); the fake writes the unit's document under each. It writes the
+debug log a real CLI writes (hooks registered, memory off) to --debug-file. FAKE_CLAUDE_SCENARIO picks a misbehaviour:
 
   ok        the session as it should be
   record    also writes <unit>.record.json into the output folder
@@ -13,15 +15,19 @@ handoff copy it "read" as catalog_handoff_sha256. FAKE_CLAUDE_SCENARIO picks a m
   unclean   reports a plugin from outside the harness in its init message
   bash      also calls Bash (refused), a tool the skill does not allow
   nodeny    reports every server tool, as a session without --disallowedTools would
+  nodebug   writes no debug log
+  readout   also reads a file outside the session's folders
+  pathpay   writes payloads holding an absolute path
+  slowstdin sleeps 25 s before it reads its prompt
 
 Synthetic: public accession ids, no person, no real model.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -46,7 +52,14 @@ def main() -> int:
         return 0
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "ok")
     log = os.environ.get("FAKE_CLAUDE_LOG")
-    prompt = sys.stdin.buffer.read().decode("utf-8")
+    if scenario == "slowstdin":
+        time.sleep(25)
+    # A checkout with core.autocrlf renders the template with CRLF; a real agent reads either.
+    prompt = sys.stdin.buffer.read().decode("utf-8").replace("\r\n", "\n")
+    debug = value(args, "--debug-file")
+    if debug and scenario != "nodebug":
+        Path(debug).write_text("[DEBUG] Registered 0 hooks from 1 plugins\n"
+                               "[DEBUG] $.fs.ancestors (cc-plugin-agents-md): project memory is off\n", encoding="utf-8")
     cwd = Path.cwd()
     if log:
         with open(log, "a", encoding="utf-8") as handle:
@@ -70,8 +83,15 @@ def main() -> int:
           "claude_code_version": "0.0.0-fake"})
     if scenario == "hang":
         time.sleep(120)
-    marker = "Triage these Catalog analysis units, and only these: "
-    units = [u.strip() for u in prompt.split(marker, 1)[1].split("\n", 1)[0].rstrip(".").split(",")]
+    named = re.findall(r"`\.\./out/([A-Za-z0-9._-]+\.json)`", prompt)
+    if named:  # a revision: the prompt names each file to write
+        targets = {name: re.sub(r"\.r[0-9]+$", "", name[:-len(".json")]) for name in named}
+    else:
+        marker = "Triage these Catalog analysis units, and only these: "
+        line = prompt.split(marker, 1)[1].split("\n", 1)[0].strip().rstrip(".")
+        targets = {f"{u.strip()}.json": u.strip() for u in line.split(",")}
+    units = list(dict.fromkeys(targets.values()))
+    digests = dict(re.findall(r"^- `([A-Za-z0-9._-]+)`: `([0-9a-f]{64})`$", prompt, flags=re.M))
     payloads = json.loads(Path(os.environ["FAKE_CLAUDE_PAYLOADS"]).read_text(encoding="utf-8"))
     out = (cwd / ".." / "out").resolve()
     inputs = (cwd / ".." / "inputs").resolve()
@@ -89,13 +109,17 @@ def main() -> int:
                   False))
     if scenario == "bash":
         calls.append(("Bash", {"command": "dir"}, "No such tool available: Bash", True))
+    if scenario == "readout":
+        calls.append(("Read", {"file_path": str((cwd / ".." / ".." / "MEMORY.md").resolve())}, "remembered", False))
     for unit in units:
         handoff = inputs / unit / "handoff.json"
         calls.append(("Read", {"file_path": str(handoff)}, handoff.read_text(encoding="utf-8")[:4000], False))
-    for unit in units:
+    for name, unit in targets.items():
         document = dict(payloads[unit])
-        document["catalog_handoff_sha256"] = hashlib.sha256((inputs / unit / "handoff.json").read_bytes()).hexdigest()
-        calls.append(("Write", {"file_path": str(out / f"{unit}.json"),
+        document["catalog_handoff_sha256"] = digests.get(unit, "0" * 64)
+        if scenario == "pathpay":
+            document["rationale"] = "Read from " + str(inputs / unit / "samples.json")
+        calls.append(("Write", {"file_path": str(out / name),
                                 "content": json.dumps(document, indent=1, ensure_ascii=False)}, "File created", False))
     if scenario == "record":
         calls.append(("Write", {"file_path": str(out / f"{units[0]}.record.json"), "content": "{}"}, "File created", False))
