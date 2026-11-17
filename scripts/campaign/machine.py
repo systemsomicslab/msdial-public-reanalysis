@@ -163,14 +163,18 @@ manifest_digest_changed (_curated_guard), with a terminal_refusal in the decisio
 At the handoff the triage is copied beside the handoff copy as handoffs\\<unit_key>\\<unit_id>.json, its decision
 record as <unit_id>.record.json beside it (the layout Interactive looks for, WS0 decision 2), and each must hash to
 what the manifest names (else stopped_policy_drift, triage_digest_changed or triage_record_digest_changed). The
-Catalog handoff taken now must be the triaged one (triage.catalog_handoff_sha256): byte for byte, or (WS0 decision A,
-2026-11-17) in every value Interactive's verify_handoff_copy compares, which leaves out the sidecar paths and the Class
-proposal's campaign ratification (curated.HANDOFF_RATIFICATION_KEYS, Interactive's own list) that this runner's
-boundary-3 save writes and the Catalog embeds. The triaged bytes are read from the decision record's catalog_handoff
-input or the accession's inputs\\<unit_id>\\handoff.json and kept beside the copy (handoff.triaged.json); a handoff
-that differs in anything else, or whose triaged bytes are not kept, is held for a person (contract_held,
-triage_handoff_changed), never passed on its rows (WS0 decision 7). A triage made before any ratification differs in
-the whole proposal and is held. The download passes Interactive curated_selection_path (the copy), decision_record_path
+Catalog handoff taken now must be the triaged one (triage.catalog_handoff_sha256) in the evidence the triage read: byte
+for byte, or (WS0 decision F, 2026-11-17, superseding decision A's ratification-only scope) in every value Interactive's
+verify_handoff_copy compares, which leaves out the sidecar paths and what the Class decides (curated.HANDOFF_CLASS_KEYS,
+Interactive's own value: the class_proposal, the Class-derived blocking_reasons codes, and next_action and
+ready_for_download_planning where no other blocking reason changed). The triage runs before the Class is saved, and the
+Class binds through its own ratification: the copy's class_proposal must be the approved proposal, accepted and
+ratified under this campaign's approval (curated.class_binding; another proposal stops the unit, class_digest_changed,
+and an unratified one is held, class_not_ratified, and rechecked from pending), beside _state_pending's class-digest
+drift stop. The triaged bytes are read from the decision record's catalog_handoff input or the accession's
+inputs\\<unit_id>\\handoff.json and kept beside the copy (handoff.triaged.json); a handoff that differs in anything
+else, or whose triaged bytes are not kept, is held for a person (contract_held, triage_handoff_changed), never passed
+on its rows (WS0 decision 7). The download passes Interactive curated_selection_path (the copy), decision_record_path
 (the original record, beside the inputs\\ it binds), original_handoff_sha256 (the triaged handoff's),
 original_handoff_path (the triaged bytes: the Catalog's as taken where they are those, else handoff.triaged.json) and
 curated_selection_validator, so an Interactive that cannot apply the selection refuses
@@ -764,9 +768,12 @@ class Runner:
 
     def _check_triage(self, unit: Mapping[str, Any], selection: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
         """Copy the unit's triage (and its decision record) beside its handoff copy and check each is what was approved,
-        and that the Catalog handoff taken now is the triaged one byte for byte: {"refused": bool, "hold": bool,
-        "reason", ...}. A handoff whose bytes changed is a hold for a person, never a pass on its rows (WS0 decision 7):
-        Interactive binds the copy to the triaged bytes and would refuse it for good."""
+        that the copy's Class is the approved one ratified under this campaign (curated.class_binding), and that the
+        Catalog handoff taken now is the triaged one in the evidence the triage read (byte for byte, or in every value
+        but what the Class decides, WS0 decision F): {"refused": bool, "hold": bool, "reason", ...}, with
+        "resume_state" for a hold rechecked from another step. A handoff whose evidence changed is a hold for a person,
+        never a pass on its rows (WS0 decision 7): Interactive binds the copy to the triaged bytes and would refuse it
+        for good."""
         copy = self._triage_copy(unit)
         out: dict[str, Any] = {"triage_sha256": selection.get("triage_sha256"), "copy_path": self._relative(copy),
                                "selection_sha256": selection.get("selection_sha256")}
@@ -794,16 +801,36 @@ class Runner:
                         "found_sha256": found_record,
                         "detail": "the triage's decision record is not the one the approved manifest names"}
             out["record_copy_path"] = self._relative(record_copy)
+        # WS0 decision F: the Class binds through its own ratification, not through the triage. The copy's Class must be
+        # the approved proposal, accepted and ratified under this campaign's approval (the record _state_pending's
+        # boundary-3 save wrote); checked in every case, a byte-identical handoff included.
+        try:
+            taken = json.loads(Path(str(record.get("copy_path") or "")).read_bytes().decode("utf-8-sig"))
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            taken = {"class_proposal": None, "_unreadable": type(error).__name__}
+        bound = curated.class_binding(taken if isinstance(taken, Mapping) else {"class_proposal": None},
+                                      unit_id=unit["catalog_unit_id"], approved_proposal_id=unit["approved_class_digest"],
+                                      ratification=self._class_ratification(unit))
+        out["class_binding"] = {key: value for key, value in bound.items() if key != "detail"}
+        if not bound["bound"]:
+            if bound["reason"] == "class_digest_changed":
+                return {**out, "refused": True, "hold": False, "reason": "class_digest_changed",
+                        "approved": unit["approved_class_digest"], "now": bound.get("now"), "detail": bound["detail"]}
+            # The approved grouping, not (or no longer) ratified under this approval: held for a person; the recheck
+            # settles the Class again (pending, boundary 3, with its digest check) and takes the handoff again.
+            return {**out, "refused": True, "hold": True, "reason": "class_not_ratified", "resume_state": "pending",
+                    "detail": bound["detail"]}
         original = str(record.get("original_sha256") or "")
         triaged = str(selection.get("catalog_handoff_sha256") or "")
         if triaged and original == triaged:
             return {**out, "refused": False, "hold": False, "handoff_identity": "handoff_identical",
                     "original_handoff_sha256": original}
-        # WS0 decision A: the runner's own Class ratification (_state_pending) is embedded in the handoff the Catalog
-        # writes, so a handoff taken under this campaign differs from the triaged one in that ratification alone.
-        # Interactive compares the copy with the triaged bytes in every value but the ratification and the sidecar
-        # paths (verify_handoff_copy); the runner decides the same here, from the triaged bytes the triage directory
-        # keeps, and keeps those bytes beside the copy (handoff.triaged.json) for original_handoff_path.
+        # WS0 decision F: the triage binds the evidence it read. Interactive compares the copy with the triaged bytes in
+        # every value but the sidecar paths and what the Class decides (curated.HANDOFF_CLASS_KEYS: the class_proposal,
+        # the Class-derived blocking_reasons codes, and the readiness keys where no other blocking reason changed); the
+        # runner decides the same here, from the triaged bytes the triage directory keeps, and keeps those bytes beside
+        # the copy (handoff.triaged.json) for original_handoff_path. A triage made before the Class was saved, or
+        # before it was ratified, or under another campaign's ratification, passes on its evidence.
         source = None
         difference: dict[str, Any] | None = None
         if triaged:
@@ -828,29 +855,37 @@ class Runner:
                 if kept_sha == triaged:
                     record["triaged_copy_path"] = str(kept.resolve())
                     return {**out, "refused": False, "hold": False,
-                            "handoff_identity": "ratification_only" if difference["ratification"]["differs"]
-                            else "values_identical",
+                            "handoff_identity": "class_only" if difference["class"]["differs"] else "values_identical",
                             "original_handoff_sha256": triaged, "catalog_handoff_sha256_now": original,
                             "triaged_handoff_source": self._relative(source), "triaged_copy_path": self._relative(kept),
-                            "ratification": difference["ratification"]}
+                            "class": difference["class"]}
         rows = None
         try:
             rows = curated.rows_sha256(curated.handoff_rows(Path(str(record.get("copy_path") or ""))))
         except (OSError, ValueError):
             pass
         found = {"differing_keys": difference["differing_keys"], "sidecar": difference["sidecar"],
-                 "ratification": difference["ratification"]} if difference is not None else {
-                     "triaged_bytes_found": False}
+                 "class": difference["class"]} if difference is not None else {"triaged_bytes_found": False}
         return {**out, "refused": True, "hold": True, "reason": "triage_handoff_changed",
                 "original_handoff_sha256": original, "triaged_handoff_sha256": triaged or None,
                 "rows_identical": bool(rows and rows == selection.get("catalog_rows_sha256")), **found,
                 "detail": "the Catalog handoff taken now is not the one the triage was made from in a value Interactive "
-                          "compares (anything but the campaign's Class ratification and the sidecar paths), or the "
-                          "triaged bytes are not kept beside the triage (inputs\\<unit_id>\\handoff.json, or the decision "
-                          "record's catalog_handoff input) to compare it with; Interactive binds the run to the triaged "
-                          "handoff, so a person re-triages the unit or restores the handoff. A triage made before the "
-                          "unit's Class was ratified differs in the whole class_proposal: triage from a handoff taken "
-                          "after a ratification."}
+                          "compares (anything but the sidecar paths and what the Class decides: the class_proposal, "
+                          "the Class-derived blocking_reasons codes and the readiness keys), or the triaged bytes are "
+                          "not kept beside the triage (inputs\\<unit_id>\\handoff.json, or the decision record's "
+                          "catalog_handoff input) to compare it with; Interactive binds the run to the triaged "
+                          "handoff, so a person re-triages the unit or restores the handoff."}
+
+    def _class_ratification(self, unit: Mapping[str, Any]) -> dict[str, Any]:
+        """The ratification this campaign's boundary-3 save passes for the unit's approved Class (_state_pending), and
+        so what the Class in its handoff copy must carry (curated.class_binding)."""
+        return {
+            "approval_id": self.approval["approval_id"],
+            "manifest_digest": self.campaign["manifest_digest"],
+            "authorization_sha256": self.campaign["authorization_sha256"],
+            "campaign_id": self.campaign["campaign_id"],
+            "proposal_id": unit["approved_class_digest"],
+        }
 
     def _handoff_copy_record(self, unit: Mapping[str, Any]) -> dict[str, Any]:
         """What the unit's last handoff step recorded of its copy (ports.copy_handoff)."""
@@ -872,8 +907,8 @@ class Runner:
         triaged = str(selection.get("catalog_handoff_sha256") or "")
         arguments: dict[str, Any] = {"curated_selection_path": str(copy), "original_handoff_sha256": triaged}
         # The triaged bytes for Interactive to compare the copy with: the Catalog's handoff as taken, where it is the
-        # triaged one byte for byte; else the triaged bytes the handoff step kept (handoff.triaged.json, WS0 decision A,
-        # where only the campaign's ratification differs).
+        # triaged one byte for byte; else the triaged bytes the handoff step kept (handoff.triaged.json, WS0 decision F,
+        # where only what the Class decides differs).
         kept_record = self._handoff_copy_record(unit)
         kept = [str(kept_record.get(key) or "") for key in ("triaged_copy_path", "original_copy_path")]
         kept = [path for path in kept if path]
@@ -1582,13 +1617,7 @@ class Runner:
             return self._curated_stop(unit, "class_digest_changed", drift, step="class",
                                       is_curated=self._is_curated(unit), close_attempt=(attempt, "refused", False, drift))
         self._require("3")
-        ratification = {
-            "approval_id": self.approval["approval_id"],
-            "manifest_digest": self.campaign["manifest_digest"],
-            "authorization_sha256": self.campaign["authorization_sha256"],
-            "campaign_id": self.campaign["campaign_id"],
-            "proposal_id": unit["approved_class_digest"],
-        }
+        ratification = self._class_ratification(unit)
         result = self.ports.catalog.save_class(
             unit_id=unit["catalog_unit_id"], purpose=purpose, kind=decision["kind"], ratification=ratification
         )
@@ -1620,14 +1649,17 @@ class Runner:
             checked = self._check_triage(unit, selection, record)
             self._event("triage_checked", {"standing": curated.DETERMINISTIC_CHECK,
                                            "verdict": ("held" if checked["hold"] else "refused") if checked["refused"] else "pass",
-                                           **{key: value for key, value in checked.items() if key not in ("refused", "hold")}},
+                                           **{key: value for key, value in checked.items()
+                                              if key not in ("refused", "hold", "resume_state")}},
                         unit["unit_key"])
             if checked["refused"] and checked["hold"]:
                 # A handoff whose bytes changed since the triage: held for a person, with nothing downloaded; a
                 # recheck takes the handoff again (WS0 decision 7).
-                return self._contract_hold(unit, step="handoff", problem=checked["reason"], resume_state="class_settled",
+                # A Class not ratified under this approval (WS0 decision F) is rechecked from its settling (pending).
+                return self._contract_hold(unit, step="handoff", problem=checked["reason"],
+                                           resume_state=str(checked.get("resume_state") or "class_settled"),
                                            attempt_id=attempt, detail={key: value for key, value in checked.items()
-                                                                       if key not in ("refused", "hold")})
+                                                                       if key not in ("refused", "hold", "resume_state")})
             if checked["refused"]:
                 return self._curated_stop(unit, checked["reason"], {key: value for key, value in checked.items()
                                                                     if key not in ("refused", "hold")},
@@ -2259,10 +2291,10 @@ class Runner:
                 "recorded": {key: applied.get(key) for key in ("manifest_digest", "standing", "child_key", "analysis_unit_key",
                                                                 "catalog_handoff_verification", "triage_record_sha256")
                              if key in applied},
-                # WS0 decision A: the campaign ratification Interactive left out of its comparison, both sides of it.
-                **({"handoff_ratification": dict(applied["original_handoff"]["ratification"])}
+                # WS0 decision F: what the Class decides, which Interactive left out of its comparison, both sides of it.
+                **({"handoff_class": dict(applied["original_handoff"]["class"])}
                    if isinstance(applied.get("original_handoff"), Mapping)
-                   and isinstance(applied["original_handoff"].get("ratification"), Mapping) else {}),
+                   and isinstance(applied["original_handoff"].get("class"), Mapping) else {}),
                 "rows_kept": applied.get("rows_kept_count", len(applied.get("rows_kept") or [])
                                          if isinstance(applied.get("rows_kept"), list) else applied.get("rows_kept")),
                 "rows_dropped": applied.get("rows_dropped_count", len(applied.get("rows_dropped") or [])

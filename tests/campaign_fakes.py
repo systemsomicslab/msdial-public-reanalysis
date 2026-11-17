@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 TESTS = Path(__file__).resolve().parent
 SCRIPTS = TESTS.parent / "scripts"
@@ -202,12 +202,25 @@ def catalog_ratification(ratification: dict[str, Any], abstention: bool, at: str
             "proposal_id": ratification["proposal_id"], "abstention": bool(abstention), "ratified_at": at}
 
 
-def catalog_shaped_handoff(folder: Path, unit_id: str, class_proposal_id: str, rows: list[dict[str, Any]],
+CATALOG_NEXT_ACTIONS = {
+    "inputs": "The sample table and the file listing disagree about the analysis inputs; see analysis_input_issues.",
+    "ready": "Pass this handoff to MS-DIAL Interactive for bounded download planning.",
+    "resolve": "Resolve required technical metadata and confirm a Class proposal first.",
+}
+
+
+def catalog_shaped_handoff(folder: Path, unit_id: str, class_proposal_id: str | None, rows: list[dict[str, Any]],
                            ratification: dict[str, Any] | None, extra: dict[str, Any] | None = None,
-                           assignments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """A handoff in the shape msdial_catalog_reanalysis_handoff writes it: the sample rows, three sidecars written into
-    `folder` and named by absolute paths, and the Class proposal as Catalog.get_class_proposal returns it (the row's
-    columns, ratified_by holding the ratification's approval_id, the ratification record, the assignments). Synthetic."""
+                           assignments: list[dict[str, Any]] | None = None, *, status: str = "accepted",
+                           required_review: Sequence[str] = (), input_issues: Sequence[dict[str, Any]] = ()
+                           ) -> dict[str, Any]:
+    """A handoff in the shape msdial_catalog_reanalysis_handoff writes it (msdial_repository_catalog 4ffa0ff): the
+    sample rows, three sidecars written into `folder` and named by absolute paths, the Class proposal as
+    Catalog.get_class_proposal returns it (the row's columns with `status`, ratified_by holding the ratification's
+    approval_id, the ratification record, the assignments; null where no `class_proposal_id` is named, as before any
+    Class is saved), and the readiness fields the builder derives: required_review, blocking_reasons (the
+    technical_metadata:* codes, then class_proposal:missing or class_proposal:not_accepted, then analysis_input:* for
+    each blocking `input_issues` item), ready_for_download_planning and next_action. Synthetic."""
     folder.mkdir(parents=True, exist_ok=True)
     sidecars = {"file_manifest_path": (f"{unit_id}.files.json", [{"path": "archive.zip", "role": "shared_raw_archive"}]),
                 "sample_table_path": (f"{unit_id}.samples.json", rows),
@@ -217,17 +230,28 @@ def catalog_shaped_handoff(folder: Path, unit_id: str, class_proposal_id: str, r
         target = folder / name
         target.write_text(json.dumps(value, indent=1, sort_keys=True), encoding="utf-8")
         named[key] = str(target.resolve())
-    proposal = {
+    proposal = None if not class_proposal_id else {
         "proposal_id": class_proposal_id, "unit_id": unit_id, "purpose": "Synthetic purpose.", "rationale": "",
-        "status": "accepted", "created_at": "2026-11-16T01:00:00+00:00",
+        "status": status, "created_at": "2026-11-16T01:00:00+00:00",
         "ratified_by": (ratification or {}).get("approval_id", ""), "selected_fields": [],
         "contrast_definition": {"kind": "abstention"}, "warnings": [], "ratification": ratification,
         "assignments": assignments if assignments is not None else sorted(
             ({"sample_id": str(row.get("sample_id") or ""), "class_label": "All", "values": {}} for row in rows),
             key=lambda item: item["sample_id"]),
     }
-    return {"analysis_unit_id": unit_id, "class_proposal_id": class_proposal_id, **dict(extra or {}),
-            "sample_metadata": rows, "class_proposal": proposal, **named}
+    blocking = [f"technical_metadata:{field}" for field in required_review]
+    if proposal is None:
+        blocking.append("class_proposal:missing")
+    elif status != "accepted":
+        blocking.append("class_proposal:not_accepted")
+    blocking.extend(f"analysis_input:{item['code']}" for item in input_issues if item.get("blocking"))
+    next_action = (CATALOG_NEXT_ACTIONS["inputs"] if any(item.get("blocking") for item in input_issues)
+                   else CATALOG_NEXT_ACTIONS["ready"] if not required_review and proposal is not None
+                   else CATALOG_NEXT_ACTIONS["resolve"])
+    return {"analysis_unit_id": unit_id, **dict(extra or {}), "sample_metadata": rows, "class_proposal": proposal,
+            "analysis_input_issues": list(input_issues), "required_review": list(required_review),
+            "blocking_reasons": blocking, "ready_for_download_planning": not blocking, "next_action": next_action,
+            **named}
 
 
 def handoff_bytes(value: dict[str, Any]) -> bytes:
@@ -1262,6 +1286,12 @@ class FakeCatalog:
         self.object_requests: list[list[str]] = []
         # The ratification record save_class stored per unit (catalog_shaped).
         self.ratifications: dict[str, dict[str, Any]] = {}
+        # Catalog-shaped handoffs only, by unit id: what the Catalog holds of the Class at the handoff in place of what
+        # save_class stored ("proposal_id", "status", "ratification" - None for none), and the technical fields still
+        # Unknown (required_review) and the analysis-input issues the builder turns into blocking_reasons.
+        self.class_state: dict[str, dict[str, Any]] = {}
+        self.required_review: dict[str, list[str]] = {}
+        self.input_issues: dict[str, list[dict[str, Any]]] = {}
 
     def class_decision(self, unit_id: str, purpose: str) -> dict[str, Any]:
         digest = self.world.class_digest(unit_id) + ("-drifted" if unit_id in self.drift else "")
@@ -1274,7 +1304,7 @@ class FakeCatalog:
                                                                self.world.clock.now().isoformat())
         return {"ok": True, "proposal_id": ratification["proposal_id"]}
 
-    # Catalog-shaped handoffs (WS0 decision A): while set, handoff() writes what msdial_catalog_reanalysis_handoff
+    # Catalog-shaped handoffs (WS0 decisions A and F): while set, handoff() writes what msdial_catalog_reanalysis_handoff
     # writes - sidecars at absolute paths beside the handoff, and the Class proposal with the ratification save_class
     # recorded (ratified_by and the ratification record) - so the handoff changes with every re-ratification.
     catalog_shaped = False
@@ -1283,8 +1313,13 @@ class FakeCatalog:
         path = self.world.root / "catalog-data" / "handoffs" / f"{unit_id}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         if self.catalog_shaped:
-            value = catalog_shaped_handoff(path.parent, unit_id, class_proposal_id, self.world.handoff_rows.get(unit_id) or [],
-                                           self.ratifications.get(unit_id), self.world.handoff_extra.get(unit_id))
+            state = self.class_state.get(unit_id) or {}
+            value = catalog_shaped_handoff(path.parent, unit_id, state.get("proposal_id", class_proposal_id),
+                                           self.world.handoff_rows.get(unit_id) or [],
+                                           state.get("ratification", self.ratifications.get(unit_id)),
+                                           self.world.handoff_extra.get(unit_id), status=state.get("status", "accepted"),
+                                           required_review=self.required_review.get(unit_id) or (),
+                                           input_issues=self.input_issues.get(unit_id) or ())
             path.write_bytes(handoff_bytes(value))
             return {"ok": True, "handoff_path": str(path), "blocking_reasons": []}
         path.write_bytes(handoff_bytes(fake_handoff(unit_id, class_proposal_id, self.world.handoff_rows.get(unit_id),

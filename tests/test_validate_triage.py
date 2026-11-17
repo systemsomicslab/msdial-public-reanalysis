@@ -779,5 +779,94 @@ class SecondReviewTest(TriageCase):
         self.assertFalse(any("kept by both AN004455 and AN004456" in m for m in uniq), uniq)
 
 
+class TheClassIsNotTheTriagesTest(TriageCase):
+    """WS0 decision F (2026-11-17): the triage runs before any Class is saved and binds the evidence it read; the Class
+    binds through its own ratification afterwards. The validator reads no class_proposal, and refuses a triage whose
+    evidence, or whose decision record's inputs, cite the Class."""
+
+    ACCESSION = "ST004606"
+
+    def validate(self, docs: dict, name: str):
+        directory = te.write(docs, self.tmp / name)
+        _, _, listing_path = te.load(self.ACCESSION)
+        return vt.validate(directory, vt.read_catalog(te.fixture_dir(self.ACCESSION) / "catalog.json"),
+                           vt.read_listing(listing_path)), directory
+
+    def test_a_good_triage_cites_no_class(self) -> None:
+        report, _ = self.validate(te.build_good(self.ACCESSION), "good")
+        self.assertEqual(report.verdict, "pass")
+        self.assertFalse([f for f in report.findings if f.check == "T-CLASS"])
+
+    def test_evidence_citing_the_class_proposal_is_refused(self) -> None:
+        unit = "AN007766"
+        cases = {
+            "a field naming the proposal": {"source": "catalog_unit", "field": "class_proposal.assignments", "value": "QC"},
+            "a field naming a class label": {"source": "catalog_row", "field": "class_label", "value": "Infected"},
+            "a value quoting the proposal": {"source": "catalog_unit", "field": "grouping",
+                                             "value": "class proposal groups this file with the QC samples"},
+            "the ratification": {"source": "catalog_unit", "field": "ratification.campaign_id", "value": "campaign-a"},
+        }
+        for label, citation in cases.items():
+            with self.subTest(label):
+                docs = te.build_good(self.ACCESSION)
+                docs[unit]["rows"][0]["evidence"].append(dict(citation))
+                report, _ = self.validate(docs, f"row-{len(label)}-{label[:6].replace(' ', '_')}")
+                self.assertTrue(messages(report, "T-CLASS", unit), label)
+                self.assertEqual(report.unit_verdict(unit), "error")
+        docs = te.build_good(self.ACCESSION)
+        docs[unit]["evidence_sources"] = [*docs[unit].get("evidence_sources", []),
+                                          {"source": "catalog_unit", "detail": "the handoff's class_proposal assignments"}]
+        report, _ = self.validate(docs, "sources")
+        self.assertTrue(messages(report, "T-CLASS", unit))
+
+    def test_a_decision_record_binding_the_class_is_refused(self) -> None:
+        unit = "AN007766"
+        for label, extra, refused in (
+                ("a class_proposal input", {"role": "class_proposal", "path": "inputs/AN007766/class.json"}, True),
+                ("a selector into the proposal", {"role": "catalog_handoff", "path": "inputs/AN007766/handoff.json",
+                                                  "selector": "$.class_proposal.assignments"}, True),
+                ("the listing and the handoff only", {"role": "catalog_handoff", "path": "inputs/AN007766/handoff.json"},
+                 False)):
+            with self.subTest(label):
+                docs = te.build_good(self.ACCESSION)
+                directory = te.write(docs, self.tmp / f"record-{int(refused)}-{len(label)}")
+                (directory / f"{unit}.record.json").write_text(json.dumps({
+                    "schema": "msdial-llm-decision-record.v1", "kind": "unit_triage", "unit_id": unit,
+                    "inputs": [{"role": "archive_listing", "path": "inputs/archive-members.tsv", "sha256": "a" * 64},
+                               {**extra, "sha256": "b" * 64}]}), encoding="utf-8")
+                _, _, listing_path = te.load(self.ACCESSION)
+                report = vt.validate(directory, vt.read_catalog(te.fixture_dir(self.ACCESSION) / "catalog.json"),
+                                     vt.read_listing(listing_path))
+                self.assertEqual(bool(messages(report, "T-CLASS", unit)), refused, label)
+
+    def test_the_validator_reads_no_class_proposal(self) -> None:
+        """Two handoffs that differ only in their Class read as the same Catalog unit, and the script names
+        class_proposal in no key it reads."""
+        import ast
+
+        tree = ast.parse((ROOT / "scripts" / "validate-triage.py").read_text(encoding="utf-8"))
+        keys = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        self.assertFalse({"class_proposal", "assignments", "ratification", "ratified_by"} & keys)
+        rows = [{"sample_id": "S1", "raw_file": "S1"}]
+        read = []
+        for name, proposal in (("none", None), ("ratified", {"proposal_id": "c", "status": "accepted",
+                                                             "assignments": [{"sample_id": "S1", "class_label": "B"}],
+                                                             "ratified_by": "appr", "ratification": {"approval_id": "appr"}})):
+            unit_dir = self.tmp / f"handoffs-{name}" / "AN1"
+            unit_dir.mkdir(parents=True)
+            (unit_dir / "handoff.json").write_text(json.dumps({
+                "accession": "ACC1", "sample_metadata": rows, "class_proposal": proposal,
+                "technical_settings": {"chromatography": "RP", "ion_mode": "Positive", "acquisition_mode": "DDA"}}),
+                encoding="utf-8")
+            unit = vt.read_catalog(unit_dir.parent)["AN1"]
+            read.append((unit.rows, unit.declared, unit.accession))
+        self.assertEqual(read[0], read[1])
+
+    def test_the_skill_tells_the_agent_not_to_read_the_class(self) -> None:
+        skill = (ROOT / ".claude" / "skills" / "msdial-unit-triage" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("class_proposal", skill)
+        self.assertIn("T-CLASS", skill)
+
+
 if __name__ == "__main__":
     unittest.main()

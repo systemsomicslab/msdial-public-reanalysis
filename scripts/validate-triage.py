@@ -14,7 +14,8 @@ files of one accession as a set and returns pass, hold or error.
 The triage directory holds one <unit_id>.json per unit, all of one accession (in a campaign,
 <campaign dir>/triage/<accession>/). A unit redone is kept as a revision, <unit_id>.r<N>.json, and the highest
 N is the one checked (it supersedes <unit_id>.json and every earlier revision); a decision record beside a
-triage (<name>.record.json, the envelope naming the model and prompt) is not a triage and is not read here.
+triage (<name>.record.json, the envelope naming the model and prompt) is not a triage, and only its inputs are read
+here, for the Class check below.
 --catalog takes either the campaign's handoffs directory
 (<unit_id>/handoff.json and samples.json, as msdial_catalog_reanalysis_handoff writes them; it may span many
 accessions, and only the units of the triaged accession are checked) or a catalog.json with
@@ -33,7 +34,9 @@ Levels:
 - error: the triage file breaks the contract (schema, coverage, a file in two units, byte-identical content
   settled by name, polarity or chromatography that disagrees with its unit or child, an unflagged MS1-only or
   mixed acquisition, a kept mzXML or mzData file, one acquisition kept twice in two formats, a member both
-  kept and excluded, an exclusion reason the listing or the unit's own status and flags contradict, ...).
+  kept and excluded, an exclusion reason the listing or the unit's own status and flags contradict, evidence or a
+  decision-record input that cites the Class proposal (T-CLASS: the triage runs before the Class and never binds it,
+  WS0 decision F), ...).
   The triage must be redone; nothing may be planned from it.
 - hold: the file is valid but something waits for a person: a unit that needs a person, abstained or is out
   of scope, flagged shared content, a member nobody accounted for, a check that could not run.
@@ -519,6 +522,59 @@ def current_triage_files(triage_dir: Path) -> list[Path]:
     return sorted(path for _number, path in current.values())
 
 
+# ------------------------------------------------------------------------------------ the Class is not the triage's
+# WS0 decision F (2026-11-17): the triage runs before any Class is saved and binds the evidence it read (the Catalog's
+# rows, files and listing); the Class binds through its own ratification afterwards. A triage that cites the Class
+# (the handoff's class_proposal: its assignments, labels, contrast, status or ratification) would make the selection
+# depend on a grouping the triage does not bind, so it is an error: the triage is redone without it.
+CLASS_CONTENT = re.compile(r"(?i)class[ _.-]?proposal|class[ _.-]?assignment|class_label|ratified_by|ratification")
+
+
+def _citations(value: Any) -> Iterable[dict[str, Any]]:
+    """Every evidence citation in a triage document: an object naming a source (evidence, evidence_sources)."""
+    if isinstance(value, dict):
+        if isinstance(value.get("source"), str):
+            yield value
+        for item in value.values():
+            yield from _citations(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _citations(item)
+
+
+def class_citations(triage: Any) -> list[str]:
+    """What in a triage document cites the Class: an evidence citation whose field, value or detail names the
+    class_proposal or its content. The validator reads no class_proposal itself."""
+    found: list[str] = []
+    for citation in _citations(triage):
+        for key in ("field", "value", "detail"):
+            text = citation.get(key)
+            if isinstance(text, str) and CLASS_CONTENT.search(text):
+                found.append(f"evidence from {citation.get('source')} cites the Class in its {key} ({text[:80]!r})")
+                break
+    return found
+
+
+def record_class_citations(triage_path: Path) -> list[str]:
+    """What the decision record beside a triage (<name>.record.json) binds of the Class: an input whose role, path or
+    selector names the class_proposal. Only the inputs are read; a record that is missing or not JSON is left to the
+    plan's own checks."""
+    record = triage_path.with_name(triage_path.name[: -len(".json")] + RECORD_SUFFIX)
+    try:
+        value = json.loads(record.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return []
+    found: list[str] = []
+    for item in (value.get("inputs") if isinstance(value, dict) else None) or []:
+        if not isinstance(item, dict):
+            continue
+        for key, text in item.items():
+            if key not in ("sha256", "bytes") and isinstance(text, str) and CLASS_CONTENT.search(text):
+                found.append(f"its decision record {record.name} binds an input whose {key} names the Class ({text[:80]!r})")
+                break
+    return found
+
+
 def validate(
     triage_dir: Path,
     catalog: dict[str, CatalogUnit] | None = None,
@@ -554,6 +610,10 @@ def validate(
             report.add("error", "T-SET", unit, f"{path.name} holds unit {unit}; name the file {unit}.json (or {unit}.r<N>.json)")
         triages[unit] = data
         report.unit_status[unit] = data["status"]
+        for citation in class_citations(data) + record_class_citations(path):
+            report.add("error", "T-CLASS", unit, f"{path.name}: {citation}; the triage binds the Catalog's rows, files and "
+                       "listing and never the Class, which runs after it and binds through its own ratification "
+                       "(WS0 decision F)")
 
     accessions = {t["accession"] for t in triages.values()}
     if len(accessions) > 1:

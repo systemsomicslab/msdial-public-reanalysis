@@ -947,27 +947,41 @@ class BarrierAndSingleMemberTests(_Root):
         self.assertEqual(kinds[-1], "terminal_refusal", "the released ledger never ends at the approval")
 
 
-class RatifiedHandoffTests(_Root):
-    """WS0 decision A against a Catalog-shaped handoff: the runner's own ratification at boundary 3 is embedded in the
-    handoff it then takes, so the handoff differs from the triaged one in that ratification. It passes, with the
-    triaged bytes kept for Interactive; any other difference is a hold."""
+class TriageBindsEvidenceClassBindsByRatificationTests(_Root):
+    """WS0 decision F against a Catalog-shaped handoff (with the readiness fields the Catalog's builder derives). The
+    triage runs before the Class is saved and binds the evidence it read; the runner's boundary-3 save settles and
+    ratifies the Class afterwards, and the Class binds through that ratification. So the handoff taken at run time may
+    differ from the triaged one in what the Class decides (curated.HANDOFF_CLASS_KEYS) and passes, with the triaged
+    bytes kept for Interactive; any other difference is a hold, and a copy whose Class is not the approved one ratified
+    under this campaign is held or stopped."""
 
     RATIFIED_A = {"kind": "campaign_approval", "authorization_schema": "msdial-campaign-authorization.v1", "boundary": 3,
                   "approval_id": "appr-A", "manifest_digest": "sha256:" + "1" * 64, "authorization_sha256": "2" * 64,
                   "campaign_id": "campaign-a", "proposal_id": campaign_fakes.World.class_digest("u1"),
                   "abstention": True, "ratified_at": "2026-11-16T02:00:00+00:00"}
+    ROWS = [{"sample_id": "u1-S1", "raw_file": "S1"}, {"sample_id": "u1-S2", "raw_file": "S2"}]
 
-    def triaged(self, ratification: dict | None, **changes: object) -> dict:
-        rows = [{"sample_id": "u1-S1", "raw_file": "S1"}, {"sample_id": "u1-S2", "raw_file": "S2"}]
-        value = campaign_fakes.catalog_shaped_handoff(self.root / "catalog-data" / "handoffs", "u1",
-                                                      campaign_fakes.World.class_digest("u1"), rows, ratification)
-        value["class_proposal"].update(changes)
+    def triaged(self, ratification: dict | None, *, proposal: str | None = "approved", status: str = "accepted",
+                required_review: tuple = (), input_issues: tuple = (), **changes: object) -> dict:
+        value = campaign_fakes.catalog_shaped_handoff(
+            self.root / "catalog-data" / "handoffs", "u1",
+            campaign_fakes.World.class_digest("u1") if proposal == "approved" else proposal, self.ROWS, ratification,
+            status=status, required_review=required_review, input_issues=input_issues)
+        if value["class_proposal"] is not None:
+            value["class_proposal"].update(changes)
         return value
 
-    def world(self, ratification: dict | None = RATIFIED_A, **changes: object) -> campaign_fakes.World:
-        world = curated_world(self.root, {"u1": {"triaged_handoff": self.triaged(ratification, **changes)}})
+    def world(self, ratification: dict | None = RATIFIED_A, **options: object) -> campaign_fakes.World:
+        world = curated_world(self.root, {"u1": {"triaged_handoff": self.triaged(ratification, **options)}})
         world.catalog.catalog_shaped = True
         return world
+
+    def held(self, world: campaign_fakes.World) -> dict:
+        with world.open() as book:
+            world.runner(book).run(max_iterations=60)
+        self.assertEqual(unit_row(world, "u1")["state"], "contract_held")
+        self.assertEqual(world.interactive.download_starts, [])
+        return events(world, "triage_checked")[0]["detail"]
 
     def test_a_handoff_reratified_under_this_campaign_passes_with_the_triaged_bytes_kept(self) -> None:
         world = self.world()
@@ -977,42 +991,86 @@ class RatifiedHandoffTests(_Root):
         taken = (world.root / "catalog-data" / "handoffs" / "u1.json").read_bytes()
         self.assertNotEqual(hashlib.sha256(triaged).digest(), hashlib.sha256(taken).digest())
         checked = events(world, "triage_checked")[0]["detail"]
-        self.assertEqual((checked["verdict"], checked["handoff_identity"]), ("pass", "ratification_only"))
+        self.assertEqual((checked["verdict"], checked["handoff_identity"]), ("pass", "class_only"))
         self.assertEqual(checked["original_handoff_sha256"], hashlib.sha256(triaged).hexdigest())
-        self.assertEqual(checked["ratification"]["original"]["ratification.approval_id"], "appr-A")
-        self.assertEqual(checked["ratification"]["copy"]["ratification.approval_id"], world.approval["approval_id"])
-        self.assertEqual(checked["ratification"]["copy"]["ratified_by"], world.approval["approval_id"])
+        self.assertEqual(checked["class"]["original"]["class_proposal"]["ratification"]["approval_id"], "appr-A")
+        self.assertEqual(checked["class"]["copy"]["class_proposal"]["ratification"]["approval_id"], world.approval["approval_id"])
+        self.assertEqual(checked["class"]["copy"]["class_proposal"]["ratified_by"], world.approval["approval_id"])
+        self.assertEqual(checked["class"]["excluded_keys"], ["class_proposal"])
+        self.assertTrue(checked["class"]["differs"])
+        self.assertEqual((checked["class_binding"]["bound"], checked["class_binding"]["checked"]), (True, True))
         self.assertFalse(Path(checked["triaged_copy_path"]).is_absolute())
         sent = world.interactive.curated_downloads[0]
         self.assertEqual(sent["original_handoff_sha256"], hashlib.sha256(triaged).hexdigest())
         self.assertTrue(sent["original_handoff_path"].endswith("handoff.triaged.json"))
         self.assertEqual(Path(sent["original_handoff_path"]).read_bytes(), triaged)
 
-    def test_any_other_difference_of_the_proposal_is_held_for_a_person(self) -> None:
-        for label, ratification, changes in (
-                ("another assignment", RatifiedHandoffTests.RATIFIED_A,
+    def test_a_triage_made_before_the_class_is_saved_or_ratified_passes_once_the_campaign_ratifies_it(self) -> None:
+        """The three cases of the round-3 probes (probe_a.py, probe_a2.py), and a triaged proposal the person later
+        regrouped: the triage never bound the Class, so each passes on its evidence."""
+        for label, ratification, options, codes in (
+                ("no Class saved when triaged", None, {"proposal": None}, ["class_proposal:missing"]),
+                ("confirmed but unratified when triaged", None, {}, []),
+                ("proposed when triaged", None, {"status": "proposed"}, ["class_proposal:not_accepted"]),
+                ("another assignment when triaged", self.RATIFIED_A,
                  {"assignments": [{"sample_id": "u1-S1", "class_label": "B", "values": {}},
-                                  {"sample_id": "u1-S2", "class_label": "All", "values": {}}]}),
-                ("another status", RatifiedHandoffTests.RATIFIED_A, {"status": "proposed"}),
-                ("no ratification when triaged", None, {})):
+                                  {"sample_id": "u1-S2", "class_label": "All", "values": {}}]}, [])):
             with self.subTest(label):
                 self.root = Path(tempfile.mkdtemp(dir=self.directory.name))
-                world = self.world(ratification, **changes)
-                with world.open() as book:
-                    world.runner(book).run(max_iterations=60)
-                self.assertEqual(unit_row(world, "u1")["state"], "contract_held")
+                world = self.world(ratification, **options)
+                world.run()
+                self.assertEqual(unit_row(world, "u1")["state"], "done")
                 checked = events(world, "triage_checked")[0]["detail"]
-                self.assertEqual((checked["verdict"], checked["reason"], checked["differing_keys"]),
-                                 ("held", "triage_handoff_changed", ["class_proposal"]))
-                self.assertEqual(world.interactive.download_starts, [])
+                self.assertEqual((checked["verdict"], checked["handoff_identity"]), ("pass", "class_only"))
+                record = checked["class"]
+                self.assertEqual(record["original"]["class_blocking_reasons"], codes)
+                self.assertEqual(record["copy"]["class_blocking_reasons"], [])
+                self.assertTrue(record["readiness_left_out"])
+                self.assertEqual(record["copy"]["class_proposal"]["ratified_by"], world.approval["approval_id"])
+                self.assertEqual(len(world.interactive.curated_downloads), 1)
+
+    def test_a_change_in_the_evidence_is_held_for_a_person(self) -> None:
+        other_files = [{"path": "other.zip", "role": "shared_raw_archive"}]
+        for label, options, edit, expected in (
+                ("a changed file list", {}, lambda value: value.update(files=other_files), ["files"]),
+                ("a changed sample row", {}, lambda value: value.update(sample_metadata=[dict(self.ROWS[0])]),
+                 ["sample_metadata"]),
+                ("a changed unit id", {}, lambda value: value.update(analysis_unit_id="u2"), ["analysis_unit_id"]),
+                ("another top-level key", {}, lambda value: value.update(unit_attributes={"Group": ["A"]}),
+                 ["unit_attributes"]),
+                ("a non-Class blocking reason appearing at run time", {"run_required_review": ["ion_mode"]}, None,
+                 ["blocking_reasons", "required_review"]),
+                ("a non-Class blocking reason gone at run time",
+                 {"input_issues": ({"code": "count_mismatch", "blocking": True, "message": "x"},)}, None,
+                 ["analysis_input_issues", "blocking_reasons", "next_action", "ready_for_download_planning"])):
+            with self.subTest(label):
+                self.root = Path(tempfile.mkdtemp(dir=self.directory.name))
+                options = dict(options)
+                run_required_review = options.pop("run_required_review", None)
+                triaged = self.triaged(None, proposal=None, **options)
+                if edit is not None:
+                    edit(triaged)
+                world = curated_world(self.root, {"u1": {"triaged_handoff": triaged}})
+                world.catalog.catalog_shaped = True
+                if run_required_review:
+                    world.catalog.required_review["u1"] = run_required_review
+                checked = self.held(world)
+                self.assertEqual((checked["verdict"], checked["reason"]), ("held", "triage_handoff_changed"))
+                self.assertEqual(checked["differing_keys"], expected)
+                self.assertTrue(checked["class_binding"]["bound"], "the Class was not what held it")
+
+    def test_an_unknown_class_proposal_code_is_not_left_out(self) -> None:
+        triaged = self.triaged(None, proposal=None)
+        triaged["blocking_reasons"] = [*triaged["blocking_reasons"], "class_proposal:withdrawn"]
+        world = curated_world(self.root, {"u1": {"triaged_handoff": triaged}})
+        world.catalog.catalog_shaped = True
+        checked = self.held(world)
+        self.assertEqual(checked["differing_keys"], ["blocking_reasons", "next_action", "ready_for_download_planning"])
 
     def test_a_handoff_whose_triaged_bytes_are_not_kept_is_held(self) -> None:
         world = self.world()
         (self.root / "triage" / "ACC1" / "inputs" / "u1" / "handoff.json").unlink()
-        with world.open() as book:
-            world.runner(book).run(max_iterations=60)
-        self.assertEqual(unit_row(world, "u1")["state"], "contract_held")
-        checked = events(world, "triage_checked")[0]["detail"]
+        checked = self.held(world)
         self.assertEqual((checked["verdict"], checked["triaged_bytes_found"]), ("held", False))
 
     def test_a_changed_sidecar_is_held(self) -> None:
@@ -1024,11 +1082,63 @@ class RatifiedHandoffTests(_Root):
         triaged["sample_table_path"] = str(other)
         world = curated_world(self.root, {"u1": {"triaged_handoff": triaged}})
         world.catalog.catalog_shaped = True
-        with world.open() as book:
-            world.runner(book).run(max_iterations=60)
-        checked = events(world, "triage_checked")[0]["detail"]
+        checked = self.held(world)
         self.assertEqual((checked["verdict"], checked["sidecar"]), ("held", "sample_table_path"))
+
+    def test_a_copy_whose_class_is_not_ratified_under_this_campaign_is_held_and_rechecked_from_its_settling(self) -> None:
+        for label, state in (("no ratification", {"ratification": None}),
+                             ("not accepted", {"status": "proposed", "ratification": None}),
+                             ("another campaign's ratification", {"ratification": self.RATIFIED_A}),
+                             ("no proposal", {"proposal_id": None})):
+            with self.subTest(label):
+                self.root = Path(tempfile.mkdtemp(dir=self.directory.name))
+                world = self.world(None, proposal=None)
+                world.catalog.class_state["u1"] = dict(state)
+                checked = self.held(world)
+                self.assertEqual((checked["verdict"], checked["reason"]), ("held", "class_not_ratified"))
+                self.assertFalse(checked["class_binding"]["bound"])
+                held = unit_row(world, "u1")
+                self.assertEqual(held["resume_state"], "pending")
+                self.assertEqual(events(world, "contract_held")[-1]["detail"]["contract"], "class_not_ratified")
+                # The Catalog's Class back as the campaign ratified it: the recheck settles it again and runs the unit.
+                world.catalog.class_state.pop("u1")
+                saved = len(world.catalog.saved)
+                request(world, "recheck_held", "u1", "the Class is ratified again", "Test Person")
+                world.run()
+                self.assertEqual(unit_row(world, "u1")["state"], "done")
+                self.assertEqual(len(world.catalog.saved), saved + 1, "the recheck ratified the Class again")
+
+    def test_a_copy_carrying_another_proposal_stops_the_unit_as_a_class_digest_drift(self) -> None:
+        world = self.world(None, proposal=None)
+        world.catalog.class_state["u1"] = {"proposal_id": "another-grouping"}
+        world.run()
+        unit = unit_row(world, "u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"]), ("stopped_policy_drift", "class_digest_changed"))
+        refusal = [item["detail"] for item in events(world, "terminal_refusal") if item["unit_key"] == "u1"]
+        self.assertEqual([(item["reason_code"], item["step"]) for item in refusal], [("class_digest_changed", "handoff")])
         self.assertEqual(world.interactive.download_starts, [])
+
+    def test_class_binding_is_pure_and_names_each_problem(self) -> None:
+        ratification = {"approval_id": "appr-B", "manifest_digest": "sha256:" + "3" * 64, "authorization_sha256": "4" * 64,
+                        "campaign_id": "campaign-b", "proposal_id": "class-1"}
+        stored = campaign_fakes.catalog_ratification(ratification, True, "2026-11-17T03:00:00+00:00")
+        handoff = campaign_fakes.catalog_shaped_handoff(self.root / "c", "AN1", "class-1", [], stored)
+        found = curated.class_binding(handoff, unit_id="AN1", approved_proposal_id="class-1", ratification=ratification)
+        self.assertEqual((found["bound"], found["reason"], found["abstention"]), (True, "", True))
+        self.assertEqual(curated.class_binding(handoff, unit_id="AN1", approved_proposal_id="class-2",
+                                               ratification=ratification)["reason"], "class_digest_changed")
+        other_unit = json.loads(json.dumps(handoff))
+        other_unit["class_proposal"]["unit_id"] = "AN2"
+        self.assertEqual(curated.class_binding(other_unit, unit_id="AN1", approved_proposal_id="class-1",
+                                               ratification=ratification)["reason"], "class_not_ratified")
+        for key in curated.CLASS_RATIFICATION_KEYS:
+            with self.subTest(key):
+                found = curated.class_binding(handoff, unit_id="AN1", approved_proposal_id="class-1",
+                                              ratification={**ratification, key: "other"})
+                self.assertEqual(found["reason"], "class_not_ratified")
+        unshaped = curated.class_binding({"analysis_unit_id": "AN1"}, unit_id="AN1", approved_proposal_id="class-1",
+                                         ratification=ratification)
+        self.assertEqual((unshaped["bound"], unshaped["checked"]), (True, False))
 
 
 class WorkspaceNameTests(unittest.TestCase):
@@ -1284,9 +1394,9 @@ class EndToEndTests(_Root):
                          replay_cli.DIFFERENT)
 
     def test_catalog_handoffs_with_absolute_paths_are_released_as_projections_and_replayed(self) -> None:
-        """WS0 decisions A and C on one campaign: the triage is made from the Catalog's own handoffs (sidecars at
+        """WS0 decisions F and C on one campaign: the triage is made from the Catalog's own handoffs (sidecars at
         absolute paths, the Class proposal ratified under another campaign), kept at inputs\\<unit_id>\\handoff.json.
-        The runner re-ratifies and runs each unit on the triaged bytes (A). The release projects the handoffs
+        The runner re-ratifies and runs each unit on the triaged bytes (F). The release projects the handoffs
         (workspace-relative or <external>/<name>), lists the original and the released sha256 of each, passes the
         redaction check, and the replay validates them against the original sha256 the index names (C)."""
         fixture = json.loads((te.fixture_dir(ACCESSION) / "catalog.json").read_text(encoding="utf-8"))
@@ -1331,7 +1441,7 @@ class EndToEndTests(_Root):
         digest = world.digest
         world.run()
         self.assertEqual({unit_row(world, key)["state"] for key in keys}, {"done"})
-        self.assertEqual({item["detail"]["handoff_identity"] for item in events(world, "triage_checked")}, {"ratification_only"})
+        self.assertEqual({item["detail"]["handoff_identity"] for item in events(world, "triage_checked")}, {"class_only"})
         with world.open() as book:
             curated.export_decision_ledger(world.directory / curated.DECISION_LEDGER, book.events())
         release = self.root / "release"
