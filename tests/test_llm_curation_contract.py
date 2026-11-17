@@ -691,7 +691,7 @@ class WS0DecisionsOf20261117(unittest.TestCase):
         self.assertIn("`handoff_class`", _table_row(ledger, "curated_selection_applied"))
         _says(_section("## 6."), "in more than what the Class decides", "`class_not_ratified`")
         _says(_section("## 7."), "the triage first, read only and before any Class is saved", "WS0 decision F",
-              "No unit is triaged again because its Class was ratified", "(PR #102, 0c2921a)", "(PR #60, 87c4fe3)",
+              "No unit is triaged again because its Class was ratified", "(PR #102, 0c2921a)", "(PR #60, 370f490)",
               "`T-CLASS`")
         text = _flat(_text())
         for gone in ("HANDOFF_RATIFICATION_KEYS", "ratification_only", "handoff_ratification",
@@ -742,6 +742,22 @@ class WS0DecisionsOf20261117(unittest.TestCase):
         _says(_section("### 2.4"), "once for a curated unit alone in its group")
         self.assertIn("class_digest_changed", _table_row(_section("### 2.4"), "terminal_refusal"))
         _says(_section("## 7."), "Future work:", "accept the header, accept the triage, exclude the file")
+
+    def test_f_a_copy_with_no_class_key_and_a_copy_changed_after_its_check_are_held(self):
+        """The round-6 low (runner #60 370f490): a handoff copy with no class_proposal key is no Class, held as
+        class_not_ratified and never bound; and the download start hashes the copy and its sidecars again, holding a
+        copy changed since its Class was checked (handoff_copy_changed)."""
+        section = _section("### 2.5")
+        _says(section, "a copy without it is held the same way (`class_not_ratified`, with `class_proposal_key: false`)",
+              "and never bound", "`copy_sha256`", "(`contract_held`, `handoff_copy_changed`, naming the file)",
+              "its recheck takes the Catalog handoff again (from `class_settled`)")
+        self.assertIn("`handoff_copy_changed`", _table_row(_section("### 2.4"), "triage_checked"))
+        _says(_section("## 6."), "or a copy with no `class_proposal` key at all",
+              "(`contract_held`, `handoff_copy_changed`)")
+        _says(_section("## 7."), "(`handoff_copy_changed`)")
+        text = _flat(_text())
+        for gone in ("checked: false", "is recorded with `checked", "not the Catalog's shape"):
+            self.assertNotIn(gone, text, gone)
 
 
 if __name__ == "__main__":
