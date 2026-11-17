@@ -10,7 +10,10 @@ the release bundle the replay reads and what needs a Console run. The WS0 decisi
 39f42f2, runner #60 f25e5b8) add the campaign ratification left out of the handoff comparison (A), a unit refused
 after it ran (B), the triage inputs released as projections (C), the stated role over the name filter (D), and the
 lows (a single member, the plan-time workspace name, the class drift stop, the reference's child key, the header
-disagreement answers). Synthetic accessions only.
+disagreement answers). WS0 decision F of 2026-11-17 (Interactive #102 0c2921a, runner #60 87c4fe3) supersedes A's
+scope: the triage runs before the Class and binds the evidence it read, and the Class binds through its own
+ratification and the class digest; the handoff comparison leaves out what the Class decides (HANDOFF_CLASS_KEYS), and
+the triage validator refuses a triage that cites the Class (T-CLASS). Synthetic accessions only.
 
 Where Interactive is importable (MSDIAL_INTERACTIVE_ROOT names a checkout of 0.5.69 or later), or this checkout
 holds the runner's scripts/campaign/curated.py, the reference implementation is also compared with theirs.
@@ -63,16 +66,15 @@ PROJECTION_V1_KEYS = (
 )
 # Interactive's workspace_unit_key pattern (repository_reanalysis._WORKSPACE_UNIT_KEY).
 WORKSPACE_UNIT_KEY = "[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}"
-# The campaign ratification verify_handoff_copy leaves out of class_proposal (Interactive #102 39f42f2,
-# curated_selection.HANDOFF_RATIFICATION_KEYS; the runner's copy in scripts/campaign/curated.py at #60 f25e5b8).
-HANDOFF_RATIFICATION_KEYS = (
-    ("ratified_by",),
-    ("ratification", "approval_id"),
-    ("ratification", "manifest_digest"),
-    ("ratification", "authorization_sha256"),
-    ("ratification", "campaign_id"),
-    ("ratification", "ratified_at"),
-)
+# What the Class decides, which the handoff comparison leaves out (WS0 decision F; Interactive #102 0c2921a,
+# curated_selection.HANDOFF_CLASS_KEYS; the runner's copy in scripts/campaign/curated.py at #60 87c4fe3): the whole
+# class_proposal, the blocking_reasons codes the Catalog's handoff builder adds from the Class alone, and the readiness
+# keys, left out only where the remaining blocking_reasons are equal.
+HANDOFF_CLASS_KEYS = {
+    "keys": ("class_proposal",),
+    "blocking_reason_codes": ("class_proposal:missing", "class_proposal:not_accepted", "class_proposal:other_unit"),
+    "readiness_keys": ("next_action", "ready_for_download_planning"),
+}
 # A unit that ran and a later cross-unit check refused (runner #60 f25e5b8, ledger schema 5).
 INVALIDATED_AFTER_DONE = "invalidated_after_done"
 INVALIDATION_QUESTION = "cross_unit_refused_after_done"
@@ -279,6 +281,52 @@ class SelectionCanonicalForm(unittest.TestCase):
               "refuses the unit with `curated_selection_selection_mismatch`")
 
 
+def _handoff(**changes) -> dict:
+    """A synthetic Catalog-shaped handoff: no Class saved, so the builder's Class code holds it (section 2.5)."""
+    handoff = {
+        "analysis_unit_id": "AN000001", "accession": "ST000001",
+        "files": [{"name": "S01.mzML", "bytes": 10}, {"name": "S02.mzML", "bytes": 11}],
+        "samples": [{"sample_id": "S01", "factors": "A"}, {"sample_id": "S02", "factors": "B"}],
+        "technical_metadata": {"ion_mode": "Positive"}, "required_review": [],
+        "class_proposal": None, "blocking_reasons": ["class_proposal:missing"],
+        "next_action": "save_class_proposal", "ready_for_download_planning": False,
+    }
+    handoff.update(changes)
+    return handoff
+
+
+def _ratified(campaign: str) -> dict:
+    return {"proposal_id": "cp-1", "unit_id": "AN000001", "status": "accepted", "ratified_by": f"approval-{campaign}",
+            "assignments": [{"sample_id": "S01", "class": "A"}, {"sample_id": "S02", "class": "B"}],
+            "ratification": {"proposal_id": "cp-1", "approval_id": f"approval-{campaign}", "campaign_id": campaign}}
+
+
+def _class_cases() -> list[tuple[str, dict, dict, list[str]]]:
+    """(name, triaged handoff, handoff taken now, the keys section 2.5 says differ)."""
+    ready = {"blocking_reasons": [], "next_action": "plan_download", "ready_for_download_planning": True}
+    confirmed = {**_ratified("a"), "ratified_by": None, "ratification": None}
+    ion = "technical_metadata:ion_mode"
+    return [
+        ("triaged with no Class, then ratified", _handoff(), _handoff(class_proposal=_ratified("b"), **ready), []),
+        ("confirmed but unratified, then ratified", _handoff(class_proposal=confirmed, **ready),
+         _handoff(class_proposal=_ratified("b"), **ready), []),
+        ("re-ratified", _handoff(class_proposal=_ratified("a"), **ready),
+         _handoff(class_proposal=_ratified("b"), **ready), []),
+        ("a changed file list", _handoff(), _handoff(class_proposal=_ratified("b"), **ready,
+                                                     files=[{"name": "S01.mzML", "bytes": 10}]), ["files"]),
+        ("a changed sample row", _handoff(), _handoff(samples=[{"sample_id": "S01", "factors": "B"}]), ["samples"]),
+        ("a changed unit id", _handoff(), _handoff(analysis_unit_id="AN000002"), ["analysis_unit_id"]),
+        ("a non-Class code appearing", _handoff(),
+         _handoff(class_proposal=_ratified("b"), blocking_reasons=[ion], next_action="review_technical_metadata",
+                  ready_for_download_planning=False), ["blocking_reasons", "next_action"]),
+        ("a non-Class code disappearing", _handoff(blocking_reasons=["class_proposal:missing", ion]),
+         _handoff(class_proposal=_ratified("b"), **ready),
+         ["blocking_reasons", "next_action", "ready_for_download_planning"]),
+        ("an unknown class_proposal code", _handoff(),
+         _handoff(blocking_reasons=["class_proposal:missing", "class_proposal:withdrawn"]), ["blocking_reasons"]),
+    ]
+
+
 def _interactive():
     root = os.environ.get("MSDIAL_INTERACTIVE_ROOT")
     if not root:
@@ -332,18 +380,27 @@ class ImplementationsAgree(unittest.TestCase):
             with self.assertRaises(TypeError):
                 function(split, "pos")
 
-    def _compare_ratification_keys(self, other) -> None:
-        keys = getattr(other, "HANDOFF_RATIFICATION_KEYS", None)
-        if keys is None:
-            return
-        self.assertEqual(tuple(tuple(path) for path in keys), HANDOFF_RATIFICATION_KEYS)
+    def _compare_class_keys(self, other) -> None:
+        """WS0 decision F: the implementation leaves out exactly the set section 2.5 names, and decides the cases the
+        section states as it states them."""
+        keys = getattr(other, "HANDOFF_CLASS_KEYS", None)
+        self.assertIsNotNone(keys, "the implementation names no HANDOFF_CLASS_KEYS (WS0 decision F)")
+        self.assertEqual({name: tuple(value) for name, value in keys.items()}, HANDOFF_CLASS_KEYS)
+        self.assertFalse(hasattr(other, "HANDOFF_RATIFICATION_KEYS"), "decision A's ratification-only set is gone")
+        for name, original, copy, expected in _class_cases():
+            with self.subTest(case=name):
+                differing, record = other.handoff_differing_keys(original, copy)
+                self.assertEqual(sorted(differing), sorted(expected))
+                self.assertEqual(record["excluded_keys"], list(HANDOFF_CLASS_KEYS["keys"]))
+                self.assertEqual(record["excluded_blocking_reason_codes"],
+                                 list(HANDOFF_CLASS_KEYS["blocking_reason_codes"]))
 
     def test_interactive_gives_the_reference_value(self):
         module = _interactive()
         if module is None:
             self.skipTest("MSDIAL_INTERACTIVE_ROOT names no Interactive with msdial-selection-canonical.v1")
         self._compare(module)
-        self._compare_ratification_keys(module)
+        self._compare_class_keys(module)
         replay = getattr(module, "replay_projection", None)
         if replay is not None:
             self.assertEqual(sorted(replay({})), sorted(PROJECTION_V1_KEYS))
@@ -353,7 +410,7 @@ class ImplementationsAgree(unittest.TestCase):
         if module is None:
             self.skipTest("this checkout holds no scripts/campaign/curated.py with msdial-selection-canonical.v1")
         self._compare(module)
-        self._compare_ratification_keys(module)
+        self._compare_class_keys(module)
         self.assertEqual(tuple(module.DECISION_KINDS), LEDGER_KINDS)
         self.assertEqual({kind: tuple(fields) for kind, fields in module.REVIEW_LOG_KINDS.items()}, REVIEW_LOG_KINDS)
 
@@ -602,22 +659,46 @@ class SamplingAndMethods(unittest.TestCase):
 class WS0DecisionsOf20261117(unittest.TestCase):
     """The WS0 decisions of 2026-11-17 as Interactive #102 39f42f2 and runner #60 f25e5b8 built them."""
 
-    def test_a_the_ratification_alone_may_differ(self):
+    def test_a_f_the_triage_binds_evidence_and_the_class_binds_by_ratification(self):
+        """WS0 decision F (Interactive #102 0c2921a, runner #60 87c4fe3), superseding decision A's ratification-only
+        scope: the triage runs before the Class, binds the evidence it read, and never cites the Class; the Class binds
+        through its own ratification and the class digest."""
+        order = _section("### 2.1")
+        _says(order, "The triage runs first, read only, before any Class proposal of the unit is saved",
+              "never reads or cites the handoff's `class_proposal`", "(error `T-CLASS`)",
+              "the triage binds its evidence through `catalog_handoff_sha256` and the handoff comparison",
+              "the Class binds through its own ratification and the class digest", "handoff.triaged.json")
         section = _section("### 2.5")
-        for path in HANDOFF_RATIFICATION_KEYS:
-            self.assertIn("`" + ".".join(("class_proposal", *path)) + "`", section, path)
-        _says(section, "`curated_selection.HANDOFF_RATIFICATION_KEYS`",
-              "a ratification that appears where the triaged handoff had none is still a difference",
-              "`handoff.triaged.json`", "`handoff_identity: ratification_only`", "`triaged_bytes_found: false`",
-              "never passed because its rows look the same", "`ratification` `{excluded_keys, original, copy, differs}`")
-        self.assertIn("handoff.triaged.json", _section("### 2.1"))
+        for code in HANDOFF_CLASS_KEYS["blocking_reason_codes"]:
+            self.assertIn(f"`{code}`", section, code)
+        for key in HANDOFF_CLASS_KEYS["readiness_keys"]:
+            self.assertIn(f"`{key}`", section, key)
+        _says(section, "`curated_selection.HANDOFF_CLASS_KEYS`", "`HANDOFF_CLASS_KEYS`", "the whole `class_proposal`",
+              "any other code appearing or disappearing",
+              "only when the remaining (non Class) `blocking_reasons` are equal on both sides",
+              "Everything else is compared: the files, the sample rows, the technical settings, the sidecars' contents, "
+              "the unit and accession", "`curated.class_binding`", "`class_not_ratified`", "`class_digest_changed`",
+              "a byte identical handoff included", "`handoff_identity: class_only`", "`triaged_bytes_found: false`",
+              "never passed because its rows look the same",
+              "`class` `{excluded_keys, excluded_blocking_reason_codes, readiness_keys, readiness_left_out, original, "
+              "copy, differs}`", "Interactive does not check that it was ratified under the campaign")
         row = _table_row(section, "original_handoff_path")
         self.assertIn("handoff.original.json", row)
         self.assertIn("handoff.triaged.json", row)
         ledger = _section("### 2.4")
-        self.assertIn("`ratification_only`", _table_row(ledger, "triage_checked"))
-        self.assertIn("`handoff_ratification`", _table_row(ledger, "curated_selection_applied"))
-        self.assertNotIn("must be the triaged one byte for byte", _flat(_text()))
+        for phrase in ("`class_only`", "`class_binding`", "`class_not_ratified`", "`original_handoff.class`"):
+            self.assertIn(phrase, _table_row(ledger, "triage_checked"), phrase)
+        self.assertIn("`handoff_class`", _table_row(ledger, "curated_selection_applied"))
+        _says(_section("## 6."), "in more than what the Class decides", "`class_not_ratified`")
+        _says(_section("## 7."), "the triage first, read only and before any Class is saved", "WS0 decision F",
+              "No unit is triaged again because its Class was ratified", "(PR #102, 0c2921a)", "(PR #60, 87c4fe3)",
+              "`T-CLASS`")
+        text = _flat(_text())
+        for gone in ("HANDOFF_RATIFICATION_KEYS", "ratification_only", "handoff_ratification",
+                     "Triage from a handoff taken after the unit's Class proposal was ratified",
+                     "whether a handoff whose ratification appears where the triaged handoff had none may pass",
+                     "must be the triaged one byte for byte", "differs only in its ratification"):
+            self.assertNotIn(gone, text, gone)
 
     def test_b_a_unit_refused_after_it_ran_is_invalidated(self):
         section = _section("## 6.")

@@ -41,10 +41,22 @@ answer on its own. A person's answer never edits a frozen file; it produces a re
 <campaign dir>\handoffs\<unit_key>\                     the runner's run-time copies (section 2.5)
     handoff.json                the Catalog handoff copy Interactive reads, its sidecars beside it
     handoff.original.json       the Catalog handoff's bytes exactly as taken at the handoff step
-    handoff.triaged.json        the triaged handoff's bytes, kept when the one taken differs only in its ratification
+    handoff.triaged.json        the triaged handoff's bytes, kept when the one taken differs only in what the Class decides
     <unit_id>.json              a byte copy of the triage payload
     <unit_id>.record.json       a byte copy of its decision record
 ```
+
+**Order: the triage comes before the Class.** The triage runs first, read only, before any Class proposal of
+the unit is saved. It binds only the evidence it read: the Catalog's rows, files and listing, the repository's
+declarations and the archive listing. It never reads or cites the handoff's `class_proposal` (its assignments,
+labels, contrast, status or ratification), and never binds it as a decision record input. `validate-triage.py`
+refuses a triage whose evidence citations (field, value or detail), or whose decision record inputs, name the Class
+proposal, its assignments or labels, `ratified_by` or the ratification (error `T-CLASS`); the triage must then be
+redone. The Class is settled afterwards. The plan records the Class decision's proposal id as the approved Class
+digest, and the runner saves and ratifies that proposal under the campaign approval (boundary 3) just before it
+takes the handoff. So the handoff the triage read normally carries no Class, or one that is not yet ratified. The
+two bind separately: the triage binds its evidence through `catalog_handoff_sha256` and the handoff comparison,
+and the Class binds through its own ratification and the class digest (section 2.5).
 
 `<unit_key>` is the campaign's unit key: the Catalog unit id, or `<unit_id>-<child_key>` for a child. The
 unit's workspace folder is its key, or `<unit_key>@<campaign_id>` for a reopened unit (`workspace_name` in the
@@ -190,8 +202,8 @@ verdicts are recorded here, not in the review log:
 | `triage_validated` | deterministic_check | the approval | `validator_sha256`, `verdict`, `report_sha256`, `review_log_head_sha256` |
 | `manifest_approved` | accepted_decision | the approval | `manifest_digest`, `approval_id`, `approved_by`, `covers`, `selections` (unit key to `selection_sha256`), `validator_sha256` |
 | `unit_reopened` | accepted_decision | the approval | `reason_code`, `evidence_sha256`, the evidence file name, the new workspaces |
-| `triage_checked` | deterministic_check | the runner, at the handoff step | `verdict` (`pass`, `refused`, `held`), `handoff_identity` (`handoff_identical`, `values_identical` or `ratification_only`) with both sides' `ratification`, the reason (`triage_digest_changed`, `triage_record_digest_changed`, `triage_handoff_changed` with `rows_identical` and `differing_keys`, `sidecar` or `triaged_bytes_found`), the copies' paths and the handoff hashes |
-| `curated_selection_applied` | accepted_decision | the runner, after the download | `plan_selection_sha256`, `interactive_selection_sha256`, `selection_sha256_equal`, `selection_canonical_form`, rows kept and dropped, what Interactive recorded (`manifest_digest`, `standing`, `child_key`, `analysis_unit_key`, `catalog_handoff_verification`, `triage_record_sha256`), and `handoff_ratification`, Interactive's `original_handoff.ratification` |
+| `triage_checked` | deterministic_check | the runner, at the handoff step | `verdict` (`pass`, `refused`, `held`), `handoff_identity` (`handoff_identical`, `values_identical` or `class_only`) with the `class` record (both sides' Class, as Interactive's `original_handoff.class`), `class_binding` (whether the copy's Class is the approved proposal, accepted and ratified under this campaign), the reason (`triage_digest_changed`, `triage_record_digest_changed`, `class_digest_changed`, `class_not_ratified`, `triage_handoff_changed` with `rows_identical` and `differing_keys`, `sidecar` or `triaged_bytes_found`), the copies' paths and the handoff hashes |
+| `curated_selection_applied` | accepted_decision | the runner, after the download | `plan_selection_sha256`, `interactive_selection_sha256`, `selection_sha256_equal`, `selection_canonical_form`, rows kept and dropped, what Interactive recorded (`manifest_digest`, `standing`, `child_key`, `analysis_unit_key`, `catalog_handoff_verification`, `triage_record_sha256`), and `handoff_class`, Interactive's `original_handoff.class` |
 | `header_reconciliation` | deterministic_check | the runner, after the preflight | Interactive's reconciliation block (section 6): `schema`, `verdict` (or `not_recorded`), `reason`, `inspected`, `agree`, `disagree`, `kept_rows_not_inspected`, `disagreements_by_field`, and every per file item copied whole |
 | `cross_unit_verdict` | deterministic_check | the runner, once per download group, and once for a curated unit alone in its group | `group`, `units`, `manifest_paths`, `verdict` (`passed`, `refused`, or `not_applicable` with reason `single_member`), `refused` (per unit `reason_code`, `reasons`, `rule` P, C, S or D, `refused_against`), `refused_after_pass` (units an earlier check passed), `unit_verdicts`, and `interactive` (`verdict`, `rule`, the rule id such as `cross_unit_attribution_2026_11_16b`, `schema`, `overlaps`, `version`) |
 | `terminal_refusal` | deterministic_check | the runner | a refusal that ends the unit: attribution coverage; `attribution_refused` (a curated selection Interactive refuses, the cross-unit check), with `invalidated_after_done: true`, `outputs: kept_flagged_invalid` and `question_code: cross_unit_refused_after_done` for a unit that had run (section 6); and policy drift (`reason: policy_drift` with the code, for a unit stopped on a changed manifest, triage, record, handoff or Class decision, `class_digest_changed`) |
@@ -227,21 +239,50 @@ If either does not, the unit ends `stopped_policy_drift` (`triage_digest_changed
 `triage_record_digest_changed`) and nothing is downloaded. The Catalog handoff taken now must be the triaged
 one (`catalog_handoff_sha256`), byte for byte or in every value Interactive compares (below).
 
-The Catalog embeds the unit's Class proposal in the handoff, ratification included, and the runner saves the
-approved proposal under its own approval (boundary 3) just before it takes the handoff. A handoff taken under
-the campaign therefore never hashes to the triaged one. When the bytes differ, the runner reads the triaged
-bytes, first from the decision record's `catalog_handoff` input, then from `inputs\<unit_id>\handoff.json`, and
-accepts only those whose sha256 is `catalog_handoff_sha256`. It compares them with the handoff taken now exactly
-as Interactive's `verify_handoff_copy` does (`curated.handoff_difference`, with Interactive's two key lists
-copied and a test asserting they equal Interactive's). When only the ratification differs, the runner keeps the
-triaged bytes as `handoff.triaged.json` and passes them as `original_handoff_path`. `triage_checked` records
-`handoff_identity: ratification_only`, or `values_identical`, with both ratifications.
+The Catalog embeds the unit's Class in the handoff: the `class_proposal` object (the proposal, its assignments,
+contrast, status, ratification and `ratified_by`), and the readiness it derives from it. The triage was made
+before that Class was saved or ratified (section 2.1), and the runner saves and ratifies the approved proposal
+under its own approval (boundary 3) just before it takes the handoff. A handoff taken under the campaign
+therefore normally does not hash to the triaged one. The triage binds the evidence it read; the Class binds
+through its own ratification. The handoff step checks the two separately.
 
-A handoff that differs in anything else is held for a person (`contract_held`, `triage_handoff_changed`, with
-`differing_keys` or the differing `sidecar`). So is a handoff whose triaged bytes are kept in neither place
-(`triaged_bytes_found: false`). It is never passed because its rows look the same. A triage made from a
-handoff taken before any ratification differs in the whole `class_proposal`, so it is held. Triage from a
-handoff taken after the unit's Class proposal was ratified.
+*The Class, by ratification.* For every curated unit, a byte identical handoff included, the runner checks the
+copy's `class_proposal` (`curated.class_binding`). It must be the approved proposal (its id is the approved Class
+digest), saved for this unit, `accepted`, and ratified under this campaign: `ratified_by` and the ratification's
+`approval_id`, `manifest_digest`, `authorization_sha256` and `campaign_id` must be this campaign's, and the
+ratification must name the proposal. A ratified abstention passes the same way. A copy that carries another
+proposal ends `stopped_policy_drift` (`class_digest_changed`), as the class digest drift stop at the Class step
+does. A copy whose Class is missing, saved for another unit, not accepted or not ratified under this campaign is
+held (`contract_held`, `class_not_ratified`); its recheck settles the Class again from the start (boundary 3,
+with its digest check) and takes the handoff again. `triage_checked` records the result as `class_binding`. A
+handoff with no `class_proposal` key at all, which the Catalog never writes, is recorded with `checked: false`.
+
+*The evidence, by the triage.* When the bytes differ, the runner reads the triaged bytes, first from the decision
+record's `catalog_handoff` input, then from `inputs\<unit_id>\handoff.json`, and accepts only those whose sha256
+is `catalog_handoff_sha256`. It compares them with the handoff taken now exactly as Interactive's
+`verify_handoff_copy` does (`curated.handoff_difference`), leaving out the rewritten sidecar paths and what the
+Class decides, `HANDOFF_CLASS_KEYS`:
+- `keys`: the whole `class_proposal`;
+- `blocking_reason_codes`: `class_proposal:missing`, `class_proposal:not_accepted` and
+  `class_proposal:other_unit`, the codes the Catalog's handoff builder adds from the Class alone.
+  `blocking_reasons` is compared with only these codes removed, so any other code appearing or disappearing
+  (`technical_metadata:*`, `analysis_input:*`, an unknown `class_proposal:*`) is still a difference;
+- `readiness_keys`: `next_action` and `ready_for_download_planning`, which the builder derives from the blocking
+  reasons. They are left out only when the remaining (non Class) `blocking_reasons` are equal on both sides;
+  otherwise they are compared like any key.
+
+Everything else is compared: the files, the sample rows, the technical settings, the sidecars' contents, the unit
+and accession, and every other top level key. The runner's `HANDOFF_CLASS_KEYS` is Interactive's, copied, and a
+test asserts the two are equal and that both sides decide the same cases alike. When only the Class differs, the
+runner keeps the triaged bytes as `handoff.triaged.json` and passes them as `original_handoff_path`.
+`triage_checked` records `handoff_identity: class_only`, or `values_identical` when even the `class_proposal` is
+equal, with the `class` record.
+
+A triage made before any Class was saved, before the Class was ratified, or under another campaign's ratification
+therefore passes on its evidence, and the Class it did not read is bound by the ratification check. A handoff that
+differs in anything else is held for a person (`contract_held`, `triage_handoff_changed`, with `differing_keys` or
+the differing `sidecar`). So is a handoff whose triaged bytes are kept in neither place (`triaged_bytes_found:
+false`). It is never passed because its rows look the same.
 
 **The download.** The runner calls `msdial_download_repository_raw` with:
 
@@ -283,20 +324,18 @@ in an earlier workspace is not carried into a reopened one.
   `handoff_file`. Otherwise Interactive reads the triaged bytes from `original_handoff_path`, else from the
   record's `catalog_handoff` input, whose recorded sha256 must be the asserted one. It compares them with the
   copy (`verify_handoff_copy`). Every key except `file_manifest_path`, `sample_table_path` and
-  `analysis_input_manifest_path` must be equal, and so must the sidecar contents. Of `class_proposal`, only its
-  campaign ratification may differ, exactly these keys (`curated_selection.HANDOFF_RATIFICATION_KEYS`):
-  - `class_proposal.ratified_by`;
-  - `class_proposal.ratification.approval_id`;
-  - `class_proposal.ratification.manifest_digest`;
-  - `class_proposal.ratification.authorization_sha256`;
-  - `class_proposal.ratification.campaign_id`;
-  - `class_proposal.ratification.ratified_at`.
+  `analysis_input_manifest_path` must be equal, and so must the sidecar contents, except what the Class decides
+  (`curated_selection.HANDOFF_CLASS_KEYS`, the same set as the runner's above): the whole `class_proposal`; the
+  `blocking_reasons` codes `class_proposal:missing`, `class_proposal:not_accepted` and
+  `class_proposal:other_unit`, with `blocking_reasons` compared without them; and `next_action` and
+  `ready_for_download_planning`, left out only when the remaining `blocking_reasons` are equal. Any other
+  difference refuses the unit (`curated_selection_handoff_mismatch`). Verification is then
+  `original_read_and_copy_compared`. With nothing to compare against, the unit is refused.
 
-  Every other key of the proposal and of its ratification is compared: the assignments, the contrast, the
-  status, `proposal_id`, and the ratification's `kind`, `boundary`, `proposal_id` and `abstention`. A key is
-  left out only where it is present, so a ratification that appears where the triaged handoff had none is still
-  a difference. Verification is then `original_read_and_copy_compared`. With nothing to compare against, the
-  unit is refused.
+  The run uses the copy's Class. Interactive does not check that it was ratified under the campaign; the copy's
+  own `blocking_reasons` hold it as any handoff's do, so a missing or not accepted Class is a download blocker. A
+  Class a person confirmed but nobody ratified carries no blocker of its own, so the runner's ratification check
+  (`class_not_ratified`) is what holds it.
 - **The approval.** Under a campaign approval, the manifest entry is matched by `unit_key` or `unit_id`. It
   must carry the same `triage_sha256`, and the same `triage_record_sha256` and `selection_sha256` where it
   names them. A `selection_sha256` that differs from Interactive's own value refuses the unit with
@@ -313,7 +352,9 @@ Every refusal is `retryable: false`. The codes are `curated_selection_invalid`, 
   (`name`, `path`, `sha256`, `decision_id`, `located` (`explicit` or `beside_triage`), `archive_listings`,
   `catalog_handoff_input`);
 - the handoff: `catalog_handoff_sha256`, `catalog_handoff_verification`, `original_handoff` (only when
-  compared, with `source` and `ratification` `{excluded_keys, original, copy, differs}`), `original_handoff_sha256`
+  compared, with `source` and `class` `{excluded_keys, excluded_blocking_reason_codes, readiness_keys,
+  readiness_left_out, original, copy, differs}`, each side holding its `class_proposal`, its Class blocking codes,
+  `next_action` and `ready_for_download_planning`), `original_handoff_sha256`
   and `copy_handoff_sha256`;
 - the unit: `analysis_unit_key`, `catalog_analysis_unit_id`, `child_key`, `phase`, `decided_by`,
   `decided_at`, `purpose`, `unit_technical`, `applied_technical` and `validator`;
@@ -859,9 +900,13 @@ the replay never reads it. The bundle it writes therefore passes those three rul
   - **A triage or record copy that no longer hashes to the manifest**, or a Class decision that is not the
     approved one (`class_digest_changed`), ends the unit `stopped_policy_drift`, with a `terminal_refusal` in
     the ledger.
-  - **A Catalog handoff that differs from the triaged one in more than the campaign ratification** (section 2.5)
+  - **A Catalog handoff that differs from the triaged one in more than what the Class decides** (section 2.5)
     is held (`contract_held`, `triage_handoff_changed`), as is one whose triaged bytes are not kept. A person
-    re-triages the unit or restores the handoff. A difference in the ratification alone passes.
+    re-triages the unit or restores the handoff. A difference in the Class alone passes the evidence check: a
+    triage made before the Class was saved or ratified is not redone.
+  - **A copy whose Class is the approved proposal but is not accepted and ratified under this campaign** is held
+    (`contract_held`, `class_not_ratified`); the recheck settles and ratifies the Class again and takes the
+    handoff again. A copy carrying another proposal stops the unit (`class_digest_changed`, above).
   - **A `selection_sha256` that differs between the plan and Interactive** is refused by Interactive before
     download, or held by the runner after it (`curated_selection_selection_mismatch`).
 - **Gate refusal** (rules P, C, S, D). The units of one download group that carry a curated selection wait
@@ -926,17 +971,28 @@ the replay never reads it. The bundle it writes therefore passes those three rul
 
 ## 7. Build order
 
+The order a unit goes through is fixed: the triage first, read only and before any Class is saved; then the
+plan, whose digest covers the triage and the approved Class digest; then, under the approval, the Class saved and
+ratified (boundary 3), the handoff taken, and the download. The triage binds the evidence it read, and the Class
+binds by its ratification and the class digest (sections 2.1 and 2.5, WS0 decision F of 2026-11-17, which
+supersedes decision A's ratification only scope). No unit is triaged again because its Class was ratified.
+
 Built:
-- **Interactive 0.5.69** (PR #102, 39f42f2): `curated_selection`, with the section 3.1 function and the
-  listing as its crc32 and size source; the download arguments and checks of section 2.5, with the campaign
-  ratification left out of the handoff copy check (`HANDOFF_RATIFICATION_KEYS`); reconciliation; the cross-unit
-  check, where a stated role overrides the name filter; `replay_projection` v1.
-- **The runner** (PR #60, f25e5b8): the plan and runner fields; the run-time copies, with the
-  ratification-only handoff comparison and `handoff.triaged.json`; the plan-time workspace name check; the
-  preflight comparison of `selection_sha256`; the review log writer and the decision ledger; the cross-unit
-  barrier, `single_member` for a unit alone, and `invalidated_after_done`; `campaign-runner.py release`, with
-  projected triage inputs and the three path rules of the redaction check; `replay-campaign.py`, with a
-  synthetic fixture test per level and an integration test against Interactive.
+- **Interactive 0.5.69** (PR #102, 0c2921a): `curated_selection`, with the section 3.1 function and the
+  listing as its crc32 and size source; the download arguments and checks of section 2.5, with what the Class
+  decides left out of the handoff copy check (`HANDOFF_CLASS_KEYS`, `handoff_differing_keys`,
+  `handoff_class_split`) and both sides' Class recorded in `original_handoff.class`; reconciliation; the
+  cross-unit check, where a stated role overrides the name filter; `replay_projection` v1.
+- **The runner** (PR #60, 87c4fe3): the plan and runner fields; the run-time copies, with the handoff comparison
+  that leaves out what the Class decides (Interactive's `HANDOFF_CLASS_KEYS`, copied and tested equal), the
+  Class ratification check at the handoff step (`class_binding`, `class_not_ratified`, `class_digest_changed`)
+  and `handoff.triaged.json`; the plan-time workspace name check; the preflight comparison of `selection_sha256`;
+  the review log writer and the decision ledger; the cross-unit barrier, `single_member` for a unit alone, and
+  `invalidated_after_done`; `campaign-runner.py release`, with projected triage inputs and the three path rules of
+  the redaction check; `replay-campaign.py`, with a synthetic fixture test per level and an integration test
+  against Interactive.
+- **The triage's Class boundary** (PR #60, 87c4fe3): the skill never reads or cites `class_proposal`, and
+  `validate-triage.py` refuses a triage whose evidence or decision record inputs cite it (`T-CLASS`).
 
 To build:
 - schemas and skill 1.1.0;
@@ -950,6 +1006,4 @@ To build:
 Future work:
 - direct answers to `triage_header_disagreement` taken by a runner request (accept the header, accept the
   triage, exclude the file), in Interactive's reconciliation and execution gate and in the runner; today only a
-  skip or a revised triage moves the unit (section 6);
-- whether a handoff whose ratification appears where the triaged handoff had none may pass; today it is a
-  difference, so a unit is triaged from a handoff taken after its Class proposal was ratified (section 2.5).
+  skip or a revised triage moves the unit (section 6).
