@@ -6,7 +6,11 @@ and the sections the reviews of 2026-11-16 found inconsistent with the builds (t
 saw, the decision ledger, the replay levels, header reconciliation, revisions, redaction, sampling and the Methods)
 must say what the builds do. The WS0 settlement of 2026-11-16 (Interactive #102 d83ed5b, runner #60 64f7983) adds
 the run-time layout, the download arguments, the applied selection's location, the cross-unit vocabulary and rules,
-the release bundle the replay reads and what needs a Console run. Synthetic accessions only.
+the release bundle the replay reads and what needs a Console run. The WS0 decisions of 2026-11-17 (Interactive #102
+39f42f2, runner #60 f25e5b8) add the campaign ratification left out of the handoff comparison (A), a unit refused
+after it ran (B), the triage inputs released as projections (C), the stated role over the name filter (D), and the
+lows (a single member, the plan-time workspace name, the class drift stop, the reference's child key, the header
+disagreement answers). Synthetic accessions only.
 
 Where Interactive is importable (MSDIAL_INTERACTIVE_ROOT names a checkout of 0.5.69 or later), or this checkout
 holds the runner's scripts/campaign/curated.py, the reference implementation is also compared with theirs.
@@ -59,6 +63,19 @@ PROJECTION_V1_KEYS = (
 )
 # Interactive's workspace_unit_key pattern (repository_reanalysis._WORKSPACE_UNIT_KEY).
 WORKSPACE_UNIT_KEY = "[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}"
+# The campaign ratification verify_handoff_copy leaves out of class_proposal (Interactive #102 39f42f2,
+# curated_selection.HANDOFF_RATIFICATION_KEYS; the runner's copy in scripts/campaign/curated.py at #60 f25e5b8).
+HANDOFF_RATIFICATION_KEYS = (
+    ("ratified_by",),
+    ("ratification", "approval_id"),
+    ("ratification", "manifest_digest"),
+    ("ratification", "authorization_sha256"),
+    ("ratification", "campaign_id"),
+    ("ratification", "ratified_at"),
+)
+# A unit that ran and a later cross-unit check refused (runner #60 f25e5b8, ledger schema 5).
+INVALIDATED_AFTER_DONE = "invalidated_after_done"
+INVALIDATION_QUESTION = "cross_unit_refused_after_done"
 
 
 def _text() -> str:
@@ -237,6 +254,26 @@ class SelectionCanonicalForm(unittest.TestCase):
         self.assertEqual(ref["selection_sha256"](forward, {}), hashlib.sha256(payload).hexdigest())
         self.assertNotIn(b" ", payload)
 
+    def test_the_reference_takes_a_child_key_as_the_implementations_do(self):
+        """WS0 low (2026-11-17): the reference accepts a child_key string, "" as the whole unit, raises ValueError for
+        an unknown key and TypeError for a string listing, as section 3.1 states and Interactive and the runner do."""
+        ref = _reference()
+        for triage, listing, child in _cases():
+            if child is None:
+                continue
+            with self.subTest(child=child["child_key"], listing=bool(listing)):
+                self.assertEqual(ref["selection_sha256"](triage, listing, child["child_key"]),
+                                 ref["selection_sha256"](triage, listing, child))
+        example = _example()
+        self.assertEqual(ref["selection_sha256"](example["triage"], example["listing"], ""),
+                         _fence("text selection-example-sha256").strip())
+        with self.assertRaises(ValueError):
+            ref["selection_canonical"](_cases()[2][0], {}, "no-such-child")
+        with self.assertRaises(TypeError):
+            ref["selection_canonical"](example["triage"], "pos")
+        _says(_section("### 3.1"), "The reference and the implementations also accept a child's `child_key` string",
+              "an unknown key raises `ValueError`", "a string passed as the listing raises `TypeError`")
+
     def test_the_runner_compares_the_value_interactive_recorded(self):
         _says(_section("### 2.5"), "holds the unit when they differ (`contract_held`, `curated_selection_selection_mismatch`)",
               "refuses the unit with `curated_selection_selection_mismatch`")
@@ -283,12 +320,30 @@ class ImplementationsAgree(unittest.TestCase):
                                  ref["selection_sha256"](triage, listing, child))
         data = _listing_tsv(_example()["listing"])
         self.assertEqual(other.parse_archive_listing(data), ref["parse_archive_listing"](data))
+        # The child given by its key, the whole unit as "", and the two errors (section 3.1).
+        for triage, listing, child in _cases():
+            key = "" if child is None else child["child_key"]
+            with self.subTest(unit=triage["unit_id"], child_key=key, listing=bool(listing)):
+                self.assertEqual(other.selection_sha256(triage, listing, key), ref["selection_sha256"](triage, listing, key))
+        split = _cases()[2][0]
+        for function in (other.selection_canonical, ref["selection_canonical"]):
+            with self.assertRaises(ValueError):
+                function(split, {}, "no-such-child")
+            with self.assertRaises(TypeError):
+                function(split, "pos")
+
+    def _compare_ratification_keys(self, other) -> None:
+        keys = getattr(other, "HANDOFF_RATIFICATION_KEYS", None)
+        if keys is None:
+            return
+        self.assertEqual(tuple(tuple(path) for path in keys), HANDOFF_RATIFICATION_KEYS)
 
     def test_interactive_gives_the_reference_value(self):
         module = _interactive()
         if module is None:
             self.skipTest("MSDIAL_INTERACTIVE_ROOT names no Interactive with msdial-selection-canonical.v1")
         self._compare(module)
+        self._compare_ratification_keys(module)
         replay = getattr(module, "replay_projection", None)
         if replay is not None:
             self.assertEqual(sorted(replay({})), sorted(PROJECTION_V1_KEYS))
@@ -298,6 +353,7 @@ class ImplementationsAgree(unittest.TestCase):
         if module is None:
             self.skipTest("this checkout holds no scripts/campaign/curated.py with msdial-selection-canonical.v1")
         self._compare(module)
+        self._compare_ratification_keys(module)
         self.assertEqual(tuple(module.DECISION_KINDS), LEDGER_KINDS)
         self.assertEqual({kind: tuple(fields) for kind, fields in module.REVIEW_LOG_KINDS.items()}, REVIEW_LOG_KINDS)
 
@@ -517,7 +573,8 @@ class Release(unittest.TestCase):
                      "triage\\<accession>\\", "decision-ledger.jsonl", "msdial-release-index.v1"):
             self.assertIn(name, section, name)
         _says(section, "`campaign-runner.py release --campaign <id> --out <empty folder>`",
-              "{schema, approved_manifest_digest, manifests: [{name, release, original_sha256, release_sha256}]}",
+              "{schema, approved_manifest_digest, manifests: [{name, release, original_sha256, release_sha256}], "
+              "triage_inputs: [{name, release, original_sha256, release_sha256, projection}]}",
               "the original manifests, `campaign-authorization.json`")
 
     def test_the_redaction_rule_covers_unc_paths_and_context_blocks(self):
@@ -540,6 +597,70 @@ class SamplingAndMethods(unittest.TestCase):
         section = _section("### 5.1")
         self.assertIn("{n_redo}", section)
         self.assertIn("{n_units_redo}", section)
+
+
+class WS0DecisionsOf20261117(unittest.TestCase):
+    """The WS0 decisions of 2026-11-17 as Interactive #102 39f42f2 and runner #60 f25e5b8 built them."""
+
+    def test_a_the_ratification_alone_may_differ(self):
+        section = _section("### 2.5")
+        for path in HANDOFF_RATIFICATION_KEYS:
+            self.assertIn("`" + ".".join(("class_proposal", *path)) + "`", section, path)
+        _says(section, "`curated_selection.HANDOFF_RATIFICATION_KEYS`",
+              "a ratification that appears where the triaged handoff had none is still a difference",
+              "`handoff.triaged.json`", "`handoff_identity: ratification_only`", "`triaged_bytes_found: false`",
+              "never passed because its rows look the same", "`ratification` `{excluded_keys, original, copy, differs}`")
+        self.assertIn("handoff.triaged.json", _section("### 2.1"))
+        row = _table_row(section, "original_handoff_path")
+        self.assertIn("handoff.original.json", row)
+        self.assertIn("handoff.triaged.json", row)
+        ledger = _section("### 2.4")
+        self.assertIn("`ratification_only`", _table_row(ledger, "triage_checked"))
+        self.assertIn("`handoff_ratification`", _table_row(ledger, "curated_selection_applied"))
+        self.assertNotIn("must be the triaged one byte for byte", _flat(_text()))
+
+    def test_b_a_unit_refused_after_it_ran_is_invalidated(self):
+        section = _section("## 6.")
+        _says(section, f"`{INVALIDATED_AFTER_DONE}`", f"`{INVALIDATION_QUESTION}`", "`held_before_download`",
+              "has a unit manifest or has ended before its download", "`refused_after_pass`",
+              "Its outputs and raw data are kept. The runner never deletes them", "`outputs_valid`",
+              "The Catalog run record has status `invalidated_after_done`", "`plan --reopen`")
+        self.assertNotIn("withdrawn from redistribution. The refusal", _flat(section))
+        self.assertNotIn("Units an earlier check passed are sent first", _flat(section))
+        row = _table_row(_section("### 2.4"), "terminal_refusal")
+        for phrase in ("`invalidated_after_done: true`", "`outputs: kept_flagged_invalid`",
+                       f"`question_code: {INVALIDATION_QUESTION}`"):
+            self.assertIn(phrase, row)
+        self.assertIn("`refused_after_pass`", _table_row(_section("### 2.4"), "cross_unit_verdict"))
+
+    def test_c_triage_inputs_are_released_as_projections(self):
+        section = _section("### 5.3")
+        _says(section, "triage_inputs: [{name, release, original_sha256, release_sha256, projection}]",
+              "`projection: release_projection`", "the bundle is not written",
+              "The original handoff's sha256 stays verifiable without its bytes",
+              "the hash chained ledger's `triage_recorded` `catalog_handoff_sha256`",
+              "The original bytes, with their absolute paths, stay on the producing machine and are not released",
+              "`curated.release_redaction_findings`", "gets no `release-index.json`")
+        self.assertNotIn("copied whole", section)
+        _says(_section("## 3."), "`curated.released_catalog`", "`released_triage_inputs` check `different`")
+        _says(_section("### 2.3"), "checked through `release-index.json` instead")
+
+    def test_d_a_stated_role_overrides_the_name_filter(self):
+        _says(_section("## 6."), "a row whose role is `sample` is compared whatever its file name or sample id says",
+              "a row whose role is `qc`, `blank` or `other` is not compared",
+              "only a row whose role is `unknown` or empty, or an input no curated row names, is read by its names")
+
+    def test_e_the_lows(self):
+        section = _section("## 6.")
+        _says(section, "So does a curated unit that is the only one in its download group, once",
+              "Interactive holds the unit until a revised triage is planned again",
+              "Accepting the triage against the header has no path yet", "are future work (section 7)",
+              "`class_digest_changed`")
+        self.assertNotIn("The person accepts the header, accepts the triage or excludes the file", _flat(section))
+        _says(_section("### 2.5"), "`curated.workspace_name_problem`", "refused at plan time, never at the download")
+        _says(_section("### 2.4"), "once for a curated unit alone in its group")
+        self.assertIn("class_digest_changed", _table_row(_section("### 2.4"), "terminal_refusal"))
+        _says(_section("## 7."), "Future work:", "accept the header, accept the triage, exclude the file")
 
 
 if __name__ == "__main__":
