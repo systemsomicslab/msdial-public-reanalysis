@@ -22,7 +22,8 @@ and the rendered prompt by its own sha256. This comment block is part of the tem
 # Unit triage revision: {{accession}}
 
 Revise the triage of accession **{{accession}}**, following the `msdial-unit-triage` skill
-(`.claude/skills/msdial-unit-triage/SKILL.md`), procedure step 10 (Revisions). Read the skill first and follow
+(`.claude/skills/msdial-unit-triage/SKILL.md`; the payload schema it names is
+`schemas/msdial-unit-triage.v2.json`, beside it in the working directory), procedure step 10 (Revisions). Read the skill first and follow
 it exactly.
 
 ## Units and causes
@@ -45,7 +46,7 @@ Everything you may read is in `{{input_dir}}`: the files the current payloads re
 `*.members.tsv` listings), and each revised unit's `r<N>/previous.json` and `r<N>/cause.json`. The paths a
 `handoff.json` names for its sidecars point outside this session: never read those paths; read the sidecars
 beside it. Never read or cite a `class_proposal` or its `class_proposal:*` blocking reasons. Nothing else is
-evidence. A read outside `{{input_dir}}`, the output directory and the skill refuses the whole session.
+evidence. A read outside `{{input_dir}}`, the output directory, the skill and the schema refuses the whole session.
 
 ## Handoff sha256
 

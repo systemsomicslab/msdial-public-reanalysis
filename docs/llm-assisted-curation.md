@@ -178,7 +178,7 @@ that breaks any of these refuses the unit: Interactive's code is `curated_select
 plan leaves the unit out as `triage_record_mismatch` before a person sees the digest.
 
 **Context.** Triage runs in a clean harness configuration: a working directory outside every code checkout
-that holds only the skill, no user or project `CLAUDE.md`, auto memory disabled, no hooks, and only the MCP
+that holds only the skill and the payload schema it names, no user or project `CLAUDE.md`, auto memory disabled, no hooks, and only the MCP
 servers the skill allows. `agent.context` records that configuration, with every context file the harness
 loaded and its sha256; the list is expected to be empty. The harness's own system prompt belongs to the
 harness version and is identified by `harness_version`; it is not ours to release. A record whose

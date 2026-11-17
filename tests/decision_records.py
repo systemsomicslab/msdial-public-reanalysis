@@ -35,6 +35,7 @@ SKILL_PATH = ".claude/skills/msdial-unit-triage/SKILL.md"
 TEMPLATE_PATH = "prompts/unit-triage-task.v1.md"
 REVISION_TEMPLATE_PATH = "prompts/unit-triage-revision.v1.md"
 WRAPPER_PATH = "scripts/run-triage-agent.py"
+SCHEMA_PATH = "schemas/msdial-unit-triage.v2.json"
 FIXTURES = ROOT / "tests" / "fixtures" / "triage-eval"
 CATALOG_SERVER = "msdial-repository-catalog"
 CLEAN_CONTEXT = {
@@ -108,7 +109,8 @@ class Code:
     def snapshot(self, module: Any) -> Any:
         """This code as scripts/run-triage-agent.py's CodeSnapshot (`module` is the loaded wrapper)."""
         return module.CodeSnapshot(self.commit, self.skill, self.template, self.root, wrapper=self.wrapper,
-                                   wrapper_commit=self.commit, revision_template=self.revision_template)
+                                   wrapper_commit=self.commit, revision_template=self.revision_template,
+                                   schema=(ROOT / SCHEMA_PATH).read_bytes())
 
 
 def render(template: bytes, **values: str) -> bytes:

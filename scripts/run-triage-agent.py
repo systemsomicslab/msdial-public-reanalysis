@@ -16,7 +16,8 @@ docs/llm-assisted-curation.md sections 2.1 to 2.3 (the "Context" paragraph and t
    input and output directories relative to the session's working directory and the sha256 of each unit's handoff
    copy, which the agent writes as catalog_handoff_sha256 (its tools cannot hash a file).
 3. LAUNCH the Claude Code CLI headless in a clean configuration (CLEAN_FLAGS below): a fresh working directory
-   outside every code checkout holding only the skill (SKILL.md at HEAD), the inputs and an empty output folder as
+   outside every code checkout holding only the skill (SKILL.md at HEAD) and the payload schema it names
+   (schemas/msdial-unit-triage.v2.json at HEAD), the inputs and an empty output folder as
    sibling directories added with --add-dir, no settings files (--restricted), CLAUDE.md and auto memory disabled,
    hooks disabled, only the MCP servers the skill's allowed-tools name (--strict-mcp-config), the built-in tools
    limited to the skill's, every other tool of those servers removed (--disallowedTools, from the server's own
@@ -102,6 +103,7 @@ _SPEC.loader.exec_module(validator)
 
 SKILL_NAME = "msdial-unit-triage"
 SKILL_PATH = ".claude/skills/msdial-unit-triage/SKILL.md"
+SCHEMA_PATH = "schemas/msdial-unit-triage.v2.json"
 TEMPLATE_PATH = "prompts/unit-triage-task.v1.md"
 REVISION_TEMPLATE_PATH = "prompts/unit-triage-revision.v1.md"
 WRAPPER_PATH = "scripts/run-triage-agent.py"
@@ -112,7 +114,7 @@ HARNESS = "claude-code"
 RECORD_SCHEMA = "msdial-llm-decision-record.v1"
 SAMPLING = "harness default, not exposed"
 WORKING_DIRECTORY = ("a fresh directory outside every code checkout holding only the skill "
-                     f"({SKILL_PATH}); the inputs (../inputs) and the output folder (../out) are sibling directories "
+                     f"({SKILL_PATH}) and the payload schema it names ({SCHEMA_PATH}); the inputs (../inputs) and the output folder (../out) are sibling directories "
                      "added with --add-dir")
 MW_REPOSITORY = "metabolomics_workbench"
 MWTAB_URL = "https://www.metabolomicsworkbench.org/rest/study/analysis_id/{analysis}/mwtab/txt"
@@ -172,6 +174,7 @@ class CodeSnapshot:
     wrapper: bytes = b""
     wrapper_commit: str | None = None
     revision_template: bytes | None = None
+    schema: bytes = b""
 
     @property
     def wrapper_identity(self) -> dict[str, Any]:
@@ -207,7 +210,8 @@ def code_from_head(repo: Path = REPO_ROOT) -> CodeSnapshot:
         same = running.replace(b"\r\n", b"\n") == held.replace(b"\r\n", b"\n")
         return CodeSnapshot(commit, git("show", f"{commit}:{SKILL_PATH}"), git("show", f"{commit}:{TEMPLATE_PATH}"),
                             wrapper=held if same else running, wrapper_commit=commit if same else None,
-                            revision_template=git("show", f"{commit}:{REVISION_TEMPLATE_PATH}"))
+                            revision_template=git("show", f"{commit}:{REVISION_TEMPLATE_PATH}"),
+                            schema=git("show", f"{commit}:{SCHEMA_PATH}"))
     except (OSError, subprocess.SubprocessError) as error:
         raise WrapperError(f"git could not be run: {error}") from error
 
@@ -822,6 +826,12 @@ def build_session(root: Path, code: CodeSnapshot, triage_inputs: Path, offered: 
     skill = work / SKILL_PATH
     skill.parent.mkdir(parents=True)
     skill.write_bytes(code.skill)
+    # The payload schema the skill names (step 9), at the same commit: without it the agent writes the payload's
+    # field names from the skill's prose, and the validator refuses them (pilot of 2026-11-18).
+    if code.schema:
+        schema = work / SCHEMA_PATH
+        schema.parent.mkdir(parents=True)
+        schema.write_bytes(code.schema)
     for item in offered:
         source = triage_inputs.parent / item.path
         target = root / item.path

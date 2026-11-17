@@ -20,7 +20,8 @@ prompt by its own sha256. This comment block is part of the template's bytes; th
 # Unit triage: {{accession}}
 
 Triage accession **{{accession}}** before any download, following the `msdial-unit-triage` skill
-(`.claude/skills/msdial-unit-triage/SKILL.md`). Read the skill first and follow it exactly.
+(`.claude/skills/msdial-unit-triage/SKILL.md`; the payload schema it names is
+`schemas/msdial-unit-triage.v2.json`, beside it in the working directory). Read the skill first and follow it exactly.
 
 ## Units
 
@@ -42,7 +43,7 @@ Everything you may read is in `{{input_dir}}`:
 The Catalog MCP server (`msdial-repository-catalog`) may be read with the tools the skill allows. Nothing
 else is evidence: not memory, not the web, not files outside `{{input_dir}}`. If an input you need is
 missing, go without it, say so in `evidence_sources`, and ask in `needs_person`. A read outside
-`{{input_dir}}`, the output directory and the skill refuses the whole session.
+`{{input_dir}}`, the output directory, the skill and the schema refuses the whole session.
 
 ## Handoff sha256
 

@@ -83,9 +83,9 @@ way.
   `<unit_id>.r<N>.json`, never an edit. Never write a decision record, the review log, a Catalog handoff, a
   manifest or a ledger; the wrapper and the runner write those.
 - **Clean context.** In a campaign the triage runs in a clean harness configuration: a working directory
-  that holds only this skill, no user or project `CLAUDE.md`, no memory, no hooks, and only the
+  that holds only this skill and its payload schema, no user or project `CLAUDE.md`, no memory, no hooks, and only the
   `msdial-repository-catalog` MCP server. What you know beyond the skill, the prompt and the inputs is not
-  evidence. Do not cite it. Read only the skill, the input directory and the output directory: the wrapper
+  evidence. Do not cite it. Read only the skill, the schema, the input directory and the output directory: the wrapper
   refuses a session that reads anywhere else.
 - Private MSP or LBM2 libraries play no part in triage. Never name their paths, and never write an absolute
   path, a user name or an e-mail address into a triage file: payloads are released byte for byte.

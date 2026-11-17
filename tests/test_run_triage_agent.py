@@ -207,8 +207,10 @@ class DryRunTests(WrapperCase):
         self.assertTrue(all("/rest/study/analysis_id/AN" in url for url in self.fetched))
         session = Path(summary["session_dir"])
         self.assertEqual(sorted(p.relative_to(session / "work").as_posix() for p in (session / "work").rglob("*")
-                                if p.is_file()), [rta.SKILL_PATH], "the working directory holds only the skill")
+                                if p.is_file()), sorted([rta.SKILL_PATH, rta.SCHEMA_PATH]),
+                         "the working directory holds only the skill and its payload schema")
         self.assertEqual((session / "work" / rta.SKILL_PATH).read_bytes(), self.code.skill)
+        self.assertEqual((session / "work" / rta.SCHEMA_PATH).read_bytes(), self.code.schema)
         self.assertEqual(rta.tree_digest(session / "inputs"),
                          {k: v for k, v in rta.tree_digest(inputs).items() if not k.endswith("prompt.md")})
         self.assertEqual(list((session / "out").iterdir()), [])
@@ -334,7 +336,7 @@ class SessionTests(WrapperCase):
         template = self.code.template.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
         self.code = rta.CodeSnapshot(self.code.commit, self.code.skill, template, self.code.root,
                                      wrapper=self.code.wrapper, wrapper_commit=self.code.commit,
-                                     revision_template=self.code.revision_template)
+                                     revision_template=self.code.revision_template, schema=self.code.schema)
         (self.code.root / rta.TEMPLATE_PATH).write_bytes(template)
         self.ports.code = self.code
         code, [summary] = self.run_wrapper("ok")
