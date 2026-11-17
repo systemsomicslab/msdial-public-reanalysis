@@ -47,8 +47,10 @@ from urllib.parse import quote
 # it is, and a unit diagnosed before 3 keeps no record of the step it searched first (NULL). 4 (2026-10-07): the
 # state disposition_held, a unit whose campaign disposition holds it (a multi-collision-energy AIF unit waiting for
 # a patched Console). A ledger of schema 3 is brought to 4 when it is opened, its unit and transition tables made
-# anew with the wider list of states.
-SCHEMA_VERSION = 4
+# anew with the wider list of states. 5 (2026-11-17): the terminal state invalidated_after_done, a curated unit that ran
+# and that a later cross-unit check of its download group refused (WS0 decision B); a ledger of schema 4 is brought to 5
+# the same way.
+SCHEMA_VERSION = 5
 
 ACTIVE_STATES = (
     "pending", "class_settled", "handoff_ready",
@@ -74,8 +76,13 @@ WAITING_STATES = ("waiting_retry", "deferred_disk", "queued", "gate_held", "cont
 HELD_STATES = ("gate_held", "contract_held")
 # The waiting state an operator's recheck-held alone releases.
 DISPOSITION_HELD = "disposition_held"
+# invalidated_after_done: a curated unit that ran (it was done, or on its way to done) and that a later cross-unit check
+# of its download group refused (WS0 decision B, 2026-11-17). Terminal; its outputs and raw data are left as they are,
+# flagged invalid in its campaign record, the status export and the decision ledger, for a person to decide on.
+INVALIDATED_AFTER_DONE = "invalidated_after_done"
 TERMINAL_STATES = (
     "done", "skipped", "excluded", "failed", "split_done", "stopped_no_approval", "stopped_policy_drift",
+    INVALIDATED_AFTER_DONE,
 )
 STATES = ACTIVE_STATES + WAITING_STATES + TERMINAL_STATES
 # Where a unit waiting on something can resume: any state with work of its own.
@@ -552,11 +559,13 @@ class Ledger:
     # The tables each schema rebuilt, by the schema a ledger is brought from: 2 widened the CHECK lists of
     # unit and transition (the states gate_held, contract_held), request (the action recheck_held) and runner
     # (the pauses backend, outage); 3 widened unit's threshold_step to the finer step and added the step rule's
-    # columns; 4 widened the states of unit and transition (disposition_held).
-    _REBUILT = {1: ("unit", "transition", "request", "runner"), 2: ("unit",), 3: ("unit", "transition")}
+    # columns; 4 widened the states of unit and transition (disposition_held); 5 widened them again
+    # (invalidated_after_done).
+    _REBUILT = {1: ("unit", "transition", "request", "runner"), 2: ("unit",), 3: ("unit", "transition"),
+                4: ("unit", "transition")}
 
     def _migrate(self, version: int) -> None:
-        """Bring a schema 1, 2 or 3 ledger to SCHEMA_VERSION, in one transaction, keeping every row it holds.
+        """Bring a schema 1, 2, 3 or 4 ledger to SCHEMA_VERSION, in one transaction, keeping every row it holds.
 
         SQLite cannot widen a CHECK constraint in place, so each table whose CHECK names a widened list is
         made anew from SCHEMA, filled from the old one by the old one's columns (a column a later schema
@@ -621,7 +630,7 @@ class Ledger:
         groups: list[dict[str, Any]],
         now: str,
         *,
-        events: Iterable[tuple[str, Mapping[str, Any]]] = (),
+        events: Iterable[tuple[Any, ...]] = (),
     ) -> None:
         """Record the approved campaign, its approval, its download groups and its units, each unit pending.
 
@@ -676,9 +685,10 @@ class Ledger:
                     "INSERT INTO transition(unit_key, at, from_state, to_state, detail_json) VALUES (?, ?, NULL, 'pending', ?)",
                     (unit["unit_key"], now, _json({"planned": True})),
                 )
-            for kind, detail in events:
-                db.execute("INSERT INTO campaign_event(at, kind, detail_json) VALUES (?, ?, ?)",
-                           (now, kind, _json(dict(detail))))
+            for kind, detail, *unit_key in events:
+                # (kind, detail) or (kind, detail, unit_key): approve's decision events name their unit.
+                db.execute("INSERT INTO campaign_event(at, kind, unit_key, detail_json) VALUES (?, ?, ?, ?)",
+                           (now, kind, unit_key[0] if unit_key else None, _json(dict(detail))))
 
     def campaign(self) -> dict[str, Any]:
         row = self.connection.execute("SELECT * FROM campaign").fetchone()
@@ -1155,7 +1165,14 @@ class Ledger:
 
     # ---- operator requests -------------------------------------------------------------------------
 
-    def add_request(self, action: str, unit_key: str, reason: str, by: str, now: str) -> int:
+    def add_request(self, action: str, unit_key: str, reason: str, by: str, now: str, question_code: str = "") -> int:
+        """Record an operator's request. With `question_code` (the code of the question the triage or a gate raised,
+        which the reason answers in the named person's words) a request_question event is written in the same
+        transaction, which makes the request a person_answer when the runner acts on it (WS0 decision 8); it needs a
+        named person."""
+        code = str(question_code or "").strip()
+        if code and not str(by or "").strip():
+            raise LedgerError("A request that answers a question names the person who answered it (--by).")
         with self.transaction() as db:
             if db.execute("SELECT 1 FROM unit WHERE unit_key = ?", (unit_key,)).fetchone() is None:
                 raise LedgerError(f"Unknown unit {unit_key}.")
@@ -1163,7 +1180,11 @@ class Ledger:
                 "INSERT INTO request(at, action, unit_key, reason, requested_by) VALUES (?, ?, ?, ?, ?)",
                 (now, action, unit_key, reason, by),
             )
-            return int(cursor.lastrowid)
+            request_id = int(cursor.lastrowid)
+            if code:
+                db.execute("INSERT INTO campaign_event(at, kind, unit_key, detail_json) VALUES (?, ?, ?, ?)",
+                           (now, "request_question", unit_key, _json({"request_id": request_id, "question_code": code})))
+            return request_id
 
     def pending_requests(self) -> list[dict[str, Any]]:
         return [

@@ -13,6 +13,11 @@ THE ORDER OF USE
         read-only on the Catalog and the analysis root; writes campaign-manifest.json and prints its digest.
         A pilot names its units instead of a pool: --units <file or comma list> plans exactly those units,
         from both pools, each held to its own pool's rules (selection_basis), in one manifest (pool "pilot").
+        --triage-dir <campaign dir>\\triage plans from frozen triage files (one <accession>\\ folder each, the
+        msdial-unit-triage skill's): scripts/validate-triage.py judges every accession, only a pass is planned, and
+        each unit carries its curated_selection, so the digest covers the selection. --reopen <tsv> (columns
+        unit_key, reason_code, evidence_path; with --replan-from and --triage-dir) plans named done units of the
+        earlier campaign again, each into a workspace of its own, <unit_key>@<campaign id>.
         The extractor defaults to the newest built pin of Interactive's PINNED_BUILDS beside the Interactive
         checkout; a manifest is approvable only with a verified, pinned extractor and clean checkouts.
     python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
@@ -34,6 +39,18 @@ THE ORDER OF USE
         Console: with Interactive 0.5.34 and a pinned Console that has MsdialWorkbench #825 the unit then runs as
         AIF (multi_ce_aif_with_console_825).
         Every request is acted on by the runner that holds the campaign; with none running, by the next run.
+        skip, retry and release-held take --question-code CODE where --reason is a named person's answer, verbatim,
+        to the question of that code (a triage flag, triage_header_disagreement): it needs --by naming that person,
+        and the runner records the request as their person_answer in the decision ledger and, for a curated unit, in
+        the accession's review log (WS0 decision 8). Any other request is the operator's, never a person's answer.
+    python scripts/campaign-runner.py release --campaign ID --out <empty folder>
+        write the release bundle replay-campaign.py replays (section 5.3): the release projection of the campaign
+        manifest and of each unit's run manifest, the triage directory, the decision ledger and release-index.json.
+    python scripts/campaign-runner.py decisions --campaign ID
+        export the decision ledger (<campaign dir>\\decision-ledger.jsonl): the campaign's triage, validation,
+        approval, reopening, curated selection, header reconciliation, cross-unit and terminal refusal events, each
+        with its standing (source fact, model inference, deterministic check, accepted decision, person answer),
+        append only and hash chained; refused, writing nothing, where the file on disk is not a prefix of it.
 
 THE WORKSPACE ROOT IS NAMED, NEVER ASSUMED (2026-10-24). Every command takes it from --workspace-root (an option
 before the command), else from the environment variable MSDIAL_REPOSITORY_WORKSPACE_ROOT, and where neither names
@@ -379,11 +396,18 @@ def command_plan(args: argparse.Namespace) -> int:
         "template": reader.template(profile),
         **reader.code(),
     }
+    from campaign import curated
+
     try:
         replan = plan.replan_states(Path(args.workspace_root), args.replan_from) if args.replan_from else None
         unit_ids = plan.read_unit_list(args.units) if args.units else None
-    except plan.PlanError as error:
+        reopen = curated.read_reopen(Path(args.reopen)) if args.reopen else None
+    except (plan.PlanError, curated.TriageError) as error:
         print(str(error), file=sys.stderr)
+        return EXIT_REFUSED
+    triage_dir = Path(args.triage_dir).resolve() if args.triage_dir else None
+    if triage_dir is not None and not triage_dir.is_dir():
+        print(f"--triage-dir {triage_dir} is not a directory.", file=sys.stderr)
         return EXIT_REFUSED
     catalog = ports.read_only_catalog(catalog_path)
     try:
@@ -394,7 +418,7 @@ def command_plan(args: argparse.Namespace) -> int:
             class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, args.purpose),
             catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
             replan=replan, unit_ids=unit_ids, policy_overrides=sorted(overrides or {}), libraries_not_pinned=not_pinned,
-            library_paths={name: libraries[name] for name in pinned},
+            library_paths={name: libraries[name] for name in pinned}, triage_dir=triage_dir, reopen=reopen,
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
@@ -510,6 +534,9 @@ def command_approve(args: argparse.Namespace) -> int:
                 if runner["paused"]:
                     note += (f" It records a {runner['pause_kind']} pause made before the approval ({runner['pause_reason']}); "
                              f"resume lifts it.")
+            # What the approval makes accepted decisions of, as decision-ledger events (2026-11-16): each triage the
+            # manifest carries, its validation, each reopened unit, and the approval itself.
+            events += plan.decision_events(manifest, digest, approval)
             # The event in create's own transaction (review of 2026-10-15): the approval and the note of the empty
             # ledger it went into are committed together or not at all.
             book.create(campaign, approval, units, groups, approved_at, events=events)
@@ -540,6 +567,78 @@ def command_approve(args: argparse.Namespace) -> int:
         print(f"The approval could not be recorded in {ledger_path}: {error}; nothing was recorded.", file=sys.stderr)
         return EXIT_REFUSED
     print(recorded + note)
+    _log_digest_approval(manifest, digest, approval)
+    return EXIT_OK
+
+
+def _log_digest_approval(manifest: dict, digest: str, approval: dict) -> None:
+    """Append a digest_approval entry, copied from the ledger, to the review log of every accession whose triage the
+    approved manifest carries (docs/llm-assisted-curation.md, section 2.4). The ledger's manifest_approved event is the
+    record; a review log that cannot be written is said and leaves the approval as it is."""
+    from campaign import curated
+
+    triage = manifest.get("triage") if isinstance(manifest.get("triage"), dict) else None
+    if triage is None:
+        return
+    root = Path(str(triage.get("directory") or ""))
+    written: set[tuple[str, str]] = set()
+    for unit in manifest.get("units") or []:
+        chosen = unit.get("curated_selection")
+        if not isinstance(chosen, dict):
+            continue
+        folder = root / Path(str(chosen.get("triage_relative_path") or "")).parent
+        # One entry per decision (the children of one triage share it), with only the fields section 2.4 names.
+        key = (str(folder), str(chosen.get("triage_sha256")))
+        if key in written:
+            continue
+        written.add(key)
+        try:
+            curated.append_review_log(folder, "digest_approval", chosen.get("triage_sha256"), approval["approved_at"],
+                                      manifest_digest=digest, approval_id=approval["approval_id"], by=approval["approved_by"])
+        except OSError as error:
+            print(f"The approval is recorded; the review log of {folder.name} could not be appended: {error}", file=sys.stderr)
+
+
+def command_decisions(args: argparse.Namespace) -> int:
+    """Export the decision ledger, append only, beside the campaign's manifest."""
+    from campaign import curated
+
+    directory = _campaign_directory(args.workspace_root, args.campaign)
+    with _open(args) as book:
+        events = book.events()
+    try:
+        record = curated.export_decision_ledger(directory / curated.DECISION_LEDGER, events)
+    except curated.TriageError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_REFUSED
+    problems = curated.verify_decision_ledger(directory / curated.DECISION_LEDGER)
+    _print({**record, "chain_problems": problems})
+    return EXIT_REFUSED if problems else EXIT_OK
+
+
+def command_release(args: argparse.Namespace) -> int:
+    """Write the release bundle (docs/llm-assisted-curation.md section 5.3) that scripts/replay-campaign.py replays: the
+    release projections of the campaign manifest and of each unit's run manifest, the triage directory, the decision
+    ledger and release-index.json. Export the decision ledger first (decisions)."""
+    from campaign import curated
+
+    directory = _campaign_directory(args.workspace_root, args.campaign)
+    with _open(args) as book:
+        campaign = book.campaign()
+        units = [(unit["unit_key"], Path(str(unit["manifest_path"])), Path(str(unit["workspace"])))
+                 for unit in book.units() if unit.get("manifest_path") and unit.get("workspace")]
+    manifest = json.loads((directory / "campaign-manifest.json").read_text(encoding="utf-8-sig"))
+    libraries = {str(item.get("name")): str(item.get("sha256")) for item in (manifest.get("pins") or {}).get("libraries") or []
+                 if isinstance(item, dict) and item.get("name") and item.get("sha256")}
+    try:
+        index = curated.write_release(campaign_dir=directory, out=Path(args.out), workspace_root=args.workspace_root,
+                                      approved_digest=str(campaign["manifest_digest"]), run_manifests=units,
+                                      libraries=libraries)
+    except (OSError, ValueError, curated.TriageError) as error:
+        print(f"The release bundle was not written: {error}", file=sys.stderr)
+        return EXIT_REFUSED
+    _print({"out": str(args.out), "manifests": len(index["manifests"]),
+            "approved_manifest_digest": index["approved_manifest_digest"]})
     return EXIT_OK
 
 
@@ -874,10 +973,20 @@ def _runner_note(book: Any) -> str:
 
 
 def command_request(args: argparse.Namespace) -> int:
+    """An operator's request. With --question-code the reason is a named person's answer (verbatim) to the question of
+    that code, and the request is recorded as their person_answer when the runner acts on it (WS0 decision 8); it then
+    needs --by. Without it the request is the operator's, never a person's answer."""
+    from campaign import ledger
+
     action = getattr(args, "action", None) or args.command
-    with _open(args) as book:
-        request_id = book.add_request(action, args.unit, args.reason, args.by or "", _now())
-        note = _runner_note(book)
+    try:
+        with _open(args) as book:
+            request_id = book.add_request(action, args.unit, args.reason, args.by or "", _now(),
+                                          question_code=getattr(args, "question_code", "") or "")
+            note = _runner_note(book)
+    except ledger.LedgerError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_REFUSED
     print(f"Request {request_id} ({action} {args.unit}) recorded; {note}.")
     return EXIT_OK
 
@@ -1105,6 +1214,10 @@ def parser() -> argparse.ArgumentParser:
                                      "or to this file where the name ends in .json")
     plan.add_argument("--replan-from", action="append", default=[], metavar="CAMPAIGN",
                       help="an earlier campaign, its approval revoked, whose units that did not end done are planned again")
+    plan.add_argument("--triage-dir", help="plan from the frozen triage files under this folder (<accession>\\<unit_id>.json); "
+                      "only an accession scripts/validate-triage.py passes is planned")
+    plan.add_argument("--reopen", help="a TSV of done units of a --replan-from campaign to plan again (unit_key, reason_code, "
+                      "evidence_path); needs --triage-dir")
     plan.set_defaults(handler=command_plan)
 
     approve = commands.add_parser("approve", help="record the person's approval of one manifest digest; a manifest "
@@ -1156,6 +1269,16 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--out", required=True)
     export.set_defaults(handler=command_export)
 
+    decisions = commands.add_parser("decisions", help="export the decision ledger (decision-ledger.jsonl), append only")
+    decisions.add_argument("--campaign", required=True)
+    decisions.set_defaults(handler=command_decisions)
+
+    release = commands.add_parser("release", help="write the release bundle (release projections, triage, decision ledger, "
+                                                  "release-index.json) that replay-campaign.py replays")
+    release.add_argument("--campaign", required=True)
+    release.add_argument("--out", required=True, help="an empty or new folder")
+    release.set_defaults(handler=command_release)
+
     for name, handler in (("pause", command_pause), ("resume", command_resume)):
         command = commands.add_parser(name)
         command.add_argument("--campaign", required=True)
@@ -1172,6 +1295,9 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--unit", required=True)
         command.add_argument("--reason", required=True)
         command.add_argument("--by", default="")
+        command.add_argument("--question-code", default="",
+                             help="the code of the question the reason answers, in the words of the person named by --by "
+                                  "(required with it); the request is then recorded as that person's answer")
         command.set_defaults(handler=command_request, action=action)
 
     recheck = commands.add_parser(

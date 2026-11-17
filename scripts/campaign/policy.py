@@ -737,6 +737,53 @@ def download_exclusion(detail: Mapping[str, Any]) -> dict[str, Any] | None:
             if isinstance(inputs, list) else []}
 
 
+# REFUSALS NO RETRY CAN CHANGE (the integration contract's B5, 2026-11-16). Interactive 0.5.67's attribution coverage
+# gate, and 0.5.69's checks of a curated selection and across the units of a download group, refuse a unit for what
+# its handoff, its triage and its files are: the same inputs and code give the same answer, so a retry would only
+# fetch the bytes again. Interactive records each with retryable false and a reason code in the failed lease's
+# download_failure; the runner ends such a unit failed, terminal reason attribution_refused, counting no retry. The
+# codes mirror Interactive's ATTRIBUTION_COVERAGE_REFUSALS and the contract's new ones; in a lease's record a code
+# under one of the prefixes is read so too, so a refusal Interactive adds to the same family is not retried while
+# this list catches up. A check that refuses before any byte (a ValueError of the download tool) is read from the
+# reply: its reason code, or one of the exact codes named in its text, unless the reply says retryable true. A code
+# outside them, or a lease record without retryable false, is a failure as before.
+ATTRIBUTION_REFUSED = "attribution_refused"
+NOT_RETRYABLE_REFUSALS = frozenset({
+    "attribution_coverage_below_minimum", "attribution_admitted_only_blanks_qc_or_standards",
+    "attribution_sample_coverage_below_minimum", "attribution_no_rows_of_the_unit_polarity",
+    "attribution_admitted_another_units_inputs", "attribution_coverage_not_computed",
+    "cross_unit_duplicate_inputs", "cross_unit_inputs_indistinguishable_chromatography",
+    "cross_unit_polarity_contradiction", "cross_unit_inputs_contained",
+    "curated_selection_not_approved", "curated_selection_member_unresolved", "curated_selection_mixed_polarity",
+    "curated_selection_class_contrast_lost", "curated_selection_invalid", "curated_selection_not_ready",
+    "curated_selection_handoff_mismatch", "curated_selection_record_mismatch", "curated_selection_child_unknown",
+    "curated_selection_empty", "curated_selection_selection_mismatch",
+})
+NOT_RETRYABLE_PREFIXES = ("attribution_", "cross_unit_", "curated_selection_")
+_REFUSAL_TOKEN = re.compile(r"(?<![a-z0-9_])(?:attribution|cross_unit|curated_selection)_[a-z0-9_]+")
+
+
+def not_retryable(detail: Any) -> dict[str, Any] | None:
+    """{"reason_code", "retryable": False, "source"} where Interactive refused the unit for good (see above), else None.
+    `detail` is an ended download's detail, with the lease's download_failure under "failure", or a tool's ok:false
+    reply to a call that refused before any byte."""
+    if not isinstance(detail, Mapping):
+        return None
+    failure = detail.get("failure")
+    if isinstance(failure, Mapping) and failure.get("retryable") is False:
+        code = str(failure.get("reason_code") or "").strip()
+        if code in NOT_RETRYABLE_REFUSALS or (code and code.startswith(NOT_RETRYABLE_PREFIXES)):
+            return {"reason_code": code, "retryable": False, "source": "lease"}
+    if detail.get("ok") is False and detail.get("retryable") is not True:
+        code = str(detail.get("reason_code") or "").strip()
+        if not code:
+            named = _REFUSAL_TOKEN.findall(str(detail.get("detail") or ""))
+            code = next((item for item in named if item in NOT_RETRYABLE_REFUSALS), "")
+        if code in NOT_RETRYABLE_REFUSALS or (code and detail.get("retryable") is False and code.startswith(NOT_RETRYABLE_PREFIXES)):
+            return {"reason_code": code, "retryable": False, "source": "reply"}
+    return None
+
+
 # ---- stalls -----------------------------------------------------------------------------------------
 
 def download_stalled(

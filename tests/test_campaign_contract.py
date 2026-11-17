@@ -48,7 +48,12 @@ INTERACTIVE_TOOLS = {
     "msdial_download_repository_raw": {
         "repository", "accession", "workspace_root", "maximum_gb", "raw_retention_policy", "allow_preflight",
         "confirmed", "analysis_unit_handoff_path", "analysis_purpose", "campaign_authorization_path", "host", "port",
+        # A curated selection (Interactive 0.5.69, WS0 decisions 2, 5 and 7): machine.Runner._curated_arguments.
+        "curated_selection_path", "curated_selection_child_key", "original_handoff_sha256", "original_handoff_path",
+        "decision_record_path", "curated_selection_validator", "workspace_unit_key",
     },
+    # The cross-unit attribution check over one download group's manifests (0.5.69, WS0 decisions 3 and 6).
+    "msdial_repository_cross_unit_check": {"manifest_paths"},
     "msdial_interactive_job": {"job_id", "detail", "log_lines", "host", "port"},
     "msdial_cancel_job": {"job_id", "reason", "host", "port"},
     "msdial_repository_raw_metadata_preflight": {

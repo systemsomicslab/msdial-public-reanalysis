@@ -37,6 +37,11 @@ as decided, accepted or confirmed.
 
 - **Read only.** No raw-data download, no MS-DIAL run, no Catalog write (no Class proposal or abstention
   save, no run record), no Interactive plan or download call with `confirmed=true`.
+- **The Class is not the triage's.** The triage runs before any Class is saved and binds only the evidence it
+  read: the Catalog's rows, files and listing, the repository's declarations, the archive listing. Never read
+  or cite the handoff's `class_proposal` (its assignments, labels, contrast, status or ratification), and never
+  bind it as a decision-record input: the Class is settled and ratified afterwards and binds through its own
+  ratification (WS0 decision F). The validator refuses a triage that cites it (`T-CLASS`).
 - **Before download means before download.** The only remote read of an archive allowed here is its zip
   central directory by HTTP Range requests, a few hundred KB per archive at most, with a generic
   User-Agent and no personal details, through a tool built for it. Until that tool exists, use an
