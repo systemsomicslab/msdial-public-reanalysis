@@ -23,6 +23,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 sys.path.insert(0, str(TESTS))
+import decision_records as records  # noqa: E402
 import triage_eval as te  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("validate_triage", ROOT / "scripts" / "validate-triage.py")
@@ -450,13 +451,19 @@ class ContractTest(TriageCase):
         directory = te.write(te.build_good("ST002747"), self.tmp / "layout")
         catalog = vt.read_catalog(te.fixture_dir("ST002747") / "catalog.json")
         listing = vt.read_listing(te.load("ST002747")[2])
-        (directory / "AN004454.record.json").write_text(json.dumps({"schema": "msdial-llm-decision-record.v1"}), encoding="utf-8")
+        code = records.Code.from_root(self.tmp / "code")
+        bound = records.copy_listing(te.load("ST002747")[2], directory)
+        records.write_record(directory / "AN004454.json", code, inputs=[bound])
         revised = json.loads((directory / "AN004455.json").read_text(encoding="utf-8"))
         revised["notes"] = "revision 2: the same files, a reworded note"
         (directory / "AN004455.r2.json").write_text(json.dumps(revised), encoding="utf-8")
-        (directory / "AN004455.r2.record.json").write_text("{}", encoding="utf-8")
-        report = vt.validate(directory, catalog, listing)
+        records.write_record(directory / "AN004455.r2.json", code, inputs=[bound])
+        report = vt.validate(directory, catalog, listing, code_root=code.root)
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+        # A record that is not an envelope is not passed over: it is an error, never silently ignored.
+        (directory / "AN004454.record.json").write_text(json.dumps({"schema": "msdial-llm-decision-record.v1"}), encoding="utf-8")
+        self.assertIn("T-RECORD", self.checks(vt.validate(directory, catalog, listing, code_root=code.root), unit="AN004454"))
+        records.write_record(directory / "AN004454.json", code, inputs=[bound])
         self.assertEqual(sorted(report.units), ["AN004454", "AN004455", "AN004456", "AN004457"])
         self.assertEqual([path.name for path in vt.current_triage_files(directory) if path.name.startswith("AN004455")],
                          ["AN004455.r2.json"])

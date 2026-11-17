@@ -183,6 +183,27 @@ def build_good(accession: str) -> dict[str, dict[str, Any]]:
     return docs
 
 
+def to_v2(docs: dict[str, dict[str, Any]], skill_version: str = "1.1.0") -> dict[str, dict[str, Any]]:
+    """The same triage written as msdial-unit-triage.v2 (skill 1.1.0): a confidence and a rationale on every kept and
+    excluded row and member and on the unit, and no person_answers (a person's answer is a review-log entry). A kept file
+    resting on a declaration is high confidence, one resting on names medium; an exclusion is high."""
+    out = copy.deepcopy(docs)
+    for doc in out.values():
+        doc["schema"] = "msdial-unit-triage.v2"
+        doc["decided_by"]["skill_version"] = skill_version
+        doc.pop("person_answers", None)
+        for item in [*doc["rows"], *doc.get("added_members", [])]:
+            item["confidence"] = "high" if item["basis"] == "declared" else "medium"
+            first = item["evidence"][0]
+            item["rationale"] = f"Kept: {first['source']} {first['field']} reads {first['value']}."
+        for item in [*doc["excluded_rows"], *doc.get("excluded_members", [])]:
+            item["confidence"] = "high"
+            item["rationale"] = f"Left out ({item['reason']}): {item['detail']}"
+        doc["confidence"] = "high" if doc["status"] == "ready" else "medium"
+        doc["rationale"] = f"{doc['unit_id']} is {doc['status']}: {len(doc['rows'])} row(s) kept, {len(doc['excluded_rows'])} left out."
+    return out
+
+
 def write(docs: dict[str, dict[str, Any]], directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     for uid, doc in docs.items():

@@ -33,6 +33,7 @@ sys.dont_write_bytecode = True
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 import campaign_fakes  # noqa: E402  (puts scripts/ on the path)
+import decision_records  # noqa: E402
 import test_campaign_contract as contract  # noqa: E402  (puts Interactive and the Catalog on the path)
 import triage_eval as te  # noqa: E402
 from campaign import curated, machine, plan, policy, ports  # noqa: E402
@@ -1633,15 +1634,10 @@ class EndToEndTests(_Root):
         folder = triage_root / ACCESSION
         record = folder / "AN004454.record.json"
         payload = folder / "AN004454.json"
-        listing = folder / "inputs" / "archive-members.tsv"
-        record.write_text(json.dumps({
-            "schema": "msdial-llm-decision-record.v1", "decision_id": hashlib.sha256(payload.read_bytes()).hexdigest(),
-            "kind": "unit_triage", "accession": ACCESSION, "unit_id": "AN004454",
-            "payload": {"path": payload.name, "schema": "msdial-unit-triage.v1", "sha256": hashlib.sha256(payload.read_bytes()).hexdigest()},
-            "agent": {"harness": "synthetic-harness", "model_id": "synthetic-model"},
-            "inputs": [{"role": "archive_listing", "path": "inputs/archive-members.tsv",
-                        "sha256": hashlib.sha256(listing.read_bytes()).hexdigest(), "bytes": listing.stat().st_size}]}),
-            encoding="utf-8")
+        # The record as the wrapper writes it (msdial-llm-decision-record.v1, complete): the validator the plan runs checks
+        # every hash it names, with the skill and the prompt template at this repository's HEAD.
+        decision_records.write_record(payload, decision_records.Code.from_head(),
+                                      inputs=[{"role": "archive_listing", "path": "inputs/archive-members.tsv"}])
         revised = json.loads((folder / "AN004455.json").read_text(encoding="utf-8"))
         revised["notes"] = "revision 2: the same files, a reworded note"
         (folder / "AN004455.r2.json").write_text(json.dumps(revised), encoding="utf-8")

@@ -1,21 +1,27 @@
-"""Check one accession's msdial-unit-triage.v1 files before anything is planned or downloaded.
+"""Check one accession's msdial-unit-triage files (v1 or v2) and their decision records before anything is planned.
 
-A triage file (schemas/msdial-unit-triage.v1.json, written by the msdial-unit-triage skill) records which
-Catalog rows and archive members one analysis unit keeps. Every choice in it is a model inference. This
-script is the deterministic stage that stands between those inferences and a plan: it reads the triage
-files of one accession as a set and returns pass, hold or error.
+A triage file (schemas/msdial-unit-triage.v2.json, written by the msdial-unit-triage skill; v1 files stay readable)
+records which Catalog rows and archive members one analysis unit keeps. Every choice in it is a model inference. This
+script is the deterministic stage that stands between those inferences and a plan: it reads the triage files of one
+accession as a set, with the decision record (msdial-llm-decision-record.v1) beside each and the accession's
+review-log.jsonl, and returns pass, hold or error (docs/llm-assisted-curation.md sections 2.2 to 2.4).
 
     python scripts/validate-triage.py <triage dir>
         [--catalog <handoffs dir | catalog.json>]   Catalog rows (and handoff sha256) to check coverage against
         [--archive-listing <tsv>]...                 zip member listing(s): path, size, crc32 [, archive]
         [--ground-truth <ground_truth.json>]         score the assignment against a known answer (eval)
+        [--code-root <dir>]                          the released code (skill, prompt templates) at its commit,
+                                                     read in place of git at each record's repo_commit
+        [--release-bundle <dir>]                     the release bundle the triage dir sits in (found on its own
+                                                     when <dir>/release-index.json is two levels up)
+        [--emit-selection]                           add each unit's selection to the report and append a
+                                                     validator_verdict per decision to the review log
         [--json]
 
 The triage directory holds one <unit_id>.json per unit, all of one accession (in a campaign,
 <campaign dir>/triage/<accession>/). A unit redone is kept as a revision, <unit_id>.r<N>.json, and the highest
 N is the one checked (it supersedes <unit_id>.json and every earlier revision); a decision record beside a
-triage (<name>.record.json, the envelope naming the model and prompt) is not a triage, and only its inputs are read
-here, for the Class check below.
+triage (<name>.record.json, the envelope naming the model and prompt) is not a triage.
 --catalog takes either the campaign's handoffs directory
 (<unit_id>/handoff.json and samples.json, as msdial_catalog_reanalysis_handoff writes them; it may span many
 accessions, and only the units of the triaged accession are checked) or a catalog.json with
@@ -30,19 +36,45 @@ A kept row may name its file by member_path or only by raw_file. Both resolve to
 without one the member paths the triage files name, by exact name, then stem), so the same file is the
 same file in every check, and its name tokens and format are read from the member it resolves to.
 
+THE DECISION RECORD (section 2.3). Beside each payload the wrapper writes <name>.record.json. This script recomputes,
+refusing any mismatch (T-RECORD): decision_id and payload.sha256 from the payload's bytes; the sha256 and bytes of
+every inputs[] item, read relative to the record; skill.sha256 from SKILL.md at repo_commit (git show in this
+repository, or --code-root), and the skill's version; prompt.template_sha256 at repo_commit and
+prompt.rendered_sha256; every tool_calls[].result_sha256; transcript.sha256 where the released redacted transcript is
+present. It refuses a tool call that is not on the skill's allowed-tools list, and a tool_calls list that differs from
+the tool calls the released transcript shows (T-TOOLS). A context that is not clean (configuration, context_files,
+memory, hooks, an MCP server the skill does not allow) is a hold (T-CONTEXT), and so is a check that cannot run (the
+skill or the template not readable at repo_commit, a v2 payload without a record). A v1 payload may have no record;
+it is reported rationale_not_recorded (a note, which changes no verdict).
+
+THE REVIEW LOG (section 2.4). For a v2 payload, a ready unit that carries a blocking flag passes only when
+review-log.jsonl holds a person_answer whose question_code is the flag's code and whose decision_id is this payload or
+one it supersedes (by its record's supersedes, or a revision entry); v1 payloads keep their person_answers. A revision
+that drops a blocking flag the payload it supersedes carried passes only when the cause of its revision entry cites
+such a person_answer (T-REVISION). A review log whose hash chain is broken is an error (T-LOG).
+
+RELEASE-BUNDLE MODE (sections 3 and 5.3). In a release bundle a triage input that held an absolute path (a Catalog
+handoff) is released as a projection: release-index.json's triage_inputs names its original_sha256 and the
+release_sha256 of the released bytes. Such a file is checked through the index: its bytes must hash to
+release_sha256, and original_sha256 must be the sha256 the record (or, for --catalog, the triage) names.
+
 Levels:
 - error: the triage file breaks the contract (schema, coverage, a file in two units, byte-identical content
   settled by name, polarity or chromatography that disagrees with its unit or child, an unflagged MS1-only or
   mixed acquisition, a kept mzXML or mzData file, one acquisition kept twice in two formats, a member both
   kept and excluded, an exclusion reason the listing or the unit's own status and flags contradict, evidence or a
   decision-record input that cites the Class proposal (T-CLASS: the triage runs before the Class and never binds it,
-  WS0 decision F), ...).
+  WS0 decision F), a decision record that does not hash to what it names, a tool the skill does not allow, ...).
   The triage must be redone; nothing may be planned from it.
 - hold: the file is valid but something waits for a person: a unit that needs a person, abstained or is out
-  of scope, flagged shared content, a member nobody accounted for, a check that could not run.
+  of scope, flagged shared content, a member nobody accounted for, a kept file inferred at low confidence in a ready
+  unit (T-CONFIDENCE), a context that was not clean, a check that could not run.
 - pass: every unit is ready and nothing waits.
+- note: recorded, never a verdict (rationale_not_recorded, a transcript that is not released here).
 
-Exit status: 0 pass, 1 hold, 2 error. The script reads only; it writes nothing.
+Exit status: 0 pass, 1 hold, 2 error. The script reads only, except that --emit-selection appends validator_verdict
+entries to the accession's review-log.jsonl (through scripts/campaign/curated.append_review_log); a release bundle is
+never written to.
 """
 
 from __future__ import annotations
@@ -52,14 +84,25 @@ import csv
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_ID = "msdial-unit-triage.v1"
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "msdial-unit-triage.v1.json"
+SCHEMA_V2_ID = "msdial-unit-triage.v2"
+SCHEMA_PATH = REPO_ROOT / "schemas" / "msdial-unit-triage.v1.json"
+SCHEMA_PATHS = {SCHEMA_ID: SCHEMA_PATH, SCHEMA_V2_ID: REPO_ROOT / "schemas" / "msdial-unit-triage.v2.json"}
+RECORD_SCHEMA_ID = "msdial-llm-decision-record.v1"
+RECORD_SCHEMA_PATH = REPO_ROOT / "schemas" / "msdial-llm-decision-record.v1.json"
+SKILL_NAME = "msdial-unit-triage"
+REVIEW_LOG = "review-log.jsonl"
+RELEASE_INDEX = "release-index.json"
+TOOL_NAME = "validate-triage.py"
 
 RAW_EXTENSIONS = (".raw", ".mzml", ".mzxml", ".mzdata", ".wiff", ".wiff2", ".d", ".lcd", ".cdf", ".abf", ".ibf", ".baf", ".tdf")
 VENDOR_FOLDER = re.compile(r"(?i)^(.*?\.(?:d|raw))/.+")  # Agilent/Bruker .d and Waters .raw directories
@@ -85,7 +128,7 @@ BLOCKING_FLAGS = {
 
 @dataclass
 class Finding:
-    level: str  # "error" or "hold"
+    level: str  # "error", "hold", or "note" (recorded, never a verdict)
     check: str
     unit: str | None
     message: str
@@ -101,6 +144,8 @@ class Report:
     findings: list[Finding] = field(default_factory=list)
     unit_status: dict[str, str] = field(default_factory=dict)
     score: dict[str, dict[str, int]] | None = None
+    payloads: dict[str, dict[str, Any]] = field(default_factory=dict)  # unit -> payload file name, schema, decision_id
+    extra: dict[str, Any] = field(default_factory=dict)  # --emit-selection: selection, review_log
 
     def add(self, level: str, check: str, unit: str | None, message: str) -> None:
         self.findings.append(Finding(level, check, unit, message))
@@ -118,11 +163,15 @@ class Report:
         out: dict[str, Any] = {
             "accession": self.accession,
             "verdict": self.verdict,
-            "units": {u: {"status": self.unit_status.get(u), "verdict": self.unit_verdict(u)} for u in self.units},
+            # The schema only: a payload's decision_id would tie every unit's report_sha256 to every other unit's bytes
+            # (the plan records the report's sha256 per unit). --emit-selection reports the decision ids.
+            "units": {u: {"status": self.unit_status.get(u), "verdict": self.unit_verdict(u),
+                          "schema": self.payloads.get(u, {}).get("schema")} for u in self.units},
             "findings": [f.as_dict() for f in self.findings],
         }
         if self.score is not None:
             out["score"] = self.score
+        out.update(self.extra)
         return out
 
 
@@ -200,8 +249,10 @@ def schema_errors(value: Any, schema: dict[str, Any], root: dict[str, Any], wher
     return errors
 
 
-def load_schema() -> dict[str, Any]:
-    return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+def load_schema(schema_id: str = SCHEMA_ID) -> dict[str, Any]:
+    """The JSON schema of a payload version (msdial-unit-triage.v1 or .v2) or of the decision record."""
+    path = RECORD_SCHEMA_PATH if schema_id == RECORD_SCHEMA_ID else SCHEMA_PATHS[schema_id]
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # ------------------------------------------------------------------------------------------- inputs
@@ -278,15 +329,27 @@ class CatalogUnit:
     declared: dict[str, Any]
     handoff_sha256: str | None
     accession: str | None = None
+    problem: str | None = None  # a handoff released as a projection whose bytes are not the ones the index names
 
 
-def read_catalog(path: Path) -> dict[str, CatalogUnit]:
+def read_catalog(path: Path, bundle: "ReleaseBundle | None" = None) -> dict[str, CatalogUnit]:
+    """The Catalog units a handoffs directory or a catalog.json holds. In a release bundle a handoff.json released as a
+    projection (release-index.json triage_inputs) stands for its original: its sha256 is the index's original_sha256,
+    once its bytes are checked against the index's release_sha256 (a mismatch is the unit's `problem`)."""
     units: dict[str, CatalogUnit] = {}
     if path.is_dir():
         for handoff in sorted(path.glob("*/handoff.json")):
             unit_dir = handoff.parent
             raw = handoff.read_bytes()
-            data = json.loads(raw.decode("utf-8"))
+            data = json.loads(raw.decode("utf-8-sig"))
+            handoff_sha = hashlib.sha256(raw).hexdigest()
+            problem = None
+            entry = bundle.projected(handoff) if bundle is not None else None
+            if entry is not None:
+                if handoff_sha != entry["release_sha256"]:
+                    problem = (f"{handoff.name} of {unit_dir.name} hashes to {handoff_sha}, not the release index's "
+                               f"release_sha256 {entry['release_sha256']}; its original sha256 is not taken on trust")
+                handoff_sha = entry["original_sha256"]
             samples_path = unit_dir / "samples.json"
             rows = json.loads(samples_path.read_text(encoding="utf-8")) if samples_path.exists() else data.get("sample_metadata") or []
             ts = data.get("technical_settings") or {}
@@ -294,8 +357,9 @@ def read_catalog(path: Path) -> dict[str, CatalogUnit]:
                 unit_id=unit_dir.name,
                 rows=rows,
                 declared={k: ts.get(k) for k in ("chromatography", "ion_mode", "acquisition_mode")},
-                handoff_sha256=hashlib.sha256(raw).hexdigest(),
+                handoff_sha256=handoff_sha,
                 accession=data.get("accession"),
+                problem=problem,
             )
         return units
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -489,10 +553,6 @@ def _triage_member_paths(triages: dict[str, dict[str, Any]]) -> list[str]:
     return paths
 
 
-def _cleared(triage: dict[str, Any], code: str) -> bool:
-    return any(a.get("code") == code for a in triage.get("person_answers", []))
-
-
 def _flag_codes(triage: dict[str, Any]) -> set[str]:
     return {f["code"] for f in triage.get("flags", [])}
 
@@ -575,22 +635,567 @@ def record_class_citations(triage_path: Path) -> list[str]:
     return found
 
 
+# ------------------------------------------------------------------------------ the decision record (section 2.3)
+# The model writes only the payload; the wrapper writes the envelope from the harness's transcript. Everything the
+# envelope names by sha256 is recomputed here from the stored bytes. Nothing here runs a model or reads a Class.
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical_json(value: Any) -> bytes:
+    """Sorted keys, no spaces, UTF-8 (scripts/campaign/curated.canonical): the form every digest here is taken over."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+_ABSOLUTE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|/)")
+
+
+class CodeSource:
+    """The repository files a record names at its repo_commit (SKILL.md, the prompt template).
+
+    By default `git show <commit>:<path>` in the repository this script belongs to, so a record is checked against the
+    exact bytes it names; with --code-root, the file at <code root>/<path> (the released code, at its commit, for a third
+    party without the repository). read() gives (bytes, None) or (None, why it could not be read)."""
+
+    def __init__(self, code_root: Path | None = None, repo: Path = REPO_ROOT):
+        self.code_root = Path(code_root) if code_root is not None else None
+        self.repo = repo
+        self._cache: dict[tuple[str, str], tuple[bytes | None, str | None]] = {}
+
+    def read(self, commit: str, path: str) -> tuple[bytes | None, str | None]:
+        relative = str(path or "").replace("\\", "/").strip("/")
+        if not relative or _ABSOLUTE.match(str(path)) or ".." in relative.split("/"):
+            return None, f"{path!r} is not a path relative to the repository"
+        key = (commit, relative)
+        if key not in self._cache:
+            self._cache[key] = self._read(commit, relative)
+        return self._cache[key]
+
+    def _read(self, commit: str, relative: str) -> tuple[bytes | None, str | None]:
+        if self.code_root is not None:
+            try:
+                return (self.code_root / relative).read_bytes(), None
+            except OSError as error:
+                return None, f"{relative} is not in the code root ({type(error).__name__})"
+        if not re.fullmatch(r"[0-9a-f]{40}", str(commit or "")):
+            return None, f"repo_commit {commit!r} is not a commit id"
+        try:
+            done = subprocess.run(["git", "-C", str(self.repo), "show", f"{commit}:{relative}"],
+                                  capture_output=True, timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError) as error:
+            return None, f"git could not run ({type(error).__name__})"
+        if done.returncode != 0:
+            return None, f"{relative} at {commit[:12]} is not in this repository"
+        return done.stdout, None
+
+
+def code_commit(repo: Path = REPO_ROOT) -> str | None:
+    """The commit this validator runs at: HEAD, when the running script is the one HEAD holds (line endings aside);
+    None when it is not a commit's (an edited working tree) or git cannot say."""
+    try:
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, timeout=60, check=False)
+        if head.returncode != 0:
+            return None
+        commit = head.stdout.decode("ascii", "replace").strip()
+        shown = subprocess.run(["git", "-C", str(repo), "show", f"{commit}:scripts/validate-triage.py"],
+                               capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    running = Path(__file__).read_bytes().replace(b"\r\n", b"\n")
+    if shown.returncode != 0 or shown.stdout.replace(b"\r\n", b"\n") != running:
+        return None
+    return commit if re.fullmatch(r"[0-9a-f]{40}", commit) else None
+
+
+def skill_frontmatter(text: str) -> dict[str, Any]:
+    """The YAML front matter of a SKILL.md, as far as this contract reads it: scalars, and lists written either inline
+    (a, b) or as '- item' lines. Nothing beyond that is parsed."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return {}
+    out: dict[str, Any] = {}
+    key: str | None = None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        item = re.match(r"^\s+-\s+(.*\S)\s*$", line)
+        if item and key is not None:
+            if not isinstance(out.get(key), list):
+                out[key] = []
+            out[key].append(item.group(1).strip("'\""))
+            continue
+        pair = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", line)
+        if pair:
+            key, value = pair.group(1), pair.group(2)
+            out[key] = value.strip("'\"") if value else None
+    return out
+
+
+def skill_allowed_tools(text: str) -> list[str] | None:
+    """The skill's allowed-tools, in order, or None when it names none."""
+    value = skill_frontmatter(text).get("allowed-tools")
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",") if part.strip()]
+    return list(value) if value else None
+
+
+def skill_version(text: str) -> str | None:
+    match = re.search(r"Skill version: \*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*", text)
+    return match.group(1) if match else None
+
+
+_MCP_TOOL = re.compile(r"^mcp__(?P<server>.+?)__(?P<tool>.+)$")
+
+
+def tool_server(name: str) -> str | None:
+    match = _MCP_TOOL.match(name)
+    return match.group("server") if match else None
+
+
+def bare_tool(name: str) -> str:
+    """A tool's own name: mcp__<server>__<tool> is <tool>; a permission rule's '(...)' is dropped."""
+    base = str(name or "").split("(", 1)[0].strip()
+    match = _MCP_TOOL.match(base)
+    return match.group("tool") if match else base
+
+
+def tool_allowed(name: str, allowed: Iterable[str]) -> bool:
+    """A tool call against the skill's allowed-tools: a server-qualified name (mcp__<server>__<tool>) must be listed as
+    it is; a bare name (as a record may write an MCP tool, msdial_catalog_get_analysis_unit) matches a listed tool of
+    that name."""
+    allowed_bases = [str(item).split("(", 1)[0].strip() for item in allowed]
+    base = str(name or "").split("(", 1)[0].strip()
+    if _MCP_TOOL.match(base):
+        return base in allowed_bases
+    return base in allowed_bases or base in {bare_tool(item) for item in allowed_bases}
+
+
+def transcript_tool_names(data: bytes) -> list[str]:
+    """The tool calls a harness transcript (JSON lines) shows, in order: every {"type": "tool_use", "name": ...} block,
+    once per id."""
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "tool_use" and isinstance(value.get("name"), str):
+                ident = value.get("id")
+                if not (isinstance(ident, str) and ident in seen):
+                    if isinstance(ident, str):
+                        seen.add(ident)
+                    names.append(value["name"])
+                return
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    for line in data.decode("utf-8", "replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            walk(json.loads(line))
+        except ValueError:
+            continue
+    return names
+
+
+class ReleaseBundle:
+    """A release bundle (section 5.3): its root and the triage inputs release-index.json says were released as
+    projections, by bundle-relative path."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        index = json.loads((self.root / RELEASE_INDEX).read_text(encoding="utf-8-sig"))
+        self.inputs: dict[str, dict[str, str]] = {}
+        for item in index.get("triage_inputs") or []:
+            if isinstance(item, dict) and item.get("release"):
+                self.inputs[str(item["release"]).replace("\\", "/")] = {
+                    "original_sha256": str(item.get("original_sha256") or "").removeprefix("sha256:").casefold(),
+                    "release_sha256": str(item.get("release_sha256") or "").removeprefix("sha256:").casefold(),
+                }
+
+    @staticmethod
+    def find(triage_dir: Path) -> "ReleaseBundle | None":
+        """The bundle a triage directory (<bundle>/triage/<accession>) sits in, or None."""
+        root = Path(triage_dir).resolve().parent.parent
+        return ReleaseBundle(root) if (root / RELEASE_INDEX).is_file() else None
+
+    def projected(self, path: Path) -> dict[str, str] | None:
+        try:
+            relative = Path(path).resolve().relative_to(self.root.resolve()).as_posix()
+        except ValueError:
+            return None
+        return self.inputs.get(relative)
+
+
+@dataclass
+class Provenance:
+    """What the record checks need beyond the triage directory."""
+
+    code: CodeSource = field(default_factory=CodeSource)
+    bundle: ReleaseBundle | None = None
+
+
+def _file_check(report: "Report", unit: str, record: Path, label: str, path_text: Any, expected_sha: Any,
+                expected_bytes: Any, bundle: ReleaseBundle | None, check: str = "T-RECORD") -> bytes | None:
+    """One file a record names, against the sha256 (and bytes) it records. A file released as a projection is checked
+    through the release index. Returns its bytes when they could be read."""
+    text = str(path_text or "")
+    if not text:
+        report.add("error", check, unit, f"{record.name}: {label} names no path")
+        return None
+    if _ABSOLUTE.match(text):
+        report.add("error", check, unit, f"{record.name}: {label} is an absolute path; a record names its files relative "
+                   "to itself, because it is released byte for byte")
+        return None
+    location = record.parent / text
+    try:
+        data = location.read_bytes()
+    except OSError:
+        report.add("error", check, unit, f"{record.name}: {label} {text} is not there; the decision cannot be checked "
+                   "against what it rested on")
+        return None
+    expected = str(expected_sha or "").casefold()
+    entry = bundle.projected(location) if bundle is not None else None
+    if entry is not None:
+        if sha256_bytes(data) != entry["release_sha256"]:
+            report.add("error", check, unit, f"{record.name}: {label} {text} is released as a projection, but hashes to "
+                       f"{sha256_bytes(data)}, not the release index's release_sha256 {entry['release_sha256']}")
+        elif entry["original_sha256"] != expected:
+            report.add("error", check, unit, f"{record.name}: {label} {text}: the release index's original_sha256 "
+                       f"{entry['original_sha256']} is not the {expected or '(none)'} the record names")
+        return data
+    if sha256_bytes(data) != expected:
+        report.add("error", check, unit, f"{record.name}: {label} {text} hashes to {sha256_bytes(data)}; the record names "
+                   f"{expected or '(none)'}")
+    if expected_bytes is not None and len(data) != expected_bytes:
+        report.add("error", check, unit, f"{record.name}: {label} {text} is {len(data)} bytes; the record names {expected_bytes}")
+    return data
+
+
+def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Path, payload_bytes: bytes,
+                 payload: dict[str, Any], provenance: Provenance) -> dict[str, Any] | None:
+    """The decision record beside one payload (section 2.3). Returns the record when it could be read as one."""
+    record_path = payload_path.with_name(payload_path.name[: -len(".json")] + RECORD_SUFFIX)
+    v2 = payload.get("schema") == SCHEMA_V2_ID
+    if not record_path.is_file():
+        if v2:
+            report.add("hold", "T-RECORD", unit, f"{payload_path.name} has no decision record ({record_path.name}); what it "
+                       "rested on, the skill, the prompt and the tool calls cannot be checked")
+        return None
+    try:
+        record = json.loads(record_path.read_bytes().decode("utf-8-sig"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        report.add("error", "T-RECORD", unit, f"{record_path.name} is not readable JSON: {error}")
+        return None
+    schema = load_schema(RECORD_SCHEMA_ID)
+    problems = schema_errors(record, schema, schema)
+    if problems:
+        for problem in problems[:20]:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: {problem}")
+        if len(problems) > 20:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: {len(problems) - 20} more schema problem(s)")
+        return None
+    bundle = provenance.bundle
+    sha = sha256_bytes(payload_bytes)
+    named = record["payload"]
+    if record["decision_id"] != sha:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: decision_id {record['decision_id']} is not the payload's "
+                   f"sha256 {sha}")
+    if named["sha256"] != sha:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: payload.sha256 {named['sha256']} is not the payload's "
+                   f"sha256 {sha}")
+    if named["path"] != payload_path.name:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: payload.path {named['path']!r} is not {payload_path.name}")
+    if named["schema"] != payload.get("schema"):
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: payload.schema {named['schema']!r} is not the payload's "
+                   f"{payload.get('schema')!r}")
+    if record["kind"] != "unit_triage":
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: kind {record['kind']!r} beside a triage payload")
+    if record["accession"] != payload.get("accession") or record["unit_id"] != payload.get("unit_id"):
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: names {record['accession']}/{record['unit_id']}, the "
+                   f"payload {payload.get('accession')}/{payload.get('unit_id')}")
+    if record["supersedes"] == sha:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: a decision cannot supersede itself")
+
+    for index, item in enumerate(record["inputs"]):
+        _file_check(report, unit, record_path, f"inputs[{index}] ({item['role']})", item["path"], item["sha256"],
+                    item["bytes"], bundle)
+
+    # The skill at its commit: its bytes, its version and the tools it allows.
+    skill = record["skill"]
+    allowed: list[str] | None = None
+    if skill["name"] != SKILL_NAME:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: skill {skill['name']!r} is not {SKILL_NAME}")
+    skill_bytes, why = provenance.code.read(skill["repo_commit"], skill["path"])
+    if skill_bytes is None:
+        report.add("hold", "T-RECORD", unit, f"{record_path.name}: SKILL.md cannot be read at repo_commit ({why}); the "
+                   "skill and the tools it allows were not checked")
+    else:
+        text = skill_bytes.decode("utf-8", "replace")
+        if sha256_bytes(skill_bytes) != skill["sha256"]:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: {skill['path']} at {skill['repo_commit'][:12]} hashes "
+                       f"to {sha256_bytes(skill_bytes)}; the record names {skill['sha256']}")
+        version = skill_version(text)
+        if version != skill["version"]:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: the skill at its commit is version {version}, the "
+                       f"record names {skill['version']}")
+        written_by = (payload.get("decided_by") or {}).get("skill_version")
+        if v2 and written_by != skill["version"]:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: the payload was written by skill version "
+                       f"{written_by}, the record names {skill['version']}")
+        allowed = skill_allowed_tools(text)
+
+    # The prompt: the template at the commit, the rendered prompt beside the record.
+    prompt = record["prompt"]
+    template, why = provenance.code.read(skill["repo_commit"], prompt["template_path"])
+    if template is None:
+        report.add("hold", "T-RECORD", unit, f"{record_path.name}: the prompt template cannot be read at repo_commit ({why})")
+    elif sha256_bytes(template) != prompt["template_sha256"]:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: {prompt['template_path']} at its commit hashes to "
+                   f"{sha256_bytes(template)}; the record names {prompt['template_sha256']}")
+    _file_check(report, unit, record_path, "the rendered prompt", prompt["rendered_path"], prompt["rendered_sha256"], None,
+                bundle)
+
+    # The tool calls: in order, each allowed by the skill, each result as stored.
+    calls = record["tool_calls"]
+    for index, call in enumerate(calls, start=1):
+        if call["seq"] != index:
+            report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool_calls[{index - 1}] has seq {call['seq']}; the "
+                       "calls are numbered 1, 2, ... in the order the transcript shows them")
+        if allowed is not None and not tool_allowed(call["tool"], allowed):
+            report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} uses {call['tool']}, which "
+                       f"the skill does not allow ({', '.join(allowed)})")
+        if call["result_path"] is not None or call["result_sha256"] is not None or call["status"] == "ok":
+            _file_check(report, unit, record_path, f"the result of tool call {call['seq']}", call["result_path"],
+                        call["result_sha256"], None, bundle, check="T-TOOLS")
+    if allowed is None and calls and skill_bytes is not None:
+        report.add("hold", "T-TOOLS", unit, f"{record_path.name}: the skill at its commit lists no allowed-tools, so its "
+                   f"{len(calls)} tool call(s) cannot be checked against it")
+
+    # The released redacted transcript, where there is one.
+    transcript = record["transcript"] or {}
+    released = transcript.get("released_path")
+    if released:
+        candidates = [record_path.parent / released, Path(triage_dir).parent.parent / released]
+        if bundle is not None:
+            candidates.append(bundle.root / released)
+        found = None if _ABSOLUTE.match(str(released)) else next((p for p in candidates if p.is_file()), None)
+        if found is None:
+            report.add("note", "T-TRANSCRIPT", unit, f"{record_path.name}: the redacted transcript {released} is not "
+                       "released here; its sha256 and the tool calls it shows were not checked")
+        else:
+            data = found.read_bytes()
+            if sha256_bytes(data) != str(transcript.get("sha256") or ""):
+                report.add("error", "T-RECORD", unit, f"{record_path.name}: the released transcript {released} hashes to "
+                           f"{sha256_bytes(data)}; the record names {transcript.get('sha256')}")
+            shown = [bare_tool(name) for name in transcript_tool_names(data)]
+            listed = [bare_tool(call["tool"]) for call in calls]
+            if shown != listed:
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool_calls ({len(listed)}: "
+                           f"{', '.join(listed[:8]) or 'none'}) differ from the {len(shown)} tool call(s) the released "
+                           f"transcript shows ({', '.join(shown[:8]) or 'none'})")
+
+    # The context: clean, or a hold.
+    context = record["agent"]["context"]
+    if context["configuration"] != "clean":
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the agent ran in configuration "
+                   f"{context['configuration']!r}, not clean")
+    if context["context_files"]:
+        shown_files = ", ".join(item["path"] for item in context["context_files"][:3])
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the harness loaded {len(context['context_files'])} "
+                   f"context file(s) ({shown_files}); a clean run loads none")
+        for item in context["context_files"]:
+            location = record_path.parent / item["path"]
+            if not _ABSOLUTE.match(item["path"]) and location.is_file() and sha256_bytes(location.read_bytes()) != item["sha256"]:
+                report.add("error", "T-RECORD", unit, f"{record_path.name}: context file {item['path']} hashes to "
+                           f"{sha256_bytes(location.read_bytes())}; the record names {item['sha256']}")
+    if context["memory"] != "disabled":
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: memory was {context['memory']!r}, not disabled")
+    if context["hooks"]:
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the harness ran {len(context['hooks'])} hook(s)")
+    if allowed is not None:
+        servers = {tool_server(item.split("(", 1)[0].strip()) for item in allowed} - {None}
+        extra = sorted({item["name"] for item in context["mcp_servers"]} - servers)
+        if extra:
+            report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: MCP server(s) {', '.join(extra)} were loaded, which "
+                       "the skill does not allow")
+    return record
+
+
+# ------------------------------------------------------------------------------ the review log (section 2.4)
+
+
+def read_review_log(triage_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """(the entries of the accession's review-log.jsonl, why its hash chain does not hold). No log is no entry."""
+    path = Path(triage_dir) / REVIEW_LOG
+    if not path.is_file():
+        return [], []
+    entries: list[dict[str, Any]] = []
+    problems: list[str] = []
+    previous = None
+    for index, line in enumerate([item for item in path.read_bytes().split(b"\n") if item.strip()], start=1):
+        try:
+            entry = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            problems.append(f"line {index} does not parse")
+            entry = None
+        if isinstance(entry, dict):
+            if entry.get("seq") != index:
+                problems.append(f"line {index} has seq {entry.get('seq')}")
+            if entry.get("prev_sha256") != previous:
+                problems.append(f"line {index} does not chain to line {index - 1}")
+            entries.append(entry)
+        elif entry is not None:
+            problems.append(f"line {index} is not an object")
+        previous = sha256_bytes(line)
+    return entries, problems
+
+
+def _revision_entries(log: list[dict[str, Any]], decision_id: str) -> list[dict[str, Any]]:
+    return [e for e in log if e.get("kind") == "revision" and e.get("new_decision_id") == decision_id]
+
+
+def lineage(decision_id: str, supersedes: dict[str, str | None], log: list[dict[str, Any]]) -> set[str]:
+    """This decision and every one it supersedes, by the records' supersedes and the review log's revision entries."""
+    found = {decision_id}
+    queue = [decision_id]
+    while queue:
+        current = queue.pop()
+        earlier = {supersedes.get(current)} | {e.get("supersedes") for e in _revision_entries(log, current)}
+        for item in earlier:
+            if isinstance(item, str) and item and item not in found:
+                found.add(item)
+                queue.append(item)
+    return found
+
+
+def answered_codes(decision_id: str, payload: dict[str, Any], supersedes: dict[str, str | None],
+                   log: list[dict[str, Any]]) -> set[str]:
+    """The question codes a named person answered for this payload or one it supersedes (review-log person_answer
+    entries); a v1 payload's own person_answers count as well."""
+    ids = lineage(decision_id, supersedes, log)
+    codes = {str(e.get("question_code")) for e in log
+             if e.get("kind") == "person_answer" and e.get("decision_id") in ids and str(e.get("by") or "").strip()
+             and str(e.get("question_code") or "").strip()}
+    if payload.get("schema") != SCHEMA_V2_ID:
+        codes |= {str(a.get("code")) for a in payload.get("person_answers", []) if str(a.get("by") or "").strip()}
+    return codes
+
+
+def _blocking(payload: dict[str, Any] | None) -> set[str]:
+    return {f.get("code") for f in (payload or {}).get("flags", []) if isinstance(f, dict)} & BLOCKING_FLAGS
+
+
+def check_revision(report: "Report", unit: str, path: Path, decision_id: str, payload: dict[str, Any],
+                   payloads: dict[str, tuple[Path, dict[str, Any] | None]], supersedes: dict[str, str | None],
+                   log: list[dict[str, Any]], unit_files: list[tuple[int, Path]]) -> None:
+    """A v2 revision may drop a blocking flag of the payload it supersedes only on a person's answer: the cause of its
+    revision entry must be a person_answer with that flag's question_code, for this decision or one it supersedes."""
+    earlier = {supersedes.get(decision_id)} | {e.get("supersedes") for e in _revision_entries(log, decision_id)}
+    earlier = {item for item in earlier if isinstance(item, str) and item}
+    if not earlier:
+        # No record or log entry names what it revises: the revision before it by name (<unit>.r<N-1>.json, ...).
+        match = _REVISION.match(path.stem)
+        number = int(match.group("n")) if match else 0
+        lower = [(n, p) for n, p in unit_files if n < number]
+        if not lower:
+            return
+        before = max(lower)[1]
+        earlier = {sha for sha, (p, _) in payloads.items() if p == before}
+    ids = lineage(decision_id, supersedes, log)
+    by_seq = {e.get("seq"): e for e in log}
+    cited = set()
+    for entry in _revision_entries(log, decision_id):
+        cause = entry.get("cause") if isinstance(entry.get("cause"), dict) else {}
+        answer = by_seq.get(cause.get("seq"))
+        if (cause.get("kind") == "person_answer" and answer is not None and answer.get("kind") == "person_answer"
+                and answer.get("decision_id") in ids and str(answer.get("by") or "").strip()):
+            cited.add(str(answer.get("question_code")))
+    for sha in sorted(earlier):
+        if sha not in payloads:
+            report.add("hold", "T-REVISION", unit, f"{path.name} supersedes {sha}, which is not in this directory; the flags "
+                       "it dropped cannot be checked")
+            continue
+        dropped = _blocking(payloads[sha][1]) - _blocking(payload)
+        for code in sorted(dropped - cited):
+            report.add("error", "T-REVISION", unit, f"{path.name} drops the blocking flag {code} that "
+                       f"{payloads[sha][0].name} carried, but no revision entry of the review log cites a person's answer "
+                       f"to {code} as its cause; a flag is cleared by a person, not by a revision")
+
+
+def _payload_files(triage_dir: Path) -> dict[str, list[tuple[int, Path]]]:
+    """Every payload of the directory, current or superseded, by unit: [(revision number, path)], 0 for <unit>.json."""
+    out: dict[str, list[tuple[int, Path]]] = defaultdict(list)
+    for path in sorted(triage_dir.glob("*.json")):
+        if path.name == "index.json" or path.name.endswith(RECORD_SUFFIX):
+            continue
+        match = _REVISION.match(path.stem)
+        unit, number = (match.group("unit"), int(match.group("n"))) if match else (path.stem, 0)
+        out[unit].append((number, path))
+    return {unit: sorted(items) for unit, items in out.items()}
+
+
 def validate(
     triage_dir: Path,
     catalog: dict[str, CatalogUnit] | None = None,
     listings: Iterable[ListedMember] = (),
+    *,
+    code_root: Path | None = None,
+    bundle: ReleaseBundle | None = None,
 ) -> Report:
+    """The accession's triage files as a set, with their decision records and review log.
+
+    `code_root` is the released code (SKILL.md, the prompt templates) read in place of git at each record's repo_commit;
+    `bundle` the release bundle the directory sits in (found on its own when <triage dir>/../../release-index.json
+    exists), through whose index projected inputs are checked."""
     report = Report()
-    schema = load_schema()
+    triage_dir = Path(triage_dir)
+    if bundle is None:
+        bundle = ReleaseBundle.find(triage_dir)
+    provenance = Provenance(CodeSource(code_root), bundle)
     triages: dict[str, dict[str, Any]] = {}
     files = current_triage_files(triage_dir)
     if not files:
         report.add("error", "T-SET", None, f"no triage files in {triage_dir}")
         return report
+
+    # Every payload of the directory, superseded ones included, by sha256, with what its record says it supersedes.
+    all_files = _payload_files(triage_dir)
+    payloads: dict[str, tuple[Path, dict[str, Any] | None]] = {}
+    supersedes: dict[str, str | None] = {}
+    for items in all_files.values():
+        for _number, path in items:
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            sha = sha256_bytes(raw)
+            try:
+                value = json.loads(raw.decode("utf-8-sig"))
+            except (UnicodeDecodeError, ValueError):
+                value = None
+            payloads[sha] = (path, value if isinstance(value, dict) else None)
+            try:
+                named = json.loads(path.with_name(path.name[: -len(".json")] + RECORD_SUFFIX).read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                named = None
+            if isinstance(named, dict) and isinstance(named.get("supersedes"), str):
+                supersedes[sha] = named["supersedes"]
+    log, log_problems = read_review_log(triage_dir)
+    for problem in log_problems:
+        report.add("error", "T-LOG", None, f"{REVIEW_LOG}: {problem}; the answers and revisions it records cannot be trusted")
+    answered: dict[str, set[str]] = {}
+
     for path in files:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            raw = path.read_bytes()
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             report.add("error", "T-SCHEMA", path.stem, f"{path.name} is not readable JSON: {exc}")
             continue
         unit = data.get("unit_id") if isinstance(data, dict) else None
@@ -599,6 +1204,13 @@ def validate(
             report.add("error", "T-SET", unit, f"unit {unit} is triaged twice")
             continue
         report.units.append(unit)
+        decision_id = sha256_bytes(raw)
+        schema_id = data.get("schema") if isinstance(data, dict) else None
+        report.payloads[unit] = {"payload": path.name, "schema": schema_id, "decision_id": decision_id}
+        if schema_id not in SCHEMA_PATHS:
+            report.add("error", "T-SCHEMA", unit, f"{path.name}: schema {schema_id!r} is not one of {sorted(SCHEMA_PATHS)}")
+            continue
+        schema = load_schema(schema_id)
         problems = schema_errors(data, schema, schema)
         if problems:
             for problem in problems[:20]:
@@ -614,6 +1226,13 @@ def validate(
             report.add("error", "T-CLASS", unit, f"{path.name}: {citation}; the triage binds the Catalog's rows, files and "
                        "listing and never the Class, which runs after it and binds through its own ratification "
                        "(WS0 decision F)")
+        if schema_id == SCHEMA_ID:
+            report.add("note", "T-RATIONALE", unit, f"rationale_not_recorded: {path.name} is {SCHEMA_ID}, which carries no "
+                       "confidence or rationale")
+        check_record(report, unit, triage_dir, path, raw, data, provenance)
+        answered[unit] = answered_codes(decision_id, data, supersedes, log)
+        if schema_id == SCHEMA_V2_ID:
+            check_revision(report, unit, path, decision_id, data, payloads, supersedes, log, all_files.get(unit, []))
 
     accessions = {t["accession"] for t in triages.values()}
     if len(accessions) > 1:
@@ -631,9 +1250,9 @@ def validate(
         catalog = {u: cu for u, cu in catalog.items() if u in triages or (cu.accession is not None and cu.accession == report.accession)}
 
     for unit, triage in triages.items():
-        _check_unit(report, unit, triage, triages, catalog, by_key if listed else None, resolver)
+        _check_unit(report, unit, triage, triages, catalog, by_key if listed else None, resolver, answered[unit])
 
-    _check_cross_unit(report, triages, listed, resolver)
+    _check_cross_unit(report, triages, listed, resolver, answered)
     if catalog is not None:
         missing = sorted(set(catalog) - set(triages))
         if missing and report.accession is not None:
@@ -656,7 +1275,10 @@ def _check_unit(
     catalog: dict[str, CatalogUnit] | None,
     listed: dict[str, ListedMember] | None,
     resolver: Resolver,
+    answered: set[str] | None = None,
 ) -> None:
+    answered = set(answered or ())
+    v2 = t.get("schema") == SCHEMA_V2_ID
     status = t["status"]
     flags = _flag_codes(t)
     ut = t["unit_technical"]
@@ -686,6 +1308,8 @@ def _check_unit(
             report.add("error", "T-COVER", unit, f"the Catalog has no unit {unit}")
         elif cu.accession is not None and cu.accession != t["accession"]:
             report.add("error", "T-COVER", unit, f"the Catalog puts unit {unit} in {cu.accession}, the triage in {t['accession']}")
+        elif cu.problem:
+            report.add("error", "T-HANDOFF", unit, cu.problem)
         else:
             if cu.handoff_sha256 and cu.handoff_sha256 != t["catalog_handoff_sha256"]:
                 report.add("error", "T-HANDOFF", unit, "catalog_handoff_sha256 does not match the Catalog handoff; triage again from the current handoff")
@@ -776,8 +1400,16 @@ def _check_unit(
         if unit_chrom == "unknown":
             report.add("error", "T-CHROM", unit, "a ready unit cannot have unknown chromatography")
         for code in sorted(flags & BLOCKING_FLAGS):
-            if not _cleared(t, code):
-                report.add("error", "T-STATUS", unit, f"flag {code} keeps the unit from being ready until a person answers it (person_answers code {code})")
+            if code not in answered:
+                where = (f"a person_answer in {REVIEW_LOG} with question_code {code} for this payload or one it supersedes"
+                         if v2 else f"person_answers code {code}")
+                report.add("error", "T-STATUS", unit, f"flag {code} keeps the unit from being ready until a person answers it ({where})")
+        if v2:
+            for item in [*t["rows"], *t.get("added_members", [])]:
+                if item.get("basis") == "inferred" and item.get("confidence") == "low":
+                    label = item.get("member_path") or item.get("raw_file")
+                    report.add("hold", "T-CONFIDENCE", unit, f"{label} is kept on an inferred reading at low confidence; a "
+                               "ready unit does not rest on it until a person has looked")
         if unit_ion == "both" and not t.get("children"):
             report.add("error", "T-POL", unit, "a ready unit with both polarities needs children, one per polarity and acquisition")
     else:
@@ -872,7 +1504,7 @@ def _check_unit(
                 header_acq = {"FULLSCAN": "MS1", "MS1": "MS1"}.get(value.upper(), value.upper())
                 if header_acq.replace("-", "_") not in (item["acquisition_mode"].upper(),):
                     disagrees = True
-            if disagrees and not ("folder_header_disagreement" in flags and status != "ready" or _cleared(t, "folder_header_disagreement")):
+            if disagrees and not ("folder_header_disagreement" in flags and status != "ready" or "folder_header_disagreement" in answered):
                 report.add("error", "T-HEADER", unit, f"{label}: the raw header says {e['field']}={value}, the triage says otherwise; a folder/header disagreement goes to a person")
 
         if listed is not None and item.get("member_path") and member_key(item["member_path"]) not in listed:
@@ -909,7 +1541,9 @@ def _check_unit(
             report.add("error", "T-PERSON", unit, "a person answer must name the person")
 
 
-def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed: list[ListedMember], resolver: Resolver) -> None:
+def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed: list[ListedMember], resolver: Resolver,
+                      answered: dict[str, set[str]] | None = None) -> None:
+    answered = answered or {}
     owners: dict[str, list[Kept]] = defaultdict(list)
     for unit, t in triages.items():
         for k in _kept(unit, t, resolver):
@@ -1000,7 +1634,7 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
             twin_units = sorted({u for tw in twins[key] for u in owner_of.get(tw, [])} - {unit})
             twin_inside = any(unit in owner_of.get(tw, []) for tw in twins[key])
             tag = (unit, frozenset(twin_units))
-            settled = "shared_content" in _flag_codes(t) and (t["status"] != "ready" or _cleared(t, "shared_content"))
+            settled = "shared_content" in _flag_codes(t) and (t["status"] != "ready" or "shared_content" in answered.get(unit, set()))
             if twin_inside and not settled:
                 report.add("error", "T-DUP", unit, f"{holders[0].path} has a byte-identical twin kept by the same unit")
             if tag in reported:
@@ -1118,28 +1752,133 @@ def _render(report: Report) -> str:
     return "\n".join(lines)
 
 
+# ------------------------------------------------------------------------------ --emit-selection (section 2.4)
+
+
+def _curated():
+    """scripts/campaign/curated.py, the runner's reader and the review log's only writer."""
+    scripts = str(Path(__file__).resolve().parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from campaign import curated  # noqa: PLC0415
+
+    return curated
+
+
+def emit_selection(report: Report, triage_dir: Path, *, at: str | None = None, commit: str | None = None,
+                   append: bool = True) -> dict[str, Any]:
+    """Each judged decision's selection and its validator_verdict entry in the review log.
+
+    The selection is msdial-selection-canonical.v1 over the archive listing the unit's decision record binds
+    (curated.record_inputs, as the plan and Interactive read it; none without a record), per unit and per child. The
+    verdict entry (tool, code_commit, verdict, findings_sha256, findings) is appended once per decision through
+    curated.append_review_log, the unit's findings with the accession's own; an entry that would repeat the decision's
+    last verdict entry (same code_commit, verdict and findings) is not appended again. A review log whose chain is
+    broken is not appended to."""
+    curated = _curated()
+    triage_dir = Path(triage_dir)
+    at = at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    log, problems = read_review_log(triage_dir)
+    last: dict[str, dict[str, Any]] = {}
+    for entry in log:
+        if entry.get("kind") == "validator_verdict":
+            last[str(entry.get("decision_id"))] = entry
+    selection: dict[str, Any] = {}
+    appended, repeated = [], []
+    for unit in report.units:
+        info = report.payloads.get(unit)
+        if not info:
+            continue
+        decision_id = info["decision_id"]
+        items = [{"check": f.check, "level": f.level, "message": f.message} for f in report.findings if f.unit in (unit, None)]
+        levels = {item["level"] for item in items}
+        verdict = "error" if "error" in levels else "hold" if "hold" in levels else "pass"
+        findings_sha256 = sha256_bytes(canonical_json(items))
+        block: dict[str, Any] = {"decision_id": decision_id, "verdict": verdict,
+                                 "selection_canonical_form": curated.SELECTION_CANONICAL_FORM}
+        path = triage_dir / info["payload"]
+        if unit in report.unit_status:
+            triage = json.loads(path.read_bytes().decode("utf-8"))
+            record = curated.record_path(path)
+            bound = curated.record_inputs(record, decision_id) if record.is_file() else None
+            if bound is not None and bound["problem"]:
+                block.update(selection_sha256=None, problem=bound["problem"])
+            else:
+                listing = bound["listing"] if bound is not None else {}
+                block.update(
+                    record=record.name if bound is not None else None,
+                    selection_listings=(bound or {}).get("archive_listings") or [],
+                    selection_count=len(curated.selection_canonical(triage, listing)),
+                    selection_sha256=curated.selection_sha256(triage, listing),
+                    children={str(child["child_key"]): curated.selection_sha256(triage, listing, str(child["child_key"]))
+                              for child in triage.get("children") or []},
+                )
+        else:
+            block.update(selection_sha256=None, problem="the payload is not a valid triage")
+        selection[unit] = block
+        previous = last.get(decision_id)
+        if previous is not None and (previous.get("code_commit"), previous.get("verdict"), previous.get("findings_sha256")) \
+                == (commit, verdict, findings_sha256):
+            repeated.append(unit)
+            continue
+        if append and not problems:
+            curated.append_review_log(triage_dir, "validator_verdict", decision_id, at, tool=TOOL_NAME, code_commit=commit,
+                                      verdict=verdict, findings_sha256=findings_sha256, findings=items)
+            appended.append(unit)
+    review_log: dict[str, Any] = {"path": REVIEW_LOG, "appended": appended, "already_recorded": repeated,
+                                  "head_sha256": curated.review_log_head(triage_dir)}
+    if problems:
+        review_log["refused"] = f"{REVIEW_LOG}'s chain does not hold ({problems[0]}); nothing was appended"
+    elif not append:
+        review_log["refused"] = "a release bundle is never written to; nothing was appended"
+    report.extra["selection"] = selection
+    report.extra["review_log"] = review_log
+    return report.extra
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("triage_dir", type=Path)
     parser.add_argument("--catalog", type=Path, help="handoffs directory or catalog.json")
     parser.add_argument("--archive-listing", type=Path, action="append", default=[], help="archive member TSV (repeatable)")
     parser.add_argument("--ground-truth", type=Path, help="ground_truth.json to score against")
+    parser.add_argument("--code-root", type=Path, help="the released code (skill, prompt templates) at the records' commit, "
+                        "read in place of git")
+    parser.add_argument("--release-bundle", type=Path, help="the release bundle the triage directory sits in (found on "
+                        "its own when <triage dir>/../../release-index.json exists)")
+    parser.add_argument("--emit-selection", action="store_true", help="add each unit's selection to the report and append "
+                        "a validator_verdict per decision to the accession's review-log.jsonl")
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     args = parser.parse_args(argv)
 
     if not args.triage_dir.is_dir():
         print(f"not a directory: {args.triage_dir}", file=sys.stderr)
         return 2
-    catalog = read_catalog(args.catalog) if args.catalog else None
+    bundle = None
+    if args.release_bundle is not None:
+        if not (args.release_bundle / RELEASE_INDEX).is_file():
+            print(f"not a release bundle (no {RELEASE_INDEX}): {args.release_bundle}", file=sys.stderr)
+            return 2
+        bundle = ReleaseBundle(args.release_bundle)
+    else:
+        bundle = ReleaseBundle.find(args.triage_dir)
+    catalog = read_catalog(args.catalog, bundle) if args.catalog else None
     listed: list[ListedMember] = []
     for path in args.archive_listing:
         listed += read_listing(path)
-    report = validate(args.triage_dir, catalog, listed)
+    report = validate(args.triage_dir, catalog, listed, code_root=args.code_root, bundle=bundle)
     if args.ground_truth:
         report.score = score(args.triage_dir, json.loads(args.ground_truth.read_text(encoding="utf-8")))
+    if args.emit_selection:
+        emit_selection(report, args.triage_dir, commit=code_commit(), append=bundle is None)
     print(json.dumps(report.as_dict(), indent=2, ensure_ascii=False) if args.json else _render(report))
+    if args.emit_selection and bundle is not None:
+        print("--emit-selection does not write into a release bundle; the review log was left as it is", file=sys.stderr)
+        return 2
     return {"pass": 0, "hold": 1, "error": 2}[report.verdict]
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     sys.exit(main())
