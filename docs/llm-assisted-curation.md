@@ -997,7 +997,7 @@ Built:
   decides left out of the handoff copy check (`HANDOFF_CLASS_KEYS`, `handoff_differing_keys`,
   `handoff_class_split`) and both sides' Class recorded in `original_handoff.class`; reconciliation; the
   cross-unit check, where a stated role overrides the name filter; `replay_projection` v1.
-- **The runner** (PR #60, 370f490): the plan and runner fields; the run-time copies, with the handoff comparison
+- **The runner** (PR #60, cfb8b39): the plan and runner fields; the run-time copies, with the handoff comparison
   that leaves out what the Class decides (Interactive's `HANDOFF_CLASS_KEYS`, copied and tested equal), the
   Class ratification check at the handoff step (`class_binding`, `class_not_ratified`, `class_digest_changed`), a
   copy with no `class_proposal` key held as `class_not_ratified`, the copy's sha256 checked again at the download
@@ -1006,7 +1006,7 @@ Built:
   `invalidated_after_done`; `campaign-runner.py release`, with projected triage inputs and the three path rules of
   the redaction check; `replay-campaign.py`, with a synthetic fixture test per level and an integration test
   against Interactive.
-- **The triage's Class boundary** (PR #60, 370f490): the skill never reads or cites `class_proposal`, and
+- **The triage's Class boundary** (PR #60, cfb8b39): the skill never reads or cites `class_proposal`, and
   `validate-triage.py` refuses a triage whose evidence or decision record inputs cite it (`T-CLASS`).
 
 To build:
