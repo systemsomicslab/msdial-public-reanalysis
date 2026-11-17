@@ -112,7 +112,7 @@ def aligned_docs(accession: str = ACCESSION, docs: dict | None = None, *, with_r
 
 
 def keep_triaged_handoffs(triage_root: Path, accession: str = ACCESSION, *, with_rows: bool = True) -> None:
-    """Keep, at inputs\<unit_id>\handoff.json, the handoff each aligned_docs triage was made from (class_proposal
+    """Keep, at inputs\\<unit_id>\\handoff.json, the handoff each aligned_docs triage was made from (class_proposal
     null, before any Class was saved), as the framework keeps it: the handoff taken at run time carries the Class the
     campaign ratified, and the runner compares the two in every value but what the Class decides."""
     fixture = json.loads((te.fixture_dir(accession) / "catalog.json").read_text(encoding="utf-8"))
