@@ -211,6 +211,24 @@ def check_review_log(row: Row, chosen: dict[str, Any], folder: Path) -> None:
                        "replayed": line_sha256[-1] if line_sha256 else None, **({"why": "; ".join(problems[:5])} if problems else {})})
 
 
+def validate_accession(bundle: Path, folder: Path) -> dict[str, Any]:
+    """scripts/validate-triage.py over one accession of the bundle. Where the release wrote the accession's Catalog
+    handoffs as projections (WS0 decision C: their sidecar paths were absolute), the validator reads the same rows as a
+    catalog.json whose handoff sha256 is the original's the release index names (curated.released_catalog), once each
+    projection is checked against the index; a projection that is not the bytes the index names is reported, and the
+    validator then reads the bundle's files as they are."""
+    import tempfile
+
+    catalog, problems = curated.released_catalog(bundle, folder)
+    if catalog is None:
+        result = curated.run_validator(folder)
+        return {**result, **({"released_inputs_problems": problems} if problems else {})}
+    with tempfile.TemporaryDirectory() as scratch:
+        path = Path(scratch) / "catalog.json"
+        path.write_text(json.dumps(catalog), encoding="utf-8")
+        return curated.run_validator(folder, catalog_override=path)
+
+
 def replay_selection(bundle: Path, manifest: dict[str, Any], units: list[dict[str, Any]], out_dir: Path,
                      rows: dict[str, Row]) -> None:
     root = triage_root(bundle, manifest)
@@ -230,8 +248,11 @@ def replay_selection(bundle: Path, manifest: dict[str, Any], units: list[dict[st
         check_review_log(row, chosen, folder)
         accession = folder.name
         if accession not in verdicts:
-            verdicts[accession] = curated.run_validator(folder)
+            verdicts[accession] = validate_accession(bundle, folder)
         validation = verdicts[accession]
+        if validation.get("released_inputs_problems"):
+            row.checks.append({"check": "released_triage_inputs", "result": DIFFERENT, "expected": "release_sha256",
+                               "replayed": None, "why": "; ".join(validation["released_inputs_problems"][:5])})
         row.compare("validator_verdict", (chosen.get("validator") or {}).get("verdict"), validation.get("verdict"))
         row.compare("validator_sha256", (chosen.get("validator") or {}).get("script_sha256"), validation.get("validator_sha256"))
         triage = json.loads(raw.decode("utf-8"))

@@ -35,7 +35,7 @@ sys.path.insert(0, str(TESTS))
 import campaign_fakes  # noqa: E402  (puts scripts/ on the path)
 import test_campaign_contract as contract  # noqa: E402  (puts Interactive and the Catalog on the path)
 import triage_eval as te  # noqa: E402
-from campaign import curated, plan, policy, ports  # noqa: E402
+from campaign import curated, machine, plan, policy, ports  # noqa: E402
 
 SCRIPTS = TESTS.parent / "scripts"
 _SPEC = importlib.util.spec_from_file_location("campaign_runner_cli", SCRIPTS / "campaign-runner.py")
@@ -399,6 +399,12 @@ def curated_world(root: Path, units: dict[str, dict], *, groups: dict | None = N
         rows_of[catalog_id] = rows
         handoff = campaign_fakes.fake_handoff(catalog_id, campaign_fakes.World.class_digest(catalog_id), rows)
         handoff_sha = item.get("handoff_sha256") or hashlib.sha256(campaign_fakes.handoff_bytes(handoff)).hexdigest()
+        if item.get("triaged_handoff") is not None:
+            # The handoff the triage was made from, kept where the framework keeps it (inputs\<unit_id>\handoff.json).
+            data = campaign_fakes.handoff_bytes(item["triaged_handoff"])
+            (folder / "inputs" / catalog_id).mkdir(parents=True, exist_ok=True)
+            (folder / "inputs" / catalog_id / "handoff.json").write_bytes(data)
+            handoff_sha = hashlib.sha256(data).hexdigest()
         path = folder / f"{catalog_id}.json"
         if not path.is_file():
             triage = {
@@ -818,8 +824,13 @@ class LateSiblingTests(_Root):
         self.assertEqual([world.interactive._unit_of_manifest(path) for path in last], ["u1", "u2"],
                          "the unit that already ran is first")
 
-    def test_a_verdict_against_a_unit_that_already_ran_refuses_the_newcomer(self) -> None:
+    def test_a_verdict_against_a_unit_that_already_ran_refuses_the_newcomer_and_invalidates_the_unit(self) -> None:
+        """WS0 decision B: the unit that ran is never left silently done. It ends invalidated_after_done (terminal), its
+        outputs kept and flagged invalid in its record, the status export and the decision ledger, for a person."""
         world = self.world()
+        workspace = Path(unit_row(world, "u1")["workspace"])
+        before = {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*")
+                  if path.is_file() and path.name != "campaign-record.json"}
         world.interactive.cross_unit_refusals = {"u1": ("cross_unit_polarity_contradiction", "P")}
         request(world, "retry", "u2", "network fixed", "operator")
         world.run()
@@ -827,7 +838,217 @@ class LateSiblingTests(_Root):
         self.assertEqual((u2["state"], u2["terminal_reason"]), ("failed", policy.ATTRIBUTION_REFUSED))
         self.assertEqual(json.loads(u2["terminal_detail"])["reason_code"], "cross_unit_polarity_contradiction")
         self.assertNotIn(("u2", "run"), world.interactive.console_starts)
-        self.assertEqual(events(world, "cross_unit_verdict")[-1]["detail"]["refused"]["u2"]["with"], "u1")
+        verdict = events(world, "cross_unit_verdict")[-1]["detail"]
+        self.assertEqual(verdict["refused"]["u2"]["with"], "u1")
+        self.assertEqual(verdict["refused_after_pass"], ["u1"])
+        u1 = unit_row(world, "u1")
+        self.assertEqual((u1["state"], u1["terminal_reason"]), ("invalidated_after_done", policy.ATTRIBUTION_REFUSED))
+        self.assertTrue(u1["outputs_produced"])
+        detail = json.loads(u1["terminal_detail"])
+        self.assertEqual((detail["reason_code"], detail["rule"], detail["outputs"], detail["question_code"]),
+                         ("cross_unit_polarity_contradiction", "P", "kept_flagged_invalid", "cross_unit_refused_after_done"))
+        # Nothing of what it produced was deleted; its record says the outputs are not valid.
+        after = {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*")
+                 if path.is_file() and path.name != "campaign-record.json"}
+        self.assertEqual(after, before)
+        record = json.loads((workspace / "campaign-record.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["state"], record["completed"], record["outputs_valid"]), ("invalidated_after_done", False, False))
+        self.assertEqual(record["invalidation"]["question_code"], "cross_unit_refused_after_done")
+        self.assertEqual(world.catalog.runs[[key for key in world.catalog.runs if key.startswith("u1:")][-1]]["status"],
+                         "invalidated_after_done")
+        refusal = [item["detail"] for item in events(world, "terminal_refusal") if item["unit_key"] == "u1"]
+        self.assertEqual(len(refusal), 1)
+        self.assertTrue(refusal[0]["invalidated_after_done"])
+        # The status export flags it, and counts it as neither completed nor valid.
+        with world.open() as book:
+            document, tsv = machine.export_status(book)
+        row = next(item for item in document["units"] if item["unit_key"] == "u1")
+        self.assertEqual((row["completed"], row["outputs_valid"]), (False, False))
+        self.assertIn("invalidated_after_done", row["report_terms"])
+        self.assertTrue(any("invalidated after done" in warning for warning in row["warnings"]))
+        self.assertEqual(document["summary"]["invalidated_after_done"]["unit_keys"], ["u1"])
+        self.assertEqual(document["summary"][policy.COMPLETED], 0)
+        self.assertIn("invalidated_after_done", tsv)
+        lines, _text = exported(world)
+        self.assertTrue(any(line["kind"] == "terminal_refusal" and line["unit_key"] == "u1" for line in lines))
+
+    def test_a_unit_still_on_its_way_when_refused_late_is_invalidated_instead_of_done(self) -> None:
+        """The late refusal of a unit that passed and has not reached done yet: it runs on, and ends
+        invalidated_after_done in place of done; the sibling the verdict passed is done."""
+        world = curated_world(self.root, {"u1": {}, "u2": {}}, groups={"g": ["u1", "u2"]})
+        run_until(world, "u2", "releasing")
+        with world.open() as book:
+            group = book.unit("u2")["download_group_id"]
+            book.event("cross_unit_verdict", world.runner(book).stamp(), {
+                "standing": "deterministic_check", "group": group, "units": ["u1", "u2"], "verdict": "refused",
+                "refused": {"u2": {"reason_code": "cross_unit_inputs_contained", "reasons": ["cross_unit_inputs_contained"],
+                                   "rule": "S", "with": "u1", "refused_against": ["u1"]}}}, unit_key="u1")
+        world.run()
+        u2 = unit_row(world, "u2")
+        self.assertEqual(u2["state"], "invalidated_after_done")
+        self.assertEqual(json.loads(u2["terminal_detail"])["rule"], "S")
+        self.assertEqual(unit_row(world, "u1")["state"], "done")
+        with world.open() as book:
+            self.assertNotIn("done", [row["to_state"] for row in book.transitions("u2")])
+
+
+def exported(world: campaign_fakes.World) -> tuple[list[dict], str]:
+    target = world.directory / curated.DECISION_LEDGER
+    with world.open() as book:
+        curated.export_decision_ledger(target, book.events())
+    text = target.read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines()], text
+
+
+class BarrierAndSingleMemberTests(_Root):
+    """WS0 decision B (prevention) and the single-member low: a sibling held before its download holds the group at the
+    barrier; a curated unit alone in its group is recorded as not applicable."""
+
+    def test_a_sibling_held_at_its_handoff_holds_the_group_until_a_person_answers(self) -> None:
+        world = curated_world(self.root, {"u1": {}, "u2": {"handoff_sha256": "f" * 64}}, groups={"g": ["u1", "u2"]})
+        with world.open() as book:
+            world.runner(book).run(max_iterations=200)
+        self.assertEqual(unit_row(world, "u2")["state"], "contract_held")
+        u1 = unit_row(world, "u1")
+        self.assertEqual((u1["state"], u1["resume_state"]), ("waiting_retry", "preflighted"))
+        self.assertEqual(world.interactive.cross_unit_calls, [])
+        self.assertNotIn(("u1", "run"), world.interactive.console_starts)
+        with world.open() as book:
+            waits = [json.loads(row["detail_json"]) for row in book.transitions("u1") if row["to_state"] == "waiting_retry"]
+        self.assertEqual(waits[-1].get("held_before_download"), ["u2"])
+        # The person's answer: the held sibling is skipped (it ends before its download), and the group goes on.
+        request(world, "skip", "u2", "the handoff changed; dropped from this campaign", "operator")
+        world.run()
+        self.assertEqual(unit_row(world, "u2")["state"], "skipped")
+        self.assertEqual(unit_row(world, "u1")["state"], "done")
+        verdict = events(world, "cross_unit_verdict")[-1]["detail"]
+        self.assertEqual((verdict["verdict"], verdict["reason"]), ("not_applicable", "single_member"))
+
+    def test_a_curated_unit_alone_in_its_group_is_recorded_once_as_not_applicable(self) -> None:
+        world = curated_world(self.root, {"u1": {}})
+        world.run()
+        self.assertEqual(unit_row(world, "u1")["state"], "done")
+        verdicts = [item for item in events(world, "cross_unit_verdict") if item["unit_key"] == "u1"]
+        self.assertEqual(len(verdicts), 1)
+        self.assertEqual((verdicts[0]["detail"]["verdict"], verdicts[0]["detail"]["reason"], verdicts[0]["detail"]["units"]),
+                         ("not_applicable", "single_member", ["u1"]))
+        self.assertEqual(world.interactive.cross_unit_calls, [])
+
+    def test_a_class_digest_drift_of_a_curated_unit_is_a_terminal_refusal_in_the_ledger(self) -> None:
+        world = curated_world(self.root, {"u1": {}})
+        world.catalog.drift.add("u1")
+        world.run()
+        unit = unit_row(world, "u1")
+        self.assertEqual((unit["state"], unit["terminal_reason"]), ("stopped_policy_drift", "class_digest_changed"))
+        refusal = [item["detail"] for item in events(world, "terminal_refusal") if item["unit_key"] == "u1"]
+        self.assertEqual([(item["reason"], item["reason_code"], item["step"]) for item in refusal],
+                         [("policy_drift", "class_digest_changed", "class")])
+        kinds = [line["kind"] for line in exported(world)[0] if line.get("unit_key") in ("u1", None)]
+        self.assertEqual(kinds[-1], "terminal_refusal", "the released ledger never ends at the approval")
+
+
+class RatifiedHandoffTests(_Root):
+    """WS0 decision A against a Catalog-shaped handoff: the runner's own ratification at boundary 3 is embedded in the
+    handoff it then takes, so the handoff differs from the triaged one in that ratification. It passes, with the
+    triaged bytes kept for Interactive; any other difference is a hold."""
+
+    RATIFIED_A = {"kind": "campaign_approval", "authorization_schema": "msdial-campaign-authorization.v1", "boundary": 3,
+                  "approval_id": "appr-A", "manifest_digest": "sha256:" + "1" * 64, "authorization_sha256": "2" * 64,
+                  "campaign_id": "campaign-a", "proposal_id": campaign_fakes.World.class_digest("u1"),
+                  "abstention": True, "ratified_at": "2026-11-16T02:00:00+00:00"}
+
+    def triaged(self, ratification: dict | None, **changes: object) -> dict:
+        rows = [{"sample_id": "u1-S1", "raw_file": "S1"}, {"sample_id": "u1-S2", "raw_file": "S2"}]
+        value = campaign_fakes.catalog_shaped_handoff(self.root / "catalog-data" / "handoffs", "u1",
+                                                      campaign_fakes.World.class_digest("u1"), rows, ratification)
+        value["class_proposal"].update(changes)
+        return value
+
+    def world(self, ratification: dict | None = RATIFIED_A, **changes: object) -> campaign_fakes.World:
+        world = curated_world(self.root, {"u1": {"triaged_handoff": self.triaged(ratification, **changes)}})
+        world.catalog.catalog_shaped = True
+        return world
+
+    def test_a_handoff_reratified_under_this_campaign_passes_with_the_triaged_bytes_kept(self) -> None:
+        world = self.world()
+        world.run()
+        self.assertEqual(unit_row(world, "u1")["state"], "done")
+        triaged = (self.root / "triage" / "ACC1" / "inputs" / "u1" / "handoff.json").read_bytes()
+        taken = (world.root / "catalog-data" / "handoffs" / "u1.json").read_bytes()
+        self.assertNotEqual(hashlib.sha256(triaged).digest(), hashlib.sha256(taken).digest())
+        checked = events(world, "triage_checked")[0]["detail"]
+        self.assertEqual((checked["verdict"], checked["handoff_identity"]), ("pass", "ratification_only"))
+        self.assertEqual(checked["original_handoff_sha256"], hashlib.sha256(triaged).hexdigest())
+        self.assertEqual(checked["ratification"]["original"]["ratification.approval_id"], "appr-A")
+        self.assertEqual(checked["ratification"]["copy"]["ratification.approval_id"], world.approval["approval_id"])
+        self.assertEqual(checked["ratification"]["copy"]["ratified_by"], world.approval["approval_id"])
+        self.assertFalse(Path(checked["triaged_copy_path"]).is_absolute())
+        sent = world.interactive.curated_downloads[0]
+        self.assertEqual(sent["original_handoff_sha256"], hashlib.sha256(triaged).hexdigest())
+        self.assertTrue(sent["original_handoff_path"].endswith("handoff.triaged.json"))
+        self.assertEqual(Path(sent["original_handoff_path"]).read_bytes(), triaged)
+
+    def test_any_other_difference_of_the_proposal_is_held_for_a_person(self) -> None:
+        for label, ratification, changes in (
+                ("another assignment", RatifiedHandoffTests.RATIFIED_A,
+                 {"assignments": [{"sample_id": "u1-S1", "class_label": "B", "values": {}},
+                                  {"sample_id": "u1-S2", "class_label": "All", "values": {}}]}),
+                ("another status", RatifiedHandoffTests.RATIFIED_A, {"status": "proposed"}),
+                ("no ratification when triaged", None, {})):
+            with self.subTest(label):
+                self.root = Path(tempfile.mkdtemp(dir=self.directory.name))
+                world = self.world(ratification, **changes)
+                with world.open() as book:
+                    world.runner(book).run(max_iterations=60)
+                self.assertEqual(unit_row(world, "u1")["state"], "contract_held")
+                checked = events(world, "triage_checked")[0]["detail"]
+                self.assertEqual((checked["verdict"], checked["reason"], checked["differing_keys"]),
+                                 ("held", "triage_handoff_changed", ["class_proposal"]))
+                self.assertEqual(world.interactive.download_starts, [])
+
+    def test_a_handoff_whose_triaged_bytes_are_not_kept_is_held(self) -> None:
+        world = self.world()
+        (self.root / "triage" / "ACC1" / "inputs" / "u1" / "handoff.json").unlink()
+        with world.open() as book:
+            world.runner(book).run(max_iterations=60)
+        self.assertEqual(unit_row(world, "u1")["state"], "contract_held")
+        checked = events(world, "triage_checked")[0]["detail"]
+        self.assertEqual((checked["verdict"], checked["triaged_bytes_found"]), ("held", False))
+
+    def test_a_changed_sidecar_is_held(self) -> None:
+        # The triaged handoff's sample table lists other rows than the one the Catalog writes at run time.
+        other = self.root / "elsewhere" / "u1.samples.json"
+        other.parent.mkdir(parents=True)
+        other.write_text(json.dumps([{"sample_id": "other"}]), encoding="utf-8")
+        triaged = self.triaged(self.RATIFIED_A)
+        triaged["sample_table_path"] = str(other)
+        world = curated_world(self.root, {"u1": {"triaged_handoff": triaged}})
+        world.catalog.catalog_shaped = True
+        with world.open() as book:
+            world.runner(book).run(max_iterations=60)
+        checked = events(world, "triage_checked")[0]["detail"]
+        self.assertEqual((checked["verdict"], checked["sidecar"]), ("held", "sample_table_path"))
+        self.assertEqual(world.interactive.download_starts, [])
+
+
+class WorkspaceNameTests(unittest.TestCase):
+    """The plan refuses a workspace name Interactive would refuse as workspace_unit_key (WS0 low, 2026-11-17)."""
+
+    def test_the_names_interactive_refuses_are_refused(self) -> None:
+        for name in ("AN1", "AN1-pos", "AN1@stage3c", "AN1.r2", "AN1+x", "AN1_reopen"):
+            self.assertEqual(curated.workspace_name_problem(name, "AN1"), "", name)
+        for name in ("AN10", "BN1", "x-AN1", "AN1/..", "AN1\\x", "AN1..x", "AN1.", "AN1 x", "", "AN1@" + "x" * 130,
+                     "AN1@pilot.", "AN1@a..b"):
+            self.assertTrue(curated.workspace_name_problem(name, "AN1"), name)
+
+    def test_a_reopen_under_a_campaign_id_interactive_refuses_is_a_plan_error(self) -> None:
+        unit = {"unit_id": "AN004454", "ion_mode": "Positive", "acquisition_mode": "DDA"}
+        entry = {"child": None, "curated_selection": {}, "class_on_triaged_rows": {}}
+        for campaign_id in ("pilot.", "a..b", "x" * 130):
+            with self.subTest(campaign_id=campaign_id), self.assertRaises(plan.PlanError):
+                plan._curated_units(unit, [entry], campaign_id, {}, {"AN004454": {"reason_code": "r"}})
+        self.assertEqual(plan._curated_units(unit, [entry], "stage3c", {}, {"AN004454": {"reason_code": "r"}})[0]["workspace_name"],
+                         "AN004454@stage3c")
 
 
 class ReconciliationAndPersonTests(_Root):
@@ -1061,6 +1282,109 @@ class EndToEndTests(_Root):
         campaign = [row for row in report["units"] if row["unit_key"] == "(campaign)"][0]
         self.assertEqual({item["check"]: item["result"] for item in campaign["checks"]}["release_projection_sha256"],
                          replay_cli.DIFFERENT)
+
+    def test_catalog_handoffs_with_absolute_paths_are_released_as_projections_and_replayed(self) -> None:
+        """WS0 decisions A and C on one campaign: the triage is made from the Catalog's own handoffs (sidecars at
+        absolute paths, the Class proposal ratified under another campaign), kept at inputs\\<unit_id>\\handoff.json.
+        The runner re-ratifies and runs each unit on the triaged bytes (A). The release projects the handoffs
+        (workspace-relative or <external>/<name>), lists the original and the released sha256 of each, passes the
+        redaction check, and the replay validates them against the original sha256 the index names (C)."""
+        fixture = json.loads((te.fixture_dir(ACCESSION) / "catalog.json").read_text(encoding="utf-8"))
+        rows = {unit["unit_id"]: unit["rows"] for unit in fixture["units"]}
+        docs = te.build_good(ACCESSION)
+        triage_root = write_triage(self.root, docs)
+        folder = triage_root / ACCESSION
+        sidecars = self.root / "run" / "catalog-data" / "handoffs"
+        originals = {}
+        for unit_id, doc in docs.items():
+            ratification = {"kind": "campaign_approval", "authorization_schema": "msdial-campaign-authorization.v1",
+                            "boundary": 3, "approval_id": "appr-A", "manifest_digest": "sha256:" + "1" * 64,
+                            "authorization_sha256": "2" * 64, "campaign_id": "campaign-a",
+                            "proposal_id": campaign_fakes.World.class_digest(unit_id), "abstention": True,
+                            "ratified_at": "2026-11-16T02:00:00+00:00"}
+            handoff = campaign_fakes.catalog_shaped_handoff(sidecars, unit_id, campaign_fakes.World.class_digest(unit_id),
+                                                            rows[unit_id], ratification, {"accession": ACCESSION})
+            data = campaign_fakes.handoff_bytes(handoff)
+            (folder / "inputs" / unit_id).mkdir(parents=True, exist_ok=True)
+            (folder / "inputs" / unit_id / "handoff.json").write_bytes(data)
+            originals[unit_id] = hashlib.sha256(data).hexdigest()
+            doc["catalog_handoff_sha256"] = originals[unit_id]
+        te.write(docs, folder)
+        self.assertRegex((folder / "inputs" / "AN004454" / "handoff.json").read_text(encoding="utf-8"), r'"[A-Za-z]:[\\/]')
+        self.assertEqual(curated.run_validator(folder)["verdict"], "pass")
+        catalog = ports.read_only_catalog(self.database)
+        try:
+            manifest = plan.build_manifest(
+                catalog, pool="declared", campaign_id="test-campaign", analysis_purpose="annotation",
+                workspace_root=self.root / "run" / "analysis", raw_retention_policy="keep",
+                pins={"catalog": {"version": "0.6.1"}, "libraries": [], "interactive": {"version": "0.5.69"}},
+                profile=None, campaign_policy=policy.CampaignPolicy(),
+                class_decision=lambda unit_id: ports.decide_class(catalog, unit_id, "annotation"),
+                catalog_database=str(self.database), triage_dir=triage_root)
+        finally:
+            catalog.close()
+        keys = [unit["unit_key"] for unit in manifest["units"]]
+        self.assertEqual(sorted(keys), list(UNITS))
+        world = campaign_fakes.World(self.root / "run", keys, manifest=manifest, download_groups={"g": keys},
+                                     handoff_rows=rows, handoff_extra={key: {"accession": ACCESSION} for key in keys})
+        world.catalog.catalog_shaped = True
+        digest = world.digest
+        world.run()
+        self.assertEqual({unit_row(world, key)["state"] for key in keys}, {"done"})
+        self.assertEqual({item["detail"]["handoff_identity"] for item in events(world, "triage_checked")}, {"ratification_only"})
+        with world.open() as book:
+            curated.export_decision_ledger(world.directory / curated.DECISION_LEDGER, book.events())
+        release = self.root / "release"
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = runner_cli.main(["--workspace-root", str(world.workspace_root), "release", "--campaign", "test-campaign",
+                                    "--out", str(release)])
+        self.assertEqual(code, runner_cli.EXIT_OK, err.getvalue())
+        self.assertEqual(curated.release_redaction_findings(release), [])
+        index = json.loads((release / "release-index.json").read_text(encoding="utf-8"))
+        self.assertEqual(index["approved_manifest_digest"], digest)
+        inputs = {item["name"]: item for item in index["triage_inputs"]}
+        self.assertEqual(sorted(inputs), [f"triage/{ACCESSION}/inputs/{key}/handoff.json" for key in sorted(UNITS)])
+        for key in UNITS:
+            entry = inputs[f"triage/{ACCESSION}/inputs/{key}/handoff.json"]
+            released = (release / entry["release"]).read_bytes()
+            # The original's sha256 is the one the triage (and so the approved manifest) names; the released bytes are
+            # the projection's, whose sidecar paths name no drive.
+            self.assertEqual(entry["original_sha256"], originals[key])
+            self.assertEqual(entry["release_sha256"], hashlib.sha256(released).hexdigest())
+            self.assertNotEqual(entry["release_sha256"], entry["original_sha256"])
+            value = json.loads(released)
+            self.assertEqual(value["sample_table_path"], f"<external>/{key}.samples.json")
+        # The triage payloads, the listing and the catalog.json are released byte for byte.
+        for name in [f"{key}.json" for key in UNITS] + ["inputs/archive-members.tsv"]:
+            self.assertEqual((release / "triage" / ACCESSION / name).read_bytes(), (folder / name).read_bytes(), name)
+        report = replay_cli.replay(release, self.root / "w", "selection", out=self.root / "r-projected.json")
+        self.assertEqual((report["bundle"], report["result"]), ("release", replay_cli.EQUAL), json.dumps(report, indent=1))
+        # A projection whose bytes are not the ones the index names is a difference, never the original's on trust.
+        target = release / f"triage/{ACCESSION}/inputs/AN004455/handoff.json"
+        target.write_bytes(target.read_bytes().replace(b"<external>", b"<elsewhere>"))
+        report = replay_cli.replay(release, self.root / "w", "selection", out=self.root / "r-tampered.json")
+        self.assertEqual(report["result"], replay_cli.DIFFERENT)
+
+    def test_a_release_refuses_a_payload_that_holds_an_absolute_path(self) -> None:
+        campaign = self.root / "campaign"
+        triage = self.root / "triage"
+        (triage / "ACC1").mkdir(parents=True)
+        (triage / "ACC1" / "u1.json").write_text(json.dumps({"note": str(self.root / "somewhere.raw")}), encoding="utf-8")
+        campaign.mkdir()
+        (campaign / "campaign-manifest.json").write_text(json.dumps({"units": [], "triage": {"directory": str(triage)}}),
+                                                         encoding="utf-8")
+        with self.assertRaisesRegex(curated.TriageError, "u1.json holds an absolute path"):
+            curated.write_release(campaign_dir=campaign, out=self.root / "out", workspace_root=self.root / "analysis",
+                                  approved_digest="sha256:" + "0" * 64)
+        self.assertFalse((self.root / "out" / curated.RELEASE_INDEX).exists())
+        # A ledger line that names a drive fails the redaction check of the whole bundle.
+        (triage / "ACC1" / "u1.json").write_text("{}", encoding="utf-8")
+        (campaign / curated.DECISION_LEDGER).write_text(json.dumps({"detail": "C:\\Users\\someone\\x"}) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(curated.TriageError, "redaction"):
+            curated.write_release(campaign_dir=campaign, out=self.root / "out2", workspace_root=self.root / "analysis",
+                                  approved_digest="sha256:" + "0" * 64)
+        self.assertFalse((self.root / "out2" / curated.RELEASE_INDEX).exists())
 
     def test_records_and_revisions_are_planned_and_replayed_with_their_review_log(self) -> None:
         triage_root = write_triage(self.root)

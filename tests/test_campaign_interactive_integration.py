@@ -238,11 +238,18 @@ class RealInteractive(campaign_fakes.FakeInteractive):
 
 
 def triage_world(root: Path, accession: str, docs: dict[str, dict], *, record: bool, headers=None,
-                 keys: list[str] | None = None) -> tuple[campaign_fakes.World, dict[str, dict]]:
+                 keys: list[str] | None = None, ratified: dict[str, dict | None] | None = None,
+                 proposal_changes: dict[str, dict] | None = None) -> tuple[campaign_fakes.World, dict[str, dict]]:
     """A World whose approved manifest plans `docs` (one unit each, all in one download group) from triage files under
     <root>\\triage\\<accession>, each made from the handoff the fake Catalog writes for its unit (with the accession,
     as a real handoff carries it), with Interactive's code behind the fake. `record` writes each triage's decision
-    record binding the accession's archive listing. Returns the world and the planned manifest entries."""
+    record binding the accession's archive listing. Returns the world and the planned manifest entries.
+
+    `ratified` (WS0 decision A), by unit id: the fake Catalog writes handoffs of the Catalog's shape (sidecars at
+    absolute paths, the Class proposal with the ratification the runner saves at boundary 3), and each triage is made
+    from such a handoff carrying the ratification record named here (another campaign's, or None for none), kept at
+    inputs\\<unit_id>\\handoff.json and, with `record`, bound as the record's catalog_handoff input. `proposal_changes`
+    changes a unit's triaged proposal."""
     fixture = json.loads((te.fixture_dir(accession) / "catalog.json").read_text(encoding="utf-8"))
     rows = {unit["unit_id"]: unit["rows"] for unit in fixture["units"]}
     extra = {unit_id: {"accession": accession, "repository": REPOSITORY} for unit_id in docs}
@@ -252,8 +259,17 @@ def triage_world(root: Path, accession: str, docs: dict[str, dict], *, record: b
     listing = inputs / "archive-members.tsv"
     listing.write_bytes((te.fixture_dir(accession) / "archive-members.tsv").read_bytes())
     planned = []
+    shaped = ratified is not None
     for unit_id, doc in docs.items():
-        handoff = campaign_fakes.fake_handoff(unit_id, campaign_fakes.World.class_digest(unit_id), rows[unit_id], extra[unit_id])
+        if shaped:
+            handoff = campaign_fakes.catalog_shaped_handoff(
+                root / "run" / "catalog-data" / "handoffs", unit_id, campaign_fakes.World.class_digest(unit_id),
+                rows[unit_id], (ratified or {}).get(unit_id), extra[unit_id])
+            handoff["class_proposal"].update((proposal_changes or {}).get(unit_id) or {})
+            (inputs / unit_id).mkdir(parents=True, exist_ok=True)
+            (inputs / unit_id / "handoff.json").write_bytes(campaign_fakes.handoff_bytes(handoff))
+        else:
+            handoff = campaign_fakes.fake_handoff(unit_id, campaign_fakes.World.class_digest(unit_id), rows[unit_id], extra[unit_id])
         doc = copy.deepcopy(doc)
         doc["catalog_handoff_sha256"] = _sha(campaign_fakes.handoff_bytes(handoff))
         path = folder / f"{unit_id}.json"
@@ -268,7 +284,9 @@ def triage_world(root: Path, accession: str, docs: dict[str, dict], *, record: b
                 "unit_id": unit_id, "payload": {"path": path.name, "schema": doc["schema"], "sha256": sha},
                 "agent": {"harness": "synthetic-harness", "model_id": "synthetic-model"},
                 "inputs": [{"role": "archive_listing", "path": "inputs/archive-members.tsv", "sha256": _sha(listing.read_bytes()),
-                            "bytes": listing.stat().st_size}]}), encoding="utf-8")
+                            "bytes": listing.stat().st_size}]
+                + ([{"role": "catalog_handoff", "path": f"inputs/{unit_id}/handoff.json",
+                     "sha256": doc["catalog_handoff_sha256"]}] if shaped else [])}), encoding="utf-8")
             bound = curated.record_inputs(record_path, sha)["listing"]
             record_sha = _sha(record_path.read_bytes())
         planned.append({
@@ -287,6 +305,7 @@ def triage_world(root: Path, accession: str, docs: dict[str, dict], *, record: b
                                  handoff_rows=rows, handoff_extra=extra)
     world.interactive = RealInteractive(world, headers=headers)
     world.interactive.listings["*"] = listing
+    world.catalog.catalog_shaped = shaped
     return world, {item["unit_key"]: item for item in planned}
 
 
@@ -446,6 +465,158 @@ class RunnerWithInteractiveTests(cs._Root):
         self.assertEqual([item["workspace_unit_key"] for item in sent], ["AN004456@again"])
         with self.assertRaises(ValueError):
             ia_rr.validate_workspace_unit_key("AN004457@again", "AN004456")
+
+
+# ---- WS0 decision A: a handoff re-ratified under this campaign, against Interactive's own comparison -------------------
+
+CAMPAIGN_A = {"kind": "campaign_approval", "authorization_schema": "msdial-campaign-authorization.v1", "boundary": 3,
+              "approval_id": "appr-A", "manifest_digest": "sha256:" + "1" * 64, "authorization_sha256": "2" * 64,
+              "campaign_id": "campaign-a", "proposal_id": "", "abstention": True,
+              "ratified_at": "2026-11-16T02:00:00+00:00"}
+
+
+def ratified_a(unit_id: str) -> dict:
+    """Campaign A's ratification record of the unit's Class, as the Catalog embeds it in a handoff."""
+    return {**CAMPAIGN_A, "proposal_id": campaign_fakes.World.class_digest(unit_id)}
+
+
+@unittest.skipUnless(REAL, "the pinned Interactive predates 0.5.69's curated selection (set MSDIAL_INTERACTIVE_ROOT)")
+class RatifiedHandoffAgainstInteractiveTests(cs._Root):
+    """The triage names the handoff as the Catalog wrote it under campaign A's ratification; the runner ratifies the
+    approved Class under its own approval (boundary 3) and takes the handoff again, which now embeds that ratification.
+    The runner passes it only where Interactive's verify_handoff_copy (HANDOFF_RATIFICATION_KEYS) does, and holds it
+    otherwise, before any byte moves."""
+
+    def _write(self, name: str, value) -> Path:
+        path = self.root / "written" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value, indent=1, sort_keys=True), encoding="utf-8")
+        return path
+
+    def test_the_runner_and_interactive_exclude_the_same_keys(self) -> None:
+        self.assertEqual(curated.HANDOFF_RATIFICATION_KEYS, ia.HANDOFF_RATIFICATION_KEYS)
+        self.assertEqual(tuple(curated.HANDOFF_COPY_REWRITTEN_KEYS), tuple(ia.HANDOFF_COPY_REWRITTEN_KEYS))
+
+    def test_the_runner_decides_each_difference_as_interactive_does(self) -> None:
+        rows = [{"sample_id": "S1", "raw_file": "S1"}, {"sample_id": "S2", "raw_file": "S2"}]
+        triaged = campaign_fakes.catalog_shaped_handoff(self.root / "catalog", "AN1", "class-1", rows, ratified_a("AN1"))
+        triaged_path = self._write("triaged.json", triaged)
+        later = {**ratified_a("AN1"), "approval_id": "appr-B", "campaign_id": "campaign-b", "manifest_digest": "sha256:" + "3" * 64,
+                 "authorization_sha256": "4" * 64, "ratified_at": "2026-11-17T03:00:00+00:00"}
+        other_rows = self._write("other-rows.json", [{"sample_id": "x"}])
+        same_rows = self._write("same-rows.json", rows)
+        cases = {
+            "re-ratified": (True, lambda value: value["class_proposal"].update(ratification=dict(later), ratified_by="appr-B")),
+            "unchanged": (True, lambda value: None),
+            "a sidecar moved, same rows": (True, lambda value: value.update(sample_table_path=str(same_rows))),
+            "another assignment": (False, lambda value: value["class_proposal"]["assignments"][0].update(class_label="B")),
+            "another ratified proposal": (False, lambda value: value["class_proposal"]["ratification"].update(proposal_id="x")),
+            "an added ratification key": (False, lambda value: value["class_proposal"]["ratification"].update(note="x")),
+            "no ratification": (False, lambda value: value["class_proposal"].update(ratification=None, ratified_by="")),
+            "another unit attribute": (False, lambda value: value.update(unit_attributes={"Group": ["A"]})),
+            "other sidecar rows": (False, lambda value: value.update(sample_table_path=str(other_rows))),
+        }
+        for index, (label, (expected, change)) in enumerate(cases.items()):
+            with self.subTest(label):
+                current = json.loads(json.dumps(triaged))
+                change(current)
+                current_path = self._write(f"current-{index}.json", current)
+                runner = curated.handoff_difference(triaged_path, current_path)
+                try:
+                    found = ia.verify_handoff_copy(triaged_path, current)
+                    interactive_passes = True
+                except ia.CuratedSelectionError:
+                    found, interactive_passes = None, False
+                self.assertEqual((runner["same"], interactive_passes), (expected, expected))
+                if found is not None:
+                    self.assertEqual(runner["ratification"], found["ratification"])
+
+    def test_st002747_reratified_by_the_runner_runs_with_both_ratifications_recorded(self) -> None:
+        docs = te.build_good("ST002747")
+        world, planned = triage_world(self.root, "ST002747", docs, record=True,
+                                      ratified={unit_id: ratified_a(unit_id) for unit_id in docs})
+        world.run()
+        keys = list(planned)
+        self.assertEqual({key: unit_row(world, key)["state"] for key in keys}, {key: "done" for key in keys})
+        for key in keys:
+            checked = [item["detail"] for item in events(world, "triage_checked") if item["unit_key"] == key][0]
+            self.assertEqual(checked["handoff_identity"], "ratification_only")
+            manifest = world.interactive.store.read(unit_row(world, key)["manifest_path"])
+            block = manifest["project"]["repository_metadata"]["curated_selection"]
+            self.assertEqual(block["catalog_handoff_verification"], "original_read_and_copy_compared")
+            self.assertEqual(block["original_handoff"]["source"], "original_handoff_path")
+            self.assertEqual(block["original_handoff"]["sha256"], planned[key]["curated_selection"]["catalog_handoff_sha256"])
+            ratification = block["original_handoff"]["ratification"]
+            self.assertTrue(ratification["differs"])
+            self.assertEqual(ratification["original"]["ratification.approval_id"], "appr-A")
+            self.assertEqual(ratification["copy"]["ratification.approval_id"], world.approval["approval_id"])
+            self.assertEqual(ratification["copy"]["ratification.campaign_id"], world.campaign["campaign_id"])
+            applied = [item["detail"] for item in events(world, "curated_selection_applied") if item["unit_key"] == key][0]
+            self.assertTrue(applied["handoff_ratification"]["differs"])
+        for sent in world.interactive.curated_downloads:
+            self.assertTrue(sent["original_handoff_path"].endswith("handoff.triaged.json"))
+        _lines, text = exported(world)
+        self.assertFalse(ABSOLUTE.search(text), "the decision ledger holds workspace-relative paths only")
+
+    def test_without_the_kept_triaged_path_interactive_reads_the_records_catalog_handoff_input(self) -> None:
+        """The second way Interactive verifies the copy: no original_handoff_path, the decision record's catalog_handoff
+        input. The runner's choice of handoff.triaged.json is one of two equal answers."""
+        docs = {"AN004454": te.build_good("ST002747")["AN004454"]}
+        world, planned = triage_world(self.root, "ST002747", docs, record=True, ratified={"AN004454": ratified_a("AN004454")})
+        world.run()
+        sent = dict(world.interactive.curated_downloads[0])
+        sent.pop("original_handoff_path")
+        sent["handoff_path"] = unit_row(world, "AN004454")["handoff_path"]
+        provenance = world.interactive._apply_curated(sent)
+        self.assertEqual(provenance["original_handoff"]["source"], "decision_record_input")
+        self.assertTrue(provenance["original_handoff"]["ratification"]["differs"])
+        self.assertTrue(planned)
+
+    def test_a_triaged_proposal_with_another_assignment_is_held_and_interactive_would_refuse_it(self) -> None:
+        docs = {"AN004454": te.build_good("ST002747")["AN004454"]}
+        world, _planned = triage_world(self.root, "ST002747", docs, record=True, ratified={"AN004454": ratified_a("AN004454")},
+                                       proposal_changes={"AN004454": {"assignments": [
+                                           {"sample_id": "nobody", "class_label": "B", "values": {}}]}})
+        with world.open() as book:
+            world.runner(book).run(max_iterations=80)
+        self.assertEqual(unit_row(world, "AN004454")["state"], "contract_held")
+        checked = events(world, "triage_checked")[0]["detail"]
+        self.assertEqual((checked["reason"], checked["differing_keys"]), ("triage_handoff_changed", ["class_proposal"]))
+        self.assertEqual(world.interactive.download_starts, [])
+        # Interactive, given the copy the runner made and the triaged bytes, refuses it for the same key.
+        copy_path = world.directory / "handoffs" / "AN004454" / "handoff.json"
+        with self.assertRaises(ia.CuratedSelectionError) as raised:
+            ia.verify_handoff_copy(self.root / "triage" / "ST002747" / "inputs" / "AN004454" / "handoff.json",
+                                   json.loads(copy_path.read_text(encoding="utf-8")))
+        self.assertIn("class_proposal", str(raised.exception))
+
+    def test_a_triage_made_before_any_ratification_is_held(self) -> None:
+        docs = {"AN004454": te.build_good("ST002747")["AN004454"]}
+        world, _planned = triage_world(self.root, "ST002747", docs, record=True, ratified={"AN004454": None})
+        with world.open() as book:
+            world.runner(book).run(max_iterations=80)
+        self.assertEqual(unit_row(world, "AN004454")["state"], "contract_held")
+        checked = events(world, "triage_checked")[0]["detail"]
+        self.assertEqual(checked["differing_keys"], ["class_proposal"])
+
+
+@unittest.skipUnless(REAL, "the pinned Interactive predates 0.5.69's curated selection (set MSDIAL_INTERACTIVE_ROOT)")
+class WorkspaceNameAgainstInteractiveTests(unittest.TestCase):
+    """curated.workspace_name_problem (the plan's check) refuses exactly what Interactive's validate_workspace_unit_key
+    refuses (WS0 low, 2026-11-17)."""
+
+    def test_the_two_agree(self) -> None:
+        names = ("AN1", "AN1-pos", "AN1@stage3c", "AN1.r2", "AN1+x", "AN1_reopen", "AN10", "BN1", "x-AN1", "AN1/..",
+                 "AN1\\x", "AN1..x", "AN1.", "AN1 x", "", "AN1@" + "x" * 123, "AN1@" + "x" * 124, "AN1@pilot.",
+                 "AN1@a..b", "AN1@a.b", "AN1-pos@c-2")
+        for name in names:
+            with self.subTest(name=name):
+                try:
+                    ia_rr.validate_workspace_unit_key(name, "AN1")
+                    accepted = True
+                except ValueError:
+                    accepted = False
+                self.assertEqual(curated.workspace_name_problem(name, "AN1") == "", accepted)
 
 
 class ReplayLevelTests(unittest.TestCase):

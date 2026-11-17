@@ -163,11 +163,17 @@ manifest_digest_changed (_curated_guard), with a terminal_refusal in the decisio
 At the handoff the triage is copied beside the handoff copy as handoffs\\<unit_key>\\<unit_id>.json, its decision
 record as <unit_id>.record.json beside it (the layout Interactive looks for, WS0 decision 2), and each must hash to
 what the manifest names (else stopped_policy_drift, triage_digest_changed or triage_record_digest_changed). The
-Catalog handoff taken now must be the triaged one byte for byte (triage.catalog_handoff_sha256); one whose bytes
-changed is held for a person (contract_held, triage_handoff_changed), never passed on its rows (WS0 decision 7). The
-download passes Interactive curated_selection_path (the copy), decision_record_path (the original record, beside the
-inputs\\ it binds), original_handoff_sha256 (the triaged handoff's), original_handoff_path (the Catalog's bytes as
-taken, kept beside the copy) and curated_selection_validator, so an Interactive that cannot apply the selection refuses
+Catalog handoff taken now must be the triaged one (triage.catalog_handoff_sha256): byte for byte, or (WS0 decision A,
+2026-11-17) in every value Interactive's verify_handoff_copy compares, which leaves out the sidecar paths and the Class
+proposal's campaign ratification (curated.HANDOFF_RATIFICATION_KEYS, Interactive's own list) that this runner's
+boundary-3 save writes and the Catalog embeds. The triaged bytes are read from the decision record's catalog_handoff
+input or the accession's inputs\\<unit_id>\\handoff.json and kept beside the copy (handoff.triaged.json); a handoff
+that differs in anything else, or whose triaged bytes are not kept, is held for a person (contract_held,
+triage_handoff_changed), never passed on its rows (WS0 decision 7). A triage made before any ratification differs in
+the whole proposal and is held. The download passes Interactive curated_selection_path (the copy), decision_record_path
+(the original record, beside the inputs\\ it binds), original_handoff_sha256 (the triaged handoff's),
+original_handoff_path (the triaged bytes: the Catalog's as taken where they are those, else handoff.triaged.json) and
+curated_selection_validator, so an Interactive that cannot apply the selection refuses
 (a contract hold) instead of running the unit on its whole study's files; a child of a triaged unit passes its child
 key, and a unit whose workspace is not its Catalog unit id (a child, or a reopened unit <unit_key>@<campaign_id>)
 passes workspace_unit_key (WS0 decision 5), so the outputs of the run it replaces are never written into. After the
@@ -177,13 +183,19 @@ level is read too), the selection Interactive applied with the same triage sha25
 curated_selection_selection_mismatch); curated_selection_applied records both and whether they are equal. A refusal no
 retry can change (policy.not_retryable: the attribution coverage gate, a curated selection Interactive refuses, the
 cross-unit check) ends the unit failed, terminal reason attribution_refused, with no retry counted. The units of one
-download group that carry a selection wait at preflighted until every sibling still on its way has been preflighted;
-then Interactive's msdial_repository_cross_unit_check runs once over their manifests (rules P, C, S and D), read by
-its own keys (verdict "passed" or "refused", reasons; WS0 decision 3) and by position, and each refused unit ends so.
-A group with a single surviving member is not sent: the verdict is not_applicable, single_member (WS0 decision 6). A
-unit that reaches the check after the group was judged (a retry, or one held before its download) is checked after
-the units that already passed, so rule D refuses it and never a unit that already ran; and where a verdict refuses a
-unit that already passed, the newcomers are refused in its place. A header that disagrees with the triage is
+download group that carry a selection wait at preflighted until every sibling has a unit manifest or has ended before
+its download (WS0 decision B: a sibling held before its download, at its handoff say, is waited for, so it never
+reaches the check after a sibling has run); then Interactive's msdial_repository_cross_unit_check runs once over their
+manifests (rules P, C, S and D), read by its own keys (verdict "passed" or "refused", reasons; WS0 decision 3) and by
+position, and each refused unit ends so. A group with a single surviving member is not sent: the verdict is
+not_applicable, single_member (WS0 decision 6), recorded once for every curated unit alone in its group as well. A
+unit that still reaches the check after the group was judged (a retry of a unit that ended before its download) is
+checked after the units that already passed, so rule D refuses it and never a unit that already ran. Where a verdict
+refuses a unit that already passed (rules P, C or S can), the newcomers are refused with it, and the passed unit is
+never left silently done: it ends invalidated_after_done (terminal; at once if it is done, else in place of done),
+its outputs and raw data left as they are and flagged invalid in its campaign record, the Catalog's run record, the
+status export and the decision ledger (terminal_refusal), with the question cross_unit_refused_after_done for a
+person. A header that disagrees with the triage is
 Interactive's disposition hold (triage_header_disagreement), which waits for a person as every disposition hold does;
 a unit Interactive recorded no header reconciliation for is not run (contract_held,
 curated_selection_reconciliation_not_recorded). Interactive's reconciliation items are copied into the ledger's
@@ -241,6 +253,15 @@ TSV_COLUMNS = (
     "terminal_reason", "report_terms", "outputs_produced", "gate_exit_pre", "gate_exit_final",
     "raw_disposition", "failures", "interruptions", "run_job_id", "minimum_peak_height", "threshold_step",
     "workspace", "warnings",
+)
+# A unit that ran and that a later cross-unit check of its download group refused (WS0 decision B, 2026-11-17): its
+# outputs are kept and flagged invalid, never deleted by the runner, and the question below waits for a person.
+INVALIDATED_AFTER_DONE = ledger_module.INVALIDATED_AFTER_DONE
+INVALIDATION_QUESTION = "cross_unit_refused_after_done"
+INVALIDATED_AFTER_DONE_WARNING = (
+    "invalidated after done: a later cross-unit check of its download group refused this unit after it had run; its "
+    "outputs are kept but are not valid for redistribution, and a person decides (withdraw them, or re-triage and "
+    "reopen the unit)"
 )
 # What the status export says of a unit in gate_held (the user's rule of 2026-10-02), and of one in
 # contract_held (that rule applied to a reply or a record the runner cannot read: "stop" is per unit).
@@ -775,20 +796,61 @@ class Runner:
             out["record_copy_path"] = self._relative(record_copy)
         original = str(record.get("original_sha256") or "")
         triaged = str(selection.get("catalog_handoff_sha256") or "")
-        if not triaged or original != triaged:
-            rows = None
-            try:
-                rows = curated.rows_sha256(curated.handoff_rows(Path(str(record.get("copy_path") or ""))))
-            except (OSError, ValueError):
-                pass
-            return {**out, "refused": True, "hold": True, "reason": "triage_handoff_changed",
-                    "original_handoff_sha256": original, "triaged_handoff_sha256": triaged or None,
-                    "rows_identical": bool(rows and rows == selection.get("catalog_rows_sha256")),
-                    "detail": "the Catalog handoff taken now is not, byte for byte, the one the triage was made from; "
-                              "Interactive binds the run to the triaged handoff, so a person re-triages the unit or "
-                              "restores the handoff"}
-        return {**out, "refused": False, "hold": False, "handoff_identity": "handoff_identical",
-                "original_handoff_sha256": original}
+        if triaged and original == triaged:
+            return {**out, "refused": False, "hold": False, "handoff_identity": "handoff_identical",
+                    "original_handoff_sha256": original}
+        # WS0 decision A: the runner's own Class ratification (_state_pending) is embedded in the handoff the Catalog
+        # writes, so a handoff taken under this campaign differs from the triaged one in that ratification alone.
+        # Interactive compares the copy with the triaged bytes in every value but the ratification and the sidecar
+        # paths (verify_handoff_copy); the runner decides the same here, from the triaged bytes the triage directory
+        # keeps, and keeps those bytes beside the copy (handoff.triaged.json) for original_handoff_path.
+        source = None
+        difference: dict[str, Any] | None = None
+        if triaged:
+            for candidate in curated.triaged_handoff_candidates(
+                    Path(str(selection.get("triage_path") or "")), unit["catalog_unit_id"],
+                    selection.get("triage_record_sha256"), str(selection.get("triage_sha256") or "")):
+                try:
+                    if candidate.is_file() and curated.sha256_file(candidate) == triaged:
+                        source = candidate
+                        break
+                except OSError:
+                    continue
+        if source is not None and record.get("original_copy_path"):
+            difference = curated.handoff_difference(source, Path(str(record["original_copy_path"])))
+            if difference["same"]:
+                kept = copy.parent / "handoff.triaged.json"
+                try:
+                    shutil.copyfile(source, kept)
+                    kept_sha = curated.sha256_file(kept)
+                except OSError as error:
+                    kept_sha = f"unreadable: {type(error).__name__}"
+                if kept_sha == triaged:
+                    record["triaged_copy_path"] = str(kept.resolve())
+                    return {**out, "refused": False, "hold": False,
+                            "handoff_identity": "ratification_only" if difference["ratification"]["differs"]
+                            else "values_identical",
+                            "original_handoff_sha256": triaged, "catalog_handoff_sha256_now": original,
+                            "triaged_handoff_source": self._relative(source), "triaged_copy_path": self._relative(kept),
+                            "ratification": difference["ratification"]}
+        rows = None
+        try:
+            rows = curated.rows_sha256(curated.handoff_rows(Path(str(record.get("copy_path") or ""))))
+        except (OSError, ValueError):
+            pass
+        found = {"differing_keys": difference["differing_keys"], "sidecar": difference["sidecar"],
+                 "ratification": difference["ratification"]} if difference is not None else {
+                     "triaged_bytes_found": False}
+        return {**out, "refused": True, "hold": True, "reason": "triage_handoff_changed",
+                "original_handoff_sha256": original, "triaged_handoff_sha256": triaged or None,
+                "rows_identical": bool(rows and rows == selection.get("catalog_rows_sha256")), **found,
+                "detail": "the Catalog handoff taken now is not the one the triage was made from in a value Interactive "
+                          "compares (anything but the campaign's Class ratification and the sidecar paths), or the "
+                          "triaged bytes are not kept beside the triage (inputs\\<unit_id>\\handoff.json, or the decision "
+                          "record's catalog_handoff input) to compare it with; Interactive binds the run to the triaged "
+                          "handoff, so a person re-triages the unit or restores the handoff. A triage made before the "
+                          "unit's Class was ratified differs in the whole class_proposal: triage from a handoff taken "
+                          "after a ratification."}
 
     def _handoff_copy_record(self, unit: Mapping[str, Any]) -> dict[str, Any]:
         """What the unit's last handoff step recorded of its copy (ports.copy_handoff)."""
@@ -809,14 +871,24 @@ class Runner:
             return f"the triage copy {copy.name} hashes to {found}, not the approved {selection.get('triage_sha256')}"
         triaged = str(selection.get("catalog_handoff_sha256") or "")
         arguments: dict[str, Any] = {"curated_selection_path": str(copy), "original_handoff_sha256": triaged}
-        kept = str(self._handoff_copy_record(unit).get("original_copy_path") or "")
+        # The triaged bytes for Interactive to compare the copy with: the Catalog's handoff as taken, where it is the
+        # triaged one byte for byte; else the triaged bytes the handoff step kept (handoff.triaged.json, WS0 decision A,
+        # where only the campaign's ratification differs).
+        kept_record = self._handoff_copy_record(unit)
+        kept = [str(kept_record.get(key) or "") for key in ("triaged_copy_path", "original_copy_path")]
+        kept = [path for path in kept if path]
         if kept:
-            try:
-                if curated.sha256_file(Path(kept)) != triaged:
-                    return "the Catalog handoff kept at the handoff step no longer hashes to the triaged handoff"
-            except OSError as error:
-                return f"the Catalog handoff kept at the handoff step cannot be read: {type(error).__name__}"
-            arguments["original_handoff_path"] = kept
+            chosen = ""
+            for path in kept:
+                try:
+                    if curated.sha256_file(Path(path)) == triaged:
+                        chosen = path
+                        break
+                except OSError:
+                    continue
+            if not chosen:
+                return "no handoff kept at the handoff step hashes to the triaged handoff any more"
+            arguments["original_handoff_path"] = chosen
         if selection.get("triage_record_sha256"):
             # The original record, where the inputs\ it binds are (Interactive resolves them beside the record).
             arguments["decision_record_path"] = str(curated.record_path(Path(str(selection.get("triage_path") or ""))))
@@ -1473,7 +1545,7 @@ class Runner:
 
     def _observations(self) -> list[float]:
         values = []
-        for unit in self.ledger.units(("done",)):
+        for unit in self.ledger.units(("done", INVALIDATED_AFTER_DONE)):
             if unit["peak_workspace_bytes"] and unit["downloaded_bytes"]:
                 values.append(unit["peak_workspace_bytes"] / unit["downloaded_bytes"])
         return values
@@ -1504,14 +1576,11 @@ class Runner:
         decision = self.ports.catalog.class_decision(unit["catalog_unit_id"], purpose)
         if decision.get("proposal_id") != unit["approved_class_digest"]:
             # A grouping nobody approved: nothing is saved under the approval, and the download the unit's siblings
-            # claimed for it is released.
-            self._release_shared_claims(unit, "stopped_policy_drift")
-            self._move(
-                unit, "stopped_policy_drift", terminal_reason="class_digest_changed",
-                terminal_detail=json.dumps({"approved": unit["approved_class_digest"], "now": decision.get("proposal_id")}),
-                close_attempt=(attempt, "refused", False, {"approved": unit["approved_class_digest"], "now": decision.get("proposal_id")}),
-            )
-            return True
+            # claimed for it is released (_curated_stop). A curated unit's stop is a terminal_refusal in the decision
+            # ledger as every other drift stop is (WS0 low, 2026-11-17).
+            drift = {"approved": unit["approved_class_digest"], "now": decision.get("proposal_id")}
+            return self._curated_stop(unit, "class_digest_changed", drift, step="class",
+                                      is_curated=self._is_curated(unit), close_attempt=(attempt, "refused", False, drift))
         self._require("3")
         ratification = {
             "approval_id": self.approval["approval_id"],
@@ -2190,6 +2259,10 @@ class Runner:
                 "recorded": {key: applied.get(key) for key in ("manifest_digest", "standing", "child_key", "analysis_unit_key",
                                                                 "catalog_handoff_verification", "triage_record_sha256")
                              if key in applied},
+                # WS0 decision A: the campaign ratification Interactive left out of its comparison, both sides of it.
+                **({"handoff_ratification": dict(applied["original_handoff"]["ratification"])}
+                   if isinstance(applied.get("original_handoff"), Mapping)
+                   and isinstance(applied["original_handoff"].get("ratification"), Mapping) else {}),
                 "rows_kept": applied.get("rows_kept_count", len(applied.get("rows_kept") or [])
                                          if isinstance(applied.get("rows_kept"), list) else applied.get("rows_kept")),
                 "rows_dropped": applied.get("rows_dropped_count", len(applied.get("rows_dropped") or [])
@@ -2467,8 +2540,6 @@ class Runner:
         if not self._is_curated(unit) or unit["role"] == "split_part":
             return None
         siblings = [item for item in self._group_members(unit) if self._is_curated(item)]
-        if not siblings:
-            return None
         group = _group(unit)
         verdict = None
         last = None
@@ -2480,17 +2551,37 @@ class Runner:
                 passed |= set(detail.get("units") or []) - set(detail.get("refused") or {})
         if last is not None and unit["unit_key"] in (last.get("units") or []):
             verdict = last
+        if verdict is None and not siblings:
+            # The only curated unit of its download group (or of none): recorded as not applicable, once, so the
+            # released ledger tells "nothing to compare with" from "never considered" (WS0 low, 2026-11-17).
+            self._event("cross_unit_verdict", {
+                "standing": curated.DETERMINISTIC_CHECK, "group": group, "units": [unit["unit_key"]],
+                "verdict": "not_applicable", "reason": "single_member", "refused": {},
+                "detail": "the only unit with a curated selection in its download group; nothing to compare with"},
+                unit["unit_key"])
+            return None
         if verdict is None:
-            waiting = []
+            # The barrier (WS0 decision B, 2026-11-17): the group is judged only once every sibling has either a unit
+            # manifest the check can read or has ended before its download. A sibling held before its download (at
+            # its handoff, say) is waited for too, so it never reaches the check after a sibling has run; the units
+            # wait uncounted until a person answers its hold (a recheck, a skip).
+            waiting, held_before_download = [], []
             for item in siblings:
+                if item["state"] in ledger_module.TERMINAL_STATES:
+                    continue
                 state = item["resume_state"] if item["state"] in ledger_module.WAITING_STATES else item["state"]
                 held = item["state"] in ("contract_held", "gate_held", DISPOSITION_HELD)
-                if state in self._BEFORE_PREFLIGHT and item["state"] not in ledger_module.TERMINAL_STATES and not held:
+                has_manifest = bool(item["manifest_path"]) and Path(str(item["manifest_path"])).is_file()
+                if state in self._BEFORE_PREFLIGHT and not held:
                     waiting.append(item["unit_key"])
+                elif held and not has_manifest:
+                    waiting.append(item["unit_key"])
+                    held_before_download.append(item["unit_key"])
             if waiting:
                 due = self.now() + timedelta(seconds=float(self.policy.poll_seconds))
                 self._move(unit, "waiting_retry", resume_state="preflighted", next_attempt_at=policy.iso(due),
-                           detail={"waiting_for_group_preflight": sorted(waiting), "group": group})
+                           detail={"waiting_for_group_preflight": sorted(waiting), "group": group,
+                                   **({"held_before_download": sorted(held_before_download)} if held_before_download else {})})
                 return True
             # The siblings that hold a unit manifest and did not end without outputs: the held ones among them, whose
             # files are the group's all the same. The units an earlier check of the group passed come first, then the
@@ -2498,7 +2589,7 @@ class Runner:
             # unit that arrives late (a retry, or one held before its download) is the one refused, never a unit that
             # already ran (second review of PR #60, finding 2).
             others = [item for item in siblings if item["manifest_path"] and Path(str(item["manifest_path"])).is_file()
-                      and (item["state"] not in ledger_module.TERMINAL_STATES or item["state"] == "done")]
+                      and (item["state"] not in ledger_module.TERMINAL_STATES or item["state"] in self._RAN_STATES)]
             if not others:
                 verdict = {"standing": curated.DETERMINISTIC_CHECK, "group": group, "units": [unit["unit_key"]],
                            "verdict": "not_applicable", "reason": "single_member", "refused": {},
@@ -2544,8 +2635,10 @@ class Runner:
                 refused[key] = {"reason_code": code, "reasons": reasons, "rule": self._CROSS_UNIT_RULES.get(code),
                                 "with": against[0] if against else None, "refused_against": against,
                                 **({"prior_refusal_stands": True} if item.get("prior_refusal_stands") else {})}
-            # A unit an earlier check passed may already have run, so a refusal of it now cannot be acted on: the
-            # units new to this check, whose arrival changed the verdict, are refused in its place.
+            # A unit an earlier check passed may already have run. The units new to this check, whose arrival changed
+            # the verdict, are refused with it; and the passed unit is never left silently done (WS0 decision B): one
+            # that is done is invalidated now (invalidated_after_done: terminal, its outputs kept and flagged invalid,
+            # for a person), one still on its way when it would be done (_late_refusal).
             late = sorted(key for key in refused if key in passed)
             if late:
                 partner = refused[late[0]]
@@ -2558,17 +2651,63 @@ class Runner:
                        "manifest_paths": [self._relative(path) for path in paths],
                        "units": [item["unit_key"] for item in members], "verdict": "refused" if refused else "passed",
                        "refused": refused, "unit_verdicts": units_said,
+                       **({"refused_after_pass": late} if late else {}),
                        "interactive": {"verdict": result.get("verdict"), "rule": result.get("rule"),
                                        "schema": result.get("schema"), "overlaps": list(result.get("overlaps") or []),
                                        "version": self.pins.get("interactive", {}).get("version")
                                        if isinstance(self.pins.get("interactive"), Mapping) else None}}
             self.ledger.close_attempt(attempt, "ok", self.stamp(), detail=self.redact({"verdict": verdict["verdict"], "refused": refused}))
             self._event("cross_unit_verdict", verdict, unit["unit_key"])
+            for key in late:
+                other = self.ledger.unit(key)
+                if other["state"] == "done":
+                    self._invalidate_after_done(other, refused[key])
         mine = (verdict.get("refused") or {}).get(unit["unit_key"])
         if mine:
             return self._terminal_refusal(unit, {**mine, "retryable": False, "source": "cross_unit_check"}, mine,
                                           step="cross_unit_check")
         return None
+
+    # The ended states of a unit that ran: their inputs stay the group's, and a later check is made against them.
+    _RAN_STATES = frozenset({"done", INVALIDATED_AFTER_DONE})
+
+    def _late_refusal(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The refusal of a check of the unit's download group made after an earlier check passed the unit (WS0
+        decision B), or None. Only a curated unit is ever checked."""
+        if not self._is_curated(unit) or unit.get("role") == "split_part":
+            return None
+        group = _group(unit)
+        key = unit["unit_key"]
+        passed = False
+        for event in self.ledger.events("cross_unit_verdict"):
+            detail = _loads(event["detail_json"])
+            if detail.get("group") != group or key not in (detail.get("units") or []):
+                continue
+            refusal = (detail.get("refused") or {}).get(key)
+            if refusal and passed:
+                return dict(refusal)
+            if not refusal:
+                passed = True
+        return None
+
+    def _invalidate_after_done(self, unit: Mapping[str, Any], refusal: Mapping[str, Any], **move: Any) -> bool:
+        """End a unit that ran, and that a later cross-unit check refused, as invalidated_after_done (WS0 decision B):
+        terminal, its outputs and raw data left as they are (never deleted here), its campaign record and the Catalog's
+        run record saying the outputs are not valid, a terminal_refusal in the decision ledger, and the question
+        INVALIDATION_QUESTION for a person (withdraw the outputs, or re-triage and reopen the unit)."""
+        terminal = {"reason": policy.ATTRIBUTION_REFUSED, "reason_code": refusal.get("reason_code"),
+                    "rule": refusal.get("rule"), "retryable": False, "source": "cross_unit_check",
+                    "step": "cross_unit_check", "invalidated_after_done": True, "outputs": "kept_flagged_invalid",
+                    "question_code": INVALIDATION_QUESTION, "refused_against": list(refusal.get("refused_against") or [])}
+        exit_code = move.get("gate_exit_final", unit.get("gate_exit_final"))
+        self._record_run(unit, INVALIDATED_AFTER_DONE, exit_code)
+        self._write_record(unit, INVALIDATED_AFTER_DONE, policy.ATTRIBUTION_REFUSED, unit["raw_disposition"],
+                           unit["raw_detail"] or "", final_exit=exit_code, invalidation=terminal)
+        self._move(unit, INVALIDATED_AFTER_DONE, terminal_reason=policy.ATTRIBUTION_REFUSED,
+                   terminal_detail=json.dumps(terminal, ensure_ascii=False, sort_keys=True),
+                   detail={"step": "cross_unit_check", INVALIDATED_AFTER_DONE: refusal.get("reason_code")}, **move)
+        self._event("terminal_refusal", {"standing": curated.DETERMINISTIC_CHECK, **terminal}, unit["unit_key"])
+        return True
 
     def _state_preflighted(self, unit: dict[str, Any]) -> bool:
         """The analysis CSV and the reviewed metadata, with the approved Class applied (boundary 3). A DDA unit
@@ -3475,6 +3614,11 @@ class Runner:
         exit_code = verdict.get("exit_code") if verdict else None
         terms = policy.report_terms(bool(unit["outputs_produced"]), exit_code)
         reason = "completed" if policy.COMPLETED in terms else "outputs_produced"
+        late = self._late_refusal(unit)
+        if late is not None:
+            # A cross-unit check refused this unit after it had passed and gone on (WS0 decision B): it is not done.
+            return self._invalidate_after_done(unit, late, gate_exit_final=exit_code,
+                                               gate=("final", verdict) if verdict else None)
         self._record_run(unit, "completed" if reason == "completed" else "outputs_produced", exit_code)
         self._write_record(unit, "done", reason, unit["raw_disposition"], unit["raw_detail"] or "", final_exit=exit_code)
         self._move(unit, "done", terminal_reason=reason, gate_exit_final=exit_code,
@@ -3758,9 +3902,12 @@ class Runner:
             self._record_run(unit, status, None, job_id=unit.get("run_job_id"), final=False)
 
     def _write_record(
-        self, unit: Mapping[str, Any], state: str, reason: str, raw: str, raw_detail: str, *, final_exit: int | None = None
+        self, unit: Mapping[str, Any], state: str, reason: str, raw: str, raw_detail: str, *, final_exit: int | None = None,
+        invalidation: Mapping[str, Any] | None = None,
     ) -> None:
-        """campaign-record.json beside the unit's artifacts: which approval covered what, and how it ended."""
+        """campaign-record.json beside the unit's artifacts: which approval covered what, and how it ended. A unit
+        invalidated after done (WS0 decision B) keeps its outputs, and its record says they are not valid
+        (outputs_valid false, completed false, with the refusal in invalidation)."""
         workspace = self._workspace(unit)
         if not workspace.is_dir():
             return
@@ -3791,7 +3938,9 @@ class Runner:
             "terminal_reason": reason,
             "report_terms": policy.report_terms(outputs, final_exit),
             "outputs_produced": outputs,
-            "completed": policy.COMPLETED in policy.report_terms(outputs, final_exit),
+            "completed": policy.COMPLETED in policy.report_terms(outputs, final_exit) and state != INVALIDATED_AFTER_DONE,
+            "outputs_valid": outputs and state != INVALIDATED_AFTER_DONE,
+            "invalidation": dict(invalidation) if invalidation else None,
             "boundary_crossings": crossings,
             "campaign_disposition": _loads(unit.get("disposition_json")) or None,
             "gate_verdicts": verdicts,
@@ -3903,7 +4052,13 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None, automatic_rt_f
     gate_held what the gate gave instead of a report (policy.gate_report_problem), for contract_held what
     the runner could not read."""
     terms = policy.report_terms(bool(unit["outputs_produced"]), unit["gate_exit_final"])
+    invalidated = unit["state"] == INVALIDATED_AFTER_DONE
+    if invalidated:
+        # Outputs kept, never completed: the export says so in the terms a reader filters on (WS0 decision B).
+        terms = [term for term in terms if term != policy.COMPLETED] + [INVALIDATED_AFTER_DONE]
     warnings = []
+    if invalidated:
+        warnings.append(INVALIDATED_AFTER_DONE_WARNING)
     if unit["state"] == "gate_held":
         warnings.append(GATE_HELD_WARNING + (f" (no report: {hold})" if hold else ""))
     elif unit["state"] == "contract_held":
@@ -3919,6 +4074,7 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None, automatic_rt_f
         "report_terms": terms,
         "outputs_produced": bool(unit["outputs_produced"]),
         "completed": policy.COMPLETED in terms,
+        "outputs_valid": bool(unit["outputs_produced"]) and not invalidated,
         "disposition": _loads(unit.get("disposition_json")) or None,
         "terminal_detail": unit.get("terminal_detail"),
         "raw_detail": unit.get("raw_detail"),
@@ -4010,6 +4166,7 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     gate_held = [unit for unit in units if unit["state"] == "gate_held"]
     contract_held = [unit for unit in units if unit["state"] == "contract_held"]
     disposition_held = [unit for unit in units if unit["state"] == DISPOSITION_HELD]
+    invalidated = [unit for unit in units if unit["state"] == INVALIDATED_AFTER_DONE]
     held_for = {}
     for unit in disposition_held:
         for code in _loads(unit.get("disposition_json")).get("reasons") or ["unrecorded"]:
@@ -4034,7 +4191,13 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
         "units": len(units),
         "states": dict(sorted(states.items())),
         policy.OUTPUTS_PRODUCED: sum(1 for unit in units if unit["outputs_produced"]),
-        policy.COMPLETED: sum(1 for unit in units if unit["outputs_produced"] and unit["gate_exit_final"] == 0),
+        policy.COMPLETED: sum(1 for unit in units if unit["outputs_produced"] and unit["gate_exit_final"] == 0
+                              and unit["state"] != INVALIDATED_AFTER_DONE),
+        # Ran, then refused by a later cross-unit check of their download group (WS0 decision B): outputs kept and
+        # flagged invalid, each waiting for a person's answer to INVALIDATION_QUESTION.
+        INVALIDATED_AFTER_DONE: {"units": len(invalidated), "unit_keys": [unit["unit_key"] for unit in invalidated],
+                                 "question_code": INVALIDATION_QUESTION if invalidated else None,
+                                 "warning": INVALIDATED_AFTER_DONE_WARNING if invalidated else None},
         "raw_disposition": dict(sorted(raw.items())),
         "excluded_by_reason": dict(sorted(excluded_for.items())),
         # Still on the volume, against the rules: the disk guard sees them as used space, and so should the

@@ -409,6 +409,46 @@ def release_projection(manifest: Any, workspace_root: str | Path, base: str | Pa
 RELEASE_INDEX = "release-index.json"
 RELEASE_INDEX_SCHEMA = "msdial-release-index.v1"
 
+# What check-release-redaction refuses in a bundle file (docs/llm-assisted-curation.md section 5.3), as text and as JSON
+# escapes it: a drive-letter path, a UNC path, a user-profile path. A URL (https://) is no drive letter: the letter
+# before ':' must not follow another letter or digit.
+_REDACTION_RULES = (
+    ("drive_letter_path", re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:\\\\|\\|/)")),
+    ("unc_path", re.compile(r"(?:^|[\s\"'=(\[,])(?:\\\\\\\\|\\\\)[A-Za-z0-9._$-]+(?:\\\\|\\)[A-Za-z0-9._$-]+")),
+    ("user_profile_path", re.compile(r"(?i)(?:^|[\\/\"'\s])(?:Users|home|Documents and Settings)(?:\\\\|\\|/)[^\\/\"'\s]+(?:\\\\|\\|/)")),
+)
+
+
+def release_redaction_findings(bundle: Path, limit: int = 20) -> list[dict[str, Any]]:
+    """Every file of `bundle` read as text, against the path rules check-release-redaction applies (section 5.3): a
+    drive-letter, UNC or user-profile path. [{file (bundle-relative), rule, at (character offset)}], at most `limit`."""
+    findings: list[dict[str, Any]] = []
+    for path in sorted(Path(bundle).rglob("*")):
+        if not path.is_file():
+            continue
+        text = path.read_bytes().decode("utf-8", "replace")
+        for rule, pattern in _REDACTION_RULES:
+            match = pattern.search(text)
+            if match:
+                findings.append({"file": path.relative_to(bundle).as_posix(), "rule": rule, "at": match.start()})
+                if len(findings) >= limit:
+                    return findings
+    return findings
+
+
+def _holds_absolute_path(data: bytes) -> bool:
+    text = data.decode("utf-8", "replace")
+    return any(pattern.search(text) for _rule, pattern in _REDACTION_RULES)
+
+
+def _protected_triage_file(relative: str) -> bool:
+    """A triage-directory file whose own bytes the manifest, a record or the replay binds (the payloads and their
+    revisions, the decision records, the review log): it is released byte for byte, never projected."""
+    name = relative.rsplit("/", 1)[-1]
+    if name == REVIEW_LOG or name.endswith(".record.json"):
+        return True
+    return "/inputs/" not in f"/{relative}" and name.endswith(".json")
+
 
 def write_release(
     *, campaign_dir: Path, out: Path, workspace_root: str | Path, approved_digest: str,
@@ -418,12 +458,24 @@ def write_release(
     replays: campaign-manifest.release.json and units\\<unit key>\\run-manifest.release.json (release_projection, as
     canonical JSON), the triage directory the manifest names (as triage\\), decision-ledger.jsonl as it is, and
     release-index.json, which lists per manifest the sha256 of its original (checkable only here) and of its projection,
-    with the digest the person approved. `run_manifests` are (unit key, run manifest path, unit workspace)."""
+    with the digest the person approved. `run_manifests` are (unit key, run manifest path, unit workspace).
+
+    THE TRIAGE INPUTS (WS0 decision C, 2026-11-17). The triage directory is copied byte for byte, except a JSON file
+    under an inputs\\ folder that holds an absolute path: the Catalog writes its handoff's sidecar paths
+    (file_manifest_path, sample_table_path, analysis_input_manifest_path) as resolved drive-letter paths, which the
+    redaction check refuses. Such a file is released as its release_projection (canonical JSON, paths relative to its
+    own folder or <external>/<name>) at the same path, and release-index.json's triage_inputs lists it with the sha256
+    of its original bytes (the value the triage's catalog_handoff_sha256 and the decision record bind, kept with the
+    original bytes on the producing machine) and of the released bytes. A payload, a decision record or the review log
+    that holds an absolute path cannot be projected without breaking the hashes the replay checks, so the bundle is
+    refused. Last, the whole bundle is checked as check-release-redaction does (release_redaction_findings); a bundle
+    with a finding is refused and gets no release-index.json."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
         raise TriageError(f"{out} is not empty; a release bundle is written into an empty folder.")
     entries = []
+    triage_inputs: list[dict[str, Any]] = []
 
     def project(name: str, source: Path, base: Path, target: str) -> None:
         data = source.read_bytes()
@@ -444,15 +496,82 @@ def write_release(
                     f"units/{unit_key}/run-manifest.release.json")
     triage = Path(str((manifest.get("triage") or {}).get("directory") or ""))
     if str(triage) and triage.is_dir():
-        import shutil
-
-        shutil.copytree(triage, out / "triage")
+        for source in sorted(triage.rglob("*")):
+            if not source.is_file():
+                continue
+            relative = source.relative_to(triage).as_posix()
+            target = out / "triage" / Path(relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            data = source.read_bytes()
+            if not _holds_absolute_path(data):
+                target.write_bytes(data)
+                continue
+            if _protected_triage_file(relative) or not source.name.endswith(".json"):
+                raise TriageError(
+                    f"triage/{relative} holds an absolute path, and its bytes are bound as they are (a payload, a "
+                    "decision record, the review log, or a file that is not JSON): it cannot be released projected; "
+                    "write it again without the path.")
+            try:
+                value = json.loads(data.decode("utf-8-sig"))
+            except (UnicodeDecodeError, ValueError) as error:
+                raise TriageError(f"triage/{relative} holds an absolute path and is not JSON: {error}") from error
+            released = canonical_json(release_projection(value, workspace_root, source.parent, libraries))
+            target.write_bytes(released)
+            triage_inputs.append({"name": f"triage/{relative}", "release": f"triage/{relative}",
+                                  "original_sha256": sha256_bytes(data), "release_sha256": sha256_bytes(released),
+                                  "projection": "release_projection"})
     ledger = Path(campaign_dir) / DECISION_LEDGER
     if ledger.is_file():
         (out / DECISION_LEDGER).write_bytes(ledger.read_bytes())
-    index = {"schema": RELEASE_INDEX_SCHEMA, "approved_manifest_digest": approved_digest, "manifests": entries}
+    findings = release_redaction_findings(out)
+    if findings:
+        raise TriageError("The release bundle fails the redaction check and is not complete (no release-index.json): "
+                          + "; ".join(f"{item['file']} ({item['rule']})" for item in findings[:5]))
+    index = {"schema": RELEASE_INDEX_SCHEMA, "approved_manifest_digest": approved_digest, "manifests": entries,
+             "triage_inputs": triage_inputs}
     (out / RELEASE_INDEX).write_bytes(canonical_json(index))
     return index
+
+
+def released_triage_inputs(bundle: Path) -> dict[str, dict[str, Any]]:
+    """The triage inputs a release bundle holds as projections (release-index.json triage_inputs), by bundle-relative
+    path: {name, release, original_sha256, release_sha256}. {} for a campaign directory or a bundle without any."""
+    index = Path(bundle) / RELEASE_INDEX
+    if not index.is_file():
+        return {}
+    value = json.loads(index.read_text(encoding="utf-8-sig"))
+    return {str(item["release"]): dict(item) for item in value.get("triage_inputs") or []
+            if isinstance(item, Mapping) and item.get("release")}
+
+
+def released_catalog(bundle: Path, accession_dir: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    """For an accession of a release bundle whose inputs\\<unit_id>\\handoff.json were released as projections: the
+    catalog.json form of the same Catalog rows (validate-triage --catalog reads it as it reads a handoffs directory),
+    each projected handoff's sha256 the original's that the release index names, once its released bytes are checked
+    against the index's release_sha256. (None, []) where nothing was projected; (None, problems) where a released
+    projection is not the bytes the index names (the replay then differs; the original's sha256 is never taken on
+    trust)."""
+    bundle = Path(bundle)
+    projected = released_triage_inputs(bundle)
+    inputs = Path(accession_dir) / "inputs"
+    handoffs = sorted(inputs.glob("*/handoff.json")) if inputs.is_dir() else []
+    named = {path: projected.get(path.relative_to(bundle).as_posix()) for path in handoffs}
+    if not any(named.values()):
+        return None, []
+    units, problems = [], []
+    for path, entry in named.items():
+        data = path.read_bytes()
+        if entry is not None and sha256_bytes(data) != str(entry.get("release_sha256") or ""):
+            problems.append(f"{path.relative_to(bundle).as_posix()} hashes to {sha256_bytes(data)}, not the release "
+                            f"index's {entry.get('release_sha256')}")
+            continue
+        value = json.loads(data.decode("utf-8-sig"))
+        technical = value.get("technical_settings") or {}
+        units.append({"unit_id": path.parent.name, "rows": handoff_rows(path),
+                      "declared": {key: technical.get(key) for key in ("chromatography", "ion_mode", "acquisition_mode")},
+                      "handoff_sha256": str(entry["original_sha256"]) if entry is not None else sha256_bytes(data),
+                      "accession": value.get("accession")})
+    return ({"units": units} if not problems else None), problems
 
 
 def catalog_rows(catalog: Path | None, unit_id: str) -> list[dict[str, Any]] | None:
@@ -469,6 +588,126 @@ def catalog_rows(catalog: Path | None, unit_id: str) -> list[dict[str, Any]] | N
         if unit.get("unit_id") == unit_id:
             return list(unit.get("rows") or [])
     return None
+
+
+# ---- the triaged handoff against the one taken at run time (WS0 decision A, 2026-11-17) -----------------------------
+# Interactive 0.5.69's curated_selection.verify_handoff_copy binds the handoff a runner passes to the triaged original by
+# value: every key but the sidecar paths a copy rewrites, and of class_proposal every key but the campaign ratification
+# the runner's own _state_pending writes before it takes the handoff (the Catalog embeds the proposal with it). These
+# two tuples are Interactive's, copied so the runner decides at its handoff step exactly what Interactive will decide at
+# the download; tests/test_campaign_interactive_integration.py asserts both equal Interactive's own.
+HANDOFF_COPY_REWRITTEN_KEYS = ("file_manifest_path", "sample_table_path", "analysis_input_manifest_path")
+HANDOFF_RATIFICATION_KEYS: tuple[tuple[str, ...], ...] = (
+    ("ratified_by",),
+    ("ratification", "approval_id"),
+    ("ratification", "manifest_digest"),
+    ("ratification", "authorization_sha256"),
+    ("ratification", "campaign_id"),
+    ("ratification", "ratified_at"),
+)
+
+
+def without_ratification(proposal: Any) -> tuple[Any, dict[str, Any]]:
+    """The class_proposal value with HANDOFF_RATIFICATION_KEYS removed, and their values by dotted path. Only a key
+    present is removed, so a ratification that appears or vanishes is still a difference (as in Interactive)."""
+    if not isinstance(proposal, Mapping):
+        return proposal, {}
+    stripped = json.loads(json.dumps(dict(proposal)))
+    removed: dict[str, Any] = {}
+    for path in HANDOFF_RATIFICATION_KEYS:
+        holder: Any = stripped
+        for part in path[:-1]:
+            holder = holder.get(part) if isinstance(holder, dict) else None
+        if isinstance(holder, dict) and path[-1] in holder:
+            removed[".".join(path)] = holder.pop(path[-1])
+    return stripped, removed
+
+
+def _sidecar_value(value: Any) -> tuple[str | None, bytes | None]:
+    text = str(value or "").strip()
+    path = Path(text).expanduser() if text else None
+    if path is None or not path.is_file():
+        return None, None
+    content = path.read_bytes()
+    try:
+        return sha256_bytes(content), canonical_json(json.loads(content.decode("utf-8-sig")))
+    except (UnicodeDecodeError, ValueError):
+        return sha256_bytes(content), content
+
+
+def handoff_difference(triaged: Path, current: Path) -> dict[str, Any]:
+    """Whether the handoff taken now is the triaged one in every value Interactive compares (verify_handoff_copy):
+    {"same", "differing_keys", "sidecar" (the first sidecar whose contents differ or is missing on a side, or None),
+    "problem", "ratification": {excluded_keys, original, copy, differs}}. Pure over the two files and their sidecars."""
+    out: dict[str, Any] = {"same": False, "differing_keys": [], "sidecar": None, "problem": "",
+                           "ratification": {"excluded_keys": [".".join(("class_proposal", *path))
+                                                              for path in HANDOFF_RATIFICATION_KEYS],
+                                            "original": {}, "copy": {}, "differs": False}}
+    try:
+        original = json.loads(Path(triaged).read_bytes().decode("utf-8-sig"))
+        now = json.loads(Path(current).read_bytes().decode("utf-8-sig"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        return {**out, "problem": f"a handoff cannot be read: {type(error).__name__}"}
+    if not isinstance(original, dict) or not isinstance(now, dict):
+        return {**out, "problem": "a handoff is not one JSON object"}
+    original_proposal, original_ratification = without_ratification(original.get("class_proposal"))
+    now_proposal, now_ratification = without_ratification(now.get("class_proposal"))
+
+    def compared(side: Mapping[str, Any], proposal: Any, key: str) -> bytes:
+        return canonical_json(proposal if key == "class_proposal" else side.get(key))
+
+    keys = sorted((set(original) | set(now)) - set(HANDOFF_COPY_REWRITTEN_KEYS))
+    out["differing_keys"] = [key for key in keys if compared(original, original_proposal, key) != compared(now, now_proposal, key)]
+    out["ratification"].update(original=original_ratification, copy=now_ratification,
+                               differs=canonical_json(original_ratification) != canonical_json(now_ratification))
+    for key in HANDOFF_COPY_REWRITTEN_KEYS:
+        if not (original.get(key) or now.get(key)):
+            continue
+        _sha, original_value = _sidecar_value(original.get(key))
+        _sha, now_value = _sidecar_value(now.get(key))
+        if original_value is None or now_value is None or original_value != now_value:
+            out["sidecar"] = key
+            out["problem"] = f"the {key} sidecar " + ("is missing on a side" if original_value is None or now_value is None
+                                                      else "holds other contents")
+            break
+    out["same"] = not out["differing_keys"] and out["sidecar"] is None and not out["problem"]
+    return out
+
+
+def triaged_handoff_candidates(triage_path: Path, catalog_unit_id: str, record_sha256: str | None,
+                               triage_sha256: str) -> list[Path]:
+    """Where the bytes a triage was made from may be kept: the decision record's catalog_handoff input (read relative to
+    the record, as Interactive reads it), then the accession's inputs\\<unit_id>\\handoff.json (section 2.1)."""
+    found: list[Path] = []
+    if record_sha256:
+        record = record_path(Path(triage_path))
+        named = (record_inputs(record, triage_sha256) or {}).get("catalog_handoff") if record.is_file() else None
+        if isinstance(named, Mapping) and named.get("path"):
+            location = Path(str(named["path"]))
+            found.append(location if location.is_absolute() else record.parent / location)
+    found.append(Path(triage_path).parent / "inputs" / str(catalog_unit_id) / "handoff.json")
+    return found
+
+
+# ---- a workspace name Interactive accepts (WS0 low, 2026-11-17) -----------------------------------------------------
+# Interactive 0.5.69's repository_reanalysis.validate_workspace_unit_key, which a child (<unit_id>-<child_key>) or a
+# reopened unit (<unit_key>@<campaign_id>) meets as its workspace_unit_key: checked at plan time, so a name Interactive
+# would refuse at the download (a plain ValueError reply, retried as an ordinary failure) is never approved.
+_WORKSPACE_UNIT_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}")
+_WORKSPACE_UNIT_KEY_SEPARATORS = "-_.@+"
+
+
+def workspace_name_problem(name: str, catalog_unit_id: str) -> str:
+    """Why Interactive would refuse `name` as the workspace of Catalog unit `catalog_unit_id`, or "" where it accepts it.
+    (Interactive's reserved names all start with '_', which the first character already refuses.)"""
+    text = str(name or "").strip()
+    unit = str(catalog_unit_id or "").strip()
+    if not _WORKSPACE_UNIT_KEY.fullmatch(text) or ".." in text or text.endswith("."):
+        return (f"{text!r} is not one folder name of letters, digits and '. _ - @ +' (at most 128 characters, no '..', "
+                "not ending in '.')")
+    if not unit or not (text == unit or (text.startswith(unit) and text[len(unit)] in _WORKSPACE_UNIT_KEY_SEPARATORS)):
+        return f"{text!r} does not start with the Catalog unit id {unit!r} and a separator"
+    return ""
 
 
 def handoff_rows(handoff: Path) -> list[dict[str, Any]]:
@@ -496,13 +735,18 @@ def validator_sha256() -> str:
     return sha256_file(VALIDATOR)
 
 
-def run_validator(accession_dir: Path, *, python: str | None = None, timeout: float = 600.0) -> dict[str, Any]:
+def run_validator(accession_dir: Path, *, python: str | None = None, timeout: float = 600.0,
+                  catalog_override: Path | None = None) -> dict[str, Any]:
     """scripts/validate-triage.py --json on one accession's directory, with the Catalog and listings its inputs\\
-    hold: {verdict, exit_code, report, report_sha256, validator_sha256, catalog_source, listings}.
+    hold: {verdict, exit_code, report, report_sha256, validator_sha256, catalog_source, listings}. `catalog_override`
+    is a catalog.json read in place of inputs\\ (the replay's, for a release bundle whose handoffs were released as
+    projections: released_catalog).
 
     A verdict other than pass, a report that does not parse, or a validator that cannot run is never taken for a
     pass: verdict is "error" then, with why."""
     catalog, listings = accession_sources(accession_dir)
+    if catalog_override is not None:
+        catalog = Path(catalog_override)
     command = [python or sys.executable, "-I", str(VALIDATOR), str(accession_dir), "--json"]
     if catalog is not None:
         command += ["--catalog", str(catalog)]
@@ -510,7 +754,8 @@ def run_validator(accession_dir: Path, *, python: str | None = None, timeout: fl
         command += ["--archive-listing", str(listing)]
     record: dict[str, Any] = {
         "validator_sha256": validator_sha256(),
-        "catalog_source": None if catalog is None else catalog.relative_to(accession_dir).as_posix(),
+        "catalog_source": None if catalog is None else (
+            "released_catalog" if catalog_override is not None else catalog.relative_to(accession_dir).as_posix()),
         "listings": [{"name": item.relative_to(accession_dir).as_posix(), "sha256": sha256_file(item)} for item in listings],
     }
     try:

@@ -194,6 +194,42 @@ def fake_handoff(unit_id: str, class_proposal_id: str, rows: list[dict[str, Any]
             **({"sample_metadata": rows} if rows is not None else {})}
 
 
+def catalog_ratification(ratification: dict[str, Any], abstention: bool, at: str) -> dict[str, Any]:
+    """msdial_repository_catalog's ratification_record for a ratification as the runner passes it."""
+    return {"kind": "campaign_approval", "authorization_schema": "msdial-campaign-authorization.v1", "boundary": 3,
+            "approval_id": ratification["approval_id"], "manifest_digest": ratification["manifest_digest"],
+            "authorization_sha256": ratification["authorization_sha256"], "campaign_id": ratification["campaign_id"],
+            "proposal_id": ratification["proposal_id"], "abstention": bool(abstention), "ratified_at": at}
+
+
+def catalog_shaped_handoff(folder: Path, unit_id: str, class_proposal_id: str, rows: list[dict[str, Any]],
+                           ratification: dict[str, Any] | None, extra: dict[str, Any] | None = None,
+                           assignments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """A handoff in the shape msdial_catalog_reanalysis_handoff writes it: the sample rows, three sidecars written into
+    `folder` and named by absolute paths, and the Class proposal as Catalog.get_class_proposal returns it (the row's
+    columns, ratified_by holding the ratification's approval_id, the ratification record, the assignments). Synthetic."""
+    folder.mkdir(parents=True, exist_ok=True)
+    sidecars = {"file_manifest_path": (f"{unit_id}.files.json", [{"path": "archive.zip", "role": "shared_raw_archive"}]),
+                "sample_table_path": (f"{unit_id}.samples.json", rows),
+                "analysis_input_manifest_path": (f"{unit_id}.inputs.json", [])}
+    named = {}
+    for key, (name, value) in sidecars.items():
+        target = folder / name
+        target.write_text(json.dumps(value, indent=1, sort_keys=True), encoding="utf-8")
+        named[key] = str(target.resolve())
+    proposal = {
+        "proposal_id": class_proposal_id, "unit_id": unit_id, "purpose": "Synthetic purpose.", "rationale": "",
+        "status": "accepted", "created_at": "2026-11-16T01:00:00+00:00",
+        "ratified_by": (ratification or {}).get("approval_id", ""), "selected_fields": [],
+        "contrast_definition": {"kind": "abstention"}, "warnings": [], "ratification": ratification,
+        "assignments": assignments if assignments is not None else sorted(
+            ({"sample_id": str(row.get("sample_id") or ""), "class_label": "All", "values": {}} for row in rows),
+            key=lambda item: item["sample_id"]),
+    }
+    return {"analysis_unit_id": unit_id, "class_proposal_id": class_proposal_id, **dict(extra or {}),
+            "sample_metadata": rows, "class_proposal": proposal, **named}
+
+
 def handoff_bytes(value: dict[str, Any]) -> bytes:
     """The bytes _write gives a JSON value (FakeCatalog's handoff file)."""
     return json.dumps(value, indent=1, sort_keys=True).encode("utf-8")
@@ -1224,6 +1260,8 @@ class FakeCatalog:
         self.drift: set[str] = set()
         # The units whose download URLs the runner asked for (download_objects), call by call.
         self.object_requests: list[list[str]] = []
+        # The ratification record save_class stored per unit (catalog_shaped).
+        self.ratifications: dict[str, dict[str, Any]] = {}
 
     def class_decision(self, unit_id: str, purpose: str) -> dict[str, Any]:
         digest = self.world.class_digest(unit_id) + ("-drifted" if unit_id in self.drift else "")
@@ -1231,11 +1269,24 @@ class FakeCatalog:
 
     def save_class(self, *, unit_id: str, purpose: str, kind: str, ratification: dict[str, Any]) -> dict[str, Any]:
         self.saved.append({"unit_id": unit_id, "kind": kind, "ratification": ratification})
+        if self.catalog_shaped:
+            self.ratifications[unit_id] = catalog_ratification(ratification, kind == "abstention",
+                                                               self.world.clock.now().isoformat())
         return {"ok": True, "proposal_id": ratification["proposal_id"]}
+
+    # Catalog-shaped handoffs (WS0 decision A): while set, handoff() writes what msdial_catalog_reanalysis_handoff
+    # writes - sidecars at absolute paths beside the handoff, and the Class proposal with the ratification save_class
+    # recorded (ratified_by and the ratification record) - so the handoff changes with every re-ratification.
+    catalog_shaped = False
 
     def handoff(self, *, unit_id: str, class_proposal_id: str) -> dict[str, Any]:
         path = self.world.root / "catalog-data" / "handoffs" / f"{unit_id}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
+        if self.catalog_shaped:
+            value = catalog_shaped_handoff(path.parent, unit_id, class_proposal_id, self.world.handoff_rows.get(unit_id) or [],
+                                           self.ratifications.get(unit_id), self.world.handoff_extra.get(unit_id))
+            path.write_bytes(handoff_bytes(value))
+            return {"ok": True, "handoff_path": str(path), "blocking_reasons": []}
         path.write_bytes(handoff_bytes(fake_handoff(unit_id, class_proposal_id, self.world.handoff_rows.get(unit_id),
                                                     self.world.handoff_extra.get(unit_id))))
         return {"ok": True, "handoff_path": str(path), "blocking_reasons": []}

@@ -183,12 +183,14 @@ PILOT_EXCLUSION_REASONS = ("not_in_pool",) + EXCLUSION_REASONS
 # layout before analysis units: <accession>\\raw, provenance and output).
 ACCESSION_WORKSPACE_PARTS = ("raw", "provenance", "output")
 # A unit a prior campaign ended in one of these, or has a job running for, is not planned again.
-NOT_REPLANNED = frozenset({"done", "split_done", "downloading", "diagnosing", "running"})
+NOT_REPLANNED = frozenset({"done", "split_done", "downloading", "diagnosing", "running", "invalidated_after_done"})
 # ...unless the plan reopens it (plan --reopen, with --replan-from its campaign and --triage-dir): a done unit whose
 # outputs were found wrong (the 79 stage3b unit/parts of 2026-11-15 that ran on the whole study's files) is planned
 # again with an explicit reason code and its evidence, into a workspace of its own, <unit_id>@<campaign_id>, so the
 # earlier outputs are never changed. A unit with a job running is never reopened.
-REOPENABLE = frozenset({"done", "split_done"})
+# invalidated_after_done (WS0 decision B): a unit that ran and a later cross-unit check refused; its outputs are kept, so
+# it is planned again only by a person's reopen, as a done unit is.
+REOPENABLE = frozenset({"done", "split_done", "invalidated_after_done"})
 # Planning from triage files (plan --triage-dir) leaves a unit out for these too (curated.EXCLUSION_REASONS).
 TRIAGE_EXCLUSION_REASONS = curated.EXCLUSION_REASONS
 # The first Interactive that applies a curated selection (curated_selection_path, the integration contract's A).
@@ -2392,6 +2394,12 @@ def _curated_units(
         item = copy.deepcopy(unit)
         item["unit_key"] = key
         item["workspace_name"] = f"{key}@{campaign_id}" if reopened else key
+        # The name Interactive meets as workspace_unit_key at the download (a child's, a reopened unit's): one it would
+        # refuse is refused here, before a person approves it (WS0 low, 2026-11-17).
+        problem = curated.workspace_name_problem(item["workspace_name"], str(unit["unit_id"]))
+        if item["workspace_name"] != str(unit["unit_id"]) and problem:
+            raise PlanError(f"Unit {key} would run in workspace {problem}, which Interactive refuses as a "
+                            "workspace_unit_key; choose another campaign id (or child key).")
         item["curated_selection"] = dict(entry["curated_selection"])
         item["class_on_triaged_rows"] = dict(entry["class_on_triaged_rows"])
         if child is not None:
