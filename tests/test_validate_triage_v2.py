@@ -499,17 +499,17 @@ class ContextTests(V2Case):
 class ReviewLogTests(V2Case):
     UNIT = "AN004454"
 
-    def flagged(self, *, code: str = "targeted_dda", status: str = "ready") -> dict:
+    def flagged(self, *, code: str = "mixed_acquisition", status: str = "ready") -> dict:
         docs = te.to_v2(te.build_good(self.ACCESSION))
-        docs[self.UNIT]["flags"].append({"code": code, "certainty": "suspected", "detail": "Inclusion-list DDA suspected."})
+        docs[self.UNIT]["flags"].append({"code": code, "certainty": "suspected", "detail": "DDA and DIA files in one unit suspected."})
         docs[self.UNIT]["status"] = status
         if status == "needs_person":
-            docs[self.UNIT]["needs_person"].append({"code": "scope_targeted_dda", "question": "Is tDDA in scope?"})
+            docs[self.UNIT]["needs_person"].append({"code": "mixed_acquisition", "question": "Do the acquisitions form one run?"})
         return docs
 
     def answer(self, directory: Path, decision_id: str, code: str, by: str = "Synthetic Reviewer") -> dict:
         return curated.append_review_log(directory, "person_answer", decision_id, AT, by=by, question_code=code,
-                                         answer="In scope; the inclusion list is not used for this unit.",
+                                         answer="One run; the DIA files are left to a later unit.",
                                          channel="conversation")
 
     def test_a_ready_unit_with_a_blocking_flag_needs_a_logged_answer(self) -> None:
@@ -519,16 +519,16 @@ class ReviewLogTests(V2Case):
         payload = sha((directory / f"{self.UNIT}.json").read_bytes())
         # An answer to another code, or about another decision, does not clear it.
         self.answer(directory, payload, "ms1_only")
-        self.answer(directory, "f" * 64, "targeted_dda")
+        self.answer(directory, "f" * 64, "mixed_acquisition")
         self.assertTrue(self.found(self.validate(directory), "T-STATUS", "error", self.UNIT))
-        self.answer(directory, payload, "targeted_dda")
+        self.answer(directory, payload, "mixed_acquisition")
         report = self.validate(directory)
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
 
     def test_an_answer_about_a_superseded_payload_counts(self) -> None:
         directory = self.make(docs=self.flagged(status="needs_person"))
         base = sha((directory / f"{self.UNIT}.json").read_bytes())
-        self.answer(directory, base, "targeted_dda")
+        self.answer(directory, base, "mixed_acquisition")
         revised = self.flagged()  # ready, the flag kept
         path = directory / f"{self.UNIT}.r1.json"
         path.write_text(json.dumps(revised[self.UNIT], indent=1), encoding="utf-8")
@@ -550,7 +550,7 @@ class ReviewLogTests(V2Case):
         records.write_record(path, self.code, inputs=listing, supersedes=base)
         revision = sha(path.read_bytes())
         report = self.validate(directory)
-        self.assertTrue(any("targeted_dda" in m for m in self.found(report, "T-REVISION", "error", self.UNIT)))
+        self.assertTrue(any("mixed_acquisition" in m for m in self.found(report, "T-REVISION", "error", self.UNIT)))
         # A revision entry whose cause is a validator verdict, or an answer to another code, does not carry it.
         verdict = curated.append_review_log(directory, "validator_verdict", base, AT, tool="validate-triage.py",
                                             code_commit=None, verdict="hold", findings_sha256="0" * 64, findings=[])
@@ -559,7 +559,7 @@ class ReviewLogTests(V2Case):
             curated.append_review_log(directory, "revision", base, AT, supersedes=base, new_decision_id=revision,
                                       cause={"kind": cause["kind"], "seq": cause["seq"]})
         self.assertTrue(self.found(self.validate(directory), "T-REVISION", "error", self.UNIT))
-        answer = self.answer(directory, base, "targeted_dda")
+        answer = self.answer(directory, base, "mixed_acquisition")
         curated.append_review_log(directory, "revision", base, AT, supersedes=base, new_decision_id=revision,
                                   cause={"kind": "person_answer", "seq": answer["seq"]})
         report = self.validate(directory)
@@ -580,7 +580,7 @@ class ReviewLogTests(V2Case):
         self.answer(directory, "a" * 64, "ms1_only")
         log = directory / vt.REVIEW_LOG
         lines = log.read_bytes().split(b"\n")
-        lines[0] = lines[0].replace(b"In scope", b"Out of scope")
+        lines[0] = lines[0].replace(b"One run", b"Two runs")
         log.write_bytes(b"\n".join(lines))
         report = self.validate(directory)
         self.assertTrue(self.found(report, "T-LOG", "error"))
@@ -588,11 +588,11 @@ class ReviewLogTests(V2Case):
 
     def test_v1_answers_still_come_from_the_payload(self) -> None:
         docs = te.build_good(self.ACCESSION)
-        docs[self.UNIT]["flags"].append({"code": "targeted_dda", "certainty": "suspected", "detail": "tDDA suspected."})
+        docs[self.UNIT]["flags"].append({"code": "mixed_acquisition", "certainty": "suspected", "detail": "DDA and DIA suspected."})
         directory = te.write(docs, self.tmp / "v1-answers")
         self.assertTrue(self.found(self.validate(directory), "T-STATUS", "error", self.UNIT))
-        docs[self.UNIT]["person_answers"] = [{"by": "Synthetic Reviewer", "answered_at": AT, "code": "targeted_dda",
-                                             "answer": "In scope."}]
+        docs[self.UNIT]["person_answers"] = [{"by": "Synthetic Reviewer", "answered_at": AT, "code": "mixed_acquisition",
+                                             "answer": "One run."}]
         te.write(docs, directory)
         self.assertEqual(self.validate(directory).verdict, "pass")
 
@@ -604,6 +604,74 @@ class ClassBoundaryTests(V2Case):
                                                         "value": "Treated"})
         report = self.validate(self.make(docs=docs))
         self.assertTrue(self.found(report, "T-CLASS", "error", "AN004454"))
+
+
+class InScopeDecisionTests(V2Case):
+    """The decisions of 2026-11-18. D1: inclusion- or exclusion-list DDA is untargeted DDA, in scope; targeted_dda is an
+    informational flag, never a question. D2: shared_content is for content a unit keeps; byte-identical copies among
+    excluded members hold nothing."""
+
+    UNIT = "AN004454"
+
+    def test_a_ready_unit_flagged_targeted_dda_passes_without_an_answer(self) -> None:
+        self.assertNotIn("targeted_dda", vt.BLOCKING_FLAGS)
+        self.assertIn("targeted_dda", vt.INFORMATIONAL_FLAGS)
+        docs = te.to_v2(te.build_good(self.ACCESSION))
+        docs[self.UNIT]["flags"].append({"code": "targeted_dda", "certainty": "suspected",
+                                         "detail": "Inclusion-list DDA: MS2 selection follows the list."})
+        report = self.validate(self.make(docs=docs))
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+
+    def test_a_scope_targeted_dda_question_is_a_schema_error(self) -> None:
+        self.assertNotIn("scope_targeted_dda", vt.load_schema(vt.SCHEMA_V2_ID)["$defs"]["question_code"]["enum"])
+        docs = te.to_v2(te.build_good(self.ACCESSION))
+        docs[self.UNIT]["status"] = "needs_person"
+        docs[self.UNIT]["needs_person"].append({"code": "scope_targeted_dda", "question": "Is the inclusion list in scope?"})
+        self.assertTrue(self.found(self.validate(self.make(docs=docs)), "T-SCHEMA", "error", self.UNIT))
+
+    def test_dda_beside_targeted_dda_is_not_a_mix(self) -> None:
+        docs = te.to_v2(te.build_good(self.ACCESSION))
+        docs[self.UNIT]["rows"][0]["acquisition_mode"] = "targeted_DDA"
+        report = self.validate(self.make(docs=docs))
+        self.assertTrue(any("targeted_dda flag" in m for m in self.found(report, "T-ACQ", "error", self.UNIT)),
+                        "targeted_DDA kept without the flag stays an error (the reporting guarantee)")
+        self.assertFalse(any("mix acquisition" in m for m in self.found(report, "T-ACQ", "error", self.UNIT)))
+        docs[self.UNIT]["flags"].append({"code": "targeted_dda", "certainty": "suspected", "detail": "Inclusion list."})
+        report = self.validate(self.make(docs=docs))
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+
+    def test_copies_among_excluded_members_need_no_flag(self) -> None:
+        # ST002747's mzXML copies have byte-identical twins, all excluded: nobody keeps the content (K empty).
+        twins = vt.content_twins(vt.read_listing(te.load(self.ACCESSION)[2]))
+        self.assertTrue(twins)
+        report = self.validate(self.make())
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+        self.assertFalse(self.found(report, "T-DUP"))
+        docs = te.to_v2(te.build_good(self.ACCESSION))
+        docs[self.UNIT]["flags"].append({"code": "duplicate_copies_excluded", "certainty": "confirmed",
+                                         "detail": "The mzXML copies are byte-identical; all are excluded."})
+        self.assertEqual(self.validate(self.make(docs=docs)).verdict, "pass")
+
+    def test_shared_content_with_no_kept_twin_is_an_error(self) -> None:
+        docs = te.to_v2(te.build_good(self.ACCESSION))
+        docs[self.UNIT]["status"] = "needs_person"
+        docs[self.UNIT]["flags"].append({"code": "shared_content", "certainty": "confirmed",
+                                         "detail": "The mzXML copies are byte-identical."})
+        docs[self.UNIT]["needs_person"].append({"code": "shared_content", "question": "Which copy?"})
+        found = self.found(self.validate(self.make(docs=docs)), "T-DUP", "error", self.UNIT)
+        self.assertTrue(any("duplicate_copies_excluded" in m for m in found), found)
+
+    def test_one_or_more_keepers_of_shared_content_still_wait_for_a_person(self) -> None:
+        # K = 1: one unit keeps a copy whose twins are excluded elsewhere (the failure shape where a folder name chose
+        # the copy). K >= 2: two units keep identical content. Both stay blocking.
+        report = self.validate(self.make("ST002283"), "ST002283")
+        self.assertTrue(self.found(report, "T-DUP", "hold", "AN003731"))
+        self.assertFalse(self.found(report, "T-DUP", "error"))
+        docs = te.to_v2(te.build_good("ST002283"))
+        docs["AN003731"]["flags"] = []
+        docs["AN003731"]["needs_person"] = []
+        docs["AN003731"]["status"] = "ready"
+        self.assertTrue(self.found(self.validate(self.make("ST002283", docs=docs), "ST002283"), "T-DUP", "error", "AN003731"))
 
 
 SYNTHETIC_ACCESSION = "ST000001"

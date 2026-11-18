@@ -14,8 +14,7 @@
    "expected_status_pre_download": "needs_person",
    "expected_status_after_preflight": "needs_person",
    "expected_needs_person": [
-    "scope_ms1_only",
-    "scope_targeted_dda"
+    "scope_ms1_only"
    ],
    "expected_flags": [
     "ms1_only",
@@ -999,8 +998,7 @@
    "expected_status_pre_download": "needs_person",
    "expected_status_after_preflight": "needs_person",
    "expected_needs_person": [
-    "scope_ms1_only",
-    "scope_targeted_dda"
+    "scope_ms1_only"
    ],
    "expected_flags": [
     "ms1_only",

@@ -47,7 +47,7 @@ def payload(unit: str, flags: list[str], note: str = "") -> dict:
 
 
 class Campaign:
-    """<root>/campaign with triage/ST000001/: AN000001.json (flagged targeted_dda), its revision AN000001.r1.json (the
+    """<root>/campaign with triage/ST000001/: AN000001.json (flagged mixed_acquisition), its revision AN000001.r1.json (the
     flag dropped), AN000002.json; and the review log and decision ledger a sound campaign would hold."""
 
     def __init__(self, root: Path) -> None:
@@ -57,7 +57,7 @@ class Campaign:
         self.folder.mkdir(parents=True)
         (self.directory / "campaign-manifest.json").write_text(
             json.dumps({"units": [], "triage": {"directory": str(self.triage)}}), encoding="utf-8")
-        self.base = self.write(f"{UNIT}.json", payload(UNIT, ["targeted_dda"]))
+        self.base = self.write(f"{UNIT}.json", payload(UNIT, ["mixed_acquisition"]))
         self.revision = self.write(f"{UNIT}.r1.json", payload(UNIT, [], "revised on the reviewer's answer"))
         self.other = self.write(f"{OTHER}.json", payload(OTHER, []))
         self.events: list[dict] = []
@@ -75,7 +75,7 @@ class Campaign:
                         findings_sha256="0" * 64, findings=[])
 
     def answer(self, decision_id: str, code: str, by: str = PERSON) -> dict:
-        return self.log("person_answer", decision_id, by=by, question_code=code, answer="In scope.", channel="conversation")
+        return self.log("person_answer", decision_id, by=by, question_code=code, answer="One run.", channel="conversation")
 
     def revise(self, cause: dict, *, supersedes: str | None = None, new: str | None = None) -> dict:
         return self.log("revision", supersedes or self.base, supersedes=supersedes or self.base,
@@ -93,7 +93,7 @@ class Campaign:
     def sound(self) -> None:
         """The sound history: a hold, a person's answer, the revision on it, the plan's ledger, the approval."""
         self.verdict(self.base)
-        answer = self.answer(self.base, "targeted_dda")
+        answer = self.answer(self.base, "mixed_acquisition")
         self.revise({"kind": "person_answer", "seq": answer["seq"]})
         self.verdict(self.revision, "pass")
         head = curated.review_log_head(self.folder)
@@ -198,7 +198,7 @@ class ReviewLogTests(_Case):
         self.assertTrue(any("f" * 64 in message for message in found))
 
     def test_a_revision_naming_an_unknown_decision_is_refused(self) -> None:
-        answer = self.campaign.answer(self.campaign.base, "targeted_dda")
+        answer = self.campaign.answer(self.campaign.base, "mixed_acquisition")
         self.campaign.revise({"kind": "person_answer", "seq": answer["seq"]}, new="e" * 64)
         found = self.refused_by("L-PAYLOAD")
         self.assertTrue(any("new_decision_id" in message for message in found), found)
@@ -217,7 +217,7 @@ class ReviewLogTests(_Case):
 class RevisionCauseTests(_Case):
     def test_a_cause_naming_no_entry_of_its_kind_is_refused(self) -> None:
         verdict = self.campaign.verdict(self.campaign.base)
-        self.campaign.answer(self.campaign.base, "targeted_dda")
+        self.campaign.answer(self.campaign.base, "mixed_acquisition")
         self.campaign.revise({"kind": "person_answer", "seq": verdict["seq"]})
         found = self.refused_by("L-CAUSE")
         self.assertTrue(any("holds no person_answer there" in message for message in found), found)
@@ -230,13 +230,13 @@ class RevisionCauseTests(_Case):
         self.refused_by("L-CAUSE", vdl.verify(campaign.directory))
 
     def test_a_cause_after_the_revision_or_about_another_decision_is_refused(self) -> None:
-        answer = self.campaign.answer(self.campaign.other, "targeted_dda")
+        answer = self.campaign.answer(self.campaign.other, "mixed_acquisition")
         self.campaign.revise({"kind": "person_answer", "seq": answer["seq"]})
         found = self.refused_by("L-CAUSE")
         self.assertTrue(any("does not supersede" in message for message in found), found)
         campaign = Campaign(self.root / "second")
         campaign.revise({"kind": "person_answer", "seq": 2})
-        campaign.answer(campaign.base, "targeted_dda")
+        campaign.answer(campaign.base, "mixed_acquisition")
         found = self.refused_by("L-CAUSE", vdl.verify(campaign.directory))
         self.assertTrue(any("comes after it" in message for message in found), found)
 
@@ -269,11 +269,11 @@ class DroppedFlagTests(_Case):
         verdict = self.campaign.verdict(self.campaign.base)
         self.campaign.revise({"kind": "validator_verdict", "seq": verdict["seq"]})
         found = self.refused_by("L-FLAG")
-        self.assertTrue(any("targeted_dda" in message for message in found), found)
+        self.assertTrue(any("mixed_acquisition" in message for message in found), found)
         other = self.campaign.answer(self.campaign.base, "ms1_only")
         self.campaign.revise({"kind": "person_answer", "seq": other["seq"]})
         self.refused_by("L-FLAG")
-        answer = self.campaign.answer(self.campaign.base, "targeted_dda")
+        answer = self.campaign.answer(self.campaign.base, "mixed_acquisition")
         self.campaign.revise({"kind": "person_answer", "seq": answer["seq"]})
         report = self.verify()
         self.assertNotIn("L-FLAG", self.checks(report), json.dumps(report.as_dict(), indent=1))
@@ -281,7 +281,7 @@ class DroppedFlagTests(_Case):
 
     def test_an_unnamed_answer_does_not_clear_a_flag(self) -> None:
         log = self.campaign.folder / curated.REVIEW_LOG
-        answer = self.campaign.answer(self.campaign.base, "targeted_dda")
+        answer = self.campaign.answer(self.campaign.base, "mixed_acquisition")
         self.rewrite_line(log, answer["seq"], lambda value: value.update(by=" "))
         self.campaign.revise({"kind": "person_answer", "seq": answer["seq"]})
         self.refused_by("L-FLAG")

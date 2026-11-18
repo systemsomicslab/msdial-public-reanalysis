@@ -124,9 +124,18 @@ BLOCKING_FLAGS = {
     "polarity_switching",
     "ms1_only",
     "mixed_acquisition",
-    "targeted_dda",
     "declared_technical_disputed",
     "name_token_disputed",
+}
+# Flags that only inform a report and never hold a unit (decision of 2026-11-18: inclusion- or exclusion-list DDA is
+# untargeted DDA and in scope, flagged targeted_dda so a report can name the MS2-selection bias; byte-identical copies
+# found only among excluded members are duplicate_copies_excluded, never shared_content).
+INFORMATIONAL_FLAGS = {
+    "targeted_dda",
+    "duplicate_copies_excluded",
+    "catalog_defect",
+    "target_omics_doubt",
+    "segmented_acquisition",
 }
 # The question code of a person's answer that lets a ready unit rest on a kept file inferred at low confidence
 # (T-CONFIDENCE): the person looked at it (scripts/record-person-answer.py, section 2.2).
@@ -1708,8 +1717,10 @@ def _check_unit(
         report.add("error", "T-ACQ", unit, "MS1-only files are kept without an ms1_only flag")
     if "targeted_DDA" in acqs and "targeted_dda" not in flags:
         report.add("error", "T-ACQ", unit, "targeted DDA files are kept without a targeted_dda flag")
-    if len(acqs - {"unknown"}) > 1 and "mixed_acquisition" not in flags:
-        report.add("error", "T-ACQ", unit, f"kept files mix acquisition modes {sorted(acqs - {'unknown'})} without a mixed_acquisition flag")
+    # Inclusion- or exclusion-list DDA is DDA (decision of 2026-11-18): targeted_DDA beside DDA is not a mix.
+    modes = {"DDA" if a == "targeted_DDA" else a for a in acqs} - {"unknown"}
+    if len(modes) > 1 and "mixed_acquisition" not in flags:
+        report.add("error", "T-ACQ", unit, f"kept files mix acquisition modes {sorted(modes)} without a mixed_acquisition flag")
     if "unknown" in acqs and status == "ready" and unit_acq == "unknown":
         report.add("error", "T-ACQ", unit, "a ready unit with unknown acquisition")
 
@@ -1730,6 +1741,35 @@ def _check_unit(
     for answer in t.get("person_answers", []):
         if not answer["by"].strip():
             report.add("error", "T-PERSON", unit, "a person answer must name the person")
+
+
+def content_twins(listed: Iterable[ListedMember]) -> dict[str, set[str]]:
+    """Every member key with a byte-identical twin (CRC32 and size, at least MIN_DUPLICATE_BYTES, raw-like; a vendor folder
+    by the signature of its parts) and the keys of its twins. The one code path behind T-DUP, the digest's twin groups
+    and the spec expander."""
+    content: dict[tuple[str, int], list[ListedMember]] = defaultdict(list)
+    folders: dict[str, list[tuple[str, str, int]]] = defaultdict(list)
+    for m in listed:
+        mk = member_key(m.path)
+        if VENDOR_FOLDER.match(_norm_path(m.path)):
+            inner = _norm_path(m.path)[len(mk) :].casefold()
+            folders[mk].append((inner, m.crc32, m.size))
+        elif m.size >= MIN_DUPLICATE_BYTES and m.crc32 and is_raw_like(m.path):
+            content[(m.crc32, m.size)].append(m)
+    twins: dict[str, set[str]] = defaultdict(set)
+    for group in content.values():
+        keys = {member_key(m.path) for m in group}
+        if len(keys) > 1:
+            for k in keys:
+                twins[k] |= keys - {k}
+    by_signature: dict[tuple, list[str]] = defaultdict(list)
+    for folder, parts in folders.items():
+        by_signature[tuple(sorted(parts))].append(folder)
+    for group in by_signature.values():
+        if len(group) > 1:
+            for k in group:
+                twins[k] |= set(group) - {k}
+    return dict(twins)
 
 
 def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed: list[ListedMember], resolver: Resolver,
@@ -1792,28 +1832,33 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
         return
 
     # T-DUP: byte-identical content (CRC32 + size) anywhere in the listing.
-    content: dict[tuple[str, int], list[ListedMember]] = defaultdict(list)
-    folders: dict[str, list[tuple[str, str, int]]] = defaultdict(list)
-    for m in listed:
-        mk = member_key(m.path)
-        if VENDOR_FOLDER.match(_norm_path(m.path)):
-            inner = _norm_path(m.path)[len(mk) :].casefold()
-            folders[mk].append((inner, m.crc32, m.size))
-        elif m.size >= MIN_DUPLICATE_BYTES and m.crc32 and is_raw_like(m.path):
-            content[(m.crc32, m.size)].append(m)
-    twins: dict[str, set[str]] = defaultdict(set)
-    for group in content.values():
-        keys = {member_key(m.path) for m in group}
-        if len(keys) > 1:
-            for k in keys:
-                twins[k] |= keys - {k}
-    by_signature: dict[tuple, list[str]] = defaultdict(list)
-    for folder, parts in folders.items():
-        by_signature[tuple(sorted(parts))].append(folder)
-    for group in by_signature.values():
-        if len(group) > 1:
-            for k in group:
-                twins[k] |= set(group) - {k}
+    twins = content_twins(listed)
+
+    # shared_content is for content a unit keeps (decision of 2026-11-18): a unit that flags it, where no file of the
+    # twin groups its items fall in is kept by any unit, flags copies among excluded members, which hold nothing
+    # (duplicate_copies_excluded, informational). One kept copy whose twins are excluded (K = 1) stays blocking.
+    kept_anywhere = set(owners)
+    for unit, t in triages.items():
+        if "shared_content" not in _flag_codes(t):
+            continue
+        mentioned: set[str] = set()
+        for item in [*t.get("rows", []), *t.get("added_members", []), *t["excluded_rows"], *t.get("excluded_members", [])]:
+            if item.get("member_path"):
+                mentioned.add(member_key(item["member_path"]))
+            elif item.get("raw_file"):
+                found = resolver.resolve(item["raw_file"])
+                if found:
+                    mentioned.add(found)
+        for flag in t.get("flags", []):
+            if flag.get("code") == "shared_content":
+                mentioned |= {member_key(p) for p in flag.get("member_paths") or []}
+        concerned = set()
+        for key in mentioned & set(twins):
+            concerned |= {key} | twins[key]
+        if not concerned & kept_anywhere:
+            report.add("error", "T-DUP", unit, "shared_content is flagged, but no unit keeps a file of the byte-identical "
+                       "groups this unit's files fall in" + ("" if concerned else " (none of its files has a twin)")
+                       + "; copies found only among excluded members are duplicate_copies_excluded (informational)")
 
     owner_of = {key: sorted({h.unit for h in holders}) for key, holders in owners.items()}
     reported: set[tuple[str, frozenset[str]]] = set()

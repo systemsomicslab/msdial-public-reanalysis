@@ -170,7 +170,10 @@
   "$defs": {
     "ion_mode": {"enum": ["positive", "negative", "both", "switching", "unknown"]},
     "chromatography": {"enum": ["HILIC", "RP", "normal_phase", "other", "unknown"]},
-    "acquisition_mode": {"enum": ["DDA", "DIA", "SWATH", "AIF", "MS1", "targeted_DDA", "mixed", "unknown"]},
+    "acquisition_mode": {
+      "description": "targeted_DDA is deprecated (decision of 2026-11-18): inclusion- or exclusion-list DDA is DDA, with the informational flag targeted_dda. It stays readable in earlier payloads and counts as DDA in the validator's mixing test.",
+      "enum": ["DDA", "DIA", "SWATH", "AIF", "MS1", "targeted_DDA", "mixed", "unknown"]
+    },
     "role": {"enum": ["sample", "qc", "blank", "other", "unknown"]},
     "evidence_source": {
       "enum": [
@@ -336,9 +339,9 @@
       }
     },
     "question_code": {
+      "description": "scope_targeted_dda was removed on 2026-11-18: inclusion- or exclusion-list DDA is in scope and is never a question (the flag targeted_dda informs a report).",
       "enum": [
         "scope_ms1_only",
-        "scope_targeted_dda",
         "shared_content",
         "no_signal",
         "folder_header_disagreement",
@@ -351,6 +354,7 @@
       ]
     },
     "flag_code": {
+      "description": "Blocking until a person answers: shared_content, folder_header_disagreement, polarity_switching, ms1_only, mixed_acquisition, declared_technical_disputed, name_token_disputed. Informational, never blocking: targeted_dda (inclusion- or exclusion-list DDA, in scope; reports note the MS2-selection bias), duplicate_copies_excluded (byte-identical copies among excluded members only), catalog_defect, target_omics_doubt, segmented_acquisition.",
       "enum": [
         "mixed_acquisition",
         "ms1_only",
@@ -359,6 +363,7 @@
         "shared_content",
         "undocumented_method",
         "targeted_dda",
+        "duplicate_copies_excluded",
         "segmented_acquisition",
         "declared_technical_disputed",
         "name_token_disputed",

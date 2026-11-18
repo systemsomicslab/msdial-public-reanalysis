@@ -550,8 +550,8 @@ class RevisionTests(WrapperCase):
     def test_a_question_answered_before_the_plan_is_settled_by_a_revision(self) -> None:
         def ask(doc):
             doc["status"] = "needs_person"
-            doc["flags"].append({"code": "targeted_dda", "certainty": "suspected", "detail": "Inclusion-list DDA suspected."})
-            doc["needs_person"].append({"code": "scope_targeted_dda", "question": "Is tDDA in scope?"})
+            doc["flags"].append({"code": "mixed_acquisition", "certainty": "suspected", "detail": "DDA and DIA files in one unit suspected."})
+            doc["needs_person"].append({"code": "mixed_acquisition", "question": "Do the acquisitions form one run?"})
         self.set_payloads(ask)
         code, [summary] = self.run_wrapper("ok")
         self.assertEqual((code, summary["verdict"]), (1, "hold"), summary)
@@ -559,20 +559,20 @@ class RevisionTests(WrapperCase):
         # The question is shown; an answer without a named person, or to a question not asked, is refused.
         code, shown = self.answer()
         self.assertEqual(code, 0)
-        self.assertIn("targeted_dda", json.loads(shown)["questions"])
-        self.assertEqual(self.answer("--question-code", "targeted_dda", "--answer", "In scope.")[0], 2)
+        self.assertIn("mixed_acquisition", json.loads(shown)["questions"])
+        self.assertEqual(self.answer("--question-code", "mixed_acquisition", "--answer", "One run.")[0], 2)
         self.assertEqual(self.answer("--question-code", "ms1_only", "--by", "Synthetic Reviewer", "--answer", "x")[0], 2)
-        self.assertEqual(self.answer("--question-code", "targeted_dda", "--by", "Synthetic Reviewer", "--answer", "x",
+        self.assertEqual(self.answer("--question-code", "mixed_acquisition", "--by", "Synthetic Reviewer", "--answer", "x",
                                      "--decision-id", "0" * 64)[0], 2)
-        code, written = self.answer("--question-code", "targeted_dda", "--by", "Synthetic Reviewer",
-                                    "--answer", "In scope; the inclusion list is not used.", "--decision-id", base)
+        code, written = self.answer("--question-code", "mixed_acquisition", "--by", "Synthetic Reviewer",
+                                    "--answer", "One run; the DIA files are left out.", "--decision-id", base)
         self.assertEqual(code, 0, written)
         seq = json.loads(written)["seq"]
         # The revision: ready, the flag kept, the question answered.
         def settle(doc):
             doc["status"] = "ready"
             doc["needs_person"] = []
-            doc["rationale"] = "The person's answer puts the targeted DDA files in scope."
+            doc["rationale"] = "The person's answer makes the acquisitions one run."
         self.set_payloads(settle)
         code, [summary] = self.run_wrapper("ok", "--revise", f"{self.UNIT}={seq}")
         self.assertEqual((code, summary["status"], summary["verdict"]), (0, "triaged", "pass"), summary)
