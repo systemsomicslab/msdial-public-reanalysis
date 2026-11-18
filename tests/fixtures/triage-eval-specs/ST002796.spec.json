@@ -1,0 +1,858 @@
+{
+ "schema": "msdial-unit-triage-spec.v1",
+ "accession": "ST002796",
+ "phase": "pre_download",
+ "structure": "Four arm folders (C18neg, C18pos, HILICneg, HILICpos), each with MS1 (Plasma, Serum, Whole_blood and QC, full scan) and MS2 (DDA and DIA pooled QC, tDDA inclusion-list DDA of the samples).",
+ "evidence_sources": [
+  {
+   "source": "archive_listing",
+   "detail": "Zip central directory listing read before download."
+  }
+ ],
+ "groups": [
+  {
+   "id": "CN1S",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "regex": "^C18neg/MS1/(Plasma|Serum|Whole_blood)/"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "neg_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A biological sample under C18neg/MS1, the full-scan folder."
+  },
+  {
+   "id": "CN1Q",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "C18neg/MS1/QC"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "neg_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A full-scan QC under C18neg/MS1/QC."
+  },
+  {
+   "id": "CNDD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "C18neg/MS2/DDA"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "neg_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "A pooled-QC DDA run under C18neg/MS2/DDA."
+  },
+  {
+   "id": "CNDI",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "C18neg/MS2/DIA"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "neg_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A pooled-QC DIA run under C18neg/MS2/DIA."
+  },
+  {
+   "id": "CNTD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "C18neg/MS2/tDDA"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "neg_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "An inclusion-list DDA run under C18neg/MS2/tDDA: untargeted DDA with prioritised MS2."
+  },
+  {
+   "id": "CP1S",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "regex": "^C18pos/MS1/(Plasma|Serum|Whole_blood)/"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "pos_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A biological sample under C18pos/MS1, the full-scan folder."
+  },
+  {
+   "id": "CP1Q",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "C18pos/MS1/QC"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "pos_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A full-scan QC under C18pos/MS1/QC."
+  },
+  {
+   "id": "CPDD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "C18pos/MS2/DDA"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "pos_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "A pooled-QC DDA run under C18pos/MS2/DDA."
+  },
+  {
+   "id": "CPDI",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "C18pos/MS2/DIA"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "pos_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A pooled-QC DIA run under C18pos/MS2/DIA."
+  },
+  {
+   "id": "CPTD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "C18pos/MS2/tDDA"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004548",
+    "child": "pos_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "An inclusion-list DDA run under C18pos/MS2/tDDA: untargeted DDA with prioritised MS2."
+  },
+  {
+   "id": "HN1S",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "regex": "^HILICneg/MS1/(Plasma|Serum|Whole_blood)/"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "neg_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A biological sample under HILICneg/MS1, the full-scan folder."
+  },
+  {
+   "id": "HN1Q",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICneg/MS1/QC"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "neg_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A full-scan QC under HILICneg/MS1/QC."
+  },
+  {
+   "id": "HNDD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICneg/MS2/DDA"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "neg_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "A pooled-QC DDA run under HILICneg/MS2/DDA."
+  },
+  {
+   "id": "HNDI",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICneg/MS2/DIA"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "neg_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A pooled-QC DIA run under HILICneg/MS2/DIA."
+  },
+  {
+   "id": "HNTD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICneg/MS2/tDDA"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "neg_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "An inclusion-list DDA run under HILICneg/MS2/tDDA: untargeted DDA with prioritised MS2."
+  },
+  {
+   "id": "HP1S",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "regex": "^HILICpos/MS1/(Plasma|Serum|Whole_blood)/"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "pos_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A biological sample under HILICpos/MS1, the full-scan folder."
+  },
+  {
+   "id": "HP1Q",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICpos/MS1/QC"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "pos_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A full-scan QC under HILICpos/MS1/QC."
+  },
+  {
+   "id": "HPDD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICpos/MS2/DDA"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "pos_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "A pooled-QC DDA run under HILICpos/MS2/DDA."
+  },
+  {
+   "id": "HPDI",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICpos/MS2/DIA"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "pos_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A pooled-QC DIA run under HILICpos/MS2/DIA."
+  },
+  {
+   "id": "HPTD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICpos/MS2/tDDA"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004549",
+    "child": "pos_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "An inclusion-list DDA run under HILICpos/MS2/tDDA: untargeted DDA with prioritised MS2."
+  }
+ ],
+ "units": {
+  "AN004548": {
+   "status": "needs_person",
+   "confidence": "medium",
+   "rationale": "Reversed phase: every biological sample is full scan only; MS2 exists for pooled QC and inclusion-list DDA runs.",
+   "unit_technical": {
+    "ion_mode": "both",
+    "chromatography": "RP",
+    "acquisition_mode": "mixed"
+   },
+   "children": [
+    {
+     "child_key": "neg_MS1",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1"
+    },
+    {
+     "child_key": "neg_DDA",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA"
+    },
+    {
+     "child_key": "neg_DIA",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA"
+    },
+    {
+     "child_key": "pos_MS1",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1"
+    },
+    {
+     "child_key": "pos_DDA",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA"
+    },
+    {
+     "child_key": "pos_DIA",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA"
+    }
+   ],
+   "flags": [
+    {
+     "code": "ms1_only",
+     "certainty": "suspected",
+     "detail": "Biological samples and their QC sit under MS1 folders.",
+     "groups": [
+      "CN1S",
+      "CP1S",
+      "CN1Q",
+      "CP1Q"
+     ]
+    },
+    {
+     "code": "mixed_acquisition",
+     "certainty": "suspected",
+     "detail": "Full scan, DDA and DIA in one unit."
+    },
+    {
+     "code": "targeted_dda",
+     "certainty": "suspected",
+     "detail": "Inclusion-list DDA (tDDA folders): MS2 selection is biased to the list.",
+     "groups": [
+      "CNTD",
+      "CPTD"
+     ]
+    }
+   ],
+   "needs_person": [
+    {
+     "code": "scope_ms1_only",
+     "question": "The biological samples are full scan only. Leave them out, and run only the MS2 files?",
+     "groups": [
+      "CN1S",
+      "CP1S",
+      "CN1Q",
+      "CP1Q"
+     ]
+    }
+   ]
+  },
+  "AN004549": {
+   "status": "needs_person",
+   "confidence": "medium",
+   "rationale": "HILIC: every biological sample is full scan only; MS2 exists for pooled QC and inclusion-list DDA runs.",
+   "unit_technical": {
+    "ion_mode": "both",
+    "chromatography": "HILIC",
+    "acquisition_mode": "mixed"
+   },
+   "children": [
+    {
+     "child_key": "neg_MS1",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1"
+    },
+    {
+     "child_key": "neg_DDA",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA"
+    },
+    {
+     "child_key": "neg_DIA",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA"
+    },
+    {
+     "child_key": "pos_MS1",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1"
+    },
+    {
+     "child_key": "pos_DDA",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA"
+    },
+    {
+     "child_key": "pos_DIA",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA"
+    }
+   ],
+   "flags": [
+    {
+     "code": "ms1_only",
+     "certainty": "suspected",
+     "detail": "Biological samples and their QC sit under MS1 folders.",
+     "groups": [
+      "HN1S",
+      "HP1S",
+      "HN1Q",
+      "HP1Q"
+     ]
+    },
+    {
+     "code": "mixed_acquisition",
+     "certainty": "suspected",
+     "detail": "Full scan, DDA and DIA in one unit."
+    },
+    {
+     "code": "targeted_dda",
+     "certainty": "suspected",
+     "detail": "Inclusion-list DDA (tDDA folders): MS2 selection is biased to the list.",
+     "groups": [
+      "HNTD",
+      "HPTD"
+     ]
+    }
+   ],
+   "needs_person": [
+    {
+     "code": "scope_ms1_only",
+     "question": "The biological samples are full scan only. Leave them out, and run only the MS2 files?",
+     "groups": [
+      "HN1S",
+      "HP1S",
+      "HN1Q",
+      "HP1Q"
+     ]
+    }
+   ]
+  }
+ }
+}

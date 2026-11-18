@@ -2,12 +2,14 @@
 envelope).
 
 The harness is tests/fake_claude.py, which takes the wrapper's real flags, emits a canned stream-JSON transcript and
-writes the payloads it is given; the MCP server is tests/fake_mcp_server.py; the Catalog, the remote archive listing
-and the mwTab fetch are in-process fakes over the eval fixtures. Checked: the inputs and the session prepared (dry run
-included), the clean-configuration flags, the envelope written from the transcript (hashes the validator recomputes,
-tool calls in order with secrets, e-mail addresses, the operator's names and absolute paths removed, the results
-stored), a configuration that is not clean recorded as such and held, and every refusal: a decision record or any
-other file the model writes, a write outside the output folder, a failed or timed-out session, an existing payload.
+writes the spec it is given (skill 1.2.0: the agent writes one spec, code expands it into the payloads); the MCP server
+is the real spec check server (scripts/triage-spec-server.py, written into the session's code tree); the Catalog, the
+remote archive listing and the mwTab fetch are in-process fakes over the eval fixtures. Checked: the inputs, the digest
+and the session prepared (dry run included), the clean-configuration flags, the spec expanded and the envelope written
+from the transcript with its derivation (hashes the validator recomputes, tool calls in order with secrets, e-mail
+addresses, the operator's names and absolute paths removed, the results stored), a configuration that is not clean
+recorded as such and held, and every refusal: a payload, a decision record or any other file the model writes, a spec
+that does not expand, a write outside the output folder, a failed or timed-out session, an existing payload.
 Synthetic throughout: public accession ids only, no person, no real model.
 """
 
@@ -45,10 +47,10 @@ vt = rta.validator
 FAKE_CLAUDE = TESTS / "fake_claude.py"
 FAKE_MCP = TESTS / "fake_mcp_server.py"
 CATALOG = "msdial-repository-catalog"
+SPEC_SERVER = "msdial-triage-spec"
 SERVER_TOOLS = ["msdial_catalog_status", "msdial_catalog_search", "msdial_catalog_get_analysis_unit",
                 "msdial_catalog_save_class_proposal", "msdial_catalog_reanalysis_handoff"]
-ALLOWED = ["Read", "Glob", "Grep", "Write", f"mcp__{CATALOG}__msdial_catalog_status",
-           f"mcp__{CATALOG}__msdial_catalog_search", f"mcp__{CATALOG}__msdial_catalog_get_analysis_unit"]
+ALLOWED = ["Read", "Glob", "Grep", "Write", f"mcp__{SPEC_SERVER}__triage_spec_check"]
 
 
 def sha(data: bytes) -> str:
@@ -134,6 +136,9 @@ class WrapperCase(unittest.TestCase):
             payloads.update(te.to_v2(te.build_good(accession)))
         self.payloads = self.tmp / "payloads.json"
         self.payloads.write_text(json.dumps(payloads), encoding="utf-8")
+        self.specs = self.tmp / "specs.json"
+        self.specs.write_text(json.dumps({a: json.loads(te.spec_path(a).read_text(encoding="utf-8"))
+                                          for a in self.ACCESSIONS + ["ST004606"]}), encoding="utf-8")
         self.log = self.tmp / "claude-log.jsonl"
         self.fetched: list[str] = []
         self.ports = rta.Ports(
@@ -154,7 +159,7 @@ class WrapperCase(unittest.TestCase):
         for accession in accessions or self.ACCESSIONS:
             argv += ["--accession", accession]
         environment = {"FAKE_CLAUDE_SCENARIO": scenario, "FAKE_CLAUDE_PAYLOADS": str(self.payloads),
-                       "FAKE_CLAUDE_LOG": str(self.log), "CLAUDECODE": "1"}
+                       "FAKE_CLAUDE_SPECS": str(self.specs), "FAKE_CLAUDE_LOG": str(self.log), "CLAUDECODE": "1"}
         out = io.StringIO()
         with mock.patch.dict(os.environ, environment), contextlib.redirect_stdout(out):
             code = rta.main([*argv, *extra], ports=self.ports)
@@ -198,38 +203,45 @@ class DryRunTests(WrapperCase):
             prompt = (inputs / unit / "prompt.md").read_text(encoding="utf-8")
             self.assertNotIn("{{", prompt)
             self.assertIn("`../inputs`", prompt)
-            self.assertIn("../out/<unit_id>.json", prompt)
+            self.assertIn("`../out/ST002747.spec.json`", prompt)
+            self.assertIn("`../inputs/digest.md`", prompt)
             self.assertIn(", ".join(units), prompt)
             self.assertIn("Compare infected and mock cells.", prompt)
             self.assertFalse(curated._holds_absolute_path(prompt.encode("utf-8")), "the rendered prompt is released")
         self.assertEqual(len(list(inputs.glob("*.members.tsv"))), 1)
+        digest = (inputs / "digest.md").read_bytes()
+        self.assertIn(b"# Triage digest: ST002747", digest)
+        self.assertFalse(curated._holds_absolute_path(digest), "the digest is released")
         self.assertEqual(len(list(inputs.glob("AN*.mwtab.txt"))), len(units))
         self.assertTrue(all("/rest/study/analysis_id/AN" in url for url in self.fetched))
         session = Path(summary["session_dir"])
         self.assertEqual(sorted(p.relative_to(session / "work").as_posix() for p in (session / "work").rglob("*")
                                 if p.is_file()), sorted([rta.SKILL_PATH, rta.SCHEMA_PATH]),
-                         "the working directory holds only the skill and its payload schema")
+                         "the working directory holds only the skill and the spec schema it names")
+        self.assertEqual(rta.SCHEMA_PATH, "schemas/msdial-unit-triage-spec.v1.json")
         self.assertEqual((session / "work" / rta.SKILL_PATH).read_bytes(), self.code.skill)
         self.assertEqual((session / "work" / rta.SCHEMA_PATH).read_bytes(), self.code.schema)
         self.assertEqual(rta.tree_digest(session / "inputs"),
                          {k: v for k, v in rta.tree_digest(inputs).items() if not k.endswith("prompt.md")})
         self.assertEqual(list((session / "out").iterdir()), [])
         mcp = json.loads((session / "harness" / "mcp.json").read_text(encoding="utf-8"))
-        self.assertEqual(list(mcp["mcpServers"]), [CATALOG], "only the server the skill allows")
+        self.assertEqual(list(mcp["mcpServers"]), [SPEC_SERVER], "only the spec check server the skill allows")
+        server = mcp["mcpServers"][SPEC_SERVER]
+        self.assertEqual(Path(server["args"][1]), session / "code" / rta.SPEC_SERVER_PATH)
+        self.assertEqual((session / "code" / rta.EXPANDER_PATH).read_bytes(), self.code.files[rta.EXPANDER_PATH],
+                         "the session's code is the commit's")
 
     def test_the_flags_are_the_clean_configuration(self) -> None:
-        code, [summary] = self.run_wrapper("ok", "--dry-run", "--model", "some-model")
+        code, [summary] = self.run_wrapper("ok", "--dry-run", "--model", "some-model", "--effort", "medium")
         self.assertEqual(code, 0, summary)
         flags = summary["harness_flags"]
-        denied = ",".join(f"mcp__{CATALOG}__{t}" for t in ("msdial_catalog_save_class_proposal",
-                                                            "msdial_catalog_reanalysis_handoff"))
         self.assertEqual(flags, [
             "-p", "--output-format", "stream-json", "--verbose", "--restricted",
             "--settings", "../harness/settings.json", "--strict-mcp-config", "--mcp-config", "../harness/mcp.json",
-            "--tools", "Read,Glob,Grep,Write", "--allowedTools", ",".join(ALLOWED), "--disallowedTools", denied,
+            "--tools", "Read,Glob,Grep,Write", "--allowedTools", ",".join(ALLOWED),
             "--permission-mode", "dontAsk", "--permission-prompts", "none", "--disable-slash-commands",
             "--no-session-persistence", "--session-id", "<session_id>", "--debug-file", "../harness/debug.log",
-            "--add-dir", "../inputs", "../out", "--model", "some-model"])
+            "--add-dir", "../inputs", "../out", "--model", "some-model", "--effort", "medium"])
         session = Path(summary["session_dir"])
         self.assertEqual(json.loads((session / "harness" / "settings.json").read_text(encoding="utf-8")),
                          {"disableAllHooks": True})
@@ -241,6 +253,10 @@ class DryRunTests(WrapperCase):
 class SessionTests(WrapperCase):
     def test_clean_session_writes_payloads_and_records_and_the_validator_passes(self) -> None:
         code, [summary] = self.run_wrapper("ok")
+        session = Path(summary["session_dir"])
+        spec = self.triage_dir() / "ST002747.spec.json"
+        self.assertEqual(spec.read_bytes(), (session / "out" / "ST002747.spec.json").read_bytes(), "the spec, byte for byte")
+        self.assertEqual(json.loads((session / "harness" / "expansion.json").read_text(encoding="utf-8"))["findings"], [])
         self.assertEqual(code, 0, summary)
         self.assertEqual(summary["status"], "triaged")
         self.assertEqual(summary["verdict"], "pass")
@@ -256,9 +272,22 @@ class SessionTests(WrapperCase):
         record_schema = vt.load_schema(vt.RECORD_SCHEMA_ID)
         for unit in units:
             payload = self.triage_dir() / f"{unit}.json"
-            self.assertEqual(payload.read_bytes(), (session / "out" / f"{unit}.json").read_bytes(), "byte for byte")
+            self.assertFalse((session / "out" / f"{unit}.json").exists(), "code writes the payloads, the model the spec")
             raw = (self.triage_dir() / f"{unit}.record.json").read_bytes()
+            self.assertLess(len(raw), 100_000, "the only Write argument is the spec")
             record = json.loads(raw)
+            derivation = record["derivation"]
+            self.assertEqual(derivation["spec"], {"path": "ST002747.spec.json", "schema": "msdial-unit-triage-spec.v1",
+                                                  "sha256": sha(spec.read_bytes()), "bytes": len(spec.read_bytes())})
+            self.assertEqual(derivation["expander"]["sha256"], sha(self.code.files[rta.EXPANDER_PATH]))
+            self.assertEqual(derivation["digest"]["path"], "inputs/digest.md")
+            self.assertEqual(derivation["context"], {"decided_at": record["finished_at"], "model": "fake-model-1",
+                                                     "agent": "claude-code", "skill_version": "1.2.0", "purpose": None})
+            document = json.loads(payload.read_bytes())
+            self.assertEqual((document["decided_at"], document["derivation"]["spec_sha256"]),
+                             (record["finished_at"], sha(spec.read_bytes())))
+            self.assertIn({"role": "triage_digest", "path": "inputs/digest.md"},
+                          [{k: i[k] for k in ("role", "path")} for i in record["inputs"]])
             self.assertEqual(vt.schema_errors(record, record_schema, record_schema), [])
             self.assertFalse(curated._holds_absolute_path(raw), "a record holds no absolute path")
             self.assertNotIn(b"quokka", raw.lower())
@@ -270,7 +299,7 @@ class SessionTests(WrapperCase):
             context = record["agent"]["context"]
             self.assertEqual((context["configuration"], context["context_files"], context["memory"], context["hooks"]),
                              ("clean", [], "disabled", []))
-            self.assertEqual(context["mcp_servers"], [{"name": CATALOG, "version": "0.6.1-test"}])
+            self.assertEqual(context["mcp_servers"], [{"name": SPEC_SERVER, "version": "1.0.0"}])
             self.assertIn("env CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", context["harness_flags"])
             self.assertIn("--strict-mcp-config", context["harness_flags"])
             self.assertEqual(record["skill"]["repo_commit"], self.code.commit)
@@ -288,9 +317,7 @@ class SessionTests(WrapperCase):
                                                  "repo_commit": self.code.commit})
             handoff = self.triage_dir() / "inputs" / unit / "handoff.json"
             self.assertEqual(json.loads(payload.read_bytes())["catalog_handoff_sha256"], sha(handoff.read_bytes()),
-                             "the agent copies the hash the prompt gives; it cannot hash a file")
-            self.assertIn(f"- `{unit}`: `{sha(handoff.read_bytes())}`",
-                          (self.triage_dir() / "inputs" / unit / "prompt.md").read_text(encoding="utf-8"))
+                             "code writes the hash of the handoff copy")
             first = record["inputs"][0]
             self.assertEqual((first["role"], first["path"], first["source"]),
                              ("catalog_handoff", f"inputs/{unit}/handoff.json", "msdial_catalog_reanalysis_handoff"))
@@ -304,14 +331,13 @@ class SessionTests(WrapperCase):
                 self.assertEqual((item["sha256"], item["bytes"]), (sha(data), len(data)), item["path"])
             calls = record["tool_calls"]
             self.assertEqual([c["seq"] for c in calls], list(range(1, len(calls) + 1)))
-            self.assertEqual([c["tool"] for c in calls],
-                             ["Read", f"mcp__{CATALOG}__msdial_catalog_get_analysis_unit", *["Read"] * len(units),
-                              *["Write"] * len(units)])
-            mcp_call = calls[1]
-            self.assertEqual(mcp_call["arguments"]["api_key"], "<redacted>")
-            self.assertEqual(mcp_call["arguments"]["database"], "<external>/native.sqlite")
+            self.assertEqual([c["tool"] for c in calls], ["Read", "Grep", "Read", *["Read"] * len(units), "Write"])
+            secret_call = calls[1]
+            self.assertEqual(secret_call["arguments"]["api_key"], "<redacted>")
+            self.assertEqual(secret_call["arguments"]["database"], "<external>/native.sqlite")
             self.assertEqual(calls[0]["arguments"]["file_path"].replace("\\", "/"), f"./{rta.SKILL_PATH}")
-            self.assertEqual(calls[2]["arguments"]["file_path"].replace("\\", "/"), f"../inputs/{units[0]}/handoff.json")
+            self.assertEqual(calls[2]["arguments"]["file_path"].replace("\\", "/"), "../inputs/digest.md")
+            self.assertEqual(calls[3]["arguments"]["file_path"].replace("\\", "/"), f"../inputs/{units[0]}/handoff.json")
             for call in calls:
                 stored = (self.triage_dir() / call["result_path"]).read_bytes()
                 self.assertEqual(call["result_sha256"], sha(stored))
@@ -336,7 +362,8 @@ class SessionTests(WrapperCase):
         template = self.code.template.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
         self.code = rta.CodeSnapshot(self.code.commit, self.code.skill, template, self.code.root,
                                      wrapper=self.code.wrapper, wrapper_commit=self.code.commit,
-                                     revision_template=self.code.revision_template, schema=self.code.schema)
+                                     revision_template=self.code.revision_template, schema=self.code.schema,
+                                     files=self.code.files)
         (self.code.root / rta.TEMPLATE_PATH).write_bytes(template)
         self.ports.code = self.code
         code, [summary] = self.run_wrapper("ok")
@@ -412,7 +439,46 @@ class SessionTests(WrapperCase):
         code, [summary] = self.run_wrapper("nodeny")
         self.assertEqual(code, 1, summary)
         self.assertIn("the harness offered tools the skill does not list", summary["configuration"])
-        self.assertIn("msdial_catalog_save_class_proposal", summary["configuration"])
+        self.assertIn("write_anything", summary["configuration"])
+
+    def test_the_catalog_server_is_not_in_the_session(self) -> None:
+        code, [summary] = self.run_wrapper("ok", "--dry-run")
+        self.assertEqual(code, 0, summary)
+        self.assertNotIn(CATALOG, " ".join(summary["command"]), "every Catalog fact arrives as a hashed input")
+
+    def test_a_payload_the_model_writes_refuses_the_session(self) -> None:
+        code, [summary] = self.run_wrapper("payload")
+        self.assertEqual(code, 3)
+        self.assertEqual(summary["status"], "refused")
+        self.assertTrue(any("AN004454.json, which is not a payload this session was asked for" in p
+                            for p in summary["problems"]), summary)
+        self.assertEqual((self.payload_files(), list(self.triage_dir().glob("*.spec.json"))), ([], []))
+
+    def test_a_spec_that_does_not_expand_refuses_the_session(self) -> None:
+        code, [summary] = self.run_wrapper("badspec")
+        self.assertEqual(code, 3)
+        self.assertEqual(summary["status"], "refused")
+        self.assertTrue(any("does not expand" in p for p in summary["problems"]), summary)
+        expansion = json.loads((Path(summary["session_dir"]) / "harness" / "expansion.json").read_text(encoding="utf-8"))
+        self.assertFalse(expansion["ok"])
+        self.assertTrue(any(f["code"].startswith("X-UNCOVERED") for f in expansion["findings"]), expansion)
+        self.assertEqual((self.payload_files(), list(self.triage_dir().glob("*.json"))), ([], []), "nothing is committed")
+        code, [summary] = self.run_wrapper("ok")
+        self.assertEqual((code, summary["verdict"]), (0, "pass"), "the accession is simply run again")
+
+    def test_the_spec_check_is_called_and_its_result_stored(self) -> None:
+        code, [summary] = self.run_wrapper("check")
+        self.assertEqual((code, summary["verdict"]), (0, "pass"), summary)
+        record = json.loads((self.triage_dir() / "AN004454.record.json").read_text(encoding="utf-8"))
+        [check] = [c for c in record["tool_calls"] if c["tool"] == f"mcp__{SPEC_SERVER}__triage_spec_check"]
+        self.assertEqual((check["status"], check["arguments"]), ("ok", {"spec_file": "../out/ST002747.spec.json"}))
+        stored = json.loads((self.triage_dir() / check["result_path"]).read_text(encoding="utf-8"))
+        answer = json.loads(stored["content"][0]["text"])
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual(answer["counts"]["AN004454"]["rows_kept"], 13)
+        self.assertFalse(curated._holds_absolute_path(json.dumps(stored).encode("utf-8")))
+        report = self.validate()
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings if f.level != "note"])
 
     def test_an_mwtab_text_quoting_a_path_is_offered_portable_and_releasable(self) -> None:
         original = b"#METABOLOMICS WORKBENCH\nMS_COMMENTS\tmethod C:\\Xcalibur\\methods\\x.meth\n"
@@ -433,7 +499,7 @@ class SessionTests(WrapperCase):
         self.assertTrue(any("read outside the session's folders (MEMORY.md)" in p for p in summary["problems"]), summary)
         self.assertEqual(self.payload_files(), [])
 
-    def test_a_payload_holding_an_absolute_path_refuses_the_session(self) -> None:
+    def test_a_spec_holding_an_absolute_path_refuses_the_session(self) -> None:
         code, [summary] = self.run_wrapper("pathpay")
         self.assertEqual(code, 3)
         self.assertTrue(any("holds an absolute path" in p for p in summary["problems"]), summary)
@@ -532,10 +598,10 @@ class RobustnessTests(WrapperCase):
 class RevisionTests(WrapperCase):
     UNIT = "AN004454"
 
-    def set_payloads(self, change) -> None:
-        payloads = json.loads(self.payloads.read_text(encoding="utf-8"))
-        change(payloads[self.UNIT])
-        self.payloads.write_text(json.dumps(payloads), encoding="utf-8")
+    def set_spec(self, change) -> None:
+        specs = json.loads(self.specs.read_text(encoding="utf-8"))
+        change(specs["ST002747"]["units"][self.UNIT])
+        self.specs.write_text(json.dumps(specs), encoding="utf-8")
 
     def answer(self, *extra: str) -> tuple[int, str]:
         script = importlib.util.spec_from_file_location("record_person_answer_under_test",
@@ -548,14 +614,16 @@ class RevisionTests(WrapperCase):
         return code, out.getvalue() + err.getvalue()
 
     def test_a_question_answered_before_the_plan_is_settled_by_a_revision(self) -> None:
-        def ask(doc):
-            doc["status"] = "needs_person"
-            doc["flags"].append({"code": "mixed_acquisition", "certainty": "suspected", "detail": "DDA and DIA files in one unit suspected."})
-            doc["needs_person"].append({"code": "mixed_acquisition", "question": "Do the acquisitions form one run?"})
-        self.set_payloads(ask)
+        def ask(unit):
+            unit["status"] = "needs_person"
+            unit["flags"] = [{"code": "mixed_acquisition", "certainty": "suspected",
+                              "detail": "Samples and blanks may come from different batches."}]
+            unit["needs_person"] = [{"code": "mixed_acquisition", "question": "Do the acquisitions form one run?"}]
+        self.set_spec(ask)
         code, [summary] = self.run_wrapper("ok")
         self.assertEqual((code, summary["verdict"]), (1, "hold"), summary)
         base = sha((self.triage_dir() / f"{self.UNIT}.json").read_bytes())
+        others = {u: sha((self.triage_dir() / f"{u}.json").read_bytes()) for u in ("AN004455", "AN004456", "AN004457")}
         # The question is shown; an answer without a named person, or to a question not asked, is refused.
         code, shown = self.answer()
         self.assertEqual(code, 0)
@@ -565,28 +633,46 @@ class RevisionTests(WrapperCase):
         self.assertEqual(self.answer("--question-code", "mixed_acquisition", "--by", "Synthetic Reviewer", "--answer", "x",
                                      "--decision-id", "0" * 64)[0], 2)
         code, written = self.answer("--question-code", "mixed_acquisition", "--by", "Synthetic Reviewer",
-                                    "--answer", "One run; the DIA files are left out.", "--decision-id", base)
+                                    "--answer", "One run; the batches are comparable.", "--decision-id", base)
         self.assertEqual(code, 0, written)
         seq = json.loads(written)["seq"]
-        # The revision: ready, the flag kept, the question answered.
-        def settle(doc):
-            doc["status"] = "ready"
-            doc["needs_person"] = []
-            doc["rationale"] = "The person's answer makes the acquisitions one run."
-        self.set_payloads(settle)
+
+        # A revision that also changes a unit it does not name is refused (X-SCOPE), and nothing is committed.
+        def settle(unit):
+            unit["status"] = "ready"
+            unit["needs_person"] = []
+            unit["rationale"] = "The person's answer makes the acquisitions one run."
+        self.set_spec(settle)
+        specs = json.loads(self.specs.read_text(encoding="utf-8"))
+        specs["ST002747"]["units"]["AN004455"]["rationale"] = "Changed without a cause."
+        self.specs.write_text(json.dumps(specs), encoding="utf-8")
+        code, [summary] = self.run_wrapper("ok", "--revise", f"{self.UNIT}={seq}")
+        self.assertEqual(code, 3, summary)
+        self.assertTrue(any("X-SCOPE AN004455" in p for p in summary["problems"]), summary)
+        self.assertFalse((self.triage_dir() / "ST002747.spec.r1.json").exists())
+        specs["ST002747"]["units"]["AN004455"]["rationale"] = json.loads(te.spec_path("ST002747").read_text(
+            encoding="utf-8"))["units"]["AN004455"]["rationale"]
+        self.specs.write_text(json.dumps(specs), encoding="utf-8")
+
+        # The revision: ready, the flag kept, the question answered; only the named unit changes.
         code, [summary] = self.run_wrapper("ok", "--revise", f"{self.UNIT}={seq}")
         self.assertEqual((code, summary["status"], summary["verdict"]), (0, "triaged", "pass"), summary)
         self.assertEqual(summary["accepted"], [f"{self.UNIT}.r1"])
+        self.assertEqual(summary["spec"]["path"], "ST002747.spec.r1.json")
         revision = self.triage_dir() / f"{self.UNIT}.r1.json"
         record = json.loads((self.triage_dir() / f"{self.UNIT}.r1.record.json").read_text(encoding="utf-8"))
         self.assertEqual(record["supersedes"], base)
         self.assertEqual(record["payload"]["path"], revision.name)
         self.assertEqual(record["prompt"]["template_path"], rta.REVISION_TEMPLATE_PATH)
+        self.assertEqual(record["derivation"]["spec"]["path"], "ST002747.spec.r1.json")
+        paths = {item["path"] for item in record["inputs"] if item["role"] == "prior_decision"}
+        self.assertEqual(paths, {f"inputs/{self.UNIT}/r1/previous.json", "inputs/spec.r1/previous.spec.json"})
         roles = {item["role"]: item["path"] for item in record["inputs"]}
-        self.assertEqual(roles["prior_decision"], f"inputs/{self.UNIT}/r1/previous.json")
         self.assertEqual(roles["review_entry"], f"inputs/{self.UNIT}/r1/cause.json")
-        self.assertEqual((self.triage_dir() / roles["prior_decision"]).read_bytes(),
+        self.assertEqual((self.triage_dir() / f"inputs/{self.UNIT}/r1/previous.json").read_bytes(),
                          (self.triage_dir() / f"{self.UNIT}.json").read_bytes())
+        self.assertEqual({u: sha((self.triage_dir() / f"{u}.json").read_bytes()) for u in others}, others)
+        self.assertEqual([p.name for p in self.triage_dir().glob("AN004455*.json")], ["AN004455.json", "AN004455.record.json"])
         log, problems = vt.read_review_log(self.triage_dir())
         self.assertEqual(problems, [])
         [entry] = [e for e in log if e["kind"] == "revision"]
@@ -619,6 +705,14 @@ class RevisionTests(WrapperCase):
         self.assertIn("another decision", summary["problems"][0])
         with self.assertRaises(SystemExit):
             self.run_wrapper("ok", "--revise", f"{self.UNIT}=1", accessions=["ST002747", "ST004606"])
+
+    def test_a_hand_written_payload_is_not_revised_by_a_spec(self) -> None:
+        folder = self.triage_dir()
+        te.write(te.to_v2(te.build_good("ST002747"), skill_version="1.1.0"), folder)
+        code, [summary] = self.run_wrapper("ok", "--revise", f"{self.UNIT}=1")
+        self.assertEqual(code, 3)
+        self.assertIn("has no spec", summary["problems"][0])
+        self.assertIn("new campaign directory", summary["problems"][0])
 
 
 class PartTests(unittest.TestCase):
@@ -712,7 +806,7 @@ class PartTests(unittest.TestCase):
     def test_the_prompt_template_is_filled_whole(self) -> None:
         template = (ROOT / rta.TEMPLATE_PATH).read_bytes()
         rendered = rta.render_prompt(template, accession="ST1", unit_ids="AN1", input_dir="../inputs",
-                                     output_dir="../out", analysis_purpose="null", handoff_sha256="- `AN1`: `x`")
+                                     output_dir="../out", analysis_purpose="null", spec_name="ST1.spec.json")
         self.assertNotIn(b"{{", rendered)
         with self.assertRaises(rta.WrapperError):
             rta.render_prompt(template, accession="ST1")
@@ -720,7 +814,7 @@ class PartTests(unittest.TestCase):
     def test_the_wrapper_reads_the_skills_allowed_tools(self) -> None:
         code = rta.CodeSnapshot("c" * 40, (ROOT / rta.SKILL_PATH).read_bytes(), b"")
         self.assertEqual(code.allowed_tools, ALLOWED)
-        self.assertEqual(code.skill_version, "1.1.0")
+        self.assertEqual(code.skill_version, "1.2.0")
 
 
 if __name__ == "__main__":

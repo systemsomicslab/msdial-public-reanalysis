@@ -165,7 +165,18 @@
         "properties": {"source": {"$ref": "#/$defs/evidence_source"}, "detail": {"type": "string", "minLength": 1}}
       }
     },
-    "notes": {"type": "string"}
+    "notes": {"type": "string"},
+    "derivation": {
+      "description": "Present when the payload is the expansion of an agent-written spec (schemas/msdial-unit-triage-spec.v1.json) by scripts/expand-triage-spec.py, not hand-written: the spec's file name beside the payload, its sha256 and the expander's version. validate-triage.py re-runs the expander over the inputs the decision record binds and refuses any byte of difference (T-SPEC).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "spec_sha256", "expander_version"],
+      "properties": {
+        "spec": {"type": "string", "pattern": "^[A-Za-z0-9._-]+\\.spec(\\.r[0-9]+)?\\.json$"},
+        "spec_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expander_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+      }
+    }
   },
   "$defs": {
     "ion_mode": {"enum": ["positive", "negative", "both", "switching", "unknown"]},
@@ -173,6 +184,11 @@
     "acquisition_mode": {
       "description": "targeted_DDA is deprecated (decision of 2026-11-18): inclusion- or exclusion-list DDA is DDA, with the informational flag targeted_dda. It stays readable in earlier payloads and counts as DDA in the validator's mixing test.",
       "enum": ["DDA", "DIA", "SWATH", "AIF", "MS1", "targeted_DDA", "mixed", "unknown"]
+    },
+    "rule_id": {
+      "description": "The spec group or exception an expanded item came from (scripts/expand-triage-spec.py); absent from a hand-written payload.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,31}$"
     },
     "role": {"enum": ["sample", "qc", "blank", "other", "unknown"]},
     "evidence_source": {
@@ -242,7 +258,8 @@
         "basis": true,
         "evidence": true,
         "confidence": true,
-        "rationale": true
+        "rationale": true,
+        "rule_id": {"$ref": "#/$defs/rule_id"}
       }
     },
     "member": {
@@ -270,7 +287,8 @@
         "basis": true,
         "evidence": true,
         "confidence": true,
-        "rationale": true
+        "rationale": true,
+        "rule_id": {"$ref": "#/$defs/rule_id"}
       }
     },
     "excluded_row": {
@@ -298,7 +316,8 @@
         "belongs_to_unit": {"type": ["string", "null"]},
         "detail": {"type": "string", "minLength": 1},
         "confidence": {"$ref": "#/$defs/confidence"},
-        "rationale": {"$ref": "#/$defs/rationale"}
+        "rationale": {"$ref": "#/$defs/rationale"},
+        "rule_id": {"$ref": "#/$defs/rule_id"}
       }
     },
     "excluded_member": {
@@ -324,7 +343,8 @@
         "belongs_to_unit": {"type": ["string", "null"]},
         "detail": {"type": "string", "minLength": 1},
         "confidence": {"$ref": "#/$defs/confidence"},
-        "rationale": {"$ref": "#/$defs/rationale"}
+        "rationale": {"$ref": "#/$defs/rationale"},
+        "rule_id": {"$ref": "#/$defs/rule_id"}
       }
     },
     "child": {

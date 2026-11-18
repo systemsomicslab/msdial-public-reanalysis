@@ -135,8 +135,7 @@ def accession_dirs(root: Path | None) -> list[Path]:
 
 
 def _payload_paths(folder: Path) -> list[Path]:
-    return [path for path in sorted(folder.glob("*.json"))
-            if path.name != "index.json" and not path.name.endswith(validator.RECORD_SUFFIX)]
+    return [path for path in sorted(folder.glob("*.json")) if validator.is_payload_file(path.name)]
 
 
 class Accession:

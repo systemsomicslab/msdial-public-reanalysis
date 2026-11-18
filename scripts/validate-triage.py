@@ -16,6 +16,8 @@ review-log.jsonl, and returns pass, hold or error (docs/llm-assisted-curation.md
                                                      when <dir>/release-index.json is two levels up)
         [--emit-selection]                           add each unit's selection to the report and append a
                                                      validator_verdict per decision to the review log
+        [--payload-only]                             the payloads alone: no record, transcript, context or revision
+                                                     check (the in-session spec check)
         [--json]
 
 The triage directory holds one <unit_id>.json per unit, all of one accession (in a campaign,
@@ -53,6 +55,15 @@ tool call without a stored result, a record that binds no Catalog evidence or no
 binds that was not given or one given that no record binds). A v1 payload may have no record; it is reported
 rationale_not_recorded (a note, which changes no verdict).
 
+THE DERIVATION (section 2.2). A payload the wrapper expanded from the agent's spec (<accession>.spec.json, schemas/
+msdial-unit-triage-spec.v1.json) carries "derivation", and so does its record: the spec's path, sha256 and bytes, the
+expander (scripts/expand-triage-spec.py) and the digest script (scripts/triage-digest.py) by version, sha256 and commit,
+and the context (decided_at, model, agent, skill_version, purpose). T-SPEC re-runs that expander at its commit (in this
+process when the commit's bytes are the running tree's, else from a scratch copy of the commit's files) over the inputs
+the record binds, and refuses any byte of difference, any X-* finding, a context that is not the record's, and a payload
+with a derivation whose record binds none. T-DIGEST rebuilds inputs/digest.md from the same inputs with the digest script
+at its commit. Every other check runs on the expanded payload as on any other. A spec file is never read as a payload.
+
 THE REVIEW LOG (section 2.4). For a v2 payload, a ready unit that carries a blocking flag passes only when
 review-log.jsonl holds a person_answer whose question_code is the flag's code and whose decision_id is this payload or
 one it supersedes (by its record's supersedes, or a revision entry); v1 payloads keep their person_answers. A revision
@@ -87,12 +98,16 @@ never written to.
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import hashlib
+import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -106,6 +121,12 @@ SCHEMA_PATH = REPO_ROOT / "schemas" / "msdial-unit-triage.v1.json"
 SCHEMA_PATHS = {SCHEMA_ID: SCHEMA_PATH, SCHEMA_V2_ID: REPO_ROOT / "schemas" / "msdial-unit-triage.v2.json"}
 RECORD_SCHEMA_ID = "msdial-llm-decision-record.v1"
 RECORD_SCHEMA_PATH = REPO_ROOT / "schemas" / "msdial-llm-decision-record.v1.json"
+SPEC_SCHEMA_ID = "msdial-unit-triage-spec.v1"
+EXPANDER_PATH = "scripts/expand-triage-spec.py"
+DIGEST_SCRIPT_PATH = "scripts/triage-digest.py"
+# What the expander and the digest script read beside themselves, at their commit (T-SPEC, T-DIGEST).
+SPEC_CODE_TREE = ("scripts/validate-triage.py", "schemas/msdial-unit-triage.v1.json", "schemas/msdial-unit-triage.v2.json",
+                  "schemas/msdial-unit-triage-spec.v1.json")
 SKILL_NAME = "msdial-unit-triage"
 REVIEW_LOG = "review-log.jsonl"
 RELEASE_INDEX = "release-index.json"
@@ -253,6 +274,8 @@ def schema_errors(value: Any, schema: dict[str, Any], root: dict[str, Any], wher
     if isinstance(value, str):
         if len(value) < schema.get("minLength", 0):
             errors.append(f"{where}: must not be empty")
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append(f"{where}: longer than {schema['maxLength']} characters")
         if "pattern" in schema and not re.search(schema["pattern"], value):
             errors.append(f"{where}: {value!r} does not match {schema['pattern']}")
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -261,6 +284,8 @@ def schema_errors(value: Any, schema: dict[str, Any], root: dict[str, Any], wher
     if isinstance(value, list):
         if len(value) < schema.get("minItems", 0):
             errors.append(f"{where}: needs at least {schema['minItems']} item(s)")
+        if schema.get("uniqueItems") and len({canonical_json(item) for item in value}) != len(value):
+            errors.append(f"{where}: items must be unique")
         if "items" in schema:
             for i, item in enumerate(value):
                 errors += schema_errors(item, schema["items"], root, f"{where}[{i}]")
@@ -269,11 +294,16 @@ def schema_errors(value: Any, schema: dict[str, Any], root: dict[str, Any], wher
             if key not in value:
                 errors.append(f"{where}: missing {key}")
         props = schema.get("properties", {})
+        extra = schema.get("additionalProperties")
         for key, item in value.items():
             if key in props:
                 errors += schema_errors(item, props[key], root, f"{where}.{key}")
-            elif schema.get("additionalProperties") is False:
+            elif extra is False:
                 errors.append(f"{where}: unexpected field {key}")
+            elif isinstance(extra, dict):
+                if "propertyNames" in schema:
+                    errors += schema_errors(key, schema["propertyNames"], root, f"{where} key {key!r}")
+                errors += schema_errors(item, extra, root, f"{where}.{key}")
     return errors
 
 
@@ -448,6 +478,28 @@ def token_chromatography(path: str) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
+# Acquisition tokens a name may carry (the digest prints them, the spec expander compares them within a group). A
+# token is a fact about the name, not about the file: the headers settle what was acquired.
+_ACQ_TOKEN = re.compile(r"(?i)(t-?dda|targeted-?dd-?ms2?|hermes|dd-?ms2?|dda|dia[12](?![0-9])|dia|swath|aif|"
+                        r"scan0[1-9](?![0-9])|ms1(?![0-9])|full-?scan)(?![a-z])")
+
+
+def _acq_name(token: str) -> str:
+    t = token.casefold().replace("-", "")
+    if t.startswith(("tdda", "targeted", "hermes")):
+        return "tDDA"
+    if t.startswith(("ddms", "dda")):
+        return "DDA"
+    if t in ("ms1", "fullscan"):
+        return "MS1"
+    return t.upper()
+
+
+def token_acquisition(path: str) -> tuple[str, ...]:
+    """Every acquisition token the path carries (DDA, DIA, DIA1, DIA2, SWATH, AIF, SCAN01..09, MS1, tDDA), sorted."""
+    return tuple(sorted({_acq_name(m.group(1)) for m in _ACQ_TOKEN.finditer(_norm_path(path))}))
+
+
 # --------------------------------------------------------------------------------------- the checks
 
 
@@ -587,6 +639,18 @@ def _flag_codes(triage: dict[str, Any]) -> set[str]:
 
 _REVISION = re.compile(r"^(?P<unit>.+)\.r(?P<n>[0-9]+)$")
 RECORD_SUFFIX = ".record.json"
+# The agent's compact spec (<accession>.spec.json, a revision <accession>.spec.r<N>.json; schemas/
+# msdial-unit-triage-spec.v1.json): bound by the records and expanded into the payloads, never a payload itself.
+SPEC_FILE = re.compile(r"^(?P<accession>.+)\.spec(?:\.r(?P<n>[0-9]+))?\.json$")
+
+
+def is_spec_file(name: str) -> bool:
+    return SPEC_FILE.match(name) is not None
+
+
+def is_payload_file(name: str) -> bool:
+    """A triage directory's *.json that is a payload: not index.json, a decision record or a spec."""
+    return name.endswith(".json") and name != "index.json" and not name.endswith(RECORD_SUFFIX) and not is_spec_file(name)
 
 
 def triage_file_unit(path: Path) -> str:
@@ -601,7 +665,7 @@ def current_triage_files(triage_dir: Path) -> list[Path]:
     revisions (<unit>.r<N>.json) only the highest, which supersedes <unit>.json and every earlier revision."""
     current: dict[str, tuple[int, Path]] = {}
     for path in sorted(triage_dir.glob("*.json")):
-        if path.name == "index.json" or path.name.endswith(RECORD_SUFFIX):
+        if not is_payload_file(path.name):
             continue
         match = _REVISION.match(path.stem)
         unit, number = (match.group("unit"), int(match.group("n"))) if match else (path.stem, 0)
@@ -870,6 +934,8 @@ class Provenance:
     # the listings the records bind, so that the listings checked are the ones the decisions rested on.
     listing_sha256: set[str] | None = None
     bound_listings: set[str] = field(default_factory=set)
+    modules: dict[tuple[str, str], tuple[Any, str | None]] = field(default_factory=dict)
+    expansions: dict[str, Any] = field(default_factory=dict)
 
     def code_matches(self, data: bytes, expected: str) -> bool:
         """`data` (a file the record names at its commit) hashes to `expected`; from a released code folder, also once
@@ -1117,6 +1183,14 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
             else:
                 compare_transcript(report, unit, record_path, record, data, allowed)
 
+    # The derivation: a payload expanded from the agent's spec is that spec's deterministic image (T-SPEC), over a digest
+    # that is the digest script's image of the inputs (T-DIGEST).
+    if record.get("derivation") is not None:
+        check_derivation(report, unit, record_path, record, payload_bytes, provenance)
+    elif isinstance(payload.get("derivation"), dict):
+        report.add("error", "T-SPEC", unit, f"{payload_path.name} says it was expanded from {payload['derivation'].get('spec')}, "
+                   f"but its record {record_path.name} binds no derivation; nothing ties it to that spec")
+
     # The context: clean, or a hold.
     context = record["agent"]["context"]
     if context["configuration"] != "clean":
@@ -1156,6 +1230,187 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
             report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the claude-code session's flags lack "
                        f"{', '.join(missing)}, which a clean configuration sets")
     return record
+
+
+_MATERIALISED: list[Path] = []
+
+
+def _cleanup_materialised() -> None:
+    for folder in _MATERIALISED:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+atexit.register(_cleanup_materialised)
+
+
+def _lf(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n")
+
+
+def load_code_module(provenance: Provenance, commit: str, path: str, expected_sha256: str) -> tuple[Any, str | None]:
+    """The script `path` of this repository at `commit` (git show, or the --code-root), loaded as a module with the files
+    it reads beside itself at the same commit (SPEC_CODE_TREE), or (None, why). The running tree's own file is used when
+    every byte it reads is the commit's (line endings aside); otherwise the commit's files are written to a scratch folder
+    and loaded from there, so a record is re-derived by the code it names, never by whatever runs today."""
+    key = (commit, path)
+    if key in provenance.modules:
+        return provenance.modules[key]
+    main, why = provenance.code.read(commit, path)
+    if main is None:
+        provenance.modules[key] = (None, f"{path} cannot be read at {str(commit)[:12]} ({why})")
+        return provenance.modules[key]
+    if not provenance.code_matches(main, expected_sha256):
+        provenance.modules[key] = (None, f"{path} at {str(commit)[:12]} hashes to {sha256_bytes(main)}; the record names "
+                                         f"{expected_sha256}")
+        return provenance.modules[key]
+    tree: dict[str, bytes] = {path: main}
+    for relative in SPEC_CODE_TREE:
+        data, why = provenance.code.read(commit, relative)
+        if data is None:
+            provenance.modules[key] = (None, f"{relative} cannot be read at {str(commit)[:12]} ({why})")
+            return provenance.modules[key]
+        tree[relative] = data
+    here = all((REPO_ROOT / rel).is_file() and _lf((REPO_ROOT / rel).read_bytes()) == _lf(data) for rel, data in tree.items())
+    if here:
+        root = REPO_ROOT
+    else:
+        root = Path(tempfile.mkdtemp(prefix="triage-code-"))
+        _MATERIALISED.append(root)
+        for relative, data in tree.items():
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+    name = f"triage_code_{hashlib.sha256((str(root) + path).encode('utf-8')).hexdigest()[:16]}"
+    try:
+        spec = importlib.util.spec_from_file_location(name, root / path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    except Exception as error:  # noqa: BLE001 - code from another commit may fail in any way; that is a hold, not a crash
+        provenance.modules[key] = (None, f"{path} at {str(commit)[:12]} cannot be loaded ({type(error).__name__}: {error})")
+        return provenance.modules[key]
+    provenance.modules[key] = (module, None)
+    return provenance.modules[key]
+
+
+def _bound_input_files(record_path: Path, record: dict[str, Any], bundle: "ReleaseBundle | None") -> tuple[dict[str, bytes], dict[str, str]]:
+    """({path under inputs/: bytes}, {path: original sha256 for a file released as a projection}) of the record's inputs.
+    Only files whose bytes are the ones the record names are taken; the record's own checks report the others."""
+    files: dict[str, bytes] = {}
+    originals: dict[str, str] = {}
+    for item in record["inputs"]:
+        text = str(item.get("path") or "").replace("\\", "/")
+        if not text.startswith("inputs/") or _ABSOLUTE.match(text):
+            continue
+        location = record_path.parent / text
+        try:
+            data = location.read_bytes()
+        except OSError:
+            continue
+        entry = bundle.projected(location) if bundle is not None else None
+        relative = text[len("inputs/"):]
+        if entry is not None:
+            if sha256_bytes(data) == entry["release_sha256"]:
+                files[relative] = data
+                originals[relative] = entry["original_sha256"]
+        elif sha256_bytes(data) == str(item.get("sha256") or ""):
+            files[relative] = data
+    return files, originals
+
+
+def check_derivation(report: "Report", unit: str, record_path: Path, record: dict[str, Any], payload_bytes: bytes,
+                     provenance: Provenance) -> None:
+    """T-SPEC and T-DIGEST: the payload is the expansion, by the expander at its commit, of the spec the record binds over
+    the inputs it binds and the context it states; the digest is the digest script's image of those inputs."""
+    derivation = record["derivation"]
+    bundle = provenance.bundle
+    spec_info = derivation["spec"]
+    spec_bytes = _file_check(report, unit, record_path, "the spec", spec_info["path"], spec_info["sha256"], spec_info["bytes"],
+                             bundle, check="T-SPEC")
+    context = derivation["context"]
+    for field_name, expected, label in (("decided_at", record["finished_at"], "the record's finished_at"),
+                                        ("model", record["agent"]["model_id"], "the record's model_id"),
+                                        ("skill_version", record["skill"]["version"], "the record's skill version")):
+        if context[field_name] != expected:
+            report.add("error", "T-SPEC", unit, f"{record_path.name}: derivation.context.{field_name} {context[field_name]!r} is "
+                       f"not {label} {expected!r}")
+    files, originals = _bound_input_files(record_path, record, bundle)
+
+    digest = derivation.get("digest")
+    if digest is not None:
+        digest_bytes = _file_check(report, unit, record_path, "the digest", digest["path"], digest["sha256"], None, bundle,
+                                   check="T-DIGEST")
+        script = digest["script"]
+        module, why = load_code_module(provenance, script["repo_commit"], script["path"], script["sha256"])
+        if module is None:
+            report.add("hold", "T-DIGEST", unit, f"{record_path.name}: the digest cannot be rebuilt ({why})")
+        elif str(getattr(module, "DIGEST_VERSION", "")) != script["version"]:
+            report.add("error", "T-DIGEST", unit, f"{record_path.name}: the digest script at its commit is version "
+                       f"{getattr(module, 'DIGEST_VERSION', None)}, the record names {script['version']}")
+        elif digest_bytes is not None:
+            try:
+                rebuilt = module.build_digest_from_files(files)
+            except Exception as error:  # noqa: BLE001
+                report.add("error", "T-DIGEST", unit, f"{record_path.name}: the digest script fails on the bound inputs "
+                           f"({type(error).__name__}: {error})")
+            else:
+                if _lf(rebuilt) != _lf(digest_bytes):
+                    report.add("error", "T-DIGEST", unit, f"{record_path.name}: {digest['path']} is not what the digest script "
+                               "at its commit builds from the inputs the record binds")
+
+    expander = derivation["expander"]
+    if spec_bytes is None:
+        return
+    module, why = load_code_module(provenance, expander["repo_commit"], expander["path"], expander["sha256"])
+    if module is None:
+        report.add("hold", "T-SPEC", unit, f"{record_path.name}: the payload cannot be re-derived from its spec ({why})")
+        return
+    if str(getattr(module, "EXPANDER_VERSION", "")) != expander["version"]:
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the expander at its commit is version "
+                   f"{getattr(module, 'EXPANDER_VERSION', None)}, the record names {expander['version']}")
+        return
+    key = sha256_bytes(canonical_json({"spec": sha256_bytes(spec_bytes), "name": Path(spec_info["path"]).name,
+                                       "expander": [expander["repo_commit"], expander["sha256"]], "context": context,
+                                       "files": {k: sha256_bytes(v) for k, v in sorted(files.items())}, "originals": originals}))
+    if key not in provenance.expansions:
+        try:
+            inputs = module.inputs_from_files(files)
+            for relative, original in originals.items():
+                parts = relative.split("/")
+                if len(parts) == 2 and parts[1] == "handoff.json" and parts[0] in inputs.units:
+                    inputs.units[parts[0]].handoff_sha256 = original
+            ctx = module.ExpansionContext(decided_at=context["decided_at"], model=context["model"],
+                                          skill_version=context["skill_version"], agent=context["agent"],
+                                          purpose=context["purpose"])
+            provenance.expansions[key] = module.expand(spec_bytes, inputs, ctx, spec_name=Path(spec_info["path"]).name)
+        except Exception as error:  # noqa: BLE001
+            provenance.expansions[key] = error
+    expansion = provenance.expansions[key]
+    if isinstance(expansion, Exception):
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the expander fails on the spec and the bound inputs "
+                   f"({type(expansion).__name__}: {expansion})")
+        return
+    if expansion.findings:
+        shown = "; ".join(f"{f.code} {f.unit or '-'}: {f.message[:160]}" for f in expansion.findings[:3])
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the spec does not expand over the bound inputs "
+                   f"({len(expansion.findings)} finding(s): {shown})")
+        return
+    expanded = expansion.payloads.get(unit)
+    if expanded is None:
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the spec expands to no payload for unit {unit}")
+    elif expanded != payload_bytes:
+        try:
+            payload = json.loads(payload_bytes.decode("utf-8"))
+            spec = json.loads(spec_bytes.decode("utf-8-sig"))
+            ids = {g.get("id") for g in spec.get("groups") or []} | {e.get("id") for e in spec.get("exceptions") or []}
+            stray = sorted({str(i.get("rule_id")) for key_ in ("rows", "added_members", "excluded_rows", "excluded_members")
+                            for i in payload.get(key_) or [] if i.get("rule_id") not in ids})
+        except (UnicodeDecodeError, ValueError, AttributeError):
+            stray = []
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the payload is not the spec's expansion byte for byte"
+                   + (f"; rule_id(s) {', '.join(stray[:5])} are not in the spec" if stray else "")
+                   + "; a payload is written by the expander, never by hand")
 
 
 def compare_transcript(report: "Report", unit: str, record_path: Path, record: dict[str, Any], data: bytes,
@@ -1322,7 +1577,7 @@ def _payload_files(triage_dir: Path) -> dict[str, list[tuple[int, Path]]]:
     """Every payload of the directory, current or superseded, by unit: [(revision number, path)], 0 for <unit>.json."""
     out: dict[str, list[tuple[int, Path]]] = defaultdict(list)
     for path in sorted(triage_dir.glob("*.json")):
-        if path.name == "index.json" or path.name.endswith(RECORD_SUFFIX):
+        if not is_payload_file(path.name):
             continue
         match = _REVISION.match(path.stem)
         unit, number = (match.group("unit"), int(match.group("n"))) if match else (path.stem, 0)
@@ -1338,6 +1593,7 @@ def validate(
     code_root: Path | None = None,
     bundle: ReleaseBundle | None = None,
     listing_files: Iterable[Path] | None = None,
+    payload_only: bool = False,
 ) -> Report:
     """The accession's triage files as a set, with their decision records and review log.
 
@@ -1345,7 +1601,8 @@ def validate(
     `bundle` the release bundle the directory sits in (found on its own when <triage dir>/../../release-index.json
     exists), through whose index projected inputs are checked. `listing_files` are the files `listings` were read from
     (the CLI's --archive-listing): each record's archive_listing inputs must be among them, and each of them bound by a
-    record (T-RECORD, T-DUP); without them that tie is not checked."""
+    record (T-RECORD, T-DUP); without them that tie is not checked. `payload_only` checks the payloads alone (the in-session
+    spec check, scripts/triage-spec-server.py): no decision record, transcript, context or revision check runs."""
     report = Report()
     triage_dir = Path(triage_dir)
     if bundle is None:
@@ -1416,16 +1673,17 @@ def validate(
             report.add("error", "T-SET", unit, f"{path.name} holds unit {unit}; name the file {unit}.json (or {unit}.r<N>.json)")
         triages[unit] = data
         report.unit_status[unit] = data["status"]
-        for citation in class_citations(data) + record_class_citations(path):
+        for citation in class_citations(data) + ([] if payload_only else record_class_citations(path)):
             report.add("error", "T-CLASS", unit, f"{path.name}: {citation}; the triage binds the Catalog's rows, files and "
                        "listing and never the Class, which runs after it and binds through its own ratification "
                        "(WS0 decision F)")
         if schema_id == SCHEMA_ID:
             report.add("note", "T-RATIONALE", unit, f"rationale_not_recorded: {path.name} is {SCHEMA_ID}, which carries no "
                        "confidence or rationale")
-        check_record(report, unit, triage_dir, path, raw, data, provenance)
+        if not payload_only:
+            check_record(report, unit, triage_dir, path, raw, data, provenance)
         answered[unit] = answered_codes(decision_id, data, supersedes, log)
-        if schema_id == SCHEMA_V2_ID:
+        if schema_id == SCHEMA_V2_ID and not payload_only:
             check_revision(report, unit, path, decision_id, data, payloads, supersedes, log, all_files.get(unit, []))
 
     accessions = {t["accession"] for t in triages.values()}
@@ -2098,6 +2356,8 @@ def main(argv: list[str] | None = None) -> int:
                         "its own when <triage dir>/../../release-index.json exists)")
     parser.add_argument("--emit-selection", action="store_true", help="add each unit's selection to the report and append "
                         "a validator_verdict per decision to the accession's review-log.jsonl")
+    parser.add_argument("--payload-only", action="store_true", help="check the payloads alone: no decision record, "
+                        "transcript, context or revision check (the in-session spec check)")
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     args = parser.parse_args(argv)
 
@@ -2117,7 +2377,7 @@ def main(argv: list[str] | None = None) -> int:
     for path in args.archive_listing:
         listed += read_listing(path)
     report = validate(args.triage_dir, catalog, listed, code_root=args.code_root, bundle=bundle,
-                      listing_files=args.archive_listing)
+                      listing_files=args.archive_listing, payload_only=args.payload_only)
     if args.ground_truth:
         report.score = score(args.triage_dir, json.loads(args.ground_truth.read_text(encoding="utf-8")))
     if args.emit_selection:

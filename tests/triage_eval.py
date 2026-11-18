@@ -11,7 +11,14 @@ tests/fixtures/triage-eval/<accession>/ holds, for each accession the 2026-11-15
 
 build_good() turns a ground truth into the triage files a correct pre-download triage would write, so the
 validator can be run on known-good files and on known-bad mutations of them. An agent's own triage of the
-same accessions can be scored with scripts/validate-triage.py --ground-truth.
+same accessions can be scored with scripts/validate-triage.py --ground-truth (a campaign payload by its
+source_subrecord_id): a good pre-download triage reaches every unit's expected_status_pre_download with no wrong
+inclusion, and an abstaining unit scores its files as left out, the right outcome before headers exist.
+
+The evaluation is blind (decision of 2026-11-18): the answers live here and in tests/fixtures/ only, never in the
+skill, the v2 prompts, the spec schema, the digest script or the expander (tests/test_skill_blind.py).
+tests/fixtures/triage-eval-specs/<accession>.spec.json is a hand-written spec per eval accession (spec_path(),
+input_files()), which tests/test_expand_triage_spec.py expands and scores.
 """
 
 from __future__ import annotations
@@ -183,8 +190,8 @@ def build_good(accession: str) -> dict[str, dict[str, Any]]:
     return docs
 
 
-def to_v2(docs: dict[str, dict[str, Any]], skill_version: str = "1.1.0") -> dict[str, dict[str, Any]]:
-    """The same triage written as msdial-unit-triage.v2 (skill 1.1.0): a confidence and a rationale on every kept and
+def to_v2(docs: dict[str, dict[str, Any]], skill_version: str = "1.2.0") -> dict[str, dict[str, Any]]:
+    """The same triage written as msdial-unit-triage.v2 (hand-written, as skill 1.1.0 wrote it): a confidence and a rationale on every kept and
     excluded row and member and on the unit, and no person_answers (a person's answer is a review-log entry). A kept file
     resting on a declaration is high confidence, one resting on names medium; an exclusion is high."""
     out = copy.deepcopy(docs)
@@ -202,6 +209,42 @@ def to_v2(docs: dict[str, dict[str, Any]], skill_version: str = "1.1.0") -> dict
         doc["confidence"] = "high" if doc["status"] == "ready" else "medium"
         doc["rationale"] = f"{doc['unit_id']} is {doc['status']}: {len(doc['rows'])} row(s) kept, {len(doc['excluded_rows'])} left out."
     return out
+
+
+SPECS = Path(__file__).resolve().parent / "fixtures" / "triage-eval-specs"
+
+
+def spec_path(accession: str) -> Path:
+    """tests/fixtures/triage-eval-specs/<accession>.spec.json: a hand-written msdial-unit-triage-spec.v1 that a correct
+    pre-download triage could write. Test data only: the skill never sees these answers (blind evaluation)."""
+    return SPECS / f"{accession}.spec.json"
+
+
+def input_files(accession: str) -> dict[str, bytes]:
+    """The eval accession as a wrapper inputs directory holds it, {relative path: bytes}: <unit>/handoff.json (accession,
+    repository, unit, analysis id, the declared technical settings), <unit>/samples.json (the rows) and the listing.
+    No mwTab text: the fixtures carry none."""
+    catalog, _, listing = load(accession)
+    files: dict[str, bytes] = {}
+    for unit in catalog["units"]:
+        handoff = {"schema": "msdial-repository-reanalysis-handoff.v1", "repository": catalog.get("repository"),
+                   "accession": accession, "analysis_unit_id": unit["unit_id"],
+                   "source_subrecord_id": unit.get("source_subrecord_id") or unit["unit_id"],
+                   "technical_settings": unit["declared"]}
+        files[f"{unit['unit_id']}/handoff.json"] = json.dumps(handoff, indent=2).encode("utf-8")
+        files[f"{unit['unit_id']}/samples.json"] = json.dumps(unit["rows"], indent=2).encode("utf-8")
+    files[f"{accession}.members.tsv"] = listing.read_bytes()
+    return files
+
+
+def write_inputs(accession: str, directory: Path) -> Path:
+    """input_files() written under <directory>/inputs/, returned."""
+    inputs = Path(directory) / "inputs"
+    for relative, data in input_files(accession).items():
+        target = inputs / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return inputs
 
 
 def write(docs: dict[str, dict[str, Any]], directory: Path) -> Path:

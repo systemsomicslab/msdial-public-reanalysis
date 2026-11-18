@@ -1,0 +1,317 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://github.com/systemsomicslab/msdial-public-reanalysis/schemas/msdial-unit-triage-spec.v1.json",
+ "title": "MS-DIAL unit triage spec, version 1",
+ "description": "One accession's triage as the agent writes it: groups of Catalog rows and archive members described by a closed match vocabulary (a conjunction, no negation, no catch-all), each with one disposition, one set of file fields, one confidence and one rationale; exceptions for single items; unit-level status, flags and questions. scripts/expand-triage-spec.py expands it, deterministically and over the hashed inputs only, into one msdial-unit-triage.v2 payload per unit; validate-triage.py re-runs that expansion (T-SPEC). Named <accession>.spec.json (a revision <accession>.spec.r<N>.json), immutable once accepted and released byte for byte. Everything in it is a model inference.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["schema", "accession", "phase", "structure", "groups", "units"],
+ "properties": {
+  "schema": {"const": "msdial-unit-triage-spec.v1"},
+  "accession": {"type": "string", "minLength": 1},
+  "phase": {"enum": ["pre_download", "post_preflight"]},
+  "structure": {
+   "description": "One paragraph: which folders, prefixes or tokens mark which arm.",
+   "type": "string",
+   "minLength": 1
+  },
+  "evidence_sources": {
+   "description": "Copied into every payload's evidence_sources.",
+   "type": "array",
+   "items": {"$ref": "#/$defs/evidence_source_item"}
+  },
+  "groups": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/group"}},
+  "exceptions": {"type": "array", "items": {"$ref": "#/$defs/exception"}},
+  "shared_flags": {
+   "description": "A flag raised the same way on several units, written once.",
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["units", "code", "certainty", "detail"],
+    "properties": {
+     "units": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/unit_id"}},
+     "code": {"$ref": "#/$defs/flag_code"},
+     "certainty": {"enum": ["suspected", "confirmed"]},
+     "detail": {"type": "string", "minLength": 1},
+     "with_unit": {"type": "string"},
+     "groups": {"$ref": "#/$defs/group_refs"}
+    }
+   }
+  },
+  "units": {"type": "object", "propertyNames": {"$ref": "#/$defs/unit_id"}, "additionalProperties": {"$ref": "#/$defs/unit"}}
+ },
+ "$defs": {
+  "unit_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+  "id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,31}$"},
+  "group_refs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/id"}},
+  "text_match": {
+   "description": "A value equal to the string, to one of the strings, or matched by the regex (Python re.search).",
+   "anyOf": [{"type": "string"}, {"type": "array", "minItems": 1, "items": {"type": "string"}}, {"type": "object", "additionalProperties": false, "required": ["regex"], "properties": {"regex": {"type": "string", "minLength": 1}}}]
+  },
+  "strings": {
+   "anyOf": [{"type": "string", "minLength": 1}, {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}]
+  },
+  "token": {
+   "description": "Name tokens of the path as validate-triage.py reads them: polarity and chromatography single-valued, acquisition the tokens the name carries (any of those listed).",
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "polarity": {"enum": ["positive", "negative"]},
+    "chromatography": {"enum": ["HILIC", "RP"]},
+    "acquisition": {"$ref": "#/$defs/strings"}
+   }
+  },
+  "member_match": {
+   "description": "Predicates on a member path (as the listing spells it; a vendor folder by its folder): glob (fnmatch, case-insensitive), regex, folder prefix, extension, name tokens, an exact list, or a CRC32-and-size twin. Every predicate given must hold; a list is any of its values.",
+   "type": "object",
+   "additionalProperties": false,
+   "minProperties": 1,
+   "properties": {
+    "glob": {"$ref": "#/$defs/strings"},
+    "regex": {"$ref": "#/$defs/strings"},
+    "folder": {"$ref": "#/$defs/strings"},
+    "ext": {"$ref": "#/$defs/strings"},
+    "token": {"$ref": "#/$defs/token"},
+    "paths": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "twin": {"type": "boolean"}
+   }
+  },
+  "row_match": {
+   "description": "Predicates on a Catalog row of a unit's table. Every predicate given must hold.",
+   "type": "object",
+   "additionalProperties": false,
+   "minProperties": 1,
+   "properties": {
+    "unit": {"$ref": "#/$defs/strings"},
+    "rows": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": ["unit", "indices"],
+     "properties": {
+      "unit": {"$ref": "#/$defs/unit_id"},
+      "indices": {
+       "type": "array",
+       "minItems": 1,
+       "items": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "string", "pattern": "^[0-9]+-[0-9]+$"}]}
+      }
+     }
+    },
+    "sample_id": {"$ref": "#/$defs/text_match"},
+    "raw_file": {"$ref": "#/$defs/text_match"},
+    "attribute": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/text_match"}},
+    "mwtab_samples": {"$ref": "#/$defs/strings"},
+    "resolution": {
+     "anyOf": [{"enum": ["exact", "stem", "ambiguous", "none"]}, {"type": "array", "minItems": 1, "items": {"enum": ["exact", "stem", "ambiguous", "none"]}}]
+    },
+    "resolved_member": {"$ref": "#/$defs/member_match"},
+    "token": {"$ref": "#/$defs/token"}
+   }
+  },
+  "file": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["role", "ion_mode", "chromatography", "acquisition_mode", "basis"],
+   "properties": {
+    "role": {"enum": ["sample", "qc", "blank", "other", "unknown"]},
+    "ion_mode": {"enum": ["positive", "negative", "both", "switching", "unknown"]},
+    "chromatography": {"enum": ["HILIC", "RP", "normal_phase", "other", "unknown"]},
+    "acquisition_mode": {"enum": ["DDA", "DIA", "SWATH", "AIF", "MS1", "mixed", "unknown"]},
+    "basis": {"enum": ["declared", "inferred"]}
+   }
+  },
+  "file_override": {
+   "type": "object",
+   "additionalProperties": false,
+   "minProperties": 1,
+   "properties": {
+    "role": {"enum": ["sample", "qc", "blank", "other", "unknown"]},
+    "ion_mode": {"enum": ["positive", "negative", "both", "switching", "unknown"]},
+    "chromatography": {"enum": ["HILIC", "RP", "normal_phase", "other", "unknown"]},
+    "acquisition_mode": {"enum": ["DDA", "DIA", "SWATH", "AIF", "MS1", "mixed", "unknown"]},
+    "basis": {"enum": ["declared", "inferred"]}
+   }
+  },
+  "evidence": {
+   "description": "{source, field, value}. A value may hold per-item placeholders, filled by the expander: {attribute:<name>}, {sample_id}, {raw_file}, {member_path}, {folder}, {token:polarity}, {token:chromatography}, {token:acquisition}, {mwtab_samples:<analysis id>}.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["source", "field", "value"],
+   "properties": {
+    "source": {"$ref": "#/$defs/evidence_source"},
+    "field": {"type": "string", "minLength": 1},
+    "value": {"type": ["string", "number", "boolean", "null"]}
+   }
+  },
+  "reason": {
+   "description": "Why an item is left out. A reason one item kind lacks is written as the nearest one it has (rows: not_raw_data, archive_metadata, alternative_format_copy, out_of_scope become other; members: out_of_scope_ms1_only and polarity_switching become out_of_scope, not_in_archive and needs_person become other), with the detail kept.",
+   "enum": ["no_signal_abstained", "duplicate_content", "out_of_scope_ms1_only", "polarity_switching", "requires_conversion", "not_in_archive", "needs_person", "not_raw_data", "archive_metadata", "alternative_format_copy", "out_of_scope", "other"]
+  },
+  "disposition": {
+   "description": "keep: the unit (with an optional child key, or one per unit) or several units, which then need shared_reason and get reciprocal shared_with; every other unit lists the group's items as belongs_to_other_unit. exclude: the reason and detail every unit writes.",
+   "anyOf": [{"type": "object", "additionalProperties": false, "required": ["keep"], "properties": {"keep": {"anyOf": [{"$ref": "#/$defs/unit_id"}, {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/unit_id"}}]}, "child": {"anyOf": [{"type": "string", "pattern": "^[A-Za-z0-9._-]+$"}, {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"}}]}, "shared_reason": {"type": "string", "minLength": 1}}}, {"type": "object", "additionalProperties": false, "required": ["exclude", "detail"], "properties": {"exclude": {"$ref": "#/$defs/reason"}, "detail": {"type": "string", "minLength": 1}}}]
+  },
+  "group": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "applies_to", "match", "disposition", "confidence", "rationale"],
+   "properties": {
+    "id": {"$ref": "#/$defs/id"},
+    "applies_to": {"enum": ["rows", "members"]},
+    "match": {"description": "row_match for rows, member_match for members.", "type": "object", "minProperties": 1},
+    "resolve": {
+     "description": "Rows only: where a row's file is looked up (a folder prefix) and how (exact name then stem, the default, or exact name only).",
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {"within": {"$ref": "#/$defs/strings"}, "by": {"enum": ["exact_then_stem", "exact"]}}
+    },
+    "file": {"description": "Required when the group is kept.", "$ref": "#/$defs/file"},
+    "evidence": {
+     "description": "Required (at least one) when the group is kept.",
+     "type": "array",
+     "items": {"$ref": "#/$defs/evidence"}
+    },
+    "disposition": {"$ref": "#/$defs/disposition"},
+    "heterogeneous": {
+     "description": "Why a kept group may carry differing name tokens, extensions or top folders.",
+     "type": "string",
+     "minLength": 1
+    },
+    "confidence": {"$ref": "#/$defs/confidence"},
+    "rationale": {"$ref": "#/$defs/rationale"}
+   }
+  },
+  "exception": {
+   "description": "One item treated on its own: a row (in the units named, or in every unit whose table holds it) or a member no row resolves to. It overrides any group that matches the item, inherits the group it names (disposition, file fields, evidence) and may override them.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "confidence", "rationale"],
+   "properties": {
+    "id": {"$ref": "#/$defs/id"},
+    "unit": {"$ref": "#/$defs/strings"},
+    "row": {
+     "type": "object",
+     "additionalProperties": false,
+     "minProperties": 1,
+     "properties": {"sample_id": {"type": "string"}, "raw_file": {"type": "string"}, "index": {"type": "integer", "minimum": 0}}
+    },
+    "member": {"type": "string", "minLength": 1},
+    "member_path": {"description": "Rows only: the listed member the row's file is (name drift).", "type": "string", "minLength": 1},
+    "group": {"$ref": "#/$defs/id"},
+    "file": {"$ref": "#/$defs/file_override"},
+    "disposition": {"$ref": "#/$defs/disposition"},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "confidence": {"$ref": "#/$defs/confidence"},
+    "rationale": {"$ref": "#/$defs/rationale"}
+   }
+  },
+  "flag": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["code", "certainty", "detail"],
+   "properties": {
+    "code": {"$ref": "#/$defs/flag_code"},
+    "certainty": {"enum": ["suspected", "confirmed"]},
+    "detail": {"type": "string", "minLength": 1},
+    "with_unit": {"type": "string"},
+    "groups": {"$ref": "#/$defs/group_refs"}
+   }
+  },
+  "unit": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["status", "confidence", "rationale", "unit_technical"],
+   "properties": {
+    "status": {"enum": ["ready", "needs_person", "abstained", "out_of_scope"]},
+    "confidence": {"$ref": "#/$defs/confidence"},
+    "rationale": {"$ref": "#/$defs/rationale"},
+    "unit_technical": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": ["ion_mode", "chromatography", "acquisition_mode"],
+     "properties": {
+      "ion_mode": {"enum": ["positive", "negative", "both", "switching", "unknown"]},
+      "chromatography": {"enum": ["HILIC", "RP", "normal_phase", "other", "unknown"]},
+      "chromatography_detail": {"type": "string"},
+      "acquisition_mode": {"enum": ["DDA", "DIA", "SWATH", "AIF", "MS1", "mixed", "unknown"]}
+     }
+    },
+    "exclude": {
+     "description": "Groups this unit leaves out for its own reason (never belongs_to_other_unit), over a keep elsewhere or its own.",
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["groups", "reason", "detail"],
+      "properties": {
+       "groups": {"$ref": "#/$defs/group_refs"},
+       "reason": {"$ref": "#/$defs/reason"},
+       "detail": {"type": "string", "minLength": 1},
+       "confidence": {"$ref": "#/$defs/confidence"},
+       "rationale": {"$ref": "#/$defs/rationale"}
+      }
+     }
+    },
+    "children": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["child_key", "ion_mode", "acquisition_mode"],
+      "properties": {
+       "child_key": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+       "ion_mode": {"enum": ["positive", "negative"]},
+       "acquisition_mode": {"enum": ["DDA", "DIA", "SWATH", "AIF", "MS1", "mixed", "unknown"]}
+      }
+     }
+    },
+    "flags": {"type": "array", "items": {"$ref": "#/$defs/flag"}},
+    "needs_person": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "question"],
+      "properties": {
+       "code": {"$ref": "#/$defs/question_code"},
+       "question": {"type": "string", "minLength": 1},
+       "groups": {"$ref": "#/$defs/group_refs"}
+      }
+     }
+    },
+    "shared_with": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit_id", "groups", "reason"],
+      "properties": {
+       "unit_id": {"$ref": "#/$defs/unit_id"},
+       "groups": {"$ref": "#/$defs/group_refs"},
+       "reason": {"type": "string", "minLength": 1}
+      }
+     }
+    },
+    "evidence_sources": {"type": "array", "items": {"$ref": "#/$defs/evidence_source_item"}},
+    "notes": {"type": "string"}
+   }
+  },
+  "evidence_source": {
+   "enum": ["catalog_row", "catalog_unit", "mwtab", "repository_page", "archive_listing", "folder_token", "filename_token", "raw_header", "person"]
+  },
+  "evidence_source_item": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["source", "detail"],
+   "properties": {"source": {"$ref": "#/$defs/evidence_source"}, "detail": {"type": "string", "minLength": 1}}
+  },
+  "question_code": {
+   "enum": ["scope_ms1_only", "shared_content", "no_signal", "folder_header_disagreement", "mixed_acquisition", "polarity_switching", "declared_technical_disputed", "name_token_disputed", "format_choice", "other"]
+  },
+  "flag_code": {
+   "enum": ["mixed_acquisition", "ms1_only", "polarity_switching", "folder_header_disagreement", "shared_content", "undocumented_method", "targeted_dda", "duplicate_copies_excluded", "segmented_acquisition", "declared_technical_disputed", "name_token_disputed", "catalog_defect", "target_omics_doubt", "other"]
+  },
+  "confidence": {"enum": ["high", "medium", "low"]},
+  "rationale": {"type": "string", "minLength": 1}
+ }
+}

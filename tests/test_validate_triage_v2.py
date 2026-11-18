@@ -43,10 +43,9 @@ ALLOWED_TOOLS = [
     "Glob",
     "Grep",
     "Write",
-    "mcp__msdial-repository-catalog__msdial_catalog_status",
-    "mcp__msdial-repository-catalog__msdial_catalog_search",
-    "mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit",
+    "mcp__msdial-triage-spec__triage_spec_check",
 ]
+CHECK = "mcp__msdial-triage-spec__triage_spec_check"
 AT = "2026-11-18T00:00:00+00:00"
 
 
@@ -288,45 +287,48 @@ class ToolTests(V2Case):
     def test_the_skill_lists_exactly_its_allowed_tools(self) -> None:
         text = (ROOT / records.SKILL_PATH).read_text(encoding="utf-8")
         self.assertEqual(vt.skill_allowed_tools(text), ALLOWED_TOOLS)
-        self.assertEqual(vt.skill_version(text), "1.1.0")
+        self.assertEqual(vt.skill_version(text), "1.2.0")
         self.assertEqual(vt.skill_frontmatter(text)["name"], "msdial-unit-triage")
         for tool in ALLOWED_TOOLS:
             self.assertNotIn(tool.split("__")[-1], ("msdial_catalog_save_class_proposal", "msdial_catalog_reanalysis_handoff"))
         for name in ("Bash", "WebFetch", "Edit", "mcp__msdial-interactive__msdial_download_repository_raw",
-                     "mcp__msdial-repository-catalog__msdial_catalog_save_class_proposal"):
+                     "mcp__msdial-repository-catalog__msdial_catalog_save_class_proposal",
+                     "mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit"):
             self.assertFalse(vt.tool_allowed(name, ALLOWED_TOOLS), name)
-        self.assertTrue(vt.tool_allowed("msdial_catalog_get_analysis_unit", ALLOWED_TOOLS))
-        self.assertTrue(vt.tool_allowed("mcp__msdial-repository-catalog__msdial_catalog_search", ALLOWED_TOOLS))
-        self.assertFalse(vt.tool_allowed("mcp__another-server__msdial_catalog_search", ALLOWED_TOOLS))
+        self.assertTrue(vt.tool_allowed("triage_spec_check", ALLOWED_TOOLS))
+        self.assertTrue(vt.tool_allowed(CHECK, ALLOWED_TOOLS))
+        self.assertFalse(vt.tool_allowed("mcp__another-server__triage_spec_check", ALLOWED_TOOLS))
 
     def test_the_prompt_template_names_its_placeholders(self) -> None:
         text = (ROOT / records.TEMPLATE_PATH).read_text(encoding="utf-8")
-        names = ("accession", "unit_ids", "input_dir", "output_dir", "analysis_purpose", "handoff_sha256")
+        names = ("accession", "unit_ids", "input_dir", "output_dir", "analysis_purpose", "spec_name")
         for name in names:
             self.assertIn("{{" + name + "}}", text)
+        self.assertNotIn("{{handoff_sha256}}", text, "code writes the handoff hash; the agent no longer copies it")
         self.assertNotRegex(records.render(text.encode("utf-8"), accession="ST000001", unit_ids="AN000001", input_dir="in",
-                                           output_dir="out", analysis_purpose="null", handoff_sha256="- x").decode("utf-8"),
+                                           output_dir="out", analysis_purpose="null", spec_name="ST000001.spec.json").decode("utf-8"),
                             r"\{\{[a-z0-9_]+\}\}")
         revision = (ROOT / records.REVISION_TEMPLATE_PATH).read_text(encoding="utf-8")
-        for name in (*names, "revisions"):
+        for name in (*names, "revisions", "previous_spec"):
             self.assertIn("{{" + name + "}}", revision)
 
     def test_allowed_tool_calls_pass_and_others_are_refused(self) -> None:
-        allowed = [("mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit", {"unit_id": self.UNIT}, {"ok": True}),
-                   ("msdial_catalog_search", {"query": "ST002747"}, {"ok": True}),
+        allowed = [(CHECK, {"spec_file": "../out/ST002747.spec.json"}, {"ok": True}),
+                   ("triage_spec_check", {"spec_file": "../out/ST002747.spec.json"}, {"ok": True}),
                    ("Read", {"file_path": "inputs/archive-members.tsv"}, {"lines": 3}),
                    ("Write", {"file_path": f"{self.UNIT}.json"}, {"ok": True})]
         report = self.validate(self.make(tool_calls=allowed))
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
         for tool in ("Bash", "WebFetch", "mcp__msdial-interactive__msdial_list_remote_archive",
-                     "mcp__msdial-repository-catalog__msdial_catalog_save_class_proposal"):
+                     "mcp__msdial-repository-catalog__msdial_catalog_save_class_proposal",
+                     "mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit"):
             with self.subTest(tool):
                 report = self.validate(self.make(tool_calls=[*allowed, (tool, {}, {"ok": True})]))
                 self.assertTrue(any(tool in m for m in self.found(report, "T-TOOLS", "error")), tool)
 
     def test_tool_results_and_their_order_are_checked(self) -> None:
         calls = [("Read", {"file_path": "inputs/archive-members.tsv"}, {"lines": 3}),
-                 ("msdial_catalog_status", {}, {"ok": True})]
+                 ("triage_spec_check", {"spec_file": "../out/ST002747.spec.json"}, {"ok": True})]
         directory = self.make(tool_calls=calls)
         result = directory / "inputs" / self.UNIT / "calls" / "2.json"
         result.write_bytes(result.read_bytes() + b" ")
@@ -335,7 +337,7 @@ class ToolTests(V2Case):
         self.rewrite_record(directory, self.UNIT, lambda r: r["tool_calls"].reverse())
         self.assertTrue(any("has seq" in m for m in self.found(self.validate(directory), "T-TOOLS", "error", self.UNIT)))
 
-    CALLS = [("mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit", {"unit_id": "AN004454"}, {"ok": True}),
+    CALLS = [(CHECK, {"spec_file": "../out/ST002747.spec.json"}, {"ok": True}),
              ("Write", {"file_path": "AN004454.json"}, "File created")]
 
     def _release(self, directory: Path, data: bytes) -> None:
@@ -365,7 +367,7 @@ class ToolTests(V2Case):
         self.assertTrue(any("shows a call to Bash" in m for m in errors), errors)
 
     def test_arguments_results_server_model_and_session_are_compared(self) -> None:
-        other_server = [("mcp__another-server__msdial_catalog_get_analysis_unit", *self.CALLS[0][1:]), self.CALLS[1]]
+        other_server = [("mcp__another-server__triage_spec_check", *self.CALLS[0][1:]), self.CALLS[1]]
         cases = {
             "arguments": (records.transcript_lines([(self.CALLS[0][0], {"unit_id": "AN004455"}, {"ok": True}),
                                                     self.CALLS[1]]), "T-TOOLS", "arguments"),
@@ -672,6 +674,98 @@ class InScopeDecisionTests(V2Case):
         docs["AN003731"]["needs_person"] = []
         docs["AN003731"]["status"] = "ready"
         self.assertTrue(self.found(self.validate(self.make("ST002283", docs=docs), "ST002283"), "T-DUP", "error", "AN003731"))
+
+
+class SpecDerivationTests(V2Case):
+    """T-SPEC and T-DIGEST: a payload expanded from the agent's spec is that spec's deterministic image over the inputs
+    its record binds, by the expander at its commit; the digest is the digest script's image of the same inputs."""
+
+    def spec_dir(self, accession: str | None = None, code: records.Code | None = None) -> Path:
+        self._n += 1
+        accession = accession or self.ACCESSION
+        return records.spec_triage(self.tmp / f"spec-{accession}-{self._n}", accession, code or self.code)
+
+    def validate_dir(self, directory: Path, **options) -> "vt.Report":
+        inputs = directory / "inputs"
+        options.setdefault("code_root", self.code.root)
+        return vt.validate(directory, vt.read_catalog(inputs), [m for t in sorted(inputs.glob("*.tsv")) for m in vt.read_listing(t)],
+                           listing_files=sorted(inputs.glob("*.tsv")), **options)
+
+    def test_an_expanded_triage_passes_and_its_records_are_small(self) -> None:
+        directory = self.spec_dir()
+        report = self.validate_dir(directory)
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+        self.assertEqual([p.name for p in vt.current_triage_files(directory)],
+                         ["AN004454.json", "AN004455.json", "AN004456.json", "AN004457.json"], "the spec is never a payload")
+        for record in directory.glob("*.record.json"):
+            self.assertLess(record.stat().st_size, 100_000)
+        report = self.validate_dir(self.spec_dir("ST002283"))
+        self.assertFalse([f.as_dict() for f in report.findings if f.check in ("T-SPEC", "T-DIGEST")])
+
+    def test_a_one_byte_payload_edit_is_refused(self) -> None:
+        directory = self.spec_dir()
+        path = directory / "AN004454.json"
+        data = path.read_bytes().replace(b'"confidence": "medium"', b'"confidence": "high"', 1)
+        path.write_bytes(data)
+        self.rewrite_record(directory, "AN004454", lambda r: (r.update(decision_id=sha(data)), r["payload"].update(sha256=sha(data))))
+        found = self.found(self.validate_dir(directory), "T-SPEC", "error", "AN004454")
+        self.assertTrue(any("not the spec's expansion" in m for m in found), found)
+
+    def test_a_spec_that_is_not_the_one_bound_is_refused(self) -> None:
+        directory = self.spec_dir()
+        spec = directory / f"{self.ACCESSION}.spec.json"
+        spec.write_bytes(spec.read_bytes() + b" ")
+        self.assertTrue(self.found(self.validate_dir(directory), "T-SPEC", "error", "AN004454"))
+
+    def test_the_context_is_the_records(self) -> None:
+        directory = self.spec_dir()
+        self.rewrite_record(directory, "AN004455", lambda r: r["derivation"]["context"].update(model="another-model"))
+        self.assertTrue(any("derivation.context.model" in m for m in self.found(self.validate_dir(directory), "T-SPEC", "error", "AN004455")))
+
+    def test_a_derived_payload_needs_a_derivation_in_its_record(self) -> None:
+        directory = self.spec_dir()
+        self.rewrite_record(directory, "AN004456", lambda r: r.pop("derivation"))
+        self.assertTrue(any("binds no derivation" in m for m in self.found(self.validate_dir(directory), "T-SPEC", "error", "AN004456")))
+
+    def test_the_expander_is_read_at_its_commit_through_the_code_root(self) -> None:
+        # Another commit's expander: a comment line differs, the expansion does not. It is loaded from that code, not
+        # from this tree, and the payloads pass; against this tree's expander the record's sha256 does not hold.
+        other = records.Code.from_root(self.tmp / "other-code")
+        expander = other.root / records.EXPANDER_PATH
+        expander.write_bytes(expander.read_bytes().replace(b'EXPANDER_VERSION = "1.0.0"',
+                                                           b'# another commit\nEXPANDER_VERSION = "1.0.0"', 1))
+        other.files[records.EXPANDER_PATH] = expander.read_bytes()
+        directory = self.spec_dir(code=other)
+        report = self.validate_dir(directory, code_root=other.root)
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+        report = self.validate_dir(directory, code_root=self.code.root)
+        self.assertTrue(any("cannot be re-derived" in m for m in self.found(report, "T-SPEC", "hold", "AN004454")))
+        # An expander at the record's commit that writes other bytes than the payload holds is refused.
+        changed = expander.read_bytes().replace(b'f"Kept by {owner} (', b'f"Held by {owner} (', 1)
+        self.assertNotEqual(changed, expander.read_bytes())
+        expander.write_bytes(changed)
+        self.rewrite_records(directory, lambda r: r["derivation"]["expander"].update(sha256=sha(changed)))
+        report = self.validate_dir(directory, code_root=other.root)
+        self.assertTrue(any("not the spec's expansion" in m for m in self.found(report, "T-SPEC", "error")))
+
+    def test_the_digest_is_rebuilt_from_the_bound_inputs(self) -> None:
+        directory = self.spec_dir()
+        digest = directory / "inputs" / "digest.md"
+        data = digest.read_bytes().replace(b"Source facts", b"Source facts and hints", 1)
+        digest.write_bytes(data)
+
+        def rebind(record: dict) -> None:
+            record["derivation"]["digest"]["sha256"] = sha(data)
+            for item in record["inputs"]:
+                if item["role"] == "triage_digest":
+                    item.update(sha256=sha(data), bytes=len(data))
+        self.rewrite_records(directory, rebind)
+        found = self.found(self.validate_dir(directory), "T-DIGEST", "error")
+        self.assertTrue(any("is not what the digest script" in m for m in found), found)
+
+    def rewrite_records(self, directory: Path, change) -> None:
+        for path in sorted(directory.glob("*.record.json")):
+            self.rewrite_record(directory, path.name[: -len(".record.json")], change)
 
 
 SYNTHETIC_ACCESSION = "ST000001"

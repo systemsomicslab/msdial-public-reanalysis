@@ -32,15 +32,21 @@ from typing import Any, Iterable, Mapping
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_PATH = ".claude/skills/msdial-unit-triage/SKILL.md"
-TEMPLATE_PATH = "prompts/unit-triage-task.v1.md"
-REVISION_TEMPLATE_PATH = "prompts/unit-triage-revision.v1.md"
+TEMPLATE_PATH = "prompts/unit-triage-task.v2.md"
+REVISION_TEMPLATE_PATH = "prompts/unit-triage-revision.v2.md"
 WRAPPER_PATH = "scripts/run-triage-agent.py"
-SCHEMA_PATH = "schemas/msdial-unit-triage.v2.json"
+SCHEMA_PATH = "schemas/msdial-unit-triage-spec.v1.json"
+EXPANDER_PATH = "scripts/expand-triage-spec.py"
+DIGEST_PATH = "scripts/triage-digest.py"
+# What a session's code tree holds (run-triage-agent.py CODE_FILES), copied into a released-code folder as well.
+CODE_FILES = (EXPANDER_PATH, DIGEST_PATH, "scripts/triage-spec-server.py", "scripts/validate-triage.py",
+              "schemas/msdial-unit-triage.v1.json", "schemas/msdial-unit-triage.v2.json", SCHEMA_PATH)
 FIXTURES = ROOT / "tests" / "fixtures" / "triage-eval"
 CATALOG_SERVER = "msdial-repository-catalog"
+SPEC_SERVER = "msdial-triage-spec"
 CLEAN_CONTEXT = {
     "configuration": "clean", "working_directory": "<empty directory holding only the skill>", "context_files": [],
-    "memory": "disabled", "hooks": [], "mcp_servers": [{"name": CATALOG_SERVER, "version": "0.6.1"}],
+    "memory": "disabled", "hooks": [], "mcp_servers": [{"name": SPEC_SERVER, "version": "1.0.0"}],
     "harness_flags": ["--setting-sources none"],
 }
 MODEL = "synthetic-model"
@@ -71,6 +77,7 @@ class Code:
     root: Path | None = None  # the code root to hand the validator, or None for git
     wrapper: bytes = b""
     revision_template: bytes | None = None
+    files: dict[str, bytes] | None = None  # CODE_FILES at the commit
 
     @property
     def skill_version(self) -> str:
@@ -86,12 +93,13 @@ class Code:
         template = template if template is not None else (ROOT / TEMPLATE_PATH).read_bytes()
         wrapper = (ROOT / WRAPPER_PATH).read_bytes()
         revision = (ROOT / REVISION_TEMPLATE_PATH).read_bytes()
+        files = {relative: (ROOT / relative).read_bytes() for relative in CODE_FILES}
         for relative, data in ((SKILL_PATH, skill), (TEMPLATE_PATH, template), (WRAPPER_PATH, wrapper),
-                               (REVISION_TEMPLATE_PATH, revision)):
+                               (REVISION_TEMPLATE_PATH, revision), *files.items()):
             target = Path(folder) / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-        return Code(commit, skill, template, Path(folder), wrapper, revision)
+        return Code(commit, skill, template, Path(folder), wrapper, revision, files)
 
     @staticmethod
     def from_head() -> "Code":
@@ -101,16 +109,18 @@ class Code:
         template = _git("show", f"{commit}:{TEMPLATE_PATH}") if commit else None
         wrapper = _git("show", f"{commit}:{WRAPPER_PATH}") if commit else None
         revision = _git("show", f"{commit}:{REVISION_TEMPLATE_PATH}") if commit else None
-        if not commit or skill is None or template is None or wrapper is None:
-            raise unittest.SkipTest("git HEAD of this repository, with the skill, the prompt template and the wrapper, "
-                                    "is not available")
-        return Code(commit, skill, template, None, wrapper, revision)
+        files = {relative: _git("show", f"{commit}:{relative}") for relative in CODE_FILES} if commit else {}
+        if not commit or skill is None or template is None or wrapper is None or any(v is None for v in files.values()):
+            raise unittest.SkipTest("git HEAD of this repository, with the skill, the prompt template, the wrapper and the "
+                                    "expander, is not available")
+        return Code(commit, skill, template, None, wrapper, revision, files)
 
     def snapshot(self, module: Any) -> Any:
         """This code as scripts/run-triage-agent.py's CodeSnapshot (`module` is the loaded wrapper)."""
         return module.CodeSnapshot(self.commit, self.skill, self.template, self.root, wrapper=self.wrapper,
                                    wrapper_commit=self.commit, revision_template=self.revision_template,
-                                   schema=(ROOT / SCHEMA_PATH).read_bytes())
+                                   schema=(self.files or {}).get(SCHEMA_PATH) or (ROOT / SCHEMA_PATH).read_bytes(),
+                                   files=dict(self.files or {r: (ROOT / r).read_bytes() for r in CODE_FILES}))
 
 
 def render(template: bytes, **values: str) -> bytes:
@@ -179,7 +189,7 @@ def write_record(
     unit_inputs = folder / "inputs" / unit
     unit_inputs.mkdir(parents=True, exist_ok=True)
     prompt = render(code.template, accession=triage["accession"], unit_ids=unit, input_dir="inputs",
-                    output_dir=".", analysis_purpose="null", handoff_sha256=f"- `{unit}`: `{'0' * 64}`")
+                    output_dir=".", analysis_purpose="null", spec_name=f"{triage['accession']}.spec.json")
     revision = re.match(r"^.+\.(r[0-9]+)$", payload.stem)
     prompt_name = f"prompt.{revision.group(1)}.md" if revision else "prompt.md"
     (unit_inputs / prompt_name).write_bytes(prompt)
@@ -240,3 +250,76 @@ def copy_listing(source: Path, folder: Path, name: str = "archive-members.tsv") 
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
     return {"role": "archive_listing", "path": f"inputs/{name}"}
+
+
+def _module(name: str, path: Path) -> Any:
+    import importlib.util  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+FINISHED_AT = "2026-11-16T09:10:00+09:00"  # write_record's finished_at: the expansion's decided_at
+
+
+def spec_triage(folder: Path, accession: str, code: Code, *, spec_bytes: bytes | None = None, digest: bool = True,
+                record: bool = True, **record_options: Any) -> Path:
+    """A triage directory as the wrapper commits it under skill 1.2.0: the eval accession's inputs (handoffs, samples,
+    listing, inputs/digest.md), <accession>.spec.json (the eval spec unless `spec_bytes`), the payloads the expander
+    makes of it, and records whose derivation binds the spec, the expander and the digest script of `code` (its root,
+    or this tree) with the context the record states (decided_at its finished_at, model its model_id)."""
+    import triage_eval as te  # noqa: PLC0415
+
+    folder = Path(folder)
+    inputs = te.write_inputs(accession, folder)
+    root = code.root or ROOT
+    expander = _module(f"expander_for_records_{sha(str(root).encode())[:12]}", root / EXPANDER_PATH)
+    digest_module = _module(f"digest_for_records_{sha(str(root).encode())[:12]}", root / DIGEST_PATH)
+    spec_bytes = spec_bytes if spec_bytes is not None else te.spec_path(accession).read_bytes()
+    spec_name = f"{accession}.spec.json"
+    (folder / spec_name).write_bytes(spec_bytes)
+    digest_bytes = digest_module.build_digest(inputs)
+    if digest:
+        (inputs / "digest.md").write_bytes(digest_bytes)
+    context = {"decided_at": FINISHED_AT, "model": MODEL, "agent": "claude-code", "skill_version": code.skill_version,
+               "purpose": None}
+    ctx = expander.ExpansionContext(**context)
+    result = expander.expand(spec_bytes, expander.inputs_from_dir(inputs), ctx, spec_name=spec_name)
+    assert result.ok, [f.as_dict() for f in result.findings]
+    for unit, data in result.payloads.items():
+        (folder / f"{unit}.json").write_bytes(data)
+    files = code.files or {r: (ROOT / r).read_bytes() for r in CODE_FILES}
+    derivation: dict[str, Any] = {
+        "spec": {"path": spec_name, "schema": "msdial-unit-triage-spec.v1", "sha256": sha(spec_bytes), "bytes": len(spec_bytes)},
+        "expander": {"path": EXPANDER_PATH, "version": expander.EXPANDER_VERSION, "sha256": sha(files[EXPANDER_PATH]),
+                     "repo_commit": code.commit},
+        "context": context,
+    }
+    if digest:
+        derivation["digest"] = {"path": "inputs/digest.md", "sha256": sha(digest_bytes),
+                                "script": {"path": DIGEST_PATH, "version": digest_module.DIGEST_VERSION,
+                                           "sha256": sha(files[DIGEST_PATH]), "repo_commit": code.commit}}
+    if record:
+        units = sorted(result.payloads)
+        listing = next(p.name for p in inputs.glob("*.tsv"))
+        for unit in units:
+            bound = [{"role": "catalog_handoff", "path": f"inputs/{unit}/handoff.json"},
+                     {"role": "catalog_samples", "path": f"inputs/{unit}/samples.json"},
+                     {"role": "archive_listing", "path": f"inputs/{listing}"}]
+            if digest:
+                bound.append({"role": "triage_digest", "path": "inputs/digest.md"})
+            for other in units:
+                if other != unit:
+                    bound += [{"role": "other", "path": f"inputs/{other}/handoff.json"},
+                              {"role": "other", "path": f"inputs/{other}/samples.json"}]
+            options = dict(record_options)
+            options.setdefault("derivation", derivation)
+            write_record(folder / f"{unit}.json", code, inputs=bound, **options)
+    return folder

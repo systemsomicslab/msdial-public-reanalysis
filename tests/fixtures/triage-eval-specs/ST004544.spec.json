@@ -1,0 +1,22 @@
+{
+ "schema": "msdial-unit-triage-spec.v1",
+ "accession": "ST004544",
+ "phase": "pre_download",
+ "structure": "mzML files at the archive root named <sample>_<n> with n from 1 to 6; no folder, name token or declaration says which suffix is which arm.",
+ "evidence_sources": [{"source": "archive_listing", "detail": "Zip central directory listing read before download."}],
+ "groups": [
+  {"id": "ALL", "applies_to": "rows", "match": {"sample_id": {"regex": "^(QC|Sample)[0-9_]"}, "resolution": "exact"},
+   "disposition": {"exclude": "no_signal_abstained", "detail": "Names carry no polarity or chromatography signal; abstained before download."},
+   "confidence": "high",
+   "rationale": "No name, folder or declaration ties a suffix to an arm; the headers will."}
+ ],
+ "units": {
+  "AN007633": {"status": "abstained", "confidence": "high", "rationale": "Nothing assigned before download: the names give no signal.",
+   "unit_technical": {"ion_mode": "positive", "chromatography": "HILIC", "acquisition_mode": "unknown"},
+   "needs_person": [{"code": "no_signal", "question": "Read the polarity, scan type and elution of one file per suffix from the headers before assigning."}],
+   "notes": "Odd suffixes may be one arm and even suffixes the other; only the headers can say."},
+  "AN007634": {"status": "abstained", "confidence": "high", "rationale": "Nothing assigned before download: the names give no signal.",
+   "unit_technical": {"ion_mode": "negative", "chromatography": "RP", "acquisition_mode": "unknown"},
+   "needs_person": [{"code": "no_signal", "question": "Read the polarity, scan type and elution of one file per suffix from the headers before assigning."}]}
+ }
+}

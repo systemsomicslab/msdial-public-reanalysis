@@ -106,10 +106,65 @@
     "transcript": {
       "anyOf": [{"type": "null"}, {"$ref": "#/$defs/transcript"}]
     },
-    "rationale": {"description": "Plain language summary of the decision.", "type": "string", "minLength": 1}
+    "rationale": {"description": "Plain language summary of the decision.", "type": "string", "minLength": 1},
+    "derivation": {
+      "description": "Present when the payload was not written by the model but expanded from the spec it wrote (schemas/msdial-unit-triage-spec.v1.json) by scripts/expand-triage-spec.py, over this record's inputs and the context below. validate-triage.py re-runs that expander at its commit and refuses a payload that is not the expansion byte for byte (T-SPEC), and rebuilds the digest with its script at its commit (T-DIGEST). Every unit's record of one session binds the same spec.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "expander", "context"],
+      "properties": {
+        "spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "schema", "sha256", "bytes"],
+          "properties": {
+            "path": {"description": "The spec, relative to this record (<accession>.spec.json or .spec.r<N>.json).", "type": "string", "minLength": 1},
+            "schema": {"const": "msdial-unit-triage-spec.v1"},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "bytes": {"type": "integer", "minimum": 0}
+          }
+        },
+        "expander": {"$ref": "#/$defs/code_file"},
+        "digest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256", "script"],
+          "properties": {
+            "path": {"description": "inputs/digest.md, relative to this record.", "type": "string", "minLength": 1},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "script": {"$ref": "#/$defs/code_file"}
+          }
+        },
+        "context": {
+          "description": "What the expansion took beyond the spec and the inputs: decided_at is the record's finished_at, model its agent.model_id, skill_version its skill.version, purpose the analysis_purpose the rendered prompt carries.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["decided_at", "model", "agent", "skill_version", "purpose"],
+          "properties": {
+            "decided_at": {"type": "string", "minLength": 10},
+            "model": {"type": "string", "minLength": 1},
+            "agent": {"type": "string", "minLength": 1},
+            "skill_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+            "purpose": {"type": ["string", "null"]}
+          }
+        }
+      }
+    }
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "code_file": {
+      "description": "A script of this repository at a commit: its path, version, sha256 at repo_commit and the commit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "version", "sha256", "repo_commit"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "repo_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
     "input": {
       "type": "object",
       "additionalProperties": false,
@@ -127,6 +182,7 @@
             "repository_page",
             "prior_decision",
             "review_entry",
+            "triage_digest",
             "other"
           ]
         },
