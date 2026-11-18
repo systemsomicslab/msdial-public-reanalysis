@@ -210,7 +210,8 @@ class PrototypeFailureModeTest(TriageCase):
         self.assertIn("T-DUP", self.checks(report, unit="AN003729"))
         self.assertEqual(report.unit_verdict("AN003729"), "error")
         _, truth, _ = te.load("ST002283")
-        self.assertEqual(vt.score(directory, truth)["AN003729"], {"correct": 0, "wrong_included": 43, "wrongly_left_out": 0})
+        self.assertEqual(vt.score(directory, truth)["AN003729"], {"correct": 0, "wrong_included": 43, "wrongly_left_out": 0,
+                                                                     "held_for_person": 0})
 
         # Flagged and sent to a person, the same selection is a hold, not an error.
         hilic["status"] = "needs_person"
@@ -219,6 +220,26 @@ class PrototypeFailureModeTest(TriageCase):
         report, _ = self.run_validator("ST002283", docs)
         self.assertEqual(self.checks(report), set())
         self.assertIn("T-DUP", self.checks(report, "hold", "AN003729"))
+
+    def test_copies_held_for_a_person_are_scored_as_held_not_left_out(self) -> None:
+        """Skill 1.2.0 holds a unit's shared copies for a person (needs_person) instead of keeping them; the 2026-11-18
+        re-pilot of ST002283 did so for AN003731, which the score had counted as 43 files wrongly left out."""
+        docs = te.build_good("ST002283")
+        lipid = docs["AN003731"]
+        held = [r for r in lipid["rows"] if "Human_Lipid_Neg/" in r["member_path"] and "Blank" not in r["member_path"]]
+        self.assertTrue(held)
+        lipid["rows"] = [r for r in lipid["rows"] if r not in held]
+        lipid["excluded_rows"] = [*lipid.get("excluded_rows", []), *[
+            {"row_index": r["row_index"], "sample_id": r["sample_id"], "raw_file": r["raw_file"],
+             "member_path": r["member_path"], "reason": "needs_person", "detail": "Held for the shared_content question."}
+            for r in held]]
+        _, directory = self.run_validator("ST002283", docs)
+        _, truth, _ = te.load("ST002283")
+        counts = vt.score(directory, truth)["AN003731"]
+        self.assertEqual(counts["held_for_person"], len(held))
+        self.assertEqual(counts["wrongly_left_out"], 0)
+        self.assertEqual(counts["correct"] + counts["held_for_person"],
+                         len(next(u for u in truth["units"] if u["unit_id"] == "AN003731")["members"]))
 
     def test_st004544_assignment_on_file_size_alone_is_an_error(self) -> None:
         """Names carry no signal; the size pattern is not evidence to assign on."""
@@ -508,7 +529,8 @@ class ContractTest(TriageCase):
         self.assertEqual(code, 1)
         report = json.loads(text)
         self.assertEqual(report["verdict"], "hold")
-        self.assertEqual(report["score"]["AN003731"], {"correct": 44, "wrong_included": 0, "wrongly_left_out": 0})
+        self.assertEqual(report["score"]["AN003731"], {"correct": 44, "wrong_included": 0, "wrongly_left_out": 0,
+                                                       "held_for_person": 0})
         code, text = run("ST003128", te.stage3b_style("ST003128"))
         self.assertEqual(code, 2)
         self.assertIn("ERROR", text)

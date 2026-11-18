@@ -927,7 +927,8 @@ abstained, and per unit the expected pre-download status. To score a triage of o
 A campaign payload is scored by its `source_subrecord_id` when the Catalog unit id is not the analysis id. A good
 pre-download triage reaches every unit's `expected_status_pre_download` with no wrong inclusion; abstaining (the
 accession whose names carry no signal) leaves files unassigned and scores as left out, which is the right outcome
-before headers exist. **The evaluation is blind** (decision of 2026-11-18): the skill, the v2 prompt templates, the
+before headers exist. A unit that holds shared copies for a person (`needs_person` exclusions, skill 1.2.0) scores
+them as `held_for_person`, not as left out: they wait for the answer to its question. **The evaluation is blind** (decision of 2026-11-18): the skill, the v2 prompt templates, the
 spec schema, the digest script and the expander name no eval accession, analysis id or archive folder
 (`tests/test_skill_blind.py`); the answers live in the fixtures only. `tests/fixtures/triage-eval-specs/` holds a
 hand-written spec for each eval accession, test data only, which `tests/test_expand_triage_spec.py` expands and scores

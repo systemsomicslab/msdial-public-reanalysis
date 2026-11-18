@@ -2505,7 +2505,10 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
 
 
 def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str, int]]:
-    """Per unit: correct, wrong_included, wrongly_left_out, against ground_truth.json (eval fixtures).
+    """Per unit: correct, wrong_included, wrongly_left_out, held_for_person, against ground_truth.json (eval fixtures).
+
+    held_for_person counts the ground truth's members the unit excludes as needs_person: held for the person its
+    question asks (shared byte-identical copies, skill 1.2.0), neither kept nor dropped, so not wrongly left out.
 
     A ground-truth unit is named by its public analysis id. The eval fixtures' payloads are named the same way; a
     campaign's are named by the Catalog unit id and carry the analysis id as source_subrecord_id, so the current
@@ -2534,8 +2537,12 @@ def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str,
             path = by_subrecord[uid]
         kept: set[str] = set()
         other: set[str] = set()
+        held: set[str] = set()
         if path.exists():
             t = json.loads(path.read_text(encoding="utf-8"))
+            for item in [*t.get("excluded_rows", []), *t.get("excluded_members", [])]:
+                if item.get("reason") == "needs_person" and item.get("member_path"):
+                    held.add(member_key(item["member_path"]))
             for row in t.get("rows", []):
                 if row.get("member_path"):
                     kept.add(member_key(row["member_path"]))
@@ -2553,10 +2560,12 @@ def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str,
             for member in t.get("added_members", []):
                 kept.add(member_key(member["member_path"]))
         kept -= unchecked
+        held = (held - kept) & truth
         out[uid] = {
             "correct": len(kept & truth),
             "wrong_included": len(kept - truth) + len(other),
-            "wrongly_left_out": len(truth - kept),
+            "wrongly_left_out": len(truth - kept - held),
+            "held_for_person": len(held),
         }
     return out
 
@@ -2580,7 +2589,8 @@ def _render(report: Report) -> str:
     if report.score is not None:
         lines.append("  score against ground truth:")
         for unit, s in report.score.items():
-            lines.append(f"    {unit}: correct {s['correct']}, wrong_included {s['wrong_included']}, wrongly_left_out {s['wrongly_left_out']}")
+            lines.append(f"    {unit}: correct {s['correct']}, wrong_included {s['wrong_included']}, wrongly_left_out "
+                         f"{s['wrongly_left_out']}, held_for_person {s['held_for_person']}")
     return "\n".join(lines)
 
 
