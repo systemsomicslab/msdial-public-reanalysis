@@ -92,7 +92,8 @@ Levels:
   of scope, flagged shared content, a member nobody accounted for, a kept file inferred at low confidence in a ready
   unit without a person's inferred_low_confidence answer (T-CONFIDENCE), a context that was not clean, a check that
   could not run.
-- pass: every unit is ready and nothing waits.
+- pass: every unit is ready, or excluded by the triage policy of 2026-11-18 (status excluded: it keeps, asks and
+  holds nothing, and the plan leaves it out as triage_unit_excluded), and nothing waits.
 - note: recorded, never a verdict (rationale_not_recorded).
 
 Exit status: 0 pass, 1 hold, 2 error. The script reads only, except that --emit-selection appends validator_verdict

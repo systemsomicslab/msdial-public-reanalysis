@@ -17,6 +17,7 @@ Library: expand(spec_bytes, inputs, ctx, spec_name=...) -> Expansion(payloads {u
 It is pure: no I/O beyond its arguments, no network, no clock, no randomness. Findings (each refuses the expansion):
 
   X-SCHEMA            the spec breaks schemas/msdial-unit-triage-spec.v1.json, or a rule the schema cannot state
+                      (an exclusion given on a unit that is not excluded, or none on one that is)
   X-UNITS             the spec's units are not the units of the inputs
   X-UNKNOWN-REF       a group, unit, child or exception target that does not exist
   X-EXCEPTION         an exception that is not one item: a row exception that targets by index without naming exactly
