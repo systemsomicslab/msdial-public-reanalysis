@@ -841,8 +841,9 @@ class SpecDerivationTests(V2Case):
         # from this tree, and the payloads pass; against this tree's expander the record's sha256 does not hold.
         other = records.Code.from_root(self.tmp / "other-code")
         expander = other.root / records.EXPANDER_PATH
-        expander.write_bytes(expander.read_bytes().replace(b'EXPANDER_VERSION = "1.0.0"',
-                                                           b'# another commit\nEXPANDER_VERSION = "1.0.0"', 1))
+        before = expander.read_bytes()
+        expander.write_bytes(before.replace(b'\nEXPANDER_VERSION = "', b'\n# another commit\nEXPANDER_VERSION = "', 1))
+        self.assertNotEqual(expander.read_bytes(), before)
         other.files[records.EXPANDER_PATH] = expander.read_bytes()
         directory = self.spec_dir(code=other)
         report = self.validate_dir(directory, code_root=other.root)
