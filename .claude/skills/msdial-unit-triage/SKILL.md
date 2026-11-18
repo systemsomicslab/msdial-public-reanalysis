@@ -54,8 +54,9 @@ manifest digest that carries it. Never describe it as decided, accepted or confi
 - `digest.md`: **read it first.** It is a view of the other inputs, built by code: the units and their declared
   settings, one table of every row (row index per unit, varying Catalog attributes, mwTab factors that differ from the
   Catalog, which analysis's Samples line names it, name tokens, and the member it resolves to), the mwTab method lines
-  per analysis, the listing by folder with `[row]`, `[twin:Tn]` and `[nonraw]` marks, the byte-identical groups, and
-  what does not pair. It states facts only, never a grouping.
+  per analysis, the listing by folder with `[row]`, `[twin:Tn]`, `[small:<size>]` (far below its folder's median: a
+  failed or cut injection), `[archive]` (an archive inside the archive, unopened) and `[nonraw]` marks, the
+  byte-identical groups, and what does not pair. It states facts only, never a grouping.
 - The raw inputs: `<unit_id>/handoff.json` and `samples.json`, `<analysis id>.mwtab.txt`, `*.members.tsv`. Read them
   where the digest cuts a value (`[cut; <file> line N]`) or leaves something unclear. **Where the digest and a raw
   input disagree, the raw input wins**; say so in the unit's `notes`.
@@ -70,7 +71,8 @@ manifest digest that carries it. Never describe it as decided, accepted or confi
 2. **The archive listing** (`archive_listing`): paths, folder layout, sizes, CRC32. CRC32 and size are the only
    pre-download evidence of byte-identical content.
 3. **Names** (`basis: inferred`; `folder_token`, `filename_token`): HILIC, C18, RP, RPLC; pos, neg; DDA, DIA, DIA1,
-   DIA2, SCAN01..06, tDDA, HERMES, MS1; batch or date prefixes.
+   DIA2, SCAN01..06, tDDA, HERMES, MS1; PRM, SRM, MRM, SIM, tMS2 (a targeted method); batch or date prefixes. A token
+   starts a word: `Media` carries no DIA.
 4. **Raw headers** (`raw_header`) exist only after preflight (`phase: post_preflight`).
 
 Sizes, timestamps and injection-number parity support a reading the names or declarations already give; they are
@@ -105,18 +107,23 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
    blanks a unit keeps (only when folder and name tie them to exactly one unit, or `keep: [units]` with
    `shared_reason` when the study really shares one), and exclusions: `archive_metadata`, `not_raw_data`,
    `alternative_format_copy` (an mzML copy beside vendor files), `requires_conversion` (mzXML, mzData),
-   `duplicate_content` (a CRC32-and-size twin).
+   `duplicate_content` (a CRC32-and-size twin). A member is in the archive: `not_in_archive` is a row's reason only.
+   An `[archive]` member may hold files no row resolves to; a row excluded as `not_in_archive` then waits for a person.
 5. **Dispositions.** `keep: <unit>` (with `child` when the unit has children), or `exclude: <reason>` with a `detail`.
    A group one unit keeps appears in every other unit as `belongs_to_other_unit` by itself. A unit's own `exclude`
    list leaves a group out of that unit for its own reason (`needs_person`, `out_of_scope_ms1_only`,
-   `polarity_switching`, ...).
+   `polarity_switching`, ...). These reasons are checked on members as on rows: `needs_person` only in a unit that is
+   not `ready` and asks, `out_of_scope_ms1_only` only with an `ms1_only` flag, `polarity_switching` only with its flag.
+   A group's own `exclude` applies in every unit, so give `needs_person` in the `exclude` list of the unit that asks.
 6. **File fields** of a kept group: `role`, `ion_mode`, `chromatography` (HILIC, RP, normal_phase, other, unknown),
    `acquisition_mode` (DDA, DIA, SWATH, AIF, MS1, unknown), `basis`; and at least one `evidence` item `{source, field,
    value}`. A value may use placeholders the expander fills per item, so evidence stays true per row:
    `{attribute:<name>}`, `{sample_id}`, `{raw_file}`, `{member_path}`, `{folder}`, `{token:polarity}`,
    `{token:chromatography}`, `{token:acquisition}`, `{mwtab_samples:<analysis id>}`.
 7. **Exceptions** for single items: name drift (row `X_Lip_Pos` whose member is `X__LipPos.mzML`: `row`,
-   `member_path`, the `group` it joins), or an outlier a group must not sweep in.
+   `member_path`, the `group` it joins), or an outlier a group must not sweep in. An exception is one row of a unit's
+   table: by `sample_id` or `raw_file` it applies in every unit whose table holds that row; by `index` (indices are
+   per unit) it names exactly one `unit`. Every match and target names at least one predicate.
 8. **Units**: `status`, `confidence`, `rationale`, `unit_technical`; `children` for a unit of both polarities;
    `flags` and `needs_person` naming the `groups` they concern; `shared_with` for a deliberately shared file; `notes`.
    A flag raised the same way on several units is written once in `shared_flags`.
@@ -130,8 +137,14 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
    involved, set each to `needs_person`, and say what would settle it (the mzML `sourceFile`, the elution order after
    preflight). Example of the failure: two arm-named folders held byte-identical files; the folder pointed one way,
    the headers the other, and keeping one folder's copy by its name put the other arm's data in the wrong unit.
-   Copies found **only among excluded members** (for example an mzXML copy and its twin, both excluded) hold nothing:
-   flag `duplicate_copies_excluded` (informational), never `shared_content`.
+   A unit that cannot tell which arm a copy is holds its own copy for a person (`needs_person` in its `exclude` list)
+   and asks; such held copies are shared content too. The flag names the `groups` it is about.
+   Copies **excluded for good** hold nothing: copies only among excluded members (for example an mzXML copy and its
+   twin, both excluded), or one kept file whose twin no unit keeps and which lies in no other arm's place (a backup
+   folder, a second export: not in a folder where another unit keeps or holds files, and not under another arm's
+   polarity or chromatography tokens). Exclude such a copy as `duplicate_content` and flag
+   `duplicate_copies_excluded` (informational), never `shared_content`. A twin in another arm's place stays
+   `shared_content`.
 2. **Abstain rather than guess.** When names carry no polarity or chromatography signal (rows such as `Sample_1_1`
    .. `Sample_1_6` with nothing else to go on), set the unit `abstained`: one row group excluded as
    `no_signal_abstained`, and a `no_signal` question saying which header evidence will settle it. A hypothesis such as
@@ -145,7 +158,10 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
    **Inclusion- or exclusion-list DDA is untargeted DDA and in scope** (AcquireX, inclusion-list-prioritised MS2,
    background exclusion lists, tDDA, HERMES): set `acquisition_mode` `DDA` and add the informational flag
    `targeted_dda` (`suspected` or `confirmed`, naming its groups) so reports can note the MS2-selection bias. Never
-   ask a question about it. A method with no MS1 survey (SRM/MRM, SIM, PRM only) stays `out_of_scope`.
+   ask a question about it. A kept file whose name carries a tDDA, HERMES or targeted ddMS2 token needs that flag.
+   A method with no MS1 survey (SRM/MRM, SIM, PRM, tMS2 only) stays `out_of_scope`, and a kept file named so is
+   refused. A kept file's acquisition token (MS1, DDA, DIA, SWATH, AIF) must agree with its `acquisition_mode` unless
+   `name_token_disputed` is flagged; a group of untokened files that sweeps in one tokened file is refused.
    Use `certainty: suspected` until headers confirm.
 4. **A folder and a header that disagree go to a person** (`folder_header_disagreement`). Neither wins silently. The
    same holds for a name token against a declaration (`name_token_disputed`) and for files that contradict the unit's
@@ -175,9 +191,10 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
 
 ## What is checked
 
-The expander refuses a spec that leaves a row or a raw-like member uncovered or covered twice, names a group, unit or
-child that does not exist, keeps a row whose file resolves to no single member, leaves a placeholder empty, keeps a
-heterogeneous group without a reason, or flags `shared_content` where no unit keeps a twin. The validator then checks
+The expander refuses a spec that leaves a row or a raw-like member uncovered or covered twice, matches with an empty
+predicate, names a group, unit or child that does not exist, has an exception that is not one item, keeps a row whose
+file resolves to no single member, leaves a placeholder empty, keeps a heterogeneous group without a reason, or flags
+`shared_content` about files no unit keeps or holds for a person. The validator then checks
 every payload as it checks any: coverage against the handoff, files in two units, byte-identical twins, exclusion
 reasons against the listing and the unit's own flags, polarity and chromatography against tokens and declarations,
 acquisition flags, the Class boundary, and status against open questions and answers. It also re-runs the expansion

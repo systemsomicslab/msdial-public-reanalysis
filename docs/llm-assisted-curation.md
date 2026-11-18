@@ -81,7 +81,9 @@ payloads:
   mwTab factors and sample data that differ from the Catalog, which analysis's Samples line names the row, the name
   tokens read with the validator's patterns, and the member the row resolves to, as the validator resolves it); per
   analysis the mwTab CH:, MS:, SP:SAMPLEPREP_SUMMARY and AN:ANALYSIS_TYPE lines, long values cut with their line
-  number; the listing by folder with `[row]`, `[twin:Tn]` and `[nonraw]` marks; the byte-identical groups (the
+  number; the listing by folder with `[row]`, `[twin:Tn]`, `[small:<size>]` (a raw-like member under a tenth of its
+  folder's median raw-like size), `[archive]` (an archive inside the archive, unopened) and `[nonraw]` marks; the
+  byte-identical groups (the
   validator's T-DUP code path), pairs between two folders summarised; and what does not pair. The raw inputs stay
   readable and win where they disagree.
 - **The spec** (`schemas/msdial-unit-triage-spec.v1.json`, `<accession>.spec.json`, a revision
@@ -102,35 +104,55 @@ payloads:
   appears in every other unit as `belongs_to_other_unit`, detail "Kept by A (group G01).", rationale "Belongs to A:
   <the group's rationale>". Each item carries `rule_id` (its group or exception), and each payload `derivation`
   (`spec`, `spec_sha256`, `expander_version`). The expander refuses a spec, and the wrapper the whole session, on any
-  finding: `X-SCHEMA`, `X-UNITS`, `X-UNKNOWN-REF`, a row or raw-like member no group covers or two groups cover
-  (`X-UNCOVERED-ROW`, `X-OVERLAP-ROW`, `X-UNCOVERED-MEMBER`, `X-OVERLAP-MEMBER`), `X-EMPTY-GROUP`, a kept row that
-  resolves to no single member (`X-UNRESOLVED`, `X-AMBIGUOUS`), `X-PLACEHOLDER`, a kept group whose items carry
-  differing name tokens, extensions or top folders without a stated reason (`X-HETERO`), `shared_content` where no
-  unit keeps a twin (`X-DUP-NOKEPT`), `X-CHILD`, a revision that changes a unit it does not name (`X-SCOPE`), and an
-  expanded payload that breaks the v2 schema (`X-PAYLOAD-SCHEMA`, an expander bug).
+  finding: `X-SCHEMA` (an empty match, row target or override is one: there is no catch-all), `X-UNITS`,
+  `X-UNKNOWN-REF`, an exception that is not one item (`X-EXCEPTION`: a row target by `index`, which is per unit,
+  without exactly one `unit`, or one that covers two rows of a unit's table), a row or raw-like member no group covers
+  or two groups cover (`X-UNCOVERED-ROW`, `X-OVERLAP-ROW`, `X-UNCOVERED-MEMBER`, `X-OVERLAP-MEMBER`), `X-EMPTY-GROUP`,
+  a kept row that resolves to no single member (`X-UNRESOLVED`, `X-AMBIGUOUS`), `X-PLACEHOLDER`, a kept group or
+  exception whose items carry differing name tokens, extensions or top folders without a stated reason (`X-HETERO`;
+  for acquisition a name without a token differs from one with, so a group of untokened DDA files does not sweep in a
+  `QC_MS1` or a `_tDDA` file), a `shared_content` flag about files no unit keeps or holds for a person
+  (`X-DUP-NOKEPT`), `X-CHILD`, a revision that changes a unit it does not name (`X-SCOPE`), and an expanded payload
+  that breaks the v2 schema (`X-PAYLOAD-SCHEMA`, an expander bug). An exclusion reason keeps its guards: a member
+  excluded as `needs_person`, `out_of_scope_ms1_only` or `polarity_switching` carries that reason into the payload,
+  where the validator checks it as on a row; `not_in_archive` is never a member's reason.
 
 The payload schema is unchanged for every consumer: Interactive 0.5.69 (`curated_selection`) and
 `scripts/campaign/curated.py` check only the schema id, and `selection_canonical` reads named fields, so a payload's
 `selection_sha256` is computed as before. The v2 amendments of PR #61 (unreleased until it merges) are the optional
-`rule_id` and `derivation`, the removal of `scope_targeted_dda`, and the informational flag
-`duplicate_copies_excluded`. Hand-written v2 payloads (skill 1.1.0) stay readable where they still meet the schema;
+`rule_id` and `derivation`, the removal of `scope_targeted_dda`, the informational flag
+`duplicate_copies_excluded`, and the member exclusion reasons `needs_person`, `out_of_scope_ms1_only` and
+`polarity_switching` (additions only). Hand-written v2 payloads (skill 1.1.0) stay readable where they still meet the schema;
 the pilot payloads of 2026-11-18 that ask `scope_targeted_dda` no longer do, and their accessions are triaged again.
 A spec file is never read as a payload (`validate-triage.py`, `verify-decision-log.py`, the wrapper).
 
 **In scope: inclusion- and exclusion-list DDA (decision of 2026-11-18).** AcquireX, inclusion-list-prioritised MS2,
 background exclusion lists, tDDA and HERMES are untargeted DDA: `acquisition_mode` `DDA` with the informational flag
 `targeted_dda`, which lets a report name the MS2-selection bias and never holds a unit. `targeted_DDA` stays readable
-(deprecated) and counts as DDA in the mixing test; kept `targeted_DDA` without the flag stays an error. A method with
-no MS1 survey (SRM/MRM, SIM, PRM only) stays out of scope. The flags that block `ready` until a person answers are
+(deprecated) and counts as DDA in the mixing test; kept `targeted_DDA` without the flag stays an error, and so does a
+kept file whose name carries an inclusion-list token (tDDA, HERMES, targeted ddMS2) in a unit without the flag
+(T-ACQ). `--emit-selection` lists each unit's informational flags as `report_flags`, so a report names the bias. A
+method with no MS1 survey (SRM/MRM, SIM, PRM, tMS2 only) stays out of scope: a kept file named so is refused (T-TOKEN),
+as is a kept file whose MS1, DDA, DIA, SWATH or AIF token is not its `acquisition_mode` (DIA, SWATH and AIF count as
+one family) without `name_token_disputed`. A token starts a word (after a non-letter, or in capitals after a
+lower-case letter, as in `posDDA`), so `Media` or `Claudia` carry no DIA. The flags that block `ready` until a person answers are
 `shared_content`, the folder and header disagreement flag, `polarity_switching`, `ms1_only`, `mixed_acquisition`,
 `declared_technical_disputed` and `name_token_disputed`; `targeted_dda`, `duplicate_copies_excluded`,
 `catalog_defect`, `target_omics_doubt` and `segmented_acquisition` inform only.
 
 **Shared content is for kept copies (decision of 2026-11-18).** Let K be the units that keep a member of a
-byte-identical group. K empty (copies only among excluded members, such as an mzXML copy and its twin): never
-blocking; the flag is `duplicate_copies_excluded`, and `shared_content` there is an error (T-DUP, X-DUP-NOKEPT).
-K of two or more: blocking. K of one (one unit keeps a copy and its twins are excluded) stays blocking as well: it is
-the shape of the failure where a folder name chose one arm's copy and excluded the other arm's identical file.
+byte-identical group. A copy a unit holds for a person (excluded as `needs_person`) counts as kept here: two arms
+that each hold their copy and ask are shared content. K empty (copies only among files excluded for good, such as an
+mzXML copy and its twin): never blocking; the flag is `duplicate_copies_excluded`, and `shared_content` there is an
+error (T-DUP, X-DUP-NOKEPT). Each `shared_content` flag is judged on the files it is about: the groups it names, else
+those the unit's `shared_content` questions name, else the unit's own kept, held and duplicate_content rows, never
+every file an expanded payload lists. K of two or more: blocking. K of one (one unit keeps a copy, its twins are
+excluded) blocks only when a twin is in another arm's place, the shape of the failure where a folder name chose one
+arm's copy and excluded the other arm's identical file: the twin lies in a folder where another unit keeps or holds
+files, or its name's polarity or chromatography token is not the kept copy's. Otherwise (a backup folder, a second
+export of the same arm) the copy is excluded for good: `duplicate_content`, with the informational flag
+`duplicate_copies_excluded`, which T-DUP then requires. This reading of D2 is the reviewer's refinement of
+2026-11-18 and is recorded for the person's confirmation.
 
 v2 is v1 plus these changes:
 
@@ -293,7 +315,15 @@ through git or `--code-root`; a module that cannot be read or loaded holds), re-
 (each sha256-checked; a handoff released as a projection keeps its original sha256) with `derivation.context`, whose
 `decided_at`, `model` and `skill_version` must be the record's own, and refuses any X-* finding and any byte of
 difference from the payload. It rebuilds `inputs/digest.md` with the digest script at its commit from the same inputs
-and refuses a difference. A payload carrying `derivation` whose record carries none is an error. Every other check runs
+and refuses a difference. Each `code_file` (the expander, the digest script) binds, besides its own sha256, a `tree`:
+the sha256 of every file it reads beside itself (`validate-triage.py` and the triage schemas, `SPEC_CODE_TREE`). Every
+record's hashes are checked against the bytes read, through git or `--code-root`, on every record (a loaded module is
+cached by the bytes, never by the commit alone); a hash that is not the file's is an error, code that cannot be read
+or loaded a hold. A payload carrying `derivation` whose record carries none is an error, and so is a v2 payload whose
+record binds no derivation when that record names skill 1.2.0 or later (whose agent writes a spec, never a payload),
+when the directory holds a spec, or when another record of the accession binds one. A record whose tool calls show
+the session writing a payload file of its unit is an error. For a revision spec (`.spec.r<N>.json`) X-SCOPE is
+re-checked: every unit no record of that spec names must expand to its payload as it stood before the revision. Every other check runs
 on the expanded payload as on any other, so the guarantees do not weaken; T-SPEC adds that the payload is the
 deterministic image of a spec the released transcript shows. `--payload-only` skips the record, transcript, context
 and revision checks (the in-session check uses it).
