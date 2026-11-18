@@ -5,7 +5,7 @@ The eval accessions (tests/triage_eval.ACCESSIONS), their analysis ids (the fixt
 folder names of their archives (archive-members.tsv) may appear only in test data (tests/fixtures/, triage_eval.py) and
 in the docs, never in the skill, the v2 prompt templates, the spec schema, the digest script or the expander. The rules
 stay general; the answers live in tests/fixtures/triage-eval/ and tests/fixtures/triage-eval-specs/. Also checked: one
-skill version, 1.2.0, wherever the code and the tests name the current one.
+skill version, 1.3.0, wherever the code and the tests name the current one.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ sys.path.insert(0, str(TESTS))
 import decision_records as records  # noqa: E402
 import triage_eval as te  # noqa: E402
 
-SKILL_VERSION = "1.2.0"
+SKILL_VERSION = "1.3.0"
 SEEN_BY_THE_AGENT = [
     ".claude/skills/msdial-unit-triage/SKILL.md",
     "prompts/unit-triage-task.v2.md",

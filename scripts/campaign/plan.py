@@ -88,7 +88,11 @@ and archive listing the agent read (<accession>\\inputs\\), and the unit is furt
 - triage_member_unresolved: a kept row names no archive member, which Interactive needs to declare the input;
 - triage_record_mismatch: the triage's decision record names another payload, or an archive listing it binds is
   missing or holds other bytes (Interactive would refuse it, curated_selection_record_mismatch);
-- class_contrast_lost_after_triage: the approved Class, cut to the kept rows, loses a side of its contrast.
+- class_contrast_lost_after_triage: the approved Class, cut to the kept rows, loses a side of its contrast;
+- triage_unit_excluded: the triage left the unit out by the policy of 2026-11-18 (status excluded), with its own reason
+  as the detail: no_product_ion_files (no file with product-ion spectra once its MS1-only files are left out),
+  no_files (no raw file of the unit in the deposit) or shared_content_unassigned (its arm's copies are byte-identical
+  to another arm's, until a post-download reassignment exists).
 
 A planned unit carries curated_selection (the triage path and sha256, its decision record's and the review log head's
 sha256, the Catalog handoff and rows it was made from, the validator's sha256 and verdict, the rows kept and dropped by

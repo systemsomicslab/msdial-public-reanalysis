@@ -150,19 +150,29 @@ BLOCKING_FLAGS = {
     "polarity_switching",
     "ms1_only",
     "mixed_acquisition",
-    "declared_technical_disputed",
     "name_token_disputed",
 }
-# Flags that only inform a report and never hold a unit (decision of 2026-11-18: inclusion- or exclusion-list DDA is
+# Flags that only inform a report and never hold a unit (decisions of 2026-11-18: inclusion- or exclusion-list DDA is
 # untargeted DDA and in scope, flagged targeted_dda so a report can name the MS2-selection bias; byte-identical copies
-# found only among excluded members are duplicate_copies_excluded, never shared_content).
+# found only among excluded members are duplicate_copies_excluded, never shared_content; and the triage policy P1 to
+# P5 of docs/llm-assisted-curation.md section 2.2: MS1-only files left out are ms1_only_excluded, an MS1-only reading
+# too weak to leave a file out is ms1_only_suspected, m/z-segmented DDA is segmented_acquisition, and file evidence
+# that contradicts the Catalog's declared technical fields wins and is recorded as declared_technical_disputed).
 INFORMATIONAL_FLAGS = {
     "targeted_dda",
     "duplicate_copies_excluded",
     "catalog_defect",
     "target_omics_doubt",
     "segmented_acquisition",
+    "declared_technical_disputed",
+    "ms1_only_excluded",
+    "ms1_only_suspected",
 }
+# Why a unit is excluded by the triage policy of 2026-11-18 (status excluded): no file with product-ion spectra is left
+# once MS1-only files are left out (P1), the deposit holds no raw file of the unit, or the unit's arm's copies are
+# byte-identical to another arm's and no post-download reassignment exists yet (P5). Such a unit asks nothing and holds
+# nothing: the plan leaves it out (curated.TRIAGE_UNIT_EXCLUDED) with this reason.
+UNIT_EXCLUSION_REASONS = ("no_product_ion_files", "no_files", "shared_content_unassigned")
 # The question code of a person's answer that lets a ready unit rest on a kept file inferred at low confidence
 # (T-CONFIDENCE): the person looked at it (scripts/record-person-answer.py, section 2.2).
 LOW_CONFIDENCE_CODE = "inferred_low_confidence"
@@ -2022,6 +2032,26 @@ def _check_unit(
             report.add("error", "T-EXCL", unit, f"{what} is excluded as polarity_switching without a polarity_switching flag")
         elif reason == "out_of_scope_ms1_only" and "ms1_only" not in flags:
             report.add("error", "T-EXCL", unit, f"{what} is excluded as out_of_scope_ms1_only without an ms1_only flag")
+        elif reason == "ms1_only_no_msms":
+            # P1 (2026-11-18): an MS1-only file carries no product-ion spectra and is left out, on evidence that settles
+            # it (a declaration, or a name that contrasts with sibling MS/MS runs); a weaker reading keeps the file.
+            name = item.get("member_path") or item.get("raw_file") or ""
+            said = sorted({TOKEN_MODES[x] for x in token_acquisition(name) if x in TOKEN_MODES} - {"MS1"})
+            if "ms1_only_excluded" not in flags:
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as ms1_only_no_msms without an ms1_only_excluded "
+                           "flag (informational: it records the evidence and its certainty)")
+            elif item.get("confidence") == "low":
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as ms1_only_no_msms at low confidence; an MS1-only "
+                           "reading the evidence does not settle keeps the file, with an ms1_only_suspected flag, for the "
+                           "header preflight to decide")
+            elif said and "name_token_disputed" not in flags:
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as ms1_only_no_msms, but its name says "
+                           f"{'+'.join(said)} (flag name_token_disputed and ask a person if that is meant)")
+        elif reason == "shared_content_unassigned" and not (
+                status == "excluded" and (t.get("exclusion") or {}).get("reason") == "shared_content_unassigned"):
+            report.add("error", "T-EXCL", unit, f"{what} is excluded as shared_content_unassigned, but the unit is not "
+                       "excluded as shared_content_unassigned (P5: both units whose arms hold byte-identical copies are "
+                       "excluded until a post-download reassignment exists)")
         elif reason == "requires_conversion":
             runnable = _runnable_form(item, resolver)
             if runnable:
@@ -2042,6 +2072,42 @@ def _check_unit(
             report.add("error", "T-UNIQ", unit, f"one acquisition is kept twice, in {len(paths)} formats: {', '.join(shown_paths)}; keep one and exclude the others as alternative_format_copy")
 
     # T-STATUS
+    exclusion = t.get("exclusion")
+    if status == "excluded":
+        # The triage policy of 2026-11-18: a unit left out by a rule a person already accepted asks nothing, holds
+        # nothing for a person and keeps nothing; the plan leaves it out with its reason.
+        reason = (exclusion or {}).get("reason")
+        if reason not in UNIT_EXCLUSION_REASONS:
+            report.add("error", "T-STATUS", unit, f"an excluded unit names its exclusion reason ({', '.join(UNIT_EXCLUSION_REASONS)})")
+        if kept:
+            report.add("error", "T-STATUS", unit, f"an excluded unit keeps no file ({len(kept)} kept)")
+        if t["needs_person"]:
+            report.add("error", "T-STATUS", unit, f"an excluded unit asks nothing ({len(t['needs_person'])} question(s)); "
+                       "a unit that asks is needs_person")
+        if t.get("children"):
+            report.add("error", "T-STATUS", unit, "an excluded unit has no children")
+        dropped = [*t["excluded_rows"], *t.get("excluded_members", [])]
+        held = [item for item in dropped if item["reason"] == "needs_person"]
+        if held:
+            report.add("error", "T-STATUS", unit, f"an excluded unit holds nothing for a person ({len(held)} needs_person exclusion(s))")
+        if reason == "no_product_ion_files" and not any(item["reason"] == "ms1_only_no_msms" for item in dropped):
+            report.add("error", "T-STATUS", unit, "the unit is excluded as no_product_ion_files, but it leaves no file out "
+                       "as ms1_only_no_msms")
+        if reason == "no_files":
+            own = [item for item in t["excluded_rows"] if item["reason"] not in ("not_in_archive", "belongs_to_other_unit")]
+            if own:
+                report.add("error", "T-STATUS", unit, f"the unit is excluded as no_files, but row {own[0]['row_index']} "
+                           f"({own[0]['raw_file']}) is left out as {own[0]['reason']}, not as a file the archive lacks "
+                           "or another unit's")
+        if reason == "shared_content_unassigned":
+            if "shared_content" not in flags:
+                report.add("error", "T-STATUS", unit, "the unit is excluded as shared_content_unassigned without a "
+                           "shared_content flag naming the byte-identical copies")
+            if not any(item["reason"] == "shared_content_unassigned" for item in dropped):
+                report.add("error", "T-STATUS", unit, "the unit is excluded as shared_content_unassigned, but it leaves "
+                           "no file out as shared_content_unassigned")
+    elif exclusion is not None:
+        report.add("error", "T-STATUS", unit, f"status {status} with an exclusion; only an excluded unit names one")
     if status == "needs_person" and not t["needs_person"]:
         report.add("error", "T-STATUS", unit, "status needs_person with no question in needs_person")
     if status == "ready" and t["needs_person"]:
@@ -2072,7 +2138,7 @@ def _check_unit(
                                f"{REVIEW_LOG} with question_code {LOW_CONFIDENCE_CODE})")
         if unit_ion == "both" and not t.get("children"):
             report.add("error", "T-POL", unit, "a ready unit with both polarities needs children, one per polarity and acquisition")
-    else:
+    elif status != "excluded":
         questions = "; ".join(q["code"] for q in t["needs_person"])
         report.add("hold", "T-QUEUE", unit, f"status {status}" + (f": {questions}" if questions else ""))
 
@@ -2105,6 +2171,7 @@ def _check_unit(
 
     # Per file: polarity, chromatography, acquisition, format, evidence, tokens, headers.
     acqs: set[str] = set()
+    acqs_by_run: dict[str, set[str]] = defaultdict(set)  # per child ("" for a unit without children)
     inclusion_list: list[str] = []
     for k in kept:
         item = k.item
@@ -2134,6 +2201,7 @@ def _check_unit(
         if chrom == "unknown" and status == "ready":
             report.add("error", "T-CHROM", unit, f"{label} has unknown chromatography in a ready unit")
         acqs.add(item["acquisition_mode"])
+        acqs_by_run[child["child_key"] if child else ""].add(item["acquisition_mode"])
 
         sources = {e["source"] for e in item["evidence"]}
         if item["basis"] == "declared" and not sources & DECLARED_SOURCES:
@@ -2189,10 +2257,14 @@ def _check_unit(
         report.add("error", "T-ACQ", unit, f"{len(inclusion_list)} kept file(s) carry an inclusion-list DDA name token (tDDA, "
                    f"HERMES, targeted ddMS2; first: {inclusion_list[0]}) without a targeted_dda flag; inclusion-list DDA is "
                    "in scope, and the flag (informational, suspected is enough) is how a report names the MS2-selection bias")
-    # Inclusion- or exclusion-list DDA is DDA (decision of 2026-11-18): targeted_DDA beside DDA is not a mix.
-    modes = {"DDA" if a == "targeted_DDA" else a for a in acqs} - {"unknown"}
-    if len(modes) > 1 and "mixed_acquisition" not in flags:
-        report.add("error", "T-ACQ", unit, f"kept files mix acquisition modes {sorted(modes)} without a mixed_acquisition flag")
+    # Inclusion- or exclusion-list DDA is DDA (decision of 2026-11-18): targeted_DDA beside DDA is not a mix. Modes are
+    # judged per run: children that each hold one acquisition mode split a unit's mixed acquisition (P2), not a mix.
+    for run in sorted(acqs_by_run):
+        modes = {"DDA" if a == "targeted_DDA" else a for a in acqs_by_run[run]} - {"unknown"}
+        if len(modes) > 1 and "mixed_acquisition" not in flags:
+            where = f"child {run}'s files" if run else "kept files"
+            report.add("error", "T-ACQ", unit, f"{where} mix acquisition modes {sorted(modes)} without a mixed_acquisition "
+                       "flag; split them into children, one per acquisition mode")
     if "unknown" in acqs and status == "ready" and unit_acq == "unknown":
         report.add("error", "T-ACQ", unit, "a ready unit with unknown acquisition")
 
@@ -2246,7 +2318,10 @@ def content_twins(listed: Iterable[ListedMember]) -> dict[str, set[str]]:
 
 # Exclusion reasons that hold a file for a person rather than leave it out for good: a shared_content flag about copies a
 # unit holds this way still waits for a person (decision of 2026-11-18, D2).
-HELD_REASONS = {"needs_person"}
+# Files a unit holds back without dropping them for good: for a person's answer (needs_person), or, in a unit excluded
+# because its arm's copies are byte-identical to another arm's, until a post-download reassignment exists
+# (shared_content_unassigned, P5). Both count as kept for the shared-content rule (D2).
+HELD_REASONS = {"needs_person", "shared_content_unassigned"}
 # Archive members that may hold raw data of their own, unopened: a row excluded as not_in_archive may be inside one.
 NESTED_ARCHIVE_EXTENSIONS = (".zip", ".7z", ".rar", ".tar", ".tgz", ".gz", ".bz2", ".xz")
 
@@ -2469,10 +2544,10 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
                     report.add("error", "T-EXCL", unit, f"{what} is excluded as not_in_archive, but the listing has {sorted(there)[0]}")
                 elif nested:
                     unopened += 1
-            elif item["reason"] == "duplicate_content":
+            elif item["reason"] in ("duplicate_content", "shared_content_unassigned"):
                 key = member_key(item["member_path"]) if item.get("member_path") else resolver.resolve(name)
                 if key is None or key not in twins:
-                    report.add("error", "T-EXCL", unit, f"{what} is excluded as duplicate_content, but the listing shows no byte-identical twin (CRC32 and size) for it")
+                    report.add("error", "T-EXCL", unit, f"{what} is excluded as {item['reason']}, but the listing shows no byte-identical twin (CRC32 and size) for it")
         if unopened:
             report.add("hold", "T-EXCL", unit, f"{unopened} row(s) are excluded as not_in_archive, but the listing holds "
                        f"{len(nested)} unopened archive(s) ({', '.join(nested[:3])}); their files may be inside one, so a "
@@ -2541,7 +2616,7 @@ def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str,
         if path.exists():
             t = json.loads(path.read_text(encoding="utf-8"))
             for item in [*t.get("excluded_rows", []), *t.get("excluded_members", [])]:
-                if item.get("reason") == "needs_person" and item.get("member_path"):
+                if item.get("reason") in HELD_REASONS and item.get("member_path"):
                     held.add(member_key(item["member_path"]))
             for row in t.get("rows", []):
                 if row.get("member_path"):

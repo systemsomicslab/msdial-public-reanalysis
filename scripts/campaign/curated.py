@@ -66,8 +66,13 @@ TRIAGE_MEMBER_UNRESOLVED = "triage_member_unresolved"
 # leaves it out before a person approves it.
 TRIAGE_RECORD_MISMATCH = "triage_record_mismatch"
 CLASS_CONTRAST_LOST = "class_contrast_lost_after_triage"
+# The triage left the unit out by the policy of 2026-11-18 (status excluded: no file with product-ion spectra once its
+# MS1-only files are left out, no raw file in the deposit, or byte-identical copies under two arms' folders until a
+# post-download reassignment exists); the detail names the triage's own reason (UNIT_EXCLUSION_REASONS).
+TRIAGE_UNIT_EXCLUDED = "triage_unit_excluded"
+UNIT_EXCLUSION_REASONS = ("no_product_ion_files", "no_files", "shared_content_unassigned")
 EXCLUSION_REASONS = (TRIAGE_MISSING, TRIAGE_UNREADABLE, TRIAGE_NOT_PASS, TRIAGE_MEMBER_UNRESOLVED, TRIAGE_RECORD_MISMATCH,
-                     CLASS_CONTRAST_LOST)
+                     CLASS_CONTRAST_LOST, TRIAGE_UNIT_EXCLUDED)
 SELECTION_CANONICAL_FORM = "msdial-selection-canonical.v1"
 ANALYSIS_CSV_CANONICAL_FORM = "msdial-analysis-csv-canonical.v1"
 # The review log's kinds and the fields each carries (docs/llm-assisted-curation.md section 2.4, WS0 decision 8). The
@@ -976,6 +981,9 @@ def unit_entries(
     if validation.get("verdict") != "pass":
         said = "; ".join(finding_lines(validation.get("report"))) or str(validation.get("problem") or "")
         return [], TRIAGE_NOT_PASS, f"validate-triage.py says {validation.get('verdict')} for {accession_dir.name}" + (f": {said}" if said else "")
+    if triage.get("status") == "excluded":
+        exclusion = triage.get("exclusion") if isinstance(triage.get("exclusion"), Mapping) else {}
+        return [], TRIAGE_UNIT_EXCLUDED, f"{exclusion.get('reason')}: {exclusion.get('detail')}"
     unresolved = unresolved_rows(triage)
     if unresolved:
         return [], TRIAGE_MEMBER_UNRESOLVED, f"{len(unresolved)} kept row(s) name no archive member: {', '.join(unresolved[:5])}"

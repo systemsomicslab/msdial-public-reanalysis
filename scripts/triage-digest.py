@@ -22,7 +22,11 @@ What it holds (docs/llm-assisted-curation.md section 2.2):
      [nonraw];
   e) the byte-identical groups Tn (CRC32 and size, validate-triage.py's T-DUP code path), pairs between two folders
      summarised by folder pair;
-  f) rows that resolve to no member or to more than one, and raw-like members no row names.
+  f) rows that resolve to no member or to more than one, and raw-like members no row names;
+  g) (1.1.0) the words in raw-like names and in vendor acquisition method folders that name an MS level, as written
+     (MS-only words such as MS, MS1, FullScan, Prof, Profile; MS/MS words such as MSMS, MS2, ddMS2), counted with
+     examples, and each method folder (<name>.m inside a .d) with the number of vendor folders that hold it: the
+     contrast between MS-only and MS/MS runs of one study is evidence the triage policy of 2026-11-18 reads (P1).
 Deterministic: the same inputs give the same bytes on every machine. No absolute path, no inference, no proposed group.
 """
 
@@ -38,7 +42,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping
 
-DIGEST_VERSION = "1.0.0"
+DIGEST_VERSION = "1.1.0"
 CODE_ROOT = Path(__file__).resolve().parent.parent
 CUT = 600
 
@@ -166,6 +170,39 @@ def _size(n: int) -> str:
 def _ext(path: str) -> str:
     base = vt.basename(path)
     return ("." + base.rsplit(".", 1)[-1]) if "." in base else "(none)"
+
+
+# Words that name an MS level, as a name writes them (section g). A word starts after a non-letter or, in capitals, after
+# a lower-case letter (posMS, CSHnegMSMS), as validate-triage.py reads acquisition tokens. Bare MS is matched in
+# capitals only and not before another capital or digit (MSDIAL, MS2 and MSMS are not it); the others ignore case.
+_MS_LEVEL_WORDS = (
+    ("MS/MS", "MSMS", re.compile(r"(?i)(auto-?ms-?ms|ms-?ms)")),
+    ("MS/MS", "MS2", re.compile(r"(?i)((?:dd-?)?ms2)(?![0-9])")),
+    ("MS-only", "MSProfile", re.compile(r"(?i)(ms-?prof(?:ile)?)")),
+    ("MS-only", "Profile", re.compile(r"(?i)(prof(?:ile)?)(?![a-z])")),
+    ("MS-only", "MS1", re.compile(r"(?i)(ms1)(?![0-9])")),
+    ("MS-only", "FullScan", re.compile(r"(?i)(full-?scan)")),
+    ("MS-only", "MS", re.compile(r"(MS)(?![A-Z0-9])")),
+)
+_METHOD_FOLDER = re.compile(r"(?i)^(.*?\.d)/(?:[^/]+/)*?([^/]+\.m)/")
+
+
+def ms_level_words(name: str) -> list[tuple[str, str]]:
+    """(kind, word) for each MS-level word of a name, longest first, each span read once."""
+    taken: list[tuple[int, int]] = []
+    found: list[tuple[str, str]] = []
+    for kind, label, pattern in _MS_LEVEL_WORDS:
+        for match in pattern.finditer(name):
+            start, end = match.span(1)
+            if any(start < b and a < end for a, b in taken):
+                continue
+            before = name[start - 1] if start else ""
+            first = match.group(1)[0]
+            if before.isalpha() and not (before.islower() and first.isupper()):
+                continue
+            taken.append((start, end))
+            found.append((kind, label))
+    return found
 
 
 def _attributes(row: Mapping[str, Any]) -> dict[str, str]:
@@ -450,6 +487,39 @@ def build_digest_from_files(files: Mapping[str, bytes]) -> bytes:
             for tid, paths in others:
                 out.append(f"{tid}: " + " = ".join(paths))
             out += ["```", ""]
+
+    # g) MS-level words and vendor method folders
+    out += ["## MS-level words and acquisition method folders", ""]
+    names: dict[str, set[tuple[str, str]]] = {}
+    for key in sorted(resolver.members):
+        shown_name = vt.basename(display(key))
+        words = set(ms_level_words(vt.stem(shown_name)))
+        if words:
+            names[shown_name] = words
+    methods: dict[str, set[str]] = defaultdict(set)
+    for m in listed:
+        match = _METHOD_FOLDER.match(vt._norm_path(m.path))  # noqa: SLF001
+        if match:
+            methods[match.group(2)].add(match.group(1))
+    if not names and not methods:
+        out += ["No raw-like name and no method folder carries an MS-level word.", ""]
+    for kind in ("MS-only", "MS/MS"):
+        labels: dict[str, list[str]] = defaultdict(list)
+        for shown_name, words in sorted(names.items(), key=lambda kv: (kv[0].casefold(), kv[0])):
+            for word_kind, label in sorted(words):
+                if word_kind == kind:
+                    labels[label].append(shown_name)
+        if labels:
+            total = sum(1 for words in names.values() if any(k == kind for k, _ in words))
+            out.append(f"Raw-like names with an {kind} word ({total}): "
+                       + "; ".join(f"{label} {len(found)} (e.g. {', '.join(found[:3])})" for label, found in sorted(labels.items())) + ".")
+    for method in sorted(methods, key=lambda m: (m.casefold(), m)):
+        folders = sorted(methods[method], key=lambda f: (f.casefold(), f))
+        words = sorted({label for _, label in ms_level_words(method)})
+        out.append(f"Method folder {method}: in {len(folders)} vendor folder(s) (e.g. {vt.basename(folders[0])})"
+                   + (f"; words {', '.join(words)}" if words else "") + ".")
+    if names or methods:
+        out.append("")
 
     # f) what does not pair
     out += ["## Rows and members that do not pair", ""]

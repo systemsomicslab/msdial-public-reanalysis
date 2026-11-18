@@ -292,7 +292,7 @@ class ToolTests(V2Case):
     def test_the_skill_lists_exactly_its_allowed_tools(self) -> None:
         text = (ROOT / records.SKILL_PATH).read_text(encoding="utf-8")
         self.assertEqual(vt.skill_allowed_tools(text), ALLOWED_TOOLS)
-        self.assertEqual(vt.skill_version(text), "1.2.0")
+        self.assertEqual(vt.skill_version(text), "1.3.0")
         self.assertEqual(vt.skill_frontmatter(text)["name"], "msdial-unit-triage")
         for tool in ALLOWED_TOOLS:
             self.assertNotIn(tool.split("__")[-1], ("msdial_catalog_save_class_proposal", "msdial_catalog_reanalysis_handoff"))
@@ -787,7 +787,7 @@ class SpecDerivationTests(V2Case):
     def setUp(self) -> None:
         super().setUp()
         self.code = records.Code.from_root(self.tmp / "spec-code")
-        self.assertEqual(self.code.skill_version, "1.2.0")
+        self.assertEqual(self.code.skill_version, "1.3.0")
 
     def spec_dir(self, accession: str | None = None, code: records.Code | None = None) -> Path:
         self._n += 1
@@ -880,7 +880,7 @@ class SpecDerivationTests(V2Case):
     # Review of the token diet (2026-11-18).
     def test_a_payload_and_record_stripped_of_their_derivation_are_refused(self) -> None:
         # The record rewrite the one-byte test uses, with `derivation` dropped from both: the sibling records still bind
-        # the spec, the spec sits in the directory, and the record names skill 1.2.0, so it is refused.
+        # the spec, the spec sits in the directory, and the record names skill 1.3.0, so it is refused.
         directory = self.spec_dir()
         path = directory / "AN004454.json"
         doc = json.loads(path.read_text(encoding="utf-8"))
@@ -894,7 +894,7 @@ class SpecDerivationTests(V2Case):
         self.rewrite_record(directory, "AN004454", lambda r: (r.pop("derivation"), r.update(decision_id=sha(data)),
                                                               r["payload"].update(sha256=sha(data))))
         found = self.found(self.validate_dir(directory), "T-SPEC", "error", "AN004454")
-        self.assertTrue(any("binds no derivation" in m and "skill 1.2.0" in m and "binds a spec" in m for m in found), found)
+        self.assertTrue(any("binds no derivation" in m and "skill 1.3.0" in m and "binds a spec" in m for m in found), found)
 
     def test_a_skill_1_2_0_payload_needs_a_derivation_even_alone(self) -> None:
         code = records.Code.from_root(self.tmp / "current-code")

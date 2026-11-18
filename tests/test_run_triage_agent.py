@@ -43,6 +43,8 @@ rta = importlib.util.module_from_spec(_SPEC)
 sys.modules["run_triage_agent_under_test"] = rta
 _SPEC.loader.exec_module(rta)
 vt = rta.validator
+# The spec check server reports the expander's version (scripts/triage-spec-server.py SERVER_VERSION).
+EXPANDER_VERSION = rta.load_module(ROOT, rta.EXPANDER_PATH).EXPANDER_VERSION
 
 FAKE_CLAUDE = TESTS / "fake_claude.py"
 FAKE_MCP = TESTS / "fake_mcp_server.py"
@@ -282,7 +284,7 @@ class SessionTests(WrapperCase):
             self.assertEqual(derivation["expander"]["sha256"], sha(self.code.files[rta.EXPANDER_PATH]))
             self.assertEqual(derivation["digest"]["path"], "inputs/digest.md")
             self.assertEqual(derivation["context"], {"decided_at": record["finished_at"], "model": "fake-model-1",
-                                                     "agent": "claude-code", "skill_version": "1.2.0", "purpose": None})
+                                                     "agent": "claude-code", "skill_version": "1.3.0", "purpose": None})
             document = json.loads(payload.read_bytes())
             self.assertEqual((document["decided_at"], document["derivation"]["spec_sha256"]),
                              (record["finished_at"], sha(spec.read_bytes())))
@@ -299,7 +301,7 @@ class SessionTests(WrapperCase):
             context = record["agent"]["context"]
             self.assertEqual((context["configuration"], context["context_files"], context["memory"], context["hooks"]),
                              ("clean", [], "disabled", []))
-            self.assertEqual(context["mcp_servers"], [{"name": SPEC_SERVER, "version": "1.0.0"}])
+            self.assertEqual(context["mcp_servers"], [{"name": SPEC_SERVER, "version": EXPANDER_VERSION}])
             self.assertIn("env CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", context["harness_flags"])
             self.assertIn("--strict-mcp-config", context["harness_flags"])
             self.assertEqual(record["skill"]["repo_commit"], self.code.commit)
@@ -841,7 +843,7 @@ class PartTests(unittest.TestCase):
     def test_the_wrapper_reads_the_skills_allowed_tools(self) -> None:
         code = rta.CodeSnapshot("c" * 40, (ROOT / rta.SKILL_PATH).read_bytes(), b"")
         self.assertEqual(code.allowed_tools, ALLOWED)
-        self.assertEqual(code.skill_version, "1.2.0")
+        self.assertEqual(code.skill_version, "1.3.0")
 
 
 if __name__ == "__main__":

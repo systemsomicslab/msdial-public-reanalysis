@@ -144,8 +144,8 @@
    }
   },
   "reason": {
-   "description": "Why an item is left out. Rows have no not_raw_data, archive_metadata, alternative_format_copy or out_of_scope; such a row reason is written as other, with the detail kept. A member keeps its reason, needs_person, out_of_scope_ms1_only and polarity_switching included, so the validator checks it as on a row; not_in_archive is never a member's reason (X-SCHEMA).",
-   "enum": ["no_signal_abstained", "duplicate_content", "out_of_scope_ms1_only", "polarity_switching", "requires_conversion", "not_in_archive", "needs_person", "not_raw_data", "archive_metadata", "alternative_format_copy", "out_of_scope", "other"]
+   "description": "Why an item is left out. Rows have no not_raw_data, archive_metadata, alternative_format_copy, out_of_scope or no_sample_metadata; such a row reason is written as other, with the detail kept. A member keeps its reason, needs_person, out_of_scope_ms1_only, ms1_only_no_msms, shared_content_unassigned and polarity_switching included, so the validator checks it as on a row; not_in_archive is never a member's reason (X-SCHEMA). ms1_only_no_msms: an MS1-only file (no product-ion spectra), with the flag ms1_only_excluded. shared_content_unassigned: only in a unit excluded as shared_content_unassigned. no_sample_metadata: a raw member no Catalog row or mwTab Samples line names.",
+   "enum": ["no_signal_abstained", "duplicate_content", "out_of_scope_ms1_only", "ms1_only_no_msms", "polarity_switching", "requires_conversion", "not_in_archive", "needs_person", "shared_content_unassigned", "not_raw_data", "archive_metadata", "alternative_format_copy", "out_of_scope", "no_sample_metadata", "other"]
   },
   "disposition": {
    "description": "keep: the unit (with an optional child key, or one per unit) or several units, which then need shared_reason and get reciprocal shared_with; every other unit lists the group's items as belongs_to_other_unit. exclude: the reason and detail every unit writes.",
@@ -222,7 +222,17 @@
    "additionalProperties": false,
    "required": ["status", "confidence", "rationale", "unit_technical"],
    "properties": {
-    "status": {"enum": ["ready", "needs_person", "abstained", "out_of_scope"]},
+    "status": {"enum": ["ready", "needs_person", "abstained", "out_of_scope", "excluded"]},
+    "exclusion": {
+     "description": "Required exactly when status is excluded: the triage policy's reason for leaving the unit out with no question. no_product_ion_files (no file with product-ion spectra is left once MS1-only files are left out), no_files (the deposit holds no raw file of the unit), shared_content_unassigned (its arm's copies are byte-identical to another arm's; both units are excluded).",
+     "type": "object",
+     "additionalProperties": false,
+     "required": ["reason", "detail"],
+     "properties": {
+      "reason": {"enum": ["no_product_ion_files", "no_files", "shared_content_unassigned"]},
+      "detail": {"type": "string", "minLength": 1}
+     }
+    },
     "confidence": {"$ref": "#/$defs/confidence"},
     "rationale": {"$ref": "#/$defs/rationale"},
     "unit_technical": {
@@ -309,7 +319,7 @@
    "enum": ["scope_ms1_only", "shared_content", "no_signal", "folder_header_disagreement", "mixed_acquisition", "polarity_switching", "declared_technical_disputed", "name_token_disputed", "format_choice", "other"]
   },
   "flag_code": {
-   "enum": ["mixed_acquisition", "ms1_only", "polarity_switching", "folder_header_disagreement", "shared_content", "undocumented_method", "targeted_dda", "duplicate_copies_excluded", "segmented_acquisition", "declared_technical_disputed", "name_token_disputed", "catalog_defect", "target_omics_doubt", "other"]
+   "enum": ["mixed_acquisition", "ms1_only", "polarity_switching", "folder_header_disagreement", "shared_content", "undocumented_method", "targeted_dda", "duplicate_copies_excluded", "segmented_acquisition", "declared_technical_disputed", "name_token_disputed", "catalog_defect", "target_omics_doubt", "ms1_only_excluded", "ms1_only_suspected", "other"]
   },
   "confidence": {"enum": ["high", "medium", "low"]},
   "rationale": {"type": "string", "minLength": 1}
