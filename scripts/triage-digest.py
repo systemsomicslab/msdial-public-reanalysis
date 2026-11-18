@@ -24,7 +24,8 @@ What it holds (docs/llm-assisted-curation.md section 2.2):
      summarised by folder pair;
   f) rows that resolve to no member or to more than one, and raw-like members no row names;
   g) (1.1.0) the words in raw-like names and in vendor acquisition method folders that name an MS level, as written
-     (MS-only words such as MS, MS1, FullScan, Prof, Profile; MS/MS words such as MSMS, MS2, ddMS2), counted with
+     (MS-only words such as MS, MS1, FullScan, Prof, Profile; MS/MS words such as MSMS, MS2, ddMS2, MSe, HDMSe,
+     SONAR, MSn, IDA; validate-triage.py's table), counted with
      examples, and each method folder (<name>.m inside a .d) with the number of vendor folders that hold it: the
      contrast between MS-only and MS/MS runs of one study is evidence the triage policy of 2026-11-18 reads (P1).
 Deterministic: the same inputs give the same bytes on every machine. No absolute path, no inference, no proposed group.
@@ -172,37 +173,9 @@ def _ext(path: str) -> str:
     return ("." + base.rsplit(".", 1)[-1]) if "." in base else "(none)"
 
 
-# Words that name an MS level, as a name writes them (section g). A word starts after a non-letter or, in capitals, after
-# a lower-case letter (posMS, CSHnegMSMS), as validate-triage.py reads acquisition tokens. Bare MS is matched in
-# capitals only and not before another capital or digit (MSDIAL, MS2 and MSMS are not it); the others ignore case.
-_MS_LEVEL_WORDS = (
-    ("MS/MS", "MSMS", re.compile(r"(?i)(auto-?ms-?ms|ms-?ms)")),
-    ("MS/MS", "MS2", re.compile(r"(?i)((?:dd-?)?ms2)(?![0-9])")),
-    ("MS-only", "MSProfile", re.compile(r"(?i)(ms-?prof(?:ile)?)")),
-    ("MS-only", "Profile", re.compile(r"(?i)(prof(?:ile)?)(?![a-z])")),
-    ("MS-only", "MS1", re.compile(r"(?i)(ms1)(?![0-9])")),
-    ("MS-only", "FullScan", re.compile(r"(?i)(full-?scan)")),
-    ("MS-only", "MS", re.compile(r"(MS)(?![A-Z0-9])")),
-)
+# Words that name an MS level (section g): validate-triage.py holds the table, which its P1 guard reads too.
+ms_level_words = vt.ms_level_words
 _METHOD_FOLDER = re.compile(r"(?i)^(.*?\.d)/(?:[^/]+/)*?([^/]+\.m)/")
-
-
-def ms_level_words(name: str) -> list[tuple[str, str]]:
-    """(kind, word) for each MS-level word of a name, longest first, each span read once."""
-    taken: list[tuple[int, int]] = []
-    found: list[tuple[str, str]] = []
-    for kind, label, pattern in _MS_LEVEL_WORDS:
-        for match in pattern.finditer(name):
-            start, end = match.span(1)
-            if any(start < b and a < end for a, b in taken):
-                continue
-            before = name[start - 1] if start else ""
-            first = match.group(1)[0]
-            if before.isalpha() and not (before.islower() and first.isupper()):
-                continue
-            taken.append((start, end))
-            found.append((kind, label))
-    return found
 
 
 def _attributes(row: Mapping[str, Any]) -> dict[str, str]:

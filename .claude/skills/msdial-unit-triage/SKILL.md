@@ -120,9 +120,10 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
    A group one unit keeps appears in every other unit as `belongs_to_other_unit` by itself. A unit's own `exclude`
    list leaves a group out of that unit for its own reason (`needs_person`, `ms1_only_no_msms`,
    `shared_content_unassigned`, `polarity_switching`, ...). These reasons are checked on members as on rows:
-   `needs_person` only in a unit that is not `ready` and asks, `ms1_only_no_msms` only with an `ms1_only_excluded`
-   flag and never at low confidence, `shared_content_unassigned` only in a unit excluded for it, `polarity_switching`
-   only with its flag.
+   `needs_person` only in a unit that is not `ready` and asks, `ms1_only_no_msms` only with a `confirmed`
+   `ms1_only_excluded` flag, never at low confidence and never on a file whose own name says product-ion spectra,
+   `shared_content_unassigned` only in a unit excluded for it and only for a file with a twin in another arm's place,
+   `polarity_switching` only with its flag.
    A group's own `exclude` applies in every unit, so give `needs_person` in the `exclude` list of the unit that asks,
    and flag `ms1_only_excluded` on every unit (`shared_flags`) for a group excluded as `ms1_only_no_msms`.
 6. **File fields** of a kept group: `role`, `ion_mode`, `chromatography` (HILIC, RP, normal_phase, other, unknown),
@@ -166,14 +167,18 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
 3. **Acquisition, by the policy of 2026-11-18.** The campaign annotates every experimental MS/MS spectrum, so a file
    without product-ion spectra adds nothing to it. None of these is a question:
    - **MS1-only files are left out** (P1): exclude them as `ms1_only_no_msms` and flag `ms1_only_excluded`
-     (informational; its detail states the evidence and its certainty: `confirmed` for a declaration, `suspected` for
-     names). Evidence that counts: mwTab `MS_mode` or `MS:` lines (`MS_COMMENTS`, the method) declaring MS1 or full
+     (informational; its detail states the evidence, and its certainty is `confirmed`: the evidence that counts
+     settles it). Evidence that counts: mwTab `MS_mode` or `MS:` lines (`MS_COMMENTS`, the method) declaring MS1 or full
      scan for those runs; a name or method-folder word that contrasts with sibling MS/MS runs of the same study (`_MS_`
      against `_MSMS_`, `MSProfile` or `Prof` against `MSMS`; the digest counts them); declared method text. Profile-mode
      MS1 injections of pools are MS1-only files too. When the evidence is weak (a name alone, with no contrasting
      MS/MS sibling and no declaration), keep the file with its declared mode and flag `ms1_only_suspected`: the header
-     preflight decides. If no file with product-ion spectra is left once the MS1-only files are out, the unit is
-     `excluded` (`no_product_ion_files`). Keeping an MS1-only file (`acquisition_mode` `MS1`) needs the blocking
+     preflight decides. A file whose own name says product-ion spectra (an MS/MS word such as MSMS, AutoMSMS, MS2,
+     ddMS2, MSe, HDMSe, SONAR, MSn or IDA, or a DDA, DIA, SWATH or AIF token) is never left out as MS1-only; if the
+     evidence still reads MS1 only, flag `name_token_disputed` and ask. If no file with product-ion spectra is left
+     once the MS1-only files are out, the unit is `excluded` (`no_product_ion_files`): its own rows go only as
+     `ms1_only_no_msms`, `belongs_to_other_unit`, `not_in_archive` or `duplicate_content`, and a raw file of its arm
+     that names product-ion spectra but is dropped for another reason holds it for a person. Keeping an MS1-only file (`acquisition_mode` `MS1`) needs the blocking
      `ms1_only` flag and a person: do not.
    - **Mixed acquisition is split into children** (P2): one child per acquisition mode (DDA, DIA, SWATH, AIF) and
      polarity, and a child of its own for each separately acquired DIA folder or batch (different window schemes,
@@ -212,7 +217,11 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
 10. **A unit the deposit cannot serve is excluded, not asked.** A unit with no raw file in the archive (its rows name
     files the listing lacks, or only another unit's: a polarity never deposited) is `excluded` with
     `exclusion.reason` `no_files`; its rows stay `not_in_archive` or `belongs_to_other_unit`. When an unopened archive
-    inside the archive may hold them, the validator holds the unit for a person anyway.
+    inside the archive may hold them, or a raw file left out (`no_sample_metadata`, `other`, ...) may be one of its
+    files under a name the Catalog writes differently (case, a polarity infix), the validator holds the unit for a
+    person anyway: resolve such a file to its row instead.
+    An excluded unit carries no blocking flag (except `shared_content` in a `shared_content_unassigned` unit): a unit
+    in doubt is `needs_person` with the question, not excluded.
 11. **What stays a question.** Only what the evidence cannot settle and no rule above decides: which of two batches or
     injections of one sample belongs to an analysis; which archive file is which Catalog row when no name, mwTab line
     or listing ties them; a listing that cannot be read before download; a folder against a header; a name token

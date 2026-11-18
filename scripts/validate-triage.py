@@ -169,6 +169,28 @@ INFORMATIONAL_FLAGS = {
     "ms1_only_excluded",
     "ms1_only_suspected",
 }
+# The skill version from which the triage policy of 2026-11-18 holds. A payload an earlier skill wrote is judged by the
+# rules its agent was given: declared_technical_disputed blocks, and mixed acquisition modes are judged over all kept
+# files, children or not (LEGACY_BLOCKING_FLAGS, legacy_policy).
+POLICY_2026_11_18_SKILL = (1, 3, 0)
+LEGACY_BLOCKING_FLAGS = {"declared_technical_disputed"}
+
+
+def legacy_policy(payload: dict[str, Any] | None) -> bool:
+    """Whether a payload was written by a skill before 1.3.0 (decided_by.skill_version), which the 2026-11-18 policy
+    does not reach back to."""
+    version = str(((payload or {}).get("decided_by") or {}).get("skill_version") or "")
+    try:
+        return tuple(int(part) for part in version.split(".")) < POLICY_2026_11_18_SKILL
+    except ValueError:
+        return False
+
+
+def blocking_flags_for(payload: dict[str, Any] | None) -> set[str]:
+    """The flags that keep this payload's unit from being ready until a person answers them."""
+    return BLOCKING_FLAGS | (LEGACY_BLOCKING_FLAGS if legacy_policy(payload) else set())
+
+
 # Why a unit is excluded by the triage policy of 2026-11-18 (status excluded): no file with product-ion spectra is left
 # once MS1-only files are left out (P1), the deposit holds no raw file of the unit, or the unit's arm's copies are
 # byte-identical to another arm's and no post-download reassignment exists yet (P5). Such a unit asks nothing and holds
@@ -505,13 +527,14 @@ def token_chromatography(path: str) -> str | None:
 # starts: after a character that is not a letter, or after a lower-case letter when the token is written in capitals
 # (posDDA), so that Media, media1 or Claudia carry no DIA. PRM, SRM, MRM, SIM and tMS2 name a targeted method, which
 # the campaign does not run (TARGETED_TOKENS); tDDA, HERMES and targeted ddMS2 name inclusion-list DDA, which it does.
-_ACQ_TOKEN = re.compile(r"(?i)(t-?dd-?ms2?|t-?dda|targeted-?dd-?ms2?|hermes|dd-?ms2?|dda|dia[12](?![0-9])|dia|swath|aif|"
+# Waters MSe and HDMSe name DIA (product ions in the high-energy function).
+_ACQ_TOKEN = re.compile(r"(?i)(t-?dd-?ms2?|t-?dda|targeted-?dd-?ms2?|hermes|dd-?ms2?|dda|dia[12](?![0-9])|dia|swath|aif|(?:hd)?mse|"
                         r"scan0[1-9](?![0-9])|ms1(?![0-9])|full-?scan|prm|srm|mrm|sim|tms2)(?![a-z])")
 TARGETED_TOKENS = ("MRM", "PRM", "SIM", "SRM", "tMS2")
 INCLUSION_LIST_TOKENS = ("tDDA",)
 # The acquisition_mode a name token says (T-TOKEN); SCANnn and the targeted tokens say none a payload can hold.
 TOKEN_MODES = {"DDA": "DDA", "tDDA": "DDA", "DIA": "DIA", "DIA1": "DIA", "DIA2": "DIA", "SWATH": "SWATH", "AIF": "AIF",
-               "MS1": "MS1"}
+               "MSe": "DIA", "MS1": "MS1"}
 DIA_FAMILY = {"DIA", "SWATH", "AIF"}
 
 
@@ -525,6 +548,8 @@ def _acq_name(token: str) -> str:
         return "MS1"
     if t == "tms2":
         return "tMS2"
+    if t in ("mse", "hdmse"):
+        return "MSe"
     return t.upper()
 
 
@@ -537,10 +562,57 @@ def _starts_a_word(text: str, match: re.Match[str]) -> bool:
 
 
 def token_acquisition(path: str) -> tuple[str, ...]:
-    """Every acquisition token the path carries (DDA, DIA, DIA1, DIA2, SWATH, AIF, SCAN01..09, MS1, tDDA, and the
+    """Every acquisition token the path carries (DDA, DIA, DIA1, DIA2, SWATH, AIF, MSe, SCAN01..09, MS1, tDDA, and the
     targeted MRM, PRM, SIM, SRM, tMS2), sorted."""
     text = _norm_path(path)
     return tuple(sorted({_acq_name(m.group(1)) for m in _ACQ_TOKEN.finditer(text) if _starts_a_word(text, m)}))
+
+
+# Words that name an MS level, as a name writes them (triage-digest.py section g, and the P1 guard of T-EXCL). A word
+# starts after a non-letter or, in capitals, after a lower-case letter (posMS, CSHnegMSMS), as acquisition tokens do.
+# MS/MS words name runs with product-ion spectra: MSMS and AutoMSMS, MS2 and ddMS2, Waters MSe and HDMSe (DIA, product
+# ions in the high-energy function), SONAR, MSn, and SCIEX IDA. Bare MS is matched in capitals only, not before another
+# capital or a digit (MSDIAL, MS2 and MSMS are not it) and not as the MS of MSe or MSn; the others ignore case.
+_MS_LEVEL_WORDS = (
+    ("MS/MS", "MSMS", re.compile(r"(?i)(auto-?ms-?ms|ms-?ms)")),
+    ("MS/MS", "MS2", re.compile(r"(?i)((?:dd-?)?ms2)(?![0-9])")),
+    ("MS/MS", "MSe", re.compile(r"((?:HD)?MS[eE])(?![A-Za-z0-9])")),
+    ("MS/MS", "SONAR", re.compile(r"(?i)(sonar)(?![a-z])")),
+    ("MS/MS", "MSn", re.compile(r"(MSn)(?![A-Za-z0-9])")),
+    ("MS/MS", "IDA", re.compile(r"(IDA)(?![A-Za-z0-9])")),
+    ("MS-only", "MSProfile", re.compile(r"(?i)(ms-?prof(?:ile)?)")),
+    ("MS-only", "Profile", re.compile(r"(?i)(prof(?:ile)?)(?![a-z])")),
+    ("MS-only", "MS1", re.compile(r"(?i)(ms1)(?![0-9])")),
+    ("MS-only", "FullScan", re.compile(r"(?i)(full-?scan)")),
+    ("MS-only", "MS", re.compile(r"(MS)(?![A-Z0-9])(?![en](?![a-z]))")),
+)
+
+
+def ms_level_words(name: str) -> list[tuple[str, str]]:
+    """(kind, word) for each MS-level word of a name ("MS-only" or "MS/MS"), longest first, each span read once."""
+    taken: list[tuple[int, int]] = []
+    found: list[tuple[str, str]] = []
+    for kind, label, pattern in _MS_LEVEL_WORDS:
+        for match in pattern.finditer(name):
+            start, end = match.span(1)
+            if any(start < b and a < end for a, b in taken):
+                continue
+            before = name[start - 1] if start else ""
+            first = match.group(1)[0]
+            if before.isalpha() and not (before.islower() and first.isupper()):
+                continue
+            taken.append((start, end))
+            found.append((kind, label))
+    return found
+
+
+def product_ion_words(path: str) -> list[str]:
+    """What a file's own name (the stem of its basename) says of product-ion spectra: its MS/MS words (MSMS, MS2, MSe,
+    ...) and the DDA, DIA, SWATH or AIF modes its tokens name, sorted; empty when it says none."""
+    name = stem(basename(_norm_path(path)))
+    words = {label for kind, label in ms_level_words(name) if kind == "MS/MS"}
+    words |= {TOKEN_MODES[t] for t in token_acquisition(name) if TOKEN_MODES.get(t) not in (None, "MS1")}
+    return sorted(words)
 
 
 # --------------------------------------------------------------------------------------- the checks
@@ -1687,7 +1759,11 @@ def answered_codes(decision_id: str, payload: dict[str, Any], supersedes: dict[s
 
 
 def _blocking(payload: dict[str, Any] | None) -> set[str]:
-    return {f.get("code") for f in (payload or {}).get("flags", []) if isinstance(f, dict)} & BLOCKING_FLAGS
+    return {f.get("code") for f in (payload or {}).get("flags", []) if isinstance(f, dict)} & blocking_flags_for(payload)
+
+
+def _codes(payload: dict[str, Any] | None) -> set[str]:
+    return {f.get("code") for f in (payload or {}).get("flags", []) if isinstance(f, dict)}
 
 
 def check_revision(report: "Report", unit: str, path: Path, decision_id: str, payload: dict[str, Any],
@@ -1720,7 +1796,8 @@ def check_revision(report: "Report", unit: str, path: Path, decision_id: str, pa
             report.add("hold", "T-REVISION", unit, f"{path.name} supersedes {sha}, which is not in this directory; the flags "
                        "it dropped cannot be checked")
             continue
-        dropped = _blocking(payloads[sha][1]) - _blocking(payload)
+        # A flag the revision still carries is not dropped, even where a later skill no longer counts it as blocking.
+        dropped = _blocking(payloads[sha][1]) - _codes(payload)
         for code in sorted(dropped - cited):
             report.add("error", "T-REVISION", unit, f"{path.name} drops the blocking flag {code} that "
                        f"{payloads[sha][0].name} carried, but no revision entry of the review log cites a person's answer "
@@ -1924,7 +2001,7 @@ def acquisition_token_problem(name: str, acquisition_mode: str) -> str | None:
     """What a name's acquisition tokens say against a kept file's acquisition_mode (T-TOKEN), or None: a targeted method
     (PRM, SRM, MRM, SIM, tMS2), which the campaign does not run, or an MS1, DDA, DIA, SWATH or AIF token that is not the
     mode the triage gives (DIA, SWATH and AIF count as one family; SCANnn says no mode; unknown and mixed are not
-    contradicted)."""
+    contradicted); or an MS/MS word (MSMS, MS2, MSe, ...) against MS1."""
     found = token_acquisition(name)
     targeted = [t for t in found if t in TARGETED_TOKENS]
     if targeted:
@@ -1932,9 +2009,81 @@ def acquisition_token_problem(name: str, acquisition_mode: str) -> str | None:
                 "DIA with an MS1 survey); exclude it as out_of_scope")
     modes = {TOKEN_MODES[t] for t in found if t in TOKEN_MODES}
     mode = "DDA" if acquisition_mode == "targeted_DDA" else acquisition_mode
+    if mode == "MS1" and product_ion_words(name):
+        return f"{name} says {'+'.join(product_ion_words(name))}, which names product-ion spectra; the triage says MS1"
     if not modes or mode in ("unknown", "mixed") or mode in modes or (mode in DIA_FAMILY and modes & DIA_FAMILY):
         return None
     return f"{name} says {'+'.join(sorted(modes))}, the triage says {acquisition_mode}"
+
+
+# The reasons a unit excluded as no_product_ion_files may leave its own rows out with: MS1-only (P1), another unit's, not
+# in the archive, a byte-identical copy. Anything else (other, no_signal_abstained, out_of_scope_ms1_only, ...) may drop
+# a file with product-ion spectra, and then the unit is not without them.
+NO_PRODUCT_ION_ROW_REASONS = {"ms1_only_no_msms", "belongs_to_other_unit", "not_in_archive", "duplicate_content"}
+# The reasons a member is dropped for good although it may be raw data of some unit: a unit excluded as
+# no_product_ion_files or no_files looks at these members before it leaves the campaign.
+DROPPED_FOR_GOOD_MEMBER_REASONS = {"other", "no_sample_metadata", "out_of_scope", "requires_conversion", "no_signal_abstained"}
+
+
+def _flag_names(flag: dict[str, Any], item: dict[str, Any], member_only: bool = False) -> bool:
+    """Whether a flag is about an excluded item: it names the item's row or member, or it names none at all (only for a
+    flag of the item's own unit: member_only asks for the member to be named)."""
+    rows, members = flag.get("row_indices") or [], flag.get("member_paths") or []
+    if not rows and not members:
+        return not member_only
+    if "row_index" in item and item["row_index"] in rows:
+        return True
+    return bool(item.get("member_path")) and member_key(item["member_path"]) in {member_key(p) for p in members}
+
+
+def _not_its_arm(path: str, t: dict[str, Any]) -> bool:
+    """Whether a name's polarity or chromatography token puts the file in another arm than the unit's."""
+    ut = t["unit_technical"]
+    polarity, chromatography = token_polarity(path), token_chromatography(path)
+    return bool((polarity and ut["ion_mode"] in ("positive", "negative") and polarity != ut["ion_mode"])
+                or (chromatography and ut["chromatography"] in ("HILIC", "RP") and chromatography != ut["chromatography"]))
+
+
+def _members_dropped_for_good(triages: dict[str, dict[str, Any]], resolver: "Resolver") -> dict[str, tuple[str, str]]:
+    """{member key: (path, reason)} for the raw-like members any payload excludes for good
+    (DROPPED_FOR_GOOD_MEMBER_REASONS) that no unit keeps."""
+    kept = {k.key for u, other in triages.items() for k in _kept(u, other, resolver)}
+    out: dict[str, tuple[str, str]] = {}
+    for other in triages.values():
+        for item in other.get("excluded_members", []):
+            key = member_key(item["member_path"])
+            if item["reason"] in DROPPED_FOR_GOOD_MEMBER_REASONS and key not in kept and is_raw_like(item["member_path"]):
+                out.setdefault(key, (item["member_path"], item["reason"]))
+    return out
+
+
+def _dropped_product_ion_members(t: dict[str, Any], triages: dict[str, dict[str, Any]],
+                                 resolver: "Resolver") -> list[tuple[str, str, list[str]]]:
+    """(path, reason, words) for the members dropped for good whose names name product-ion spectra and do not put them
+    in another arm than the unit's."""
+    out = []
+    for _, (path, why) in sorted(_members_dropped_for_good(triages, resolver).items()):
+        words = product_ion_words(path)
+        if words and not _not_its_arm(path, t):
+            out.append((path, why, words))
+    return out
+
+
+def _loose_stem(name: str) -> str:
+    """A stem without case, polarity words or separators: Inj001_S1_CSHposMSMS and Inj001_S1_CSHMSMS agree."""
+    return re.sub(r"(?i)pos(?:itive)?|neg(?:ative)?|[^a-z0-9]", "", stem(basename(_norm_path(name)))).casefold()
+
+
+def _dropped_raw_members(t: dict[str, Any], triages: dict[str, dict[str, Any]], resolver: "Resolver",
+                         absent: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """(path, reason) for the members dropped for good that may be the unit's own files: nothing in their names puts
+    them in another arm, or their stems match a row the unit says the archive lacks, polarity infix and case aside."""
+    wanted = {_loose_stem(item["raw_file"]) for item in absent if item.get("raw_file")}
+    out = []
+    for _, (path, why) in sorted(_members_dropped_for_good(triages, resolver).items()):
+        if not _not_its_arm(path, t) or _loose_stem(path) in wanted:
+            out.append((path, why))
+    return out
 
 
 def _check_unit(
@@ -1954,6 +2103,7 @@ def _check_unit(
     ut = t["unit_technical"]
     unit_ion, unit_chrom, unit_acq = ut["ion_mode"], ut["chromatography"], ut["acquisition_mode"]
     kept = _kept(unit, t, resolver)
+    legacy = legacy_policy(t)
 
     # T-COVER: every Catalog row kept or excluded, once.
     count = t["catalog_row_count"]
@@ -2036,18 +2186,28 @@ def _check_unit(
         elif reason == "ms1_only_no_msms":
             # P1 (2026-11-18): an MS1-only file carries no product-ion spectra and is left out, on evidence that settles
             # it (a declaration, or a name that contrasts with sibling MS/MS runs); a weaker reading keeps the file.
-            name = item.get("member_path") or item.get("raw_file") or ""
-            said = sorted({TOKEN_MODES[x] for x in token_acquisition(name) if x in TOKEN_MODES} - {"MS1"})
-            if "ms1_only_excluded" not in flags:
+            names = [n for n in (item.get("member_path"), item.get("raw_file")) if n]
+            said = sorted({word for n in names for word in product_ion_words(n)})
+            # A row is the unit's own; an expanded payload lists the accession's members in every unit, so the flag
+            # about a member may be another unit's.
+            sources = [t] if "row_index" in item else [t, *(other for u, other in triages.items() if u != unit)]
+            confirmed = [f for source in sources for f in source.get("flags", []) if f.get("code") == "ms1_only_excluded"
+                         and f.get("certainty") == "confirmed" and _flag_names(f, item, member_only=source is not t)]
+            if said:
+                # Refused whatever else the payload says: a name that says MS/MS, DDA or DIA against an MS1-only reading
+                # is a person's question, and an excluded unit asks nothing (T-STATUS refuses its blocking flags).
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as ms1_only_no_msms, but its name says "
+                           f"{'+'.join(said)}, which names product-ion spectra; keep it, or, if the evidence still reads "
+                           "MS1 only, flag name_token_disputed and send the unit to a person (needs_person)")
+            elif not any(f.get("code") == "ms1_only_excluded" for source in sources for f in source.get("flags", [])):
                 report.add("error", "T-EXCL", unit, f"{what} is excluded as ms1_only_no_msms without an ms1_only_excluded "
                            "flag (informational: it records the evidence and its certainty)")
-            elif item.get("confidence") == "low":
-                report.add("error", "T-EXCL", unit, f"{what} is excluded as ms1_only_no_msms at low confidence; an MS1-only "
-                           "reading the evidence does not settle keeps the file, with an ms1_only_suspected flag, for the "
-                           "header preflight to decide")
-            elif said and "name_token_disputed" not in flags:
-                report.add("error", "T-EXCL", unit, f"{what} is excluded as ms1_only_no_msms, but its name says "
-                           f"{'+'.join(said)} (flag name_token_disputed and ask a person if that is meant)")
+            elif item.get("confidence") == "low" or not confirmed:
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as ms1_only_no_msms "
+                           + ("at low confidence" if item.get("confidence") == "low" else
+                              "without a confirmed ms1_only_excluded flag about it (a suspected reading is weak)")
+                           + "; an MS1-only reading the evidence does not settle keeps the file, with an "
+                           "ms1_only_suspected flag, for the header preflight to decide")
         elif reason == "shared_content_unassigned" and not (
                 status == "excluded" and (t.get("exclusion") or {}).get("reason") == "shared_content_unassigned"):
             report.add("error", "T-EXCL", unit, f"{what} is excluded as shared_content_unassigned, but the unit is not "
@@ -2091,15 +2251,37 @@ def _check_unit(
         held = [item for item in dropped if item["reason"] == "needs_person"]
         if held:
             report.add("error", "T-STATUS", unit, f"an excluded unit holds nothing for a person ({len(held)} needs_person exclusion(s))")
-        if reason == "no_product_ion_files" and not any(item["reason"] == "ms1_only_no_msms" for item in dropped):
-            report.add("error", "T-STATUS", unit, "the unit is excluded as no_product_ion_files, but it leaves no file out "
-                       "as ms1_only_no_msms")
+        # A unit in doubt is needs_person, not excluded: a blocking flag on an excluded unit would hold nobody.
+        allowed = {"shared_content"} if reason == "shared_content_unassigned" else set()
+        for code in sorted((flags & blocking_flags_for(t)) - allowed - answered):
+            report.add("error", "T-STATUS", unit, f"an excluded unit carries the blocking flag {code}, which waits for a "
+                       "person; a unit in doubt is needs_person with the question, not excluded")
+        if reason == "no_product_ion_files":
+            if not any(item["reason"] == "ms1_only_no_msms" for item in dropped):
+                report.add("error", "T-STATUS", unit, "the unit is excluded as no_product_ion_files, but it leaves no file "
+                           "out as ms1_only_no_msms")
+            # The premise: no file of the unit with product-ion spectra is left. Its own rows go only as MS1-only, as
+            # another unit's, as absent or as copies; and no member the accession drops for good may be its MS/MS run.
+            for item in t["excluded_rows"]:
+                if item["reason"] not in NO_PRODUCT_ION_ROW_REASONS:
+                    report.add("error", "T-STATUS", unit, f"the unit is excluded as no_product_ion_files, but row "
+                               f"{item['row_index']} ({item['raw_file']}) is left out as {item['reason']}; its own rows "
+                               f"go only as {', '.join(sorted(NO_PRODUCT_ION_ROW_REASONS))}, or the unit asks a person")
+            for path, why, words in _dropped_product_ion_members(t, triages, resolver):
+                report.add("hold", "T-STATUS", unit, f"the unit is excluded as no_product_ion_files, but {path} (left out "
+                           f"as {why}) is named {'+'.join(words)}, which names product-ion spectra, and nothing in its "
+                           "name puts it in another arm; a person looks before the unit leaves the campaign")
         if reason == "no_files":
             own = [item for item in t["excluded_rows"] if item["reason"] not in ("not_in_archive", "belongs_to_other_unit")]
             if own:
                 report.add("error", "T-STATUS", unit, f"the unit is excluded as no_files, but row {own[0]['row_index']} "
                            f"({own[0]['raw_file']}) is left out as {own[0]['reason']}, not as a file the archive lacks "
                            "or another unit's")
+            # Its files may be in the archive under names the Catalog writes differently (a polarity infix, case).
+            absent = [item for item in t["excluded_rows"] if item["reason"] == "not_in_archive"]
+            for path, why in _dropped_raw_members(t, triages, resolver, absent):
+                report.add("hold", "T-STATUS", unit, f"the unit is excluded as no_files, but the archive's {path} (left "
+                           f"out as {why}) may be one of its files; a person looks before the unit leaves the campaign")
         if reason == "shared_content_unassigned":
             if "shared_content" not in flags:
                 report.add("error", "T-STATUS", unit, "the unit is excluded as shared_content_unassigned without a "
@@ -2125,7 +2307,7 @@ def _check_unit(
             report.add("error", "T-POL", unit, f"a ready unit cannot have ion mode {unit_ion}")
         if unit_chrom == "unknown":
             report.add("error", "T-CHROM", unit, "a ready unit cannot have unknown chromatography")
-        for code in sorted(flags & BLOCKING_FLAGS):
+        for code in sorted(flags & blocking_flags_for(t)):
             if code not in answered:
                 where = (f"a person_answer in {REVIEW_LOG} with question_code {code} for this payload or one it supersedes"
                          if v2 else f"person_answers code {code}")
@@ -2202,7 +2384,7 @@ def _check_unit(
         if chrom == "unknown" and status == "ready":
             report.add("error", "T-CHROM", unit, f"{label} has unknown chromatography in a ready unit")
         acqs.add(item["acquisition_mode"])
-        acqs_by_run[child["child_key"] if child else ""].add(item["acquisition_mode"])
+        acqs_by_run[child["child_key"] if child and not legacy else ""].add(item["acquisition_mode"])
 
         sources = {e["source"] for e in item["evidence"]}
         if item["basis"] == "declared" and not sources & DECLARED_SOURCES:
@@ -2335,12 +2517,14 @@ def _item_key(item: dict[str, Any], resolver: Resolver) -> str | None:
     return None
 
 
-def held_keys(triages: dict[str, dict[str, Any]], resolver: Resolver) -> dict[str, set[str]]:
-    """The files units hold for a person (excluded with a HELD_REASONS reason), and by which units."""
+def held_keys(triages: dict[str, dict[str, Any]], resolver: Resolver,
+              reasons: Iterable[str] = HELD_REASONS) -> dict[str, set[str]]:
+    """The files units hold back (excluded with a HELD_REASONS reason, or one of `reasons`), and by which units."""
+    reasons = set(reasons)
     out: dict[str, set[str]] = defaultdict(set)
     for unit, t in triages.items():
         for item in [*t["excluded_rows"], *t.get("excluded_members", [])]:
-            if item["reason"] in HELD_REASONS:
+            if item["reason"] in reasons:
                 key = _item_key(item, resolver)
                 if key:
                     out[key].add(unit)
@@ -2384,17 +2568,23 @@ def shared_content_without_keepers(triages: dict[str, dict[str, Any]], twins: di
                                    resolver: Resolver) -> list[tuple[str, bool]]:
     """(unit, whether its files have twins at all) for each shared_content flag none of whose byte-identical groups has a
     file that a unit keeps or holds for a person (D2): copies only among files excluded for good are
-    duplicate_copies_excluded, informational. The expander (X-DUP-NOKEPT) and T-DUP share this."""
-    taken = {k.key for unit, t in triages.items() for k in _kept(unit, t, resolver)} | set(held_keys(triages, resolver))
+    duplicate_copies_excluded, informational. The expander (X-DUP-NOKEPT) and T-DUP share this.
+
+    A copy a unit holds as shared_content_unassigned (P5) counts only for another unit's flag: a unit's own held copies
+    say nothing about whether another arm holds the same bytes."""
+    taken = ({k.key for unit, t in triages.items() for k in _kept(unit, t, resolver)}
+             | set(held_keys(triages, resolver, HELD_REASONS - {"shared_content_unassigned"})))
+    unassigned = held_keys(triages, resolver, {"shared_content_unassigned"})
     out = []
     for unit, t in triages.items():
+        theirs = taken | {key for key, units in unassigned.items() if units - {unit}}
         for flag in t.get("flags", []):
             if flag.get("code") != "shared_content":
                 continue
             concerned: set[str] = set()
             for key in shared_content_subject(t, flag, resolver) & set(twins):
                 concerned |= {key} | twins[key]
-            if not concerned & taken:
+            if not concerned & theirs:
                 out.append((unit, bool(concerned)))
     return out
 
@@ -2495,6 +2685,30 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
             if chromatography and holder.item["chromatography"] in ("HILIC", "RP") and chromatography != holder.item["chromatography"]:
                 return twin
         return None
+
+    # P5 leaves a unit out only for copies in another arm's place, the same test as above: a twin that another unit keeps
+    # or holds in its folder, or a twin whose polarity or chromatography token is not the unit's. A twin inside the unit's
+    # own files, or only in a backup folder or a second export, is a copy (D2): duplicate_content and
+    # duplicate_copies_excluded, and the unit stays.
+    for unit, t in triages.items():
+        for item in [*t["excluded_rows"], *t.get("excluded_members", [])]:
+            if item["reason"] != "shared_content_unassigned":
+                continue
+            key = _item_key(item, resolver)
+            if key is None or key not in twins:
+                continue  # reported below: no byte-identical twin at all
+            arm = None
+            for twin in sorted(twins[key]):
+                if placed.get(_folder_key(twin), set()) - {unit} or _not_its_arm(resolver.original.get(twin, twin), t):
+                    arm = twin
+                    break
+            if arm is None:
+                name = item.get("member_path") or item.get("raw_file")
+                what = f"row {item['row_index']} ({name})" if "row_index" in item else name
+                report.add("error", "T-EXCL", unit, f"{what} is excluded as shared_content_unassigned, but none of its "
+                           "byte-identical twins is in another arm's place (kept or held by another unit, in its folder, or "
+                           "under another arm's name tokens); copies inside one arm or in a backup folder are D2 copies: "
+                           "exclude the copy as duplicate_content, flag duplicate_copies_excluded, and keep the unit")
 
     owner_of = {key: sorted({h.unit for h in holders}) for key, holders in owners.items()}
     reported: set[tuple[str, frozenset[str], str]] = set()

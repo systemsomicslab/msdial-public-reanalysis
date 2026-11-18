@@ -5,15 +5,17 @@ MS1-only files, mixed acquisition, file evidence against the Catalog, profile-mo
 with no files. The person's decision of 2026-11-18 took the recommended answers; these tests hold the rules that encode
 them, on synthetic accessions (ST000001 and AN000001 style ids only):
 
-- P1: MS1-only files are excluded as ms1_only_no_msms with the informational flag ms1_only_excluded; never at low
-  confidence and never on a file whose name says DDA or DIA; a unit left with no MS/MS file is excluded
-  (no_product_ion_files), which is not a hold.
+- P1: MS1-only files are excluded as ms1_only_no_msms with a confirmed informational flag ms1_only_excluded; never at
+  low confidence and never on a file whose name says product-ion spectra (a DDA, DIA or MSe token, or an MS/MS word
+  such as MSMS, MS2 or AutoMSMS); a unit left with no MS/MS file is excluded (no_product_ion_files), which is not a
+  hold, but only when it drops no file with product-ion spectra for another reason.
 - P2: children of one acquisition mode each are not a mix; a mix inside one run still needs mixed_acquisition.
 - P4: declared_technical_disputed is informational: a ready unit may read its files against the Catalog with it.
 - P5: byte-identical copies in two arms' places exclude both units (shared_content_unassigned), with the
   shared_content flag kept as evidence and no X-DUP-NOKEPT.
-- no_files and no_sample_metadata; the excluded status's own checks; the plan's triage_unit_excluded; the digest's
-  MS-level words and method folders.
+- no_files and no_sample_metadata; the excluded status's own checks (no blocking flag; a no_files unit whose files
+  may sit in the archive under other names holds); the plan's triage_unit_excluded and its counts by reason; the
+  digest's MS-level words and method folders; a payload of a skill before 1.3.0 judged by its own rules.
 """
 
 from __future__ import annotations
@@ -270,7 +272,9 @@ class MS1OnlyTests(PolicyCase):
             entries, reason, detail = curated.unit_entries(accession_dir=accession_dir, triage_root=root, unit_id=U2,
                                                            validation={"verdict": "pass"}, catalog=None)
             self.assertEqual((entries, reason), ([], curated.TRIAGE_UNIT_EXCLUDED))
-            self.assertEqual(detail, "no_product_ion_files: Every negative run is MS1 only.")
+            # The detail counts what the unit left out, by reason, so the plan's reader sees which files went.
+            self.assertEqual(detail, "no_product_ion_files: Every negative run is MS1 only. (left out: rows "
+                             "ms1_only_no_msms 2; members belongs_to_other_unit 1, ms1_only_no_msms 1, no_sample_metadata 2)")
             # An accession that does not pass is still triage_not_pass, whatever its units' statuses.
             _, reason, _ = curated.unit_entries(accession_dir=accession_dir, triage_root=root, unit_id=U2,
                                                 validation={"verdict": "hold"}, catalog=None)
@@ -509,6 +513,224 @@ class DigestTests(unittest.TestCase):
         self.assertIn("Method folder CORE_pos_MSb_1.m: in 2 vendor folder(s) (e.g. S1_posMS.d); words MS.", text)
         self.assertIn("Method folder CORE_pos_MSMSb_1.m: in 1 vendor folder(s) (e.g. Pool_posMSMS.d); words MSMS.", text)
         self.assertEqual(dg.DIGEST_VERSION, "1.1.0")
+
+    def test_waters_and_sciex_product_ion_words(self) -> None:
+        # MSe, HDMSe and SONAR are DIA with product-ion spectra; MSn and IDA name MS/MS. None is the MS-only word MS.
+        cases = {
+            "QC_MSe_01": [("MS/MS", "MSe")],
+            "S1_SONAR_MSe": [("MS/MS", "MSe"), ("MS/MS", "SONAR")],
+            "S1_HDMSe": [("MS/MS", "MSe")],
+            "S1_MSn": [("MS/MS", "MSn")],
+            "S1_IDA_pos": [("MS/MS", "IDA")],
+            "S1_posMS": [("MS-only", "MS")],
+            "Mesa_01": [],
+        }
+        for name, expected in cases.items():
+            with self.subTest(name):
+                self.assertEqual(sorted(dg.ms_level_words(name)), sorted(expected))
+        # One table: the digest reads validate-triage.py's, which the P1 guard reads too.
+        self.assertEqual(dg.ms_level_words.__qualname__, vt.ms_level_words.__qualname__)
+        self.assertNotIn("_MS_LEVEL_WORDS", vars(dg))
+        self.assertEqual(vt.token_acquisition("QC_MSe_01.raw"), ("MSe",))
+        self.assertEqual(vt.TOKEN_MODES["MSe"], "DIA")
+        for name in ("NEG/S02_negMSMS.mzML", "CSH_posMSMS_QC01.d", "Pool_MS2_neg.raw", "x_AutoMSMS.d", "S1_MSe.raw"):
+            with self.subTest(name):
+                self.assertTrue(vt.product_ion_words(name))
+        self.assertEqual(vt.product_ion_words("S1_posMS.mzML"), [])
+        self.assertIsNotNone(vt.acquisition_token_problem("Pool_posMSMS.mzML", "MS1"))
+
+
+# ---- review fixes: what an excluded unit may leave out, and which flags it may carry ------------------------------
+
+def ms1_unit_excluded(spec: dict) -> dict:
+    """ms1_spec with the positive unit excluded as no_product_ion_files too."""
+    spec["units"][U1] = {"status": "excluded", "confidence": "high", "rationale": "No positive MS/MS run is kept.",
+                         "exclusion": {"reason": "no_product_ion_files", "detail": "Every positive run is MS1 only."},
+                         "unit_technical": {"ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "DDA"},
+                         "flags": [{"code": "ms1_only_excluded", "certainty": "confirmed", "detail": "mwTab: MS1 data.",
+                                    "groups": ["RPOS", "PROF", "POOL"]}]}
+    return spec
+
+
+class ExcludedUnitReviewTests(PolicyCase):
+    def setUp(self) -> None:
+        self.files = inputs({U1: ("Reversed phase", "Positive", rows("S01_posMS", "S02_posMS")),
+                             U2: ("Reversed phase", "Negative", rows("S01_negMS", "S02_negMS"))}, MS1_LISTING)
+
+    def test_an_msms_named_file_is_not_left_out_as_ms1_only(self) -> None:
+        # The study's only MS/MS pool, dropped as MS1-only, would take the whole unit out of the campaign.
+        spec = ms1_unit_excluded(ms1_spec())
+        spec["groups"][2] = {"id": "POOL", "applies_to": "members", "match": {"paths": ["POS/Pool_posMSMS.mzML"]},
+                             "disposition": {"exclude": "ms1_only_no_msms", "detail": "MS1."}, "confidence": "medium",
+                             "rationale": "Read as MS1."}
+        report = self.judged(spec)
+        self.assertNotEqual(report.verdict, "pass")
+        found = errors(report, "T-EXCL")
+        self.assertTrue(any("Pool_posMSMS" in m and "its name says MSMS" in m for m in found), found)
+
+    def test_a_suspected_ms1_reading_does_not_leave_a_file_out(self) -> None:
+        spec = ms1_spec()
+        spec["units"][U1]["flags"][0]["certainty"] = "suspected"
+        found = errors(self.judged(spec), "T-EXCL", U1)
+        self.assertTrue(any("without a confirmed ms1_only_excluded flag" in m for m in found), found)
+
+    def test_an_excluded_unit_cannot_carry_a_blocking_flag(self) -> None:
+        for code in ("name_token_disputed", "polarity_switching", "folder_header_disagreement", "mixed_acquisition"):
+            with self.subTest(code):
+                spec = ms1_spec()
+                spec["units"][U2]["flags"].append({"code": code, "certainty": "suspected", "detail": "In doubt."})
+                found = errors(self.judged(spec), "T-STATUS", U2)
+                self.assertTrue(any(f"carries the blocking flag {code}" in m for m in found), found)
+
+    def test_no_product_ion_files_leaves_its_rows_out_for_good_reasons_only(self) -> None:
+        payloads = self.expanded(ms1_spec())
+        two = copy.deepcopy(payloads[U2])
+        two["excluded_rows"][1]["reason"], two["excluded_rows"][1]["detail"] = "other", "Not needed."
+        found = errors(validate(self.files, {**payloads, U2: two}), "T-STATUS", U2)
+        self.assertTrue(any("row 1 (S02_negMS.mzML) is left out as other" in m for m in found), found)
+
+    def test_no_product_ion_files_holds_when_an_msms_member_is_dropped(self) -> None:
+        spec = ms1_unit_excluded(ms1_spec())
+        spec["groups"][2] = {"id": "POOL", "applies_to": "members", "match": {"paths": ["POS/Pool_posMSMS.mzML"]},
+                             "disposition": {"exclude": "other", "detail": "Not used."}, "confidence": "medium",
+                             "rationale": "Left out."}
+        spec["units"][U1]["flags"][0]["groups"] = ["RPOS", "PROF"]
+        report = self.judged(spec)
+        self.assertEqual(report.verdict, "hold", [f.as_dict() for f in report.findings])
+        holds = [f.message for f in report.findings if f.level == "hold" and f.check == "T-STATUS" and f.unit == U1]
+        self.assertTrue(any("Pool_posMSMS.mzML (left out as other) is named MSMS" in m for m in holds), holds)
+        # The negative unit's own exclusion is untouched: the positive pools carry the other arm's polarity.
+        self.assertFalse([f for f in report.findings if f.level != "note" and f.unit == U2])
+
+    def test_waters_mse_samples_are_not_ms1_only(self) -> None:
+        files = inputs({U1: ("Reversed phase", "Positive", rows("S1_MSe", "S2_MSe"))},
+                       [("S1_MSe.raw", 5000001, "00000001"), ("S2_MSe.raw", 5000002, "00000002"),
+                        ("Pool_MSMS.raw", 5000003, "00000003")])
+        spec = {
+            "schema": "msdial-unit-triage-spec.v1", "accession": ACC, "phase": "pre_download",
+            "structure": "MSe sample runs and one MSMS pool.",
+            "groups": [
+                {"id": "S", "applies_to": "rows", "match": {"unit": U1},
+                 "disposition": {"exclude": "ms1_only_no_msms", "detail": "MS against the MSMS pool."},
+                 "confidence": "high", "rationale": "Read as MS1 only."},
+                {"id": "P", "applies_to": "members", "match": {"paths": ["Pool_MSMS.raw"]},
+                 "disposition": {"exclude": "no_sample_metadata", "detail": "No row names it."},
+                 "confidence": "high", "rationale": "Samples need metadata."}],
+            "units": {U1: {"status": "excluded", "confidence": "high", "rationale": "No MS/MS run.",
+                           "exclusion": {"reason": "no_product_ion_files", "detail": "MS1 only."},
+                           "unit_technical": {"ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "DDA"},
+                           "flags": [{"code": "ms1_only_excluded", "certainty": "confirmed", "detail": "Names.",
+                                      "groups": ["S"]}]}},
+        }
+        self.files = files
+        report = self.judged(spec)
+        self.assertNotEqual(report.verdict, "pass")
+        found = errors(report, "T-EXCL", U1)
+        self.assertTrue(any("S1_MSe" in m and "MSe" in m.split("its name says", 1)[-1] for m in found), found)
+
+    def test_no_files_holds_when_the_archive_has_files_under_other_names(self) -> None:
+        # The Catalog writes the names without the polarity infix the archive carries.
+        self.files = inputs({U1: ("Reversed phase", "Positive", rows("Inj001_S1_CSHMSMS_6530B", "Inj002_S2_CSHMSMS_6530B"))},
+                            [("raw/Inj001_S1_CSHposMSMS_6530B.mzML", 3000001, "00000001"),
+                             ("raw/Inj002_S2_CSHposMSMS_6530B.mzML", 3000002, "00000002")])
+        spec = {"schema": "msdial-unit-triage-spec.v1", "accession": ACC, "phase": "pre_download",
+                "structure": "One folder of raw runs.",
+                "groups": [
+                    {"id": "R", "applies_to": "rows", "match": {"unit": U1, "resolution": "none"},
+                     "disposition": {"exclude": "not_in_archive", "detail": "No file of that name."},
+                     "confidence": "high", "rationale": "Not listed."},
+                    {"id": "M", "applies_to": "members", "match": {"paths": ["raw/Inj001_S1_CSHposMSMS_6530B.mzML",
+                                                                            "raw/Inj002_S2_CSHposMSMS_6530B.mzML"]},
+                     "disposition": {"exclude": "no_sample_metadata", "detail": "No row names it."},
+                     "confidence": "high", "rationale": "No row."}],
+                "units": {U1: {"status": "excluded", "confidence": "high", "rationale": "No file.",
+                               "exclusion": {"reason": "no_files", "detail": "The rows name no archived file."},
+                               "unit_technical": {"ion_mode": "positive", "chromatography": "RP",
+                                                  "acquisition_mode": "DDA"}}}}
+        report = self.judged(spec)
+        self.assertEqual(report.verdict, "hold", [f.as_dict() for f in report.findings])
+        holds = [f.message for f in report.findings if f.level == "hold" and f.check == "T-STATUS"]
+        self.assertTrue(any("excluded as no_files" in m and "Inj001_S1_CSHposMSMS_6530B" in m for m in holds), holds)
+
+    def test_the_plan_counts_members_left_out_by_reason(self) -> None:
+        payloads = self.expanded(ms1_spec())
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "triage"
+            accession_dir = root / ACC
+            accession_dir.mkdir(parents=True)
+            for unit, document in payloads.items():
+                (accession_dir / f"{unit}.json").write_text(json.dumps(document, indent=1), encoding="utf-8")
+            entries, reason, _ = curated.unit_entries(accession_dir=accession_dir, triage_root=root, unit_id=U1,
+                                                      validation={"verdict": "pass"}, catalog=None)
+        self.assertIsNone(reason)
+        chosen = entries[0]["curated_selection"]
+        self.assertEqual(chosen["members_excluded"], 3)
+        self.assertEqual(chosen["members_excluded_by_reason"], {"ms1_only_no_msms": 1, "no_sample_metadata": 2})
+
+
+class SharedContentReviewTests(PolicyCase):
+    def test_copies_inside_one_arm_are_not_shared_content_unassigned(self) -> None:
+        # The unit's twins are its own files: a D2 copy, not another arm's.
+        self.files = inputs({U1: ("HILIC", "Negative", rows("S1_Hilic_Neg", "S2_Hilic_Neg")),
+                             U2: ("Reversed phase", "Negative", rows("S1_Lipid_Neg", "S2_Lipid_Neg"))},
+                            [("HILIC_NEG/S1_Hilic_Neg.mzML", 4000001, "0000AA01"),
+                             ("HILIC_NEG/S2_Hilic_Neg.mzML", 4000001, "0000AA01"),
+                             ("LIPID_NEG/S1_Lipid_Neg.mzML", 4000003, "0000AA03"),
+                             ("LIPID_NEG/S2_Lipid_Neg.mzML", 4000004, "0000AA04")])
+        self.assertIn("X-DUP-NOKEPT", {f.code for f in expand(self.one_arm_spec(), self.files).findings})
+
+    def test_copies_in_a_backup_folder_are_not_shared_content_unassigned(self) -> None:
+        self.files = inputs({U1: ("HILIC", "Negative", rows("S1_Hilic_Neg", "S2_Hilic_Neg")),
+                             U2: ("Reversed phase", "Negative", rows("S1_Lipid_Neg", "S2_Lipid_Neg"))},
+                            [("HILIC_NEG/S1_Hilic_Neg.mzML", 4000001, "0000AA01"),
+                             ("HILIC_NEG/S2_Hilic_Neg.mzML", 4000002, "0000AA02"),
+                             ("backup/S1_Hilic_Neg_copy.mzML", 4000001, "0000AA01"),
+                             ("backup/S2_Hilic_Neg_copy.mzML", 4000002, "0000AA02"),
+                             ("LIPID_NEG/S1_Lipid_Neg.mzML", 4000003, "0000AA03"),
+                             ("LIPID_NEG/S2_Lipid_Neg.mzML", 4000004, "0000AA04")])
+        spec = self.one_arm_spec()
+        spec["groups"].append({"id": "BK", "applies_to": "members",
+                               "match": {"paths": ["backup/S1_Hilic_Neg_copy.mzML", "backup/S2_Hilic_Neg_copy.mzML"]},
+                               "disposition": {"exclude": "duplicate_content", "detail": "Backup copies."},
+                               "confidence": "high", "rationale": "A backup folder."})
+        self.assertIn("X-DUP-NOKEPT", {f.code for f in expand(spec, self.files).findings})
+        # The validator refuses it too, on payloads that bypass the expander (the flag written by hand).
+        spec["units"][U1]["flags"] = []
+        payloads = self.expanded(spec)
+        payloads[U1]["flags"] = [{"code": "shared_content", "certainty": "confirmed", "row_indices": [0, 1],
+                                  "detail": "Same CRC32 and size as the backup folder."}]
+        found = errors(validate(self.files, payloads), unit=U1)
+        self.assertTrue(any("none of its byte-identical twins is in another arm's place" in m for m in found), found)
+
+    @staticmethod
+    def one_arm_spec() -> dict:
+        spec = shared_spec()
+        spec["groups"][1] = {"id": "LKEEP", "applies_to": "rows", "match": {"unit": U2},
+                             "file": {"role": "sample", "ion_mode": "negative", "chromatography": "RP",
+                                      "acquisition_mode": "DDA", "basis": "declared"},
+                             "evidence": [{"source": "catalog_unit", "field": "ion_mode", "value": "Negative"}],
+                             "disposition": {"keep": U2}, "confidence": "high", "rationale": "The lipid arm."}
+        del spec["groups"][2]
+        spec["units"][U2] = {"status": "ready", "confidence": "high", "rationale": "The lipid arm.",
+                             "unit_technical": {"ion_mode": "negative", "chromatography": "RP", "acquisition_mode": "DDA"}}
+        return spec
+
+
+class LegacyPayloadTests(PolicyCase):
+    def setUp(self) -> None:
+        self.files = inputs({U1: ("Reversed phase", "Positive", rows("S01_posMS", "S02_posMS")),
+                             U2: ("Reversed phase", "Negative", rows("S01_negMS", "S02_negMS"))}, MS1_LISTING)
+
+    def test_declared_technical_disputed_blocks_a_payload_of_an_earlier_skill(self) -> None:
+        payloads = self.expanded(ms1_spec())
+        self.assertEqual(validate(self.files, payloads).verdict, "pass")
+        one = copy.deepcopy(payloads[U1])
+        one["decided_by"]["skill_version"] = "1.2.0"
+        self.assertTrue(vt.legacy_policy(one))
+        self.assertFalse(vt.legacy_policy(payloads[U1]))
+        self.assertIn("declared_technical_disputed", vt.blocking_flags_for(one))
+        found = errors(validate(self.files, {**payloads, U1: one}), "T-STATUS", U1)
+        self.assertTrue(any("declared_technical_disputed" in m for m in found), found)
 
 
 if __name__ == "__main__":

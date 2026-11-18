@@ -160,9 +160,15 @@ every experimental MS/MS spectrum. Skill 1.3.0 encodes those answers as rules, s
   or `Prof` against `MSMS`; the digest 1.1.0 counts these words and lists each vendor method folder); declared method
   text. Profile-mode MS1 injections of pools (the former `format_choice` cases) are MS1-only files. A weak reading (a
   name alone, with no contrasting MS/MS sibling and no declaration) keeps the file and flags `ms1_only_suspected`
-  (informational): the header preflight decides. The validator refuses `ms1_only_no_msms` without
-  `ms1_only_excluded`, at low confidence, or on a file whose name carries a DDA, DIA, SWATH or AIF token (unless
-  `name_token_disputed`). A unit left with no file that has product-ion spectra is `excluded` (`no_product_ion_files`).
+  (informational): the header preflight decides. The validator refuses `ms1_only_no_msms` without a `confirmed`
+  `ms1_only_excluded` flag about the file, at low confidence, or on a file whose own name says product-ion spectra: a
+  DDA, DIA, SWATH, AIF or MSe token, or an MS/MS word (MSMS, AutoMSMS, MS2, ddMS2, MSe, HDMSe, SONAR, MSn, IDA;
+  validate-triage.py `ms_level_words`, the table the digest reads). Such a file is kept, or, if the evidence still
+  reads MS1 only, the unit carries `name_token_disputed` and goes to a person. A unit left with no file that has
+  product-ion spectra is `excluded` (`no_product_ion_files`); its own rows go only as `ms1_only_no_msms`,
+  `belongs_to_other_unit`, `not_in_archive` or `duplicate_content`, and a raw member the accession drops for good
+  (`other`, `no_sample_metadata`, `out_of_scope`, ...) whose name says product-ion spectra and no other arm's polarity
+  or chromatography holds the accession for a person (T-STATUS).
 - **P2, mixed acquisition.** Split into children: one per acquisition mode and polarity, and one per separately
   acquired DIA folder or batch. The validator judges the mixing test per child, so children of one mode each need no
   `mixed_acquisition`; mixing inside one run still does. It stays a question only when the evidence cannot assign
@@ -172,23 +178,31 @@ every experimental MS/MS spectrum. Skill 1.3.0 encodes those answers as rules, s
 - **P4, file evidence against the Catalog.** Where mwTab, method or name evidence contradicts the Catalog's declared
   acquisition, chromatography, polarity or instrument model, the file evidence wins (header-first acquisition, the
   campaign rule since 2026-10-06) and `declared_technical_disputed` records the disagreement. It is informational from
-  skill 1.3.0: T-DECL accepts a unit reading that differs from the declaration when it is flagged, and the flag never
-  holds the unit. The raw header decides at preflight. A folder against a header (`folder_header_disagreement`) and a
-  name token against a file-level declaration (`name_token_disputed`) stay blocking.
+  skill 1.3.0, judged by the payload's `decided_by.skill_version`: a payload an earlier skill wrote is judged by the
+  rules its agent was given, so the flag still blocks it and its children are still judged together for mixed modes.
+  T-DECL accepts a unit reading that differs from the declaration when it is flagged, and the flag never holds the
+  unit. The raw header decides at preflight. A folder against a header (its own blocking flag) and a name token
+  against a file-level declaration (`name_token_disputed`) stay blocking.
 - **P5, byte-identical copies under two arms' folders.** Until a post-download reassignment exists, every affected
   unit is `excluded` (`shared_content_unassigned`): its affected files are excluded as `shared_content_unassigned`
   (the validator requires a CRC32-and-size twin in the listing for each), and the `shared_content` flag stays on the
   unit as evidence. Which cases count is the D2 rule below, unchanged; a copy excluded as `shared_content_unassigned`
-  counts as held, as a `needs_person` copy does.
+  counts as held, as a `needs_person` copy does, but only for another unit's flag. Each such file needs a twin in
+  another arm's place (kept or held by another unit in its folder, or under another arm's polarity or chromatography
+  token, the T-DUP test); a twin inside the unit's own files or only in a backup folder is a D2 copy
+  (`duplicate_content`, `duplicate_copies_excluded`) and the unit stays (T-EXCL, X-DUP-NOKEPT).
 - **No files, files without metadata.** A unit whose deposit holds no raw file (its rows name files the listing lacks,
   or only another unit's: a polarity never deposited) is `excluded` (`no_files`); an unopened nested archive still
-  holds it for a person (T-EXCL). A raw member of a sample no Catalog row and no mwTab Samples line names is left out
+  holds it for a person (T-EXCL), and so does a raw member dropped for good (`no_sample_metadata`, `other`, ...) that
+  no other unit keeps and that may be the unit's own: nothing in its name puts it in another arm, or its stem matches a
+  row the unit says the archive lacks once case and a polarity infix are set aside (T-STATUS). A raw member of a sample no Catalog row and no mwTab Samples line names is left out
   as `no_sample_metadata` with a detail, never asked: samples need metadata.
 
 `excluded` is a new status (v2 and spec schemas, additions only) with a required `exclusion` `{reason, detail}`,
 reason `no_product_ion_files`, `no_files` or `shared_content_unassigned` (validate-triage.py `UNIT_EXCLUSION_REASONS`,
-curated.py the same tuple). An excluded unit keeps no file, asks nothing, holds nothing as `needs_person` and has no
-children (T-STATUS). It is not a hold: its accession can pass, and the plan leaves the unit out as
+curated.py the same tuple). An excluded unit keeps no file, asks nothing, holds nothing as `needs_person`, has no
+children and carries no blocking flag other than `shared_content` in a `shared_content_unassigned` unit (T-STATUS): a
+unit in doubt is `needs_person` with the question, not excluded. It is not a hold: its accession can pass, and the plan leaves the unit out as
 `triage_unit_excluded`, with the triage's reason as the detail. `out_of_scope` keeps its meaning (polarity switching,
 GC, SRM) and stays a hold.
 
@@ -208,7 +222,7 @@ acquisition mode.
 | `other`: no raw file for a unit | not asked: `excluded` (`no_files`) |
 | `other`: raw files with no row | not asked: `no_sample_metadata` |
 | `other`: batch choice, row-to-file mapping, unreadable listing | asked |
-| `folder_header_disagreement`, `name_token_disputed`, `polarity_switching`, `no_signal` | asked |
+| a folder against a header, `name_token_disputed`, `polarity_switching`, `no_signal` | asked |
 
 **Shared content is for kept copies (decision of 2026-11-18).** Let K be the units that keep a member of a
 byte-identical group. A copy a unit holds for a person (excluded as `needs_person`) counts as kept here: two arms
@@ -506,7 +520,10 @@ Each entry has a `curated_selection` block:
 - the selection: `selection_listings` (path, sha256 and entry count of each listing the record binds),
   `selection_canonical_form`, `selection_count`, `selection_sha256` (section 3.1, over the record's listing),
   `analysis_inputs_sha256`;
-- the rows: `child_key`, `rows_kept`, `members_added`, `rows_dropped`, `rows_dropped_by_reason`.
+- the rows: `child_key`, `rows_kept`, `members_added`, `rows_dropped`, `rows_dropped_by_reason`,
+  `members_excluded`, `members_excluded_by_reason` (the plan digest names the members left out as
+  `ms1_only_no_msms`, `no_sample_metadata`, `other` or `out_of_scope`; an excluded unit's detail counts what it
+  left out, rows and members, by reason).
 
 The digest a person approves therefore covers the frozen decisions and every review entry before it. The
 plan leaves a unit out, with its reason, when its triage is `triage_missing`, `triage_unreadable`,

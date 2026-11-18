@@ -1,6 +1,6 @@
 <!--
 unit-triage-task.v2: the per-accession task prompt scripts/run-triage-agent.py renders for one triage session under
-skill 1.2.0 (docs/llm-assisted-curation.md sections 2.2, 2.3 and 4.1). The agent writes one spec; code expands it into
+skill 1.3.0 (docs/llm-assisted-curation.md sections 2.2, 2.3 and 4.1). The agent writes one spec; code expands it into
 the payloads. The skill states the procedure; this prompt states only the accession, the units, the directories, the
 file to write and the boundaries.
 

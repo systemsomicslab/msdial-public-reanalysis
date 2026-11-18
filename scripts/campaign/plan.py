@@ -2713,6 +2713,7 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
             "catalog_handoff_sha256": chosen.get("catalog_handoff_sha256"), "catalog_rows_sha256": chosen.get("catalog_rows_sha256"),
             "archive_listings": found.get("listings") or [], "rows_kept": chosen.get("rows_kept"),
             "members_added": chosen.get("members_added"), "rows_dropped_by_reason": chosen.get("rows_dropped_by_reason"),
+            "members_excluded_by_reason": chosen.get("members_excluded_by_reason"),
             "kept_by_basis": chosen.get("kept_by_basis"), "kept_by_confidence": chosen.get("kept_by_confidence"),
             "flags": chosen.get("flags"), "selection_sha256": chosen.get("selection_sha256"),
             "selection_canonical_form": chosen.get("selection_canonical_form"),
@@ -2923,11 +2924,15 @@ def curated_selection_text(manifest: Mapping[str, Any]) -> list[str]:
             if not isinstance(chosen, Mapping):
                 continue
             dropped = ", ".join(f"{reason} {count}" for reason, count in (chosen.get("rows_dropped_by_reason") or {}).items())
+            # Members a unit leaves out for a reason a reader must see (P1's MS1-only runs, raw files without metadata).
+            members = ", ".join(f"{reason} {count}" for reason, count in (chosen.get("members_excluded_by_reason") or {}).items()
+                                if reason in ("ms1_only_no_msms", "no_sample_metadata", "other", "out_of_scope"))
             cut = unit.get("class_on_triaged_rows") or {}
             lines.append(
                 f"    {unit.get('unit_key', unit['unit_id'])} ({unit['accession']}): kept {chosen.get('rows_kept')} rows"
                 + (f" + {chosen['members_added']} members" if chosen.get("members_added") else "")
                 + f", dropped {chosen.get('rows_dropped')}" + (f" ({dropped})" if dropped else "")
+                + (f"; members left out: {members}" if members else "")
                 + f"; {chosen.get('ion_mode')} {chosen.get('acquisition_mode')}"
                 + (f"; flags {', '.join(chosen['flags'])}" if chosen.get("flags") else "")
                 + (f"; Class after the cut {cut.get('counts_after')}" if cut.get("evaluated") else "")

@@ -84,6 +84,10 @@ class VersionTests(unittest.TestCase):
         for relative in ("tests/test_run_triage_agent.py", "tests/test_validate_triage_v2.py"):
             text = (ROOT / relative).read_text(encoding="utf-8")
             self.assertIn(f'"{SKILL_VERSION}"', text, relative)
+        # The rendered prompts are bound by sha256 into every decision record: they name the skill they serve.
+        for relative in ("prompts/unit-triage-task.v2.md", "prompts/unit-triage-revision.v2.md"):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertEqual(set(re.findall(r"\bskill ([0-9]+\.[0-9]+\.[0-9]+)", text)), {SKILL_VERSION}, relative)
         docs = (ROOT / "docs/llm-assisted-curation.md").read_text(encoding="utf-8")
         self.assertIn(f"skill {SKILL_VERSION}", docs)
         self.assertIn(f'"version": "{SKILL_VERSION}"', docs)

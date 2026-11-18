@@ -983,7 +983,13 @@ def unit_entries(
         return [], TRIAGE_NOT_PASS, f"validate-triage.py says {validation.get('verdict')} for {accession_dir.name}" + (f": {said}" if said else "")
     if triage.get("status") == "excluded":
         exclusion = triage.get("exclusion") if isinstance(triage.get("exclusion"), Mapping) else {}
-        return [], TRIAGE_UNIT_EXCLUDED, f"{exclusion.get('reason')}: {exclusion.get('detail')}"
+        # What the unit left out, by reason, so that a reader of the plan sees which files went and why.
+        left = {"rows": _counts(triage.get("excluded_rows") or [], "reason"),
+                "members": _counts(triage.get("excluded_members") or [], "reason")}
+        counts = "; ".join(f"{kind} " + ", ".join(f"{reason} {n}" for reason, n in found.items())
+                           for kind, found in left.items() if found)
+        return [], TRIAGE_UNIT_EXCLUDED, (f"{exclusion.get('reason')}: {exclusion.get('detail')}"
+                                          + (f" (left out: {counts})" if counts else ""))
     unresolved = unresolved_rows(triage)
     if unresolved:
         return [], TRIAGE_MEMBER_UNRESOLVED, f"{len(unresolved)} kept row(s) name no archive member: {', '.join(unresolved[:5])}"
@@ -1019,6 +1025,7 @@ def unit_entries(
         "rows_dropped": len(dropped),
         "rows_dropped_by_reason": _counts(dropped, "reason"),
         "members_excluded": len(triage.get("excluded_members") or []),
+        "members_excluded_by_reason": _counts(triage.get("excluded_members") or [], "reason"),
     }
     entries = []
     for child in children(triage) or [None]:
