@@ -29,10 +29,13 @@ answer on its own. A person's answer never edits a frozen file; it produces a re
 
 ```text
 <campaign dir>\triage\<accession>\
-    <unit_id>.json              payload: msdial-unit-triage.v2 (one per unit, immutable once written)
+    <accession>.spec.json       the agent's spec: msdial-unit-triage-spec.v1 (one per accession, immutable once accepted)
+    <accession>.spec.r<N>.json  a revised spec, if any
+    <unit_id>.json              payload: msdial-unit-triage.v2 (one per unit, expanded from the spec by code, immutable)
     <unit_id>.record.json       envelope: msdial-llm-decision-record.v1 (written by the wrapper, not the model)
     <unit_id>.r<N>.json         a revision, if any (with its own .record.json)
     inputs\                     the exact bytes the LLM read (handoff copies, mwTab text, archive listing)
+    inputs\digest.md            the digest of those inputs (scripts/triage-digest.py), which the LLM reads first
     inputs\<unit_id>\prompt.md  the rendered prompt
     inputs\<unit_id>\calls\     one file per tool result, named <seq>.json
     review-log.jsonl            append only, hash chained, one per accession
@@ -64,7 +67,92 @@ manifest), so a reopened run never writes into the earlier run's folder. The cop
 manifest's sha256 at the handoff step. The record copy is not what Interactive reads: its `inputs[]` resolve
 only beside the original record, so the runner passes the original as `decision_record_path` (section 2.5).
 
-### 2.2 Payload: `msdial-unit-triage.v2`
+### 2.2 Payload: `msdial-unit-triage.v2`, expanded from the agent's spec
+
+**The agent decides; code transcribes (skill 1.2.0).** The pilot of 2026-11-18 measured where a triage session's
+usage went: about 92% of its output tokens were the agent writing every payload row by hand (a confidence, a
+rationale and evidence per row, 60 to 130 kB per unit), and most of the context was that writing and the raw inputs
+read whole. Its reasoning was a small part. So the agent now writes one compact spec per accession and code writes the
+payloads:
+
+- **The digest** (`scripts/triage-digest.py`, `DIGEST_VERSION`, written by the wrapper to `inputs\digest.md` before
+  the session and bound as input role `triage_digest`) states the source facts compactly and infers nothing: the units
+  and their declared settings; one row table keyed by `sample_id` (row index per unit, varying Catalog attributes,
+  mwTab factors and sample data that differ from the Catalog, which analysis's Samples line names the row, the name
+  tokens read with the validator's patterns, and the member the row resolves to, as the validator resolves it); per
+  analysis the mwTab CH:, MS:, SP:SAMPLEPREP_SUMMARY and AN:ANALYSIS_TYPE lines, long values cut with their line
+  number; the listing by folder with `[row]`, `[twin:Tn]`, `[small:<size>]` (a raw-like member under a tenth of its
+  folder's median raw-like size), `[archive]` (an archive inside the archive, unopened) and `[nonraw]` marks; the
+  byte-identical groups (the
+  validator's T-DUP code path), pairs between two folders summarised; and what does not pair. The raw inputs stay
+  readable and win where they disagree.
+- **The spec** (`schemas/msdial-unit-triage-spec.v1.json`, `<accession>.spec.json`, a revision
+  `<accession>.spec.r<N>.json`) is written by the agent: a `structure` paragraph; `groups` of rows or of members, each
+  described by a closed match vocabulary combined as a conjunction (no negation, no catch-all), with one disposition
+  (`keep: <unit>` with an optional child, `keep: [units]` with a `shared_reason`, or `exclude: <reason>` with a
+  detail), one set of file fields, evidence with per-item placeholders (`{attribute:Mode}`, `{member_path}`,
+  `{folder}`, ...), one confidence and one rationale; `exceptions` for single items (name drift, outliers);
+  `shared_flags`; and per unit its status, confidence, rationale, technical reading, children, flags, questions and
+  notes, the flags and questions naming the groups they concern. The agent checks it in the session with the one
+  read-only tool of `scripts/triage-spec-server.py` (`triage_spec_check`: the expansion and the validator's
+  payload checks, at most 30 findings and per-unit counts), and its calls are recorded like any other.
+- **The expander** (`scripts/expand-triage-spec.py`, `EXPANDER_VERSION`) turns the spec, over the hashed inputs
+  alone, into one v2 payload per unit, byte for byte the same on every machine (fixed key order, items sorted by row
+  index and member path). It writes what the agent used to copy: `catalog_handoff_sha256` (the sha256 of the handoff
+  copy), `catalog_row_count`, `declared`, `purpose`, `decided_at` (the record's `finished_at`), `decided_by` (the model
+  the transcript names, the skill version at the commit) and every resolved `member_path`. A group one unit keeps
+  appears in every other unit as `belongs_to_other_unit`, detail "Kept by A (group G01).", rationale "Belongs to A:
+  <the group's rationale>". Each item carries `rule_id` (its group or exception), and each payload `derivation`
+  (`spec`, `spec_sha256`, `expander_version`). The expander refuses a spec, and the wrapper the whole session, on any
+  finding: `X-SCHEMA` (an empty match, row target or override is one: there is no catch-all), `X-UNITS`,
+  `X-UNKNOWN-REF`, an exception that is not one item (`X-EXCEPTION`: a row target by `index`, which is per unit,
+  without exactly one `unit`, or one that covers two rows of a unit's table), a row or raw-like member no group covers
+  or two groups cover (`X-UNCOVERED-ROW`, `X-OVERLAP-ROW`, `X-UNCOVERED-MEMBER`, `X-OVERLAP-MEMBER`), `X-EMPTY-GROUP`,
+  a kept row that resolves to no single member (`X-UNRESOLVED`, `X-AMBIGUOUS`), `X-PLACEHOLDER`, a kept group or
+  exception whose items carry differing name tokens, extensions or top folders without a stated reason (`X-HETERO`;
+  for acquisition a name without a token differs from one with, so a group of untokened DDA files does not sweep in a
+  `QC_MS1` or a `_tDDA` file), a `shared_content` flag about files no unit keeps or holds for a person
+  (`X-DUP-NOKEPT`), `X-CHILD`, a revision that changes a unit it does not name (`X-SCOPE`), and an expanded payload
+  that breaks the v2 schema (`X-PAYLOAD-SCHEMA`, an expander bug). An exclusion reason keeps its guards: a member
+  excluded as `needs_person`, `out_of_scope_ms1_only` or `polarity_switching` carries that reason into the payload,
+  where the validator checks it as on a row; `not_in_archive` is never a member's reason.
+
+The payload schema is unchanged for every consumer: Interactive 0.5.69 (`curated_selection`) and
+`scripts/campaign/curated.py` check only the schema id, and `selection_canonical` reads named fields, so a payload's
+`selection_sha256` is computed as before. The v2 amendments of PR #61 (unreleased until it merges) are the optional
+`rule_id` and `derivation`, the removal of `scope_targeted_dda`, the informational flag
+`duplicate_copies_excluded`, and the member exclusion reasons `needs_person`, `out_of_scope_ms1_only` and
+`polarity_switching` (additions only). Hand-written v2 payloads (skill 1.1.0) stay readable where they still meet the schema;
+the pilot payloads of 2026-11-18 that ask `scope_targeted_dda` no longer do, and their accessions are triaged again.
+A spec file is never read as a payload (`validate-triage.py`, `verify-decision-log.py`, the wrapper).
+
+**In scope: inclusion- and exclusion-list DDA (decision of 2026-11-18).** AcquireX, inclusion-list-prioritised MS2,
+background exclusion lists, tDDA and HERMES are untargeted DDA: `acquisition_mode` `DDA` with the informational flag
+`targeted_dda`, which lets a report name the MS2-selection bias and never holds a unit. `targeted_DDA` stays readable
+(deprecated) and counts as DDA in the mixing test; kept `targeted_DDA` without the flag stays an error, and so does a
+kept file whose name carries an inclusion-list token (tDDA, HERMES, targeted ddMS2) in a unit without the flag
+(T-ACQ). `--emit-selection` lists each unit's informational flags as `report_flags`, so a report names the bias. A
+method with no MS1 survey (SRM/MRM, SIM, PRM, tMS2 only) stays out of scope: a kept file named so is refused (T-TOKEN),
+as is a kept file whose MS1, DDA, DIA, SWATH or AIF token is not its `acquisition_mode` (DIA, SWATH and AIF count as
+one family) without `name_token_disputed`. A token starts a word (after a non-letter, or in capitals after a
+lower-case letter, as in `posDDA`), so `Media` or `Claudia` carry no DIA. The flags that block `ready` until a person answers are
+`shared_content`, the folder and header disagreement flag, `polarity_switching`, `ms1_only`, `mixed_acquisition`,
+`declared_technical_disputed` and `name_token_disputed`; `targeted_dda`, `duplicate_copies_excluded`,
+`catalog_defect`, `target_omics_doubt` and `segmented_acquisition` inform only.
+
+**Shared content is for kept copies (decision of 2026-11-18).** Let K be the units that keep a member of a
+byte-identical group. A copy a unit holds for a person (excluded as `needs_person`) counts as kept here: two arms
+that each hold their copy and ask are shared content. K empty (copies only among files excluded for good, such as an
+mzXML copy and its twin): never blocking; the flag is `duplicate_copies_excluded`, and `shared_content` there is an
+error (T-DUP, X-DUP-NOKEPT). Each `shared_content` flag is judged on the files it is about: the groups it names, else
+those the unit's `shared_content` questions name, else the unit's own kept, held and duplicate_content rows, never
+every file an expanded payload lists. K of two or more: blocking. K of one (one unit keeps a copy, its twins are
+excluded) blocks only when a twin is in another arm's place, the shape of the failure where a folder name chose one
+arm's copy and excluded the other arm's identical file: the twin lies in a folder where another unit keeps or holds
+files, or its name's polarity or chromatography token is not the kept copy's. Otherwise (a backup folder, a second
+export of the same arm) the copy is excluded for good: `duplicate_content`, with the informational flag
+`duplicate_copies_excluded`, which T-DUP then requires. This reading of D2 is the reviewer's refinement of
+2026-11-18 and is recorded for the person's confirmation.
 
 v2 is v1 plus these changes:
 
@@ -76,8 +164,13 @@ v2 is v1 plus these changes:
 
 The evidence per decision is the existing `evidence: [{source, field, value}]` array (for example
 `{"source": "catalog_row", "field": "Mode", "value": "C18 Negative"}`) with `basis: declared|inferred`. A
-decision with `basis: inferred` and `confidence: low` cannot be `ready`; the validator makes it a hold.
+kept file with `basis: inferred` and `confidence: low` in a `ready` unit is a hold (`T-CONFIDENCE`) until the
+review log holds a person's answer about the payload with `question_code: inferred_low_confidence`.
 `validate-triage.py` accepts v1 and v2 and reports v1 files as `rationale_not_recorded`.
+
+`catalog_handoff_sha256` is the sha256 of the handoff copy the agent read (`inputs\<unit_id>\handoff.json`). The
+expander writes it (skill 1.1.0 had the agent copy it from the task prompt). The validator compares it with the
+Catalog source it is given (`T-HANDOFF`) and with the `catalog_handoff` input the decision record binds.
 
 For v2, `validate-triage.py <triage dir>` reads each accession's `review-log.jsonl` in place of
 `person_answers`. A `ready` unit that carries a blocking flag (T-STATUS) passes only when the log holds a
@@ -85,11 +178,20 @@ For v2, `validate-triage.py <triage dir>` reads each accession's `review-log.jso
 supersedes. A revision that removes a blocking flag the superseded payload carried passes only when its
 `cause` cites such a `person_answer` with the matching `question_code`.
 
+**Answers before the plan.** A triage that does not pass leaves its accession out of the plan, so the runner's
+requests, which act on planned units, cannot carry its answers. `scripts/record-person-answer.py <triage dir>
+--unit <unit_id>` shows the current payload's questions: its blocking flags, its `needs_person` questions, and
+`inferred_low_confidence` where it applies. With `--question-code`, `--by` (the person) and `--answer` (their
+words, verbatim), and optionally `--decision-id` (the payload they were shown), it appends one `person_answer`
+about the current payload, after that person has answered in the conversation. A `ready` unit whose blocking flag
+or low-confidence file was answered then passes. A `needs_person` unit stays `needs_person`: the answer is the
+cause of a revision (section 2.4) that makes it ready.
+
 ### 2.3 Envelope: `msdial-llm-decision-record.v1` (`schemas/msdial-llm-decision-record.v1.json`)
 
-The model writes only the payload. The envelope is written by the wrapper that launched the agent
-(`scripts/run-triage-agent.py`), from the harness's own transcript after the session ends, so `tool_calls`
-is never a list the model reports about itself.
+The model writes only the spec, and code expands it into the payloads. The envelope is written by the wrapper that
+launched the agent (`scripts/run-triage-agent.py`), from the harness's own transcript after the session ends, so
+`tool_calls` is never a list the model reports about itself.
 
 ```json
 {
@@ -109,29 +211,67 @@ is never a list the model reports about itself.
     {"role": "metadata_text", "path": "inputs/AN004552.mwtab.txt", "sha256": "...", "bytes": 0,
      "source_url": "https://www.metabolomicsworkbench.org/rest/study/analysis_id/AN004552/mwtab/txt"}
   ],
-  "skill": {"name": "msdial-unit-triage", "version": "1.1.0", "path": ".claude/skills/msdial-unit-triage/SKILL.md",
+  "skill": {"name": "msdial-unit-triage", "version": "1.2.0", "path": ".claude/skills/msdial-unit-triage/SKILL.md",
             "sha256": "...", "repo_commit": "<40 hex>"},
-  "prompt": {"template_path": "prompts/unit-triage-task.v1.md", "template_sha256": "...",
+  "wrapper": {"path": "scripts/run-triage-agent.py", "sha256": "...", "repo_commit": "<40 hex, or null>"},
+  "prompt": {"template_path": "prompts/unit-triage-task.v2.md", "template_sha256": "...",
              "rendered_path": "inputs/AN004552/prompt.md", "rendered_sha256": "..."},
   "agent": {"harness": "claude-code", "harness_version": "...", "model_id": "claude-opus-5-5",
             "sampling": "harness default, not exposed", "session_id": "...",
             "context": {"configuration": "clean", "working_directory": "<empty directory holding only the skill>",
                         "context_files": [], "memory": "disabled", "hooks": [],
-                        "mcp_servers": [{"name": "msdial-repository-catalog", "version": "..."}],
+                        "mcp_servers": [{"name": "msdial-triage-spec", "version": "1.0.0"}],
                         "harness_flags": ["..."]}},
   "started_at": "2026-11-16T09:12:00+09:00", "finished_at": "...",
-  "tool_calls": [{"seq": 1, "tool": "msdial_catalog_get_analysis_unit", "arguments": {"unit_id": "..."},
+  "tool_calls": [{"seq": 1, "tool": "mcp__msdial-triage-spec__triage_spec_check",
+                  "arguments": {"spec_file": "../out/ST002798.spec.json"},
                   "status": "ok", "result_path": "inputs/AN004552/calls/1.json", "result_sha256": "..."}],
-  "transcript": {"sha256": "<sha256 of the released redacted bytes>", "released_path": "transcripts/AN004552.redacted.jsonl",
+  "transcript": {"sha256": "<sha256 of the released redacted bytes>",
+                 "released_path": "transcripts/ST002798-<session stamp>.redacted.jsonl",
                  "unredacted_sha256": "<kept locally, not verifiable from the bundle>",
-                 "redaction": "check-release-redaction.py v1"},
-  "rationale": "Plain language summary of the unit decision."
+                 "redaction": "run-triage-agent.py scrubber; check-release-redaction.py v2"},
+  "rationale": "Plain language summary of the unit decision.",
+  "derivation": {
+    "spec": {"path": "ST002798.spec.json", "schema": "msdial-unit-triage-spec.v1", "sha256": "...", "bytes": 0},
+    "expander": {"path": "scripts/expand-triage-spec.py", "version": "1.0.0", "sha256": "...", "repo_commit": "<40 hex>"},
+    "digest": {"path": "inputs/digest.md", "sha256": "...",
+               "script": {"path": "scripts/triage-digest.py", "version": "1.0.0", "sha256": "...",
+                          "repo_commit": "<40 hex>"}},
+    "context": {"decided_at": "<finished_at>", "model": "claude-opus-5-5", "agent": "claude-code",
+                "skill_version": "1.2.0", "purpose": null}
+  }
 }
 ```
 
+`inputs[]` also binds `inputs/digest.md` (role `triage_digest`). `derivation` ties the payload to the spec the
+session wrote (released byte for byte beside it) and to the code that expanded it. Every unit's record of one session
+binds the same spec; `decision_id` stays the payload's sha256. A record now carries only the spec as a Write
+argument (and the `Edit` calls that fixed it), about 50 kB in the 2026-11-18 re-pilot where a skill 1.1.0 record carried
+every hand-written payload (about 200 to 300 kB). The skill allows `Edit` on the spec because that re-pilot, without it,
+wrote a 26 kB spec three times over to correct what the check reported and one sentence of a rationale.
+
 Every input the LLM read is copied into `inputs\` and hashed, so a later change at the repository cannot
 change what the decision rested on; so are the rendered prompt and every tool result. Tool arguments are
-recorded with secrets removed.
+recorded with secrets removed. A repository text (an mwTab text, an archive listing) that holds an absolute
+path is made portable before the session, never after (`<external>/<file name>`), and its input names the
+retrieved bytes' sha256 as `original_sha256` with the `redaction` applied; the agent read the bytes `sha256`
+names, which are released as they are.
+
+**The released transcript.** The wrapper scrubs the harness transcript (secrets, e-mail addresses, the
+operator's names and handles, absolute paths) and builds `tool_calls` and the stored results from the scrubbed
+bytes, so the record and the transcript agree by construction. For a clean configuration it checks the scrubbed
+bytes with `check-release-redaction.py` and, when nothing is found, writes them as
+`triage\<accession>\transcripts\<accession>-<session stamp>.redacted.jsonl` and names them in `transcript`. A
+transcript of a run that was not clean, or one the check refuses, is not released, and the validator holds.
+
+**Acceptance.** The wrapper accepts a session whole or not at all. Beyond a failed or timed-out session, it
+refuses one that read outside its working directory, inputs and output folder (`Read`, `Glob`, `Grep`), wrote or
+edited (`Write`, `Edit`) anything but the spec it asked for (a payload above all: code writes those), or wrote a spec holding an absolute
+path, an e-mail address, a secret or the operator's name, since a spec is released byte for byte and never rewritten.
+The accepted spec is then expanded with the session's context; any `X-*` finding refuses the session the same way
+(`harness\expansion.json` lists the findings, nothing is committed, and the accession is run again). Each accepted
+session is committed all or nothing (tool results, the transcript, the spec, the records, the payloads; nothing over
+an existing file), and a lock file in the triage directory keeps two runs of one accession apart.
 
 **Inputs the build reads.** Interactive (`curated_selection.read_decision_record`) and the runner
 (`curated.record_inputs`) read two roles of `inputs[]`, resolving each `path` relative to the record file's own
@@ -144,21 +284,62 @@ that breaks any of these refuses the unit: Interactive's code is `curated_select
 plan leaves the unit out as `triage_record_mismatch` before a person sees the digest.
 
 **Context.** Triage runs in a clean harness configuration: a working directory outside every code checkout
-that holds only the skill, no user or project `CLAUDE.md`, auto memory disabled, no hooks, and only the MCP
-servers the skill allows. `agent.context` records that configuration, with every context file the harness
+that holds only the skill and the spec schema it names, no user or project `CLAUDE.md`, auto memory disabled, no hooks, and only the MCP
+servers the skill allows: since skill 1.2.0 the spec check server alone (`msdial-triage-spec`, launched from the code
+at HEAD written beside the session). The Catalog server is no longer offered: it had no call in the four pilot
+sessions, and every Catalog fact arrives as a hashed input. `--effort <level>` is passed to the CLI when given and
+recorded in `harness_flags`. `agent.context` records that configuration, with every context file the harness
 loaded and its sha256; the list is expected to be empty. The harness's own system prompt belongs to the
 harness version and is identified by `harness_version`; it is not ours to release. A record whose
-`agent.context.configuration` is not `clean`, or whose `context_files` is not empty, is a hold.
+`agent.context.configuration` is not `clean`, or whose `context_files` is not empty, is a hold. The wrapper
+writes `clean` only from evidence: the init message must list the tools, MCP servers (each `connected`) and
+plugins, and the harness's debug log must state the hooks registered and that memory is off; `memory` is
+`disabled` only when the log says so. A missing debug log or an init without those lists is `not clean`.
 
 **What `validate-triage.py` recomputes**, refusing any mismatch: `decision_id` and `payload.sha256` from the
 payload; `sha256` and `bytes` of every `inputs[]` item; `skill.sha256` from `SKILL.md` at `repo_commit`;
-`prompt.template_sha256` and `prompt.rendered_sha256` from the stored files; every
-`tool_calls[].result_sha256` from its `result_path`; `transcript.sha256` from the released redacted
-transcript; the sha256 of each `context_files` item. In a release bundle, an `inputs[]` file released as a
-projection (section 5.3) is checked through `release-index.json` instead: its bytes must hash to the index's
-`release_sha256`, and the index's `original_sha256` must be the item's `sha256`. It also refuses a tool call not on the skill's allowed
-list, and a `tool_calls` list that differs from the tool calls the released transcript shows. It does not
-recompute `transcript.unredacted_sha256` or `session_id`, which only the producing machine can check.
+`wrapper.sha256` from the wrapper at its `repo_commit`; `prompt.template_sha256` and `prompt.rendered_sha256`
+from the stored files; every `tool_calls[].result_sha256` from its `result_path`; `transcript.sha256` from the
+released redacted transcript; the sha256 of each `context_files` item. A released code folder (`--code-root`)
+checked out with CRLF line endings is read as its commit's LF bytes. In a release bundle, an `inputs[]` file
+released as a projection (section 5.3) is checked through `release-index.json` instead: its bytes must hash to
+the index's `release_sha256`, and the index's `original_sha256` must be the item's `sha256`. Against the released
+transcript it refuses a tool call, by its server-qualified name, that is not on the skill's allowed list, except a
+call the harness never ran: a tool the transcript's init message does not offer, answered with the harness's own
+`No such tool available: <name>` error (the 2026-11-18 re-pilot asked for `Edit` to change its spec), which is a
+note; a
+`tool_calls` list that differs from the tool calls the released transcript shows, in order, names, arguments or
+stored results; a `model_id` the transcript does not name; and a `session_id` other than the transcript's. The payload's
+`catalog_handoff_sha256` must be the record's own `catalog_handoff` input. It does not recompute
+`transcript.unredacted_sha256`, which only the producing machine can check.
+
+**The derivation (`T-SPEC`, `T-DIGEST`).** For a record with `derivation` the validator checks the spec's sha256 and
+bytes, loads the expander at `derivation.expander.repo_commit` (in its own process when the commit's expander,
+validator and schemas are the running tree's, line endings aside; otherwise from a scratch copy of the commit's files,
+through git or `--code-root`; a module that cannot be read or loaded holds), re-runs it over the record's `inputs[]`
+(each sha256-checked; a handoff released as a projection keeps its original sha256) with `derivation.context`, whose
+`decided_at`, `model` and `skill_version` must be the record's own, and refuses any X-* finding and any byte of
+difference from the payload. It rebuilds `inputs/digest.md` with the digest script at its commit from the same inputs
+and refuses a difference. Each `code_file` (the expander, the digest script) binds, besides its own sha256, a `tree`:
+the sha256 of every file it reads beside itself (`validate-triage.py` and the triage schemas, `SPEC_CODE_TREE`). Every
+record's hashes are checked against the bytes read, through git or `--code-root`, on every record (a loaded module is
+cached by the bytes, never by the commit alone); a hash that is not the file's is an error, code that cannot be read
+or loaded a hold. A payload carrying `derivation` whose record carries none is an error, and so is a v2 payload whose
+record binds no derivation when that record names skill 1.2.0 or later (whose agent writes a spec, never a payload),
+when the directory holds a spec, or when another record of the accession binds one. A record whose tool calls show
+the session writing a payload file of its unit is an error. For a revision spec (`.spec.r<N>.json`) X-SCOPE is
+re-checked: every unit no record of that spec names must expand to its payload as it stood before the revision. Every other check runs
+on the expanded payload as on any other, so the guarantees do not weaken; T-SPEC adds that the payload is the
+deterministic image of a spec the released transcript shows. `--payload-only` skips the record, transcript, context
+and revision checks (the in-session check uses it).
+
+**What it holds, failing closed.** A check that could not run is a hold, never a pass: a record that names no
+released transcript or whose transcript is not there (`T-TRANSCRIPT`); a `model_id` of `unknown`; a tool call with
+no stored result; a record that binds no Catalog evidence (`catalog_handoff`, `catalog_samples` or `catalog_unit`)
+or no archive listing; a listing the record binds that is not among the `--archive-listing` files, or a listing
+given that no record binds; an MCP server the tool calls use that `agent.context.mcp_servers` does not list; empty
+`harness_flags`, or for `claude-code` flags that lack the clean configuration's; and a `wrapper.repo_commit` of
+null (the wrapper ran from an edited working tree).
 
 Other kinds use the same envelope: `metadata_interpretation` (field, source text sha256, value, evidence,
 confidence, rationale), `class_proposal` (Catalog proposal id and digest, rationale; saving stays boundary
@@ -176,10 +357,25 @@ files before and at the approval, and the answers people give about them. Each e
 
 | kind | fields | written by |
 |---|---|---|
-| `validator_verdict` | `tool` (`validate-triage.py`), `code_commit`, `verdict` (pass, hold, error), `findings_sha256`, `findings` (check, level, message) | `validate-triage.py --emit-selection` |
-| `person_answer` | `by` (name or the initials the person agreed to publish), `question_code`, `answer` (verbatim), `channel` (`conversation`) | the runner, from a `skip`, `retry` or `release-held` request on a curated unit that carries `--question-code` and a named `--by`; the request's `--reason` is the answer, verbatim, as that person gave it in the conversation (the rule of `scripts/record-reading.py`) |
-| `revision` | `supersedes`, `new_decision_id`, `cause` (`{kind, seq}` of a `person_answer`, a ledger `header_reconciliation` or a `validator_verdict`) | the agent |
+| `validator_verdict` | `tool` (`validate-triage.py`), `code_commit`, `verdict` (pass, hold, error), `findings_sha256`, `findings` (check, level, message) | `validate-triage.py --emit-selection`, which `run-triage-agent.py` runs after every session it commits |
+| `person_answer` | `by` (name or the initials the person agreed to publish), `question_code`, `answer` (verbatim), `channel` (`conversation`) | before the plan, `scripts/record-person-answer.py` (section 2.2); after it, the runner, from a `skip`, `retry` or `release-held` request on a curated unit that carries `--question-code` and a named `--by`. Either way the answer is that person's words, verbatim, as they gave them in the conversation (the rule of `scripts/record-reading.py`) |
+| `revision` | `supersedes`, `new_decision_id`, `cause` (`{kind, seq}` of a `person_answer`, a ledger `header_reconciliation` or a `validator_verdict`) | `run-triage-agent.py --revise <unit_id>=<seq>`, after it commits the revised payload and its record; never the agent |
 | `digest_approval` | `manifest_digest`, `approval_id`, `by` (copied from the ledger's `manifest_approved`) | `campaign-runner.py approve`, one entry per decision the approved manifest covers (the children of one triage share it) |
+
+**Revisions.** `run-triage-agent.py --campaign-dir <dir> --accession <accession> --revise <unit_id>=<seq>`
+revises a unit of a triaged accession because of review-log entry `<seq>`, a `person_answer` or a
+`validator_verdict` about the unit's current payload or one it supersedes; one entry causes one revision. The
+session gets the inputs the current payload's record binds, unchanged (their sha256 checked), the current spec as
+`inputs\spec.r<N>\previous.spec.json`, the current payload as `inputs\<unit_id>\r<M>\previous.json` and the cause
+line as the log holds it as `cause.json`, under `prompts/unit-triage-revision.v2.md`, and writes the whole spec again
+as `<accession>.spec.r<N>.json`. Its expansion may change only the units the revision names: the expansion of every
+other unit must equal its current payload, when and by whom aside (`X-SCOPE`). Each named unit's payload is
+`<unit_id>.r<M>.json`; its record names the current decision in `supersedes`, binds those inputs (roles
+`prior_decision` for the previous payload and the previous spec, `review_entry` for the cause) and the new spec in
+`derivation`, and stores its prompt and tool results under `inputs\<unit_id>\r<M>\`. Then the wrapper appends the
+`revision` entry and validates the accession. A revision whose named unit expands to what it was is refused. A
+payload that was not expanded from a spec (skill 1.1.0) is not revised this way: its accession is triaged again in a
+new campaign directory.
 
 The runner's writer (`curated.append_review_log`) refuses any other kind and any field outside its kind's
 row, and refuses a `person_answer` without `by` and `question_code`. The CLI refuses `--question-code`
@@ -214,6 +410,20 @@ link; a `decision_id` without its payload; a revision whose `cause` names no ent
 revision that removes a blocking flag without a `person_answer` of the matching `question_code` (section
 2.2); a ledger `triage_recorded` whose triage sha256 matches no payload; and a `triage_validated` whose
 `review_log_head_sha256` is not the hash of a line of that accession's review log.
+
+It reads a campaign directory (the triage directory the manifest names, else `triage\` beside it) or a release
+bundle (its `triage\`), and reports each refusal with its check: `L-CHAIN` (a review log line that does not parse,
+counts `seq` out of order or does not chain), `L-ENTRY` (a kind or a field outside section 2.4's table),
+`L-PAYLOAD` (a `decision_id`, or a revision's `supersedes` or `new_decision_id`, that is no payload of the
+accession), `L-CAUSE` (the cause is not an entry of its kind at that `seq`: a `person_answer` or
+`validator_verdict` of the same review log, before the revision and about this decision or one it supersedes, or a
+ledger `header_reconciliation` line of that `seq` about the revised unit or one of its children), `L-FLAG` (the
+blocking flag dropped without a named person's answer to its code, read as `validate-triage.py` `T-REVISION` reads
+it), `D-CHAIN` (a ledger line that does not parse, counts out of order, does not chain or has no standing),
+`D-ENTRY` (a ledger kind the export does not write), `D-PATH` (a ledger line holding an absolute path),
+`D-TRIAGE` (a `triage_recorded` whose `triage_sha256` is no payload's, or whose `triage_relative_path` names a
+file that does not hash to it) and `D-HEAD`. A `triage_validated` with a null head (the log was empty at the plan)
+passes. Exit status 0 nothing refused, 1 refused, 2 not readable.
 
 ### 2.5 Manifest and run manifest
 
@@ -671,12 +881,14 @@ system prompt, fixed by `harness_version`. A third party re-runs the triage in t
 (section 2.3) with any capable agent harness, for example:
 
 ```text
-<python> scripts/run-triage-agent.py --accession <accession> --triage-dir <empty dir> --model <model id>
-<python> scripts/compare-triage.py <released triage dir> <re-derived triage dir> --json
+<python> scripts/run-triage-agent.py --campaign-dir <empty dir> --accession <accession> --model <model id>
+<python> scripts/compare-triage.py <released triage dir> <empty dir>\triage\<accession> --json
 ```
 
-The wrapper renders `prompts/unit-triage-task.v1.md` (the accession, directories and boundaries; the skill
-states the rest), launches the harness in the clean configuration and writes the envelopes.
+The wrapper renders `prompts/unit-triage-task.v2.md` (the accession, directories, the spec to write and the
+boundaries; the skill states the rest), writes the digest, launches the harness in the clean configuration, expands
+the spec and writes the envelopes. Records of skill 1.1.0 name `prompts/unit-triage-task.v1.md`, which stays in the
+repository for them.
 `compare-triage.py` needs no model. Within model runs in the laboratory use the same configuration, so they
 share no memory the third party lacks.
 
@@ -702,8 +914,26 @@ share no memory the third party lacks.
 ### 4.3 Eval set accuracy and validator catch rate
 
 The eval set is `tests/fixtures/triage-eval/` (eight Metabolomics Workbench accessions with ground truth from
-raw headers, mzML source paths, elution order and mwTab). For every skill version and model, `tests/triage_eval.py`
-reports per file correct, wrong and abstained, and per unit the expected pre-download status. The validator's
+raw headers, mzML source paths, elution order and mwTab: ST002798, ST002796, ST004606, ST003964, ST002283, ST002747,
+ST004544, ST003128). For every skill version and model, `tests/triage_eval.py` reports per file correct, wrong and
+abstained, and per unit the expected pre-download status. To score a triage of one of them:
+
+```text
+<python> scripts/validate-triage.py <triage dir> --catalog tests/fixtures/triage-eval/<accession>/catalog.json
+    --archive-listing tests/fixtures/triage-eval/<accession>/archive-members.tsv
+    --ground-truth tests/fixtures/triage-eval/<accession>/ground_truth.json
+```
+
+A campaign payload is scored by its `source_subrecord_id` when the Catalog unit id is not the analysis id. A good
+pre-download triage reaches every unit's `expected_status_pre_download` with no wrong inclusion; abstaining (the
+accession whose names carry no signal) leaves files unassigned and scores as left out, which is the right outcome
+before headers exist. A unit that holds shared copies for a person (`needs_person` exclusions, skill 1.2.0) scores
+them as `held_for_person`, not as left out: they wait for the answer to its question. **The evaluation is blind** (decision of 2026-11-18): the skill, the v2 prompt templates, the
+spec schema, the digest script and the expander name no eval accession, analysis id or archive folder
+(`tests/test_skill_blind.py`); the answers live in the fixtures only. `tests/fixtures/triage-eval-specs/` holds a
+hand-written spec for each eval accession, test data only, which `tests/test_expand_triage_spec.py` expands and scores
+(no wrong inclusion, nothing left out but the abstained units, every expected status): it shows the spec language can
+express every eval layout. The validator's
 catch rate is the fraction of wrong assignments (against ground truth) that `validate-triage.py` raises as
 error or hold, reported for real LLM output and for the synthetic mutations the test suite builds. A unit whose
 header reconciliation establishes ground truth in production may be added to the eval set; the set carries an
@@ -844,12 +1074,36 @@ outputs included. It refuses:
 - a drive letter path;
 - a UNC path (`\\host\share`);
 - a user profile path;
-- in a transcript, any block the harness inserts from a context file or memory.
+- in a transcript or a stored tool result, any block the harness inserts from a context file or memory;
+- an API key or token of a known form;
+- in a file the agent or the wrapper wrote, an e-mail address;
+- a name given with `--operator-term`.
 
-The script is still to be built (section 7). Until it exists, `campaign-runner.py release` applies its three path
-rules itself (`curated.release_redaction_findings`: drive letter, UNC and user profile paths, as text and as
-JSON escapes) to every file it wrote. A bundle with a finding is refused and gets no `release-index.json`, so
-the replay never reads it. The bundle it writes therefore passes those three rules.
+How it reads them (`check-release-redaction.py v2`, the version a record's `transcript.redaction` names):
+- every file is read as bytes, whatever its type, and each rule is reported once per file at its first match
+  (`{file, rule, at, line}`), as text and as JSON escapes;
+- `library_path`: a library file named with a path. A library file is one ending `.msp`, `.lbm`, `.lbm2` or
+  `.lbm3`, or a name the bundle itself names in a `<library:<name> sha256=<sha256>>` token, or one given with
+  `--library-name`. The name alone, `<library:...>`, `<external>/<name>` and a URL are not paths;
+- `drive_letter_path`, `unc_path` and `user_profile_path`: the three path rules;
+- `context_block`: in a transcript (a file under `transcripts\`, a `*.redacted.jsonl` or a `*transcript*.jsonl`)
+  or a stored tool result (under a triage's `inputs\<unit_id>\calls\`), a context file or memory shown as
+  "Contents of ..." (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `MEMORY.md`),
+  the harness's preamble to them, or the auto memory index;
+- `secret_token`: in any file, an API key or token of a known form (`sk-ant-...`, `gh?_...`, `AKIA...`,
+  `xox?-...`);
+- `email_address`: an e-mail address in a payload, a decision record, the review log, a stored tool result
+  (`inputs\<unit_id>\calls\`) or a transcript. The repository's own texts under `inputs\` may name their
+  submitters and are not read for it;
+- `operator_name`: a name or handle given with `--operator-term`, as a word (`jroe` in `pool-jroe-2026`, not in
+  `jroebuck`), or anywhere for a name in a script without spaces between words. The wrapper checks every
+  transcript it releases with the operator's names and handles.
+
+Exit status 0 nothing found, 1 a finding, 2 not readable. `campaign-runner.py release` calls it on every file it
+wrote (`curated.release_redaction_findings`, with the pinned libraries' names), and decides with its three path
+rules which triage inputs it projects. A bundle with a finding is refused and gets no `release-index.json`, so
+the replay never reads it; the command's output names the script and its sha256. Run it again over the whole
+deposit after the rest of the release is added beside the bundle.
 
 ## 6. Failure handling
 
@@ -1008,13 +1262,41 @@ Built:
   against Interactive.
 - **The triage's Class boundary** (PR #60, cfb8b39): the skill never reads or cites `class_proposal`, and
   `validate-triage.py` refuses a triage whose evidence or decision record inputs cite it (`T-CLASS`).
+- **The triage agent tooling** (branch `feat/triage-agent-tooling`):
+  - `schemas/msdial-unit-triage.v2.json` and `schemas/msdial-llm-decision-record.v1.json`; skill 1.1.0 (v2
+    payloads with confidence and rationale, a clean context, payloads only, never `class_proposal`) and
+    `prompts/unit-triage-task.v1.md`, then skill 1.2.0 (below);
+  - `run-triage-agent.py`: inputs prepared before the session (the Catalog handoffs, the remote central directory
+    listing, the mwTab text, made portable where it holds a path), the handoff sha256 in the prompt, the clean
+    configuration checked from evidence, all or nothing acceptance (reads outside the session, payloads holding a
+    path, an e-mail address, a secret or a name) and commit, a lock per triage directory, the envelope and the
+    released redacted transcript from the harness transcript, the wrapper's own identity, revisions
+    (`--revise`, with the review log's `revision` entry), and validation with `--emit-selection`;
+  - `record-person-answer.py`: a named person's answer before the plan (section 2.2);
+  - `validate-triage.py` v2: the envelope hashes (`T-RECORD`, `T-TOOLS`, `T-CONTEXT`), the comparison with the
+    released transcript and its fail-closed holds (`T-TRANSCRIPT`), `T-CONFIDENCE` and its answer, review log
+    answers (`T-STATUS`, `T-REVISION`, `T-LOG`), projected inputs through the release index, `--emit-selection`
+    and its `validator_verdict` entries;
+  - `verify-decision-log.py` (section 2.4) and `check-release-redaction.py` v2 (section 5.3), which
+    `campaign-runner.py release` calls;
+  - the token diet and the decisions of 2026-11-18 (section 2.2): skill 1.2.0 with
+    `prompts/unit-triage-task.v2.md` and `unit-triage-revision.v2.md`; `schemas/msdial-unit-triage-spec.v1.json`;
+    `triage-digest.py` 1.0.0; `expand-triage-spec.py` 1.0.0 with a hand-written spec for each eval accession;
+    `triage-spec-server.py` (`triage_spec_check`); the wrapper's spec acceptance, expansion, derivation, `--effort`
+    and spec revisions, with the Catalog server dropped from the session; `validate-triage.py` `T-SPEC`, `T-DIGEST`
+    and `--payload-only`; inclusion- and exclusion-list DDA in scope (`targeted_dda` informational,
+    `scope_targeted_dda` removed); `shared_content` only for kept copies (`duplicate_copies_excluded`); the blind
+    evaluation test.
 
 To build:
-- schemas and skill 1.1.0;
-- `run-triage-agent.py` (clean configuration, envelope from the harness transcript);
-- `validate-triage.py` (v2, envelope hashes, projected inputs through the release index, review log answers,
-  `--emit-selection`, log append);
-- `verify-decision-log.py`, `compare-triage.py`, `export-llm-decisions.py` and `check-release-redaction.py`;
+- the pilot replay of the token diet (no download): ST002747, ST002798 and ST002283 triaged again into a new pilot
+  campaign directory; per unit `selection_sha256` compared with the pilot payloads (only the D1 and D2 status changes
+  expected) and `model_usage` recorded; the targets are at most 25k output tokens per accession and at most 0.15 of
+  the pilot's usage-weighted cost. Optionally, after it, the eval set at `--effort medium`, adopted only if scores and
+  holds match;
+- `compare-triage.py` (section 4.2) and `export-llm-decisions.py` (section 5.2);
+- a revision caused by a ledger `header_reconciliation` entry: `run-triage-agent.py --revise` takes a review-log
+  `person_answer` or `validator_verdict` only;
 - canonical output hashes at finalisation and `output-checksums.tsv` in the release bundle;
 - in Interactive, `parameter_file.canonical_sha256` and projection v2 (next free patch versions).
 

@@ -33,6 +33,7 @@ sys.dont_write_bytecode = True
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 import campaign_fakes  # noqa: E402  (puts scripts/ on the path)
+import decision_records  # noqa: E402
 import test_campaign_contract as contract  # noqa: E402  (puts Interactive and the Catalog on the path)
 import triage_eval as te  # noqa: E402
 from campaign import curated, machine, plan, policy, ports  # noqa: E402
@@ -46,6 +47,10 @@ _REPLAY = importlib.util.spec_from_file_location("replay_campaign", SCRIPTS / "r
 assert _REPLAY and _REPLAY.loader
 replay_cli = importlib.util.module_from_spec(_REPLAY)
 _REPLAY.loader.exec_module(replay_cli)
+_DECISION_LOG = importlib.util.spec_from_file_location("verify_decision_log", SCRIPTS / "verify-decision-log.py")
+assert _DECISION_LOG and _DECISION_LOG.loader
+decision_log = importlib.util.module_from_spec(_DECISION_LOG)
+_DECISION_LOG.loader.exec_module(decision_log)
 
 ACCESSION = "ST002747"
 UNITS = ("AN004454", "AN004455", "AN004456", "AN004457")
@@ -1476,6 +1481,10 @@ class EndToEndTests(_Root):
         self.assertEqual({kind: kinds.count(kind) for kind in expected}, expected)
         self.assertEqual(kinds[:9], ["triage_recorded", "triage_validated"] * 4 + ["manifest_approved"])
         self.assertEqual(curated.verify_decision_ledger(target), [])
+        # verify-decision-log.py walks the review log and the ledger the campaign wrote, and refuses nothing.
+        walked = decision_log.verify(world.directory)
+        self.assertEqual(walked.verdict, "pass", json.dumps(walked.as_dict(), indent=1))
+        self.assertEqual(walked.ledger["lines"], len(kinds))
         # The replay of the selections, from the bundle alone, without any model.
         (world.directory / "campaign-manifest.summary.json").write_text(json.dumps({"manifest_digest": digest}), encoding="utf-8")
         report = replay_cli.replay(world.directory, self.root / "replay-workspace", "selection")
@@ -1510,6 +1519,11 @@ class EndToEndTests(_Root):
         index = json.loads((release / "release-index.json").read_text(encoding="utf-8"))
         self.assertEqual(index["approved_manifest_digest"], digest)
         self.assertEqual(index["manifests"][0]["original_sha256"], digest)
+        # The release command applied check-release-redaction.py, and the released ledger and triage still walk.
+        self.assertEqual(json.loads(out.getvalue())["redaction"]["verdict"], "pass")
+        self.assertEqual(json.loads(out.getvalue())["redaction"]["tool"], "check-release-redaction.py")
+        walked = decision_log.verify(release)
+        self.assertEqual(walked.verdict, "pass", json.dumps(walked.as_dict(), indent=1))
         released = (release / "campaign-manifest.release.json").read_text(encoding="utf-8")
         self.assertFalse(re.search(r'"(?:[A-Za-z]:[\\/]|\\\\\\\\)', released), "the release projection holds no absolute path")
         report = replay_cli.replay(release, self.root / "w", "selection", out=self.root / "r4.json")
@@ -1633,15 +1647,10 @@ class EndToEndTests(_Root):
         folder = triage_root / ACCESSION
         record = folder / "AN004454.record.json"
         payload = folder / "AN004454.json"
-        listing = folder / "inputs" / "archive-members.tsv"
-        record.write_text(json.dumps({
-            "schema": "msdial-llm-decision-record.v1", "decision_id": hashlib.sha256(payload.read_bytes()).hexdigest(),
-            "kind": "unit_triage", "accession": ACCESSION, "unit_id": "AN004454",
-            "payload": {"path": payload.name, "schema": "msdial-unit-triage.v1", "sha256": hashlib.sha256(payload.read_bytes()).hexdigest()},
-            "agent": {"harness": "synthetic-harness", "model_id": "synthetic-model"},
-            "inputs": [{"role": "archive_listing", "path": "inputs/archive-members.tsv",
-                        "sha256": hashlib.sha256(listing.read_bytes()).hexdigest(), "bytes": listing.stat().st_size}]}),
-            encoding="utf-8")
+        # The record as the wrapper writes it (msdial-llm-decision-record.v1, complete): the validator the plan runs checks
+        # every hash it names, with the skill and the prompt template at this repository's HEAD.
+        decision_records.write_record(payload, decision_records.Code.from_head(),
+                                      inputs=[{"role": "archive_listing", "path": "inputs/archive-members.tsv"}])
         revised = json.loads((folder / "AN004455.json").read_text(encoding="utf-8"))
         revised["notes"] = "revision 2: the same files, a reworded note"
         (folder / "AN004455.r2.json").write_text(json.dumps(revised), encoding="utf-8")

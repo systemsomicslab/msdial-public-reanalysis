@@ -1,0 +1,45 @@
+{
+ "schema": "msdial-unit-triage-spec.v1",
+ "accession": "ST003128",
+ "phase": "pre_download",
+ "structure": "Vendor .raw files at the archive root with an AppleDouble twin under __MACOSX; each analysis's Samples line names one sample-id prefix family (SP_, S_, SL_).",
+ "evidence_sources": [
+  {"source": "mwtab", "detail": "Each analysis's MS_METABOLITE_DATA Samples line names its own prefix family."},
+  {"source": "archive_listing", "detail": "Zip central directory listing read before download."}
+ ],
+ "groups": [
+  {"id": "SP", "applies_to": "rows", "match": {"sample_id": {"regex": "^SP_"}},
+   "file": {"role": "sample", "ion_mode": "switching", "chromatography": "HILIC", "acquisition_mode": "MS1", "basis": "declared"},
+   "evidence": [{"source": "mwtab", "field": "MS_METABOLITE_DATA Samples", "value": "{sample_id}"}],
+   "disposition": {"keep": "AN005128"}, "confidence": "medium",
+   "rationale": "The SP_ family is the one the HILIC analysis's Samples line names; the unit is declared Both, so the files may switch polarity."},
+  {"id": "S", "applies_to": "rows", "match": {"sample_id": {"regex": "^S_"}},
+   "file": {"role": "sample", "ion_mode": "negative", "chromatography": "RP", "acquisition_mode": "MS1", "basis": "declared"},
+   "evidence": [{"source": "mwtab", "field": "MS_METABOLITE_DATA Samples", "value": "{sample_id}"}],
+   "disposition": {"keep": "AN005129"}, "confidence": "medium",
+   "rationale": "The S_ family is the one the reversed-phase negative analysis's Samples line names."},
+  {"id": "SL", "applies_to": "rows", "match": {"sample_id": {"regex": "^SL_"}},
+   "file": {"role": "sample", "ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "DDA", "basis": "declared"},
+   "evidence": [{"source": "mwtab", "field": "MS_METABOLITE_DATA Samples", "value": "{sample_id}"}],
+   "disposition": {"keep": "AN005130"}, "confidence": "high",
+   "rationale": "The SL_ family is the one the reversed-phase positive analysis's Samples line names."}
+ ],
+ "units": {
+  "AN005128": {"status": "needs_person", "confidence": "medium",
+   "rationale": "The SP_ files belong here by the Samples line, but a unit declared Both may hold polarity-switching full-scan files, which no run takes.",
+   "unit_technical": {"ion_mode": "switching", "chromatography": "HILIC", "acquisition_mode": "MS1"},
+   "flags": [
+    {"code": "polarity_switching", "certainty": "suspected", "detail": "Declared Both with one file per sample: the files may switch polarity.", "groups": ["SP"]},
+    {"code": "ms1_only", "certainty": "suspected", "detail": "The method text describes full scan for this family.", "groups": ["SP"]}],
+   "needs_person": [
+    {"code": "polarity_switching", "question": "Do the SP_ files switch polarity? If so the unit is out of campaign scope.", "groups": ["SP"]},
+    {"code": "scope_ms1_only", "question": "Are the SP_ files full scan only? MS1-only files are out of scope.", "groups": ["SP"]}]},
+  "AN005129": {"status": "needs_person", "confidence": "medium",
+   "rationale": "The S_ files belong here by the Samples line, but they look full scan only.",
+   "unit_technical": {"ion_mode": "negative", "chromatography": "RP", "acquisition_mode": "MS1"},
+   "flags": [{"code": "ms1_only", "certainty": "suspected", "detail": "The method text describes full scan for this family.", "groups": ["S"]}],
+   "needs_person": [{"code": "scope_ms1_only", "question": "Are the S_ files full scan only? MS1-only files are out of scope.", "groups": ["S"]}]},
+  "AN005130": {"status": "ready", "confidence": "high", "rationale": "The SL_ files, named by this analysis's Samples line, are positive DDA.",
+   "unit_technical": {"ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "DDA"}}
+ }
+}

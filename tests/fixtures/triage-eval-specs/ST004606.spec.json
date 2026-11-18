@@ -1,0 +1,39 @@
+{
+ "schema": "msdial-unit-triage-spec.v1",
+ "accession": "ST004606",
+ "phase": "pre_download",
+ "structure": "One data folder of mzML files; each arm was acquired on its own date, and the date prefix of the sample id marks the arm (the reversed-phase runs also carry POS or NEG).",
+ "evidence_sources": [{"source": "archive_listing", "detail": "Zip central directory listing read before download."}],
+ "groups": [
+  {"id": "HP", "applies_to": "rows", "match": {"sample_id": {"regex": "^20250128_"}, "resolved_member": {"folder": "data"}},
+   "file": {"role": "sample", "ion_mode": "positive", "chromatography": "HILIC", "acquisition_mode": "AIF", "basis": "inferred"},
+   "evidence": [{"source": "filename_token", "field": "date prefix", "value": "{sample_id}"}],
+   "disposition": {"keep": "AN007766"}, "confidence": "medium",
+   "rationale": "The 20250128 batch, one of the four date blocks of 56 or 52 rows, is the HILIC positive arm."},
+  {"id": "HN", "applies_to": "rows", "match": {"sample_id": {"regex": "^20250319_"}, "resolved_member": {"folder": "data"}},
+   "file": {"role": "sample", "ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "AIF", "basis": "inferred"},
+   "evidence": [{"source": "filename_token", "field": "date prefix", "value": "{sample_id}"}],
+   "disposition": {"keep": "AN007768"}, "confidence": "medium",
+   "rationale": "The 20250319 batch is the HILIC negative arm."},
+  {"id": "RPP", "applies_to": "rows", "match": {"sample_id": {"regex": "^20250604_"}, "token": {"polarity": "positive"}},
+   "file": {"role": "sample", "ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "AIF", "basis": "inferred"},
+   "evidence": [{"source": "filename_token", "field": "name", "value": "{member_path}"}],
+   "disposition": {"keep": "AN007767"}, "confidence": "medium",
+   "rationale": "The 20250604 batch, named POS, is the reversed-phase positive arm."},
+  {"id": "RPN", "applies_to": "rows", "match": {"sample_id": {"regex": "^20250611_"}, "token": {"polarity": "negative"}},
+   "file": {"role": "sample", "ion_mode": "negative", "chromatography": "RP", "acquisition_mode": "AIF", "basis": "inferred"},
+   "evidence": [{"source": "filename_token", "field": "name", "value": "{member_path}"}],
+   "disposition": {"keep": "AN007769"}, "confidence": "medium",
+   "rationale": "The 20250611 batch, named NEG, is the reversed-phase negative arm."}
+ ],
+ "units": {
+  "AN007766": {"status": "ready", "confidence": "medium", "rationale": "HILIC positive: the 20250128 batch.",
+   "unit_technical": {"ion_mode": "positive", "chromatography": "HILIC", "acquisition_mode": "AIF"}},
+  "AN007767": {"status": "ready", "confidence": "medium", "rationale": "Reversed-phase positive: the 20250604 POS batch.",
+   "unit_technical": {"ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "AIF"}},
+  "AN007768": {"status": "ready", "confidence": "medium", "rationale": "HILIC negative: the 20250319 batch.",
+   "unit_technical": {"ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "AIF"}},
+  "AN007769": {"status": "ready", "confidence": "medium", "rationale": "Reversed-phase negative: the 20250611 NEG batch.",
+   "unit_technical": {"ion_mode": "negative", "chromatography": "RP", "acquisition_mode": "AIF"}}
+ }
+}

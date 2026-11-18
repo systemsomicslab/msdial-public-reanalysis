@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/systemsomicslab/msdial-public-reanalysis/schemas/msdial-unit-triage.v2.json",
+  "title": "MS-DIAL analysis-unit triage, version 2",
+  "description": "One Catalog analysis unit's file selection, decided by an agent before download. Every choice in it is a model inference until a person approves the manifest digest that carries it. One file per unit, named <unit_id>.json (a revision <unit_id>.r<N>.json); the files of one accession sit together in one directory and scripts/validate-triage.py checks them as a set. v2 is v1 plus a confidence and a rationale on every kept and excluded row and member and once for the unit (docs/llm-assisted-curation.md section 2.2). person_answers is no longer written here: a person's answer is a person_answer entry of the accession's review-log.jsonl, so the payload's sha256 never changes after it is written.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "accession",
+    "unit_id",
+    "catalog_handoff_sha256",
+    "catalog_row_count",
+    "standing",
+    "phase",
+    "decided_by",
+    "decided_at",
+    "purpose",
+    "unit_technical",
+    "status",
+    "confidence",
+    "rationale",
+    "rows",
+    "excluded_rows",
+    "shared_with",
+    "needs_person",
+    "flags"
+  ],
+  "properties": {
+    "schema": {"const": "msdial-unit-triage.v2"},
+    "repository": {"type": "string"},
+    "accession": {"type": "string", "minLength": 1},
+    "unit_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$"},
+    "source_subrecord_id": {"type": ["string", "null"]},
+    "catalog_handoff_sha256": {
+      "description": "sha256 of the Catalog handoff copy the triage was made from (inputs/<unit_id>/handoff.json, as the wrapper froze it and as its decision record binds it). The agent cannot hash a file: it copies the value the task prompt gives for the unit.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "catalog_row_count": {
+      "description": "Number of sample rows in that handoff. rows and excluded_rows together name every index 0..count-1 exactly once.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "standing": {
+      "description": "Everything in a triage file is a model inference. Approving the manifest digest is what makes it an accepted decision.",
+      "const": "model_inference"
+    },
+    "phase": {
+      "description": "pre_download: made from Catalog rows, mwTab text, names and an archive listing. post_preflight: revised after raw-header preflight.",
+      "enum": ["pre_download", "post_preflight"]
+    },
+    "decided_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "model", "skill", "skill_version"],
+      "properties": {
+        "agent": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "skill": {"const": "msdial-unit-triage"},
+        "skill_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+      }
+    },
+    "decided_at": {"type": "string", "format": "date-time", "minLength": 10},
+    "purpose": {
+      "description": "The analysis_purpose the person stated, verbatim, or null when none was stated for this campaign.",
+      "type": ["string", "null"]
+    },
+    "unit_technical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ion_mode", "chromatography", "acquisition_mode", "declared"],
+      "properties": {
+        "ion_mode": {"$ref": "#/$defs/ion_mode"},
+        "chromatography": {"$ref": "#/$defs/chromatography"},
+        "chromatography_detail": {"type": "string"},
+        "acquisition_mode": {"$ref": "#/$defs/acquisition_mode"},
+        "declared": {
+          "description": "What the Catalog unit says, copied as it reads (source fact).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["chromatography", "ion_mode", "acquisition_mode"],
+          "properties": {
+            "chromatography": {"type": ["string", "null"]},
+            "ion_mode": {"type": ["string", "null"]},
+            "acquisition_mode": {"type": ["string", "null"]},
+            "target_omics": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "status": {
+      "description": "ready: the selection can go to the plan. needs_person: a question in needs_person must be answered first. abstained: names carry no signal, nothing is assigned. out_of_scope: the unit is outside the campaign scope (for a person to accept).",
+      "enum": ["ready", "needs_person", "abstained", "out_of_scope"]
+    },
+    "confidence": {"description": "How sure the agent is of the unit's decision as a whole.", "$ref": "#/$defs/confidence"},
+    "rationale": {"description": "The unit's decision in plain language, one or two sentences.", "$ref": "#/$defs/rationale"},
+    "rows": {"description": "Catalog rows this unit keeps.", "type": "array", "items": {"$ref": "#/$defs/row"}},
+    "added_members": {
+      "description": "Archive members the unit keeps that no Catalog row names (pooled QC, blanks).",
+      "type": "array",
+      "items": {"$ref": "#/$defs/member"}
+    },
+    "excluded_rows": {"type": "array", "items": {"$ref": "#/$defs/excluded_row"}},
+    "excluded_members": {
+      "description": "Archive members this unit looked at and left out, with the reason.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/excluded_member"}
+    },
+    "children": {
+      "description": "Single-polarity, single-acquisition partition of the kept files. Required before a unit whose ion_mode is both can be ready.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/child"}
+    },
+    "shared_with": {
+      "description": "Files this unit deliberately shares with another unit. Both units must declare the same pair.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unit_id", "member_paths", "reason"],
+        "properties": {
+          "unit_id": {"type": "string", "minLength": 1},
+          "member_paths": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "needs_person": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "question"],
+        "properties": {
+          "code": {"$ref": "#/$defs/question_code"},
+          "question": {"type": "string", "minLength": 1},
+          "row_indices": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+          "member_paths": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "certainty", "detail"],
+        "properties": {
+          "code": {"$ref": "#/$defs/flag_code"},
+          "certainty": {"enum": ["suspected", "confirmed"]},
+          "detail": {"type": "string", "minLength": 1},
+          "with_unit": {"type": "string"},
+          "row_indices": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+          "member_paths": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "evidence_sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "detail"],
+        "properties": {"source": {"$ref": "#/$defs/evidence_source"}, "detail": {"type": "string", "minLength": 1}}
+      }
+    },
+    "notes": {"type": "string"},
+    "derivation": {
+      "description": "Present when the payload is the expansion of an agent-written spec (schemas/msdial-unit-triage-spec.v1.json) by scripts/expand-triage-spec.py, not hand-written: the spec's file name beside the payload, its sha256 and the expander's version. validate-triage.py re-runs the expander over the inputs the decision record binds and refuses any byte of difference (T-SPEC).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "spec_sha256", "expander_version"],
+      "properties": {
+        "spec": {"type": "string", "pattern": "^[A-Za-z0-9._-]+\\.spec(\\.r[0-9]+)?\\.json$"},
+        "spec_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expander_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+      }
+    }
+  },
+  "$defs": {
+    "ion_mode": {"enum": ["positive", "negative", "both", "switching", "unknown"]},
+    "chromatography": {"enum": ["HILIC", "RP", "normal_phase", "other", "unknown"]},
+    "acquisition_mode": {
+      "description": "targeted_DDA is deprecated (decision of 2026-11-18): inclusion- or exclusion-list DDA is DDA, with the informational flag targeted_dda. It stays readable in earlier payloads and counts as DDA in the validator's mixing test.",
+      "enum": ["DDA", "DIA", "SWATH", "AIF", "MS1", "targeted_DDA", "mixed", "unknown"]
+    },
+    "rule_id": {
+      "description": "The spec group or exception an expanded item came from (scripts/expand-triage-spec.py); absent from a hand-written payload.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,31}$"
+    },
+    "role": {"enum": ["sample", "qc", "blank", "other", "unknown"]},
+    "evidence_source": {
+      "enum": [
+        "catalog_row",
+        "catalog_unit",
+        "mwtab",
+        "repository_page",
+        "archive_listing",
+        "folder_token",
+        "filename_token",
+        "raw_header",
+        "person"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "field", "value"],
+      "properties": {
+        "source": {"$ref": "#/$defs/evidence_source"},
+        "field": {"type": "string", "minLength": 1},
+        "value": {"type": ["string", "number", "boolean", "null"]}
+      }
+    },
+    "member_fields": {
+      "type": "object",
+      "properties": {
+        "archive": {"type": ["string", "null"]},
+        "role": {"$ref": "#/$defs/role"},
+        "ion_mode": {"$ref": "#/$defs/ion_mode"},
+        "chromatography": {"$ref": "#/$defs/chromatography"},
+        "acquisition_mode": {"$ref": "#/$defs/acquisition_mode"},
+        "basis": {"enum": ["declared", "inferred"]},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "rationale": {"$ref": "#/$defs/rationale"}
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "row_index",
+        "sample_id",
+        "raw_file",
+        "member_path",
+        "ion_mode",
+        "chromatography",
+        "acquisition_mode",
+        "basis",
+        "evidence",
+        "confidence",
+        "rationale"
+      ],
+      "allOf": [{"$ref": "#/$defs/member_fields"}],
+      "properties": {
+        "row_index": {"type": "integer", "minimum": 0},
+        "sample_id": {"type": "string"},
+        "raw_file": {"type": "string"},
+        "member_path": {"type": ["string", "null"], "minLength": 1},
+        "archive": true,
+        "role": true,
+        "ion_mode": true,
+        "chromatography": true,
+        "acquisition_mode": true,
+        "basis": true,
+        "evidence": true,
+        "confidence": true,
+        "rationale": true,
+        "rule_id": {"$ref": "#/$defs/rule_id"}
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "member_path",
+        "role",
+        "ion_mode",
+        "chromatography",
+        "acquisition_mode",
+        "basis",
+        "evidence",
+        "confidence",
+        "rationale"
+      ],
+      "allOf": [{"$ref": "#/$defs/member_fields"}],
+      "properties": {
+        "member_path": {"type": "string", "minLength": 1},
+        "archive": true,
+        "role": true,
+        "ion_mode": true,
+        "chromatography": true,
+        "acquisition_mode": true,
+        "basis": true,
+        "evidence": true,
+        "confidence": true,
+        "rationale": true,
+        "rule_id": {"$ref": "#/$defs/rule_id"}
+      }
+    },
+    "excluded_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["row_index", "sample_id", "raw_file", "reason", "belongs_to_unit", "detail", "confidence", "rationale"],
+      "properties": {
+        "row_index": {"type": "integer", "minimum": 0},
+        "sample_id": {"type": "string"},
+        "raw_file": {"type": "string"},
+        "member_path": {"type": ["string", "null"]},
+        "reason": {
+          "enum": [
+            "belongs_to_other_unit",
+            "no_signal_abstained",
+            "duplicate_content",
+            "out_of_scope_ms1_only",
+            "polarity_switching",
+            "requires_conversion",
+            "not_in_archive",
+            "needs_person",
+            "other"
+          ]
+        },
+        "belongs_to_unit": {"type": ["string", "null"]},
+        "detail": {"type": "string", "minLength": 1},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "rationale": {"$ref": "#/$defs/rationale"},
+        "rule_id": {"$ref": "#/$defs/rule_id"}
+      }
+    },
+    "excluded_member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["member_path", "reason", "detail", "confidence", "rationale"],
+      "properties": {
+        "member_path": {"type": "string", "minLength": 1},
+        "archive": {"type": ["string", "null"]},
+        "reason": {
+          "description": "needs_person (a member held for a person: the unit is not ready and asks), out_of_scope_ms1_only (with an ms1_only flag) and polarity_switching (with its flag) are checked as on a row; out_of_scope is any other scope exclusion.",
+          "enum": [
+            "not_raw_data",
+            "archive_metadata",
+            "alternative_format_copy",
+            "requires_conversion",
+            "duplicate_content",
+            "belongs_to_other_unit",
+            "no_signal_abstained",
+            "out_of_scope",
+            "out_of_scope_ms1_only",
+            "polarity_switching",
+            "needs_person",
+            "other"
+          ]
+        },
+        "belongs_to_unit": {"type": ["string", "null"]},
+        "detail": {"type": "string", "minLength": 1},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "rationale": {"$ref": "#/$defs/rationale"},
+        "rule_id": {"$ref": "#/$defs/rule_id"}
+      }
+    },
+    "child": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["child_key", "ion_mode", "acquisition_mode", "member_paths"],
+      "properties": {
+        "child_key": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+        "ion_mode": {"enum": ["positive", "negative"]},
+        "acquisition_mode": {"$ref": "#/$defs/acquisition_mode"},
+        "member_paths": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "question_code": {
+      "description": "scope_targeted_dda was removed on 2026-11-18: inclusion- or exclusion-list DDA is in scope and is never a question (the flag targeted_dda informs a report).",
+      "enum": [
+        "scope_ms1_only",
+        "shared_content",
+        "no_signal",
+        "folder_header_disagreement",
+        "mixed_acquisition",
+        "polarity_switching",
+        "declared_technical_disputed",
+        "name_token_disputed",
+        "format_choice",
+        "other"
+      ]
+    },
+    "flag_code": {
+      "description": "Blocking until a person answers: shared_content, folder_header_disagreement, polarity_switching, ms1_only, mixed_acquisition, declared_technical_disputed, name_token_disputed. Informational, never blocking: targeted_dda (inclusion- or exclusion-list DDA, in scope; reports note the MS2-selection bias), duplicate_copies_excluded (byte-identical copies among excluded members only), catalog_defect, target_omics_doubt, segmented_acquisition.",
+      "enum": [
+        "mixed_acquisition",
+        "ms1_only",
+        "polarity_switching",
+        "folder_header_disagreement",
+        "shared_content",
+        "undocumented_method",
+        "targeted_dda",
+        "duplicate_copies_excluded",
+        "segmented_acquisition",
+        "declared_technical_disputed",
+        "name_token_disputed",
+        "catalog_defect",
+        "target_omics_doubt",
+        "other"
+      ]
+    },
+    "confidence": {
+      "description": "high: the evidence settles it; medium: the evidence supports it and nothing contradicts it; low: a reading the evidence allows but does not settle. A kept file with basis inferred and confidence low keeps its unit from passing (the validator holds it).",
+      "enum": ["high", "medium", "low"]
+    },
+    "rationale": {
+      "description": "Plain language, one or two sentences: why this decision, from which evidence.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

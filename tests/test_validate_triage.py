@@ -23,6 +23,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 sys.path.insert(0, str(TESTS))
+import decision_records as records  # noqa: E402
 import triage_eval as te  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("validate_triage", ROOT / "scripts" / "validate-triage.py")
@@ -125,6 +126,21 @@ class EvalSetTest(TriageCase):
                     else:
                         self.assertEqual((s["correct"], s["wrongly_left_out"]), (len(unit["members"]), 0))
 
+    def test_a_campaign_payload_named_by_its_catalog_unit_id_is_scored_by_its_analysis_id(self) -> None:
+        # A campaign names a payload <catalog unit id>.json and carries the public analysis id as
+        # source_subrecord_id; the ground truth names the analysis id (pilot of 2026-11-18).
+        for accession in ("ST002798", "ST002283"):
+            with self.subTest(accession=accession):
+                _, truth, _ = te.load(accession)
+                _, directory = self.run_validator(accession, te.build_good(accession))
+                expected = vt.score(directory, truth)
+                for n, path in enumerate(sorted(directory.glob("AN*.json"))):
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    data["source_subrecord_id"] = path.stem
+                    (directory / f"{n:020x}.json").write_text(json.dumps(data), encoding="utf-8")
+                    path.unlink()
+                self.assertEqual(vt.score(directory, truth), expected)
+
     def test_stage3b_style_whole_study_per_unit_is_refused_for_every_accession(self) -> None:
         for accession in te.ACCESSIONS:
             with self.subTest(accession=accession):
@@ -194,7 +210,8 @@ class PrototypeFailureModeTest(TriageCase):
         self.assertIn("T-DUP", self.checks(report, unit="AN003729"))
         self.assertEqual(report.unit_verdict("AN003729"), "error")
         _, truth, _ = te.load("ST002283")
-        self.assertEqual(vt.score(directory, truth)["AN003729"], {"correct": 0, "wrong_included": 43, "wrongly_left_out": 0})
+        self.assertEqual(vt.score(directory, truth)["AN003729"], {"correct": 0, "wrong_included": 43, "wrongly_left_out": 0,
+                                                                     "held_for_person": 0})
 
         # Flagged and sent to a person, the same selection is a hold, not an error.
         hilic["status"] = "needs_person"
@@ -203,6 +220,26 @@ class PrototypeFailureModeTest(TriageCase):
         report, _ = self.run_validator("ST002283", docs)
         self.assertEqual(self.checks(report), set())
         self.assertIn("T-DUP", self.checks(report, "hold", "AN003729"))
+
+    def test_copies_held_for_a_person_are_scored_as_held_not_left_out(self) -> None:
+        """Skill 1.2.0 holds a unit's shared copies for a person (needs_person) instead of keeping them; the 2026-11-18
+        re-pilot of ST002283 did so for AN003731, which the score had counted as 43 files wrongly left out."""
+        docs = te.build_good("ST002283")
+        lipid = docs["AN003731"]
+        held = [r for r in lipid["rows"] if "Human_Lipid_Neg/" in r["member_path"] and "Blank" not in r["member_path"]]
+        self.assertTrue(held)
+        lipid["rows"] = [r for r in lipid["rows"] if r not in held]
+        lipid["excluded_rows"] = [*lipid.get("excluded_rows", []), *[
+            {"row_index": r["row_index"], "sample_id": r["sample_id"], "raw_file": r["raw_file"],
+             "member_path": r["member_path"], "reason": "needs_person", "detail": "Held for the shared_content question."}
+            for r in held]]
+        _, directory = self.run_validator("ST002283", docs)
+        _, truth, _ = te.load("ST002283")
+        counts = vt.score(directory, truth)["AN003731"]
+        self.assertEqual(counts["held_for_person"], len(held))
+        self.assertEqual(counts["wrongly_left_out"], 0)
+        self.assertEqual(counts["correct"] + counts["held_for_person"],
+                         len(next(u for u in truth["units"] if u["unit_id"] == "AN003731")["members"]))
 
     def test_st004544_assignment_on_file_size_alone_is_an_error(self) -> None:
         """Names carry no signal; the size pattern is not evidence to assign on."""
@@ -450,13 +487,19 @@ class ContractTest(TriageCase):
         directory = te.write(te.build_good("ST002747"), self.tmp / "layout")
         catalog = vt.read_catalog(te.fixture_dir("ST002747") / "catalog.json")
         listing = vt.read_listing(te.load("ST002747")[2])
-        (directory / "AN004454.record.json").write_text(json.dumps({"schema": "msdial-llm-decision-record.v1"}), encoding="utf-8")
+        code = records.Code.from_root(self.tmp / "code")
+        bound = records.copy_listing(te.load("ST002747")[2], directory)
+        records.write_record(directory / "AN004454.json", code, inputs=[bound])
         revised = json.loads((directory / "AN004455.json").read_text(encoding="utf-8"))
         revised["notes"] = "revision 2: the same files, a reworded note"
         (directory / "AN004455.r2.json").write_text(json.dumps(revised), encoding="utf-8")
-        (directory / "AN004455.r2.record.json").write_text("{}", encoding="utf-8")
-        report = vt.validate(directory, catalog, listing)
+        records.write_record(directory / "AN004455.r2.json", code, inputs=[bound])
+        report = vt.validate(directory, catalog, listing, code_root=code.root)
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+        # A record that is not an envelope is not passed over: it is an error, never silently ignored.
+        (directory / "AN004454.record.json").write_text(json.dumps({"schema": "msdial-llm-decision-record.v1"}), encoding="utf-8")
+        self.assertIn("T-RECORD", self.checks(vt.validate(directory, catalog, listing, code_root=code.root), unit="AN004454"))
+        records.write_record(directory / "AN004454.json", code, inputs=[bound])
         self.assertEqual(sorted(report.units), ["AN004454", "AN004455", "AN004456", "AN004457"])
         self.assertEqual([path.name for path in vt.current_triage_files(directory) if path.name.startswith("AN004455")],
                          ["AN004455.r2.json"])
@@ -486,7 +529,8 @@ class ContractTest(TriageCase):
         self.assertEqual(code, 1)
         report = json.loads(text)
         self.assertEqual(report["verdict"], "hold")
-        self.assertEqual(report["score"]["AN003731"], {"correct": 44, "wrong_included": 0, "wrongly_left_out": 0})
+        self.assertEqual(report["score"]["AN003731"], {"correct": 44, "wrong_included": 0, "wrongly_left_out": 0,
+                                                       "held_for_person": 0})
         code, text = run("ST003128", te.stage3b_style("ST003128"))
         self.assertEqual(code, 2)
         self.assertIn("ERROR", text)

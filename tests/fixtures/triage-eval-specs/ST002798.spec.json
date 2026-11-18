@@ -1,0 +1,872 @@
+{
+ "schema": "msdial-unit-triage-spec.v1",
+ "accession": "ST002798",
+ "phase": "pre_download",
+ "structure": "Per arm a full-scan folder (<chrom>_NEGATIVE, <chrom>_POSITIVE: dilution series SA_ and QC SC_) and an MS2 folder (<chrom><pol>_ms2) with DDA and DIA/DIA1, DIA/DIA2 subfolders; RPLC is the reversed-phase arm, HILIC the HILIC arm.",
+ "evidence_sources": [
+  {
+   "source": "archive_listing",
+   "detail": "Zip central directory listing read before download."
+  }
+ ],
+ "groups": [
+  {
+   "id": "RN1S",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLC_NEGATIVE"
+    },
+    "sample_id": {
+     "regex": "^S[ABD-Z]_"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "neg_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "The dilution-series sample sits in the RPLC_NEGATIVE folder, which holds full-scan runs only."
+  },
+  {
+   "id": "RN1Q",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLC_NEGATIVE"
+    },
+    "sample_id": {
+     "regex": "^SC_"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "neg_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A QC of the full-scan series in the RPLC_NEGATIVE folder."
+  },
+  {
+   "id": "RNDD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLCneg_ms2/DDA"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "neg_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "An MS2 run in the RPLCneg_ms2/DDA folder.",
+   "heterogeneous": "Whole-range DDA beside m/z-segmented DDA (SCAN01 to SCAN06); flagged mixed_acquisition."
+  },
+  {
+   "id": "RND1",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLCneg_ms2/DIA/DIA1"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "neg_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A DIA run in the RPLCneg_ms2/DIA/DIA1 folder (one window scheme)."
+  },
+  {
+   "id": "RND2",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLCneg_ms2/DIA/DIA2"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "RP",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "neg_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A DIA run in the RPLCneg_ms2/DIA/DIA2 folder (the other window scheme).",
+   "heterogeneous": "The DIA2 folder's file names number replicates DIA1 to DIA3; the folder names the window scheme."
+  },
+  {
+   "id": "RP1S",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLC_POSITIVE"
+    },
+    "sample_id": {
+     "regex": "^S[ABD-Z]_"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "pos_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "The dilution-series sample sits in the RPLC_POSITIVE folder, which holds full-scan runs only."
+  },
+  {
+   "id": "RP1Q",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLC_POSITIVE"
+    },
+    "sample_id": {
+     "regex": "^SC_"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "pos_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A QC of the full-scan series in the RPLC_POSITIVE folder."
+  },
+  {
+   "id": "RPDD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLCpos_ms2/DDA"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "pos_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "An MS2 run in the RPLCpos_ms2/DDA folder.",
+   "heterogeneous": "Whole-range DDA beside m/z-segmented DDA (SCAN01 to SCAN06); flagged mixed_acquisition."
+  },
+  {
+   "id": "RPD1",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLCpos_ms2/DIA/DIA1"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "pos_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A DIA run in the RPLCpos_ms2/DIA/DIA1 folder (one window scheme)."
+  },
+  {
+   "id": "RPD2",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "RPLCpos_ms2/DIA/DIA2"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "RP",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004552",
+    "child": "pos_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A DIA run in the RPLCpos_ms2/DIA/DIA2 folder (the other window scheme).",
+   "heterogeneous": "The DIA2 folder's file names number replicates DIA1 to DIA3; the folder names the window scheme."
+  },
+  {
+   "id": "HN1S",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILIC_NEGATIVE"
+    },
+    "sample_id": {
+     "regex": "^S[ABD-Z]_"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "neg_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "The dilution-series sample sits in the HILIC_NEGATIVE folder, which holds full-scan runs only."
+  },
+  {
+   "id": "HN1Q",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILIC_NEGATIVE"
+    },
+    "sample_id": {
+     "regex": "^SC_"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "neg_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A QC of the full-scan series in the HILIC_NEGATIVE folder."
+  },
+  {
+   "id": "HNDD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICneg_ms2/DDA"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "neg_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "An MS2 run in the HILICneg_ms2/DDA folder.",
+   "heterogeneous": "Whole-range DDA beside m/z-segmented DDA (SCAN01 to SCAN06); flagged mixed_acquisition."
+  },
+  {
+   "id": "HND1",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICneg_ms2/DIA/DIA1"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "neg_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A DIA run in the HILICneg_ms2/DIA/DIA1 folder (one window scheme)."
+  },
+  {
+   "id": "HND2",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICneg_ms2/DIA/DIA2"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "negative",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "neg_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A DIA run in the HILICneg_ms2/DIA/DIA2 folder (the other window scheme).",
+   "heterogeneous": "The DIA2 folder's file names number replicates DIA1 to DIA3; the folder names the window scheme."
+  },
+  {
+   "id": "HP1S",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILIC_POSITIVE"
+    },
+    "sample_id": {
+     "regex": "^S[ABD-Z]_"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "pos_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "The dilution-series sample sits in the HILIC_POSITIVE folder, which holds full-scan runs only."
+  },
+  {
+   "id": "HP1Q",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILIC_POSITIVE"
+    },
+    "sample_id": {
+     "regex": "^SC_"
+    }
+   },
+   "file": {
+    "role": "qc",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "MS1",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "pos_MS1"
+   },
+   "confidence": "medium",
+   "rationale": "A QC of the full-scan series in the HILIC_POSITIVE folder."
+  },
+  {
+   "id": "HPDD",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICpos_ms2/DDA"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DDA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "pos_DDA"
+   },
+   "confidence": "medium",
+   "rationale": "An MS2 run in the HILICpos_ms2/DDA folder.",
+   "heterogeneous": "Whole-range DDA beside m/z-segmented DDA (SCAN01 to SCAN06); flagged mixed_acquisition."
+  },
+  {
+   "id": "HPD1",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICpos_ms2/DIA/DIA1"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "pos_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A DIA run in the HILICpos_ms2/DIA/DIA1 folder (one window scheme)."
+  },
+  {
+   "id": "HPD2",
+   "applies_to": "rows",
+   "match": {
+    "resolved_member": {
+     "folder": "HILICpos_ms2/DIA/DIA2"
+    }
+   },
+   "file": {
+    "role": "sample",
+    "ion_mode": "positive",
+    "chromatography": "HILIC",
+    "acquisition_mode": "DIA",
+    "basis": "inferred"
+   },
+   "evidence": [
+    {
+     "source": "folder_token",
+     "field": "folder",
+     "value": "{folder}"
+    },
+    {
+     "source": "filename_token",
+     "field": "name",
+     "value": "{member_path}"
+    }
+   ],
+   "disposition": {
+    "keep": "AN004553",
+    "child": "pos_DIA"
+   },
+   "confidence": "medium",
+   "rationale": "A DIA run in the HILICpos_ms2/DIA/DIA2 folder (the other window scheme).",
+   "heterogeneous": "The DIA2 folder's file names number replicates DIA1 to DIA3; the folder names the window scheme."
+  }
+ ],
+ "units": {
+  "AN004552": {
+   "status": "needs_person",
+   "confidence": "medium",
+   "rationale": "Reversed phase: both polarities in full-scan, DDA and two DIA window schemes; the full-scan series is out of scope unless a person decides.",
+   "unit_technical": {
+    "ion_mode": "both",
+    "chromatography": "RP",
+    "acquisition_mode": "mixed"
+   },
+   "children": [
+    {
+     "child_key": "neg_MS1",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1"
+    },
+    {
+     "child_key": "neg_DDA",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA"
+    },
+    {
+     "child_key": "neg_DIA",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA"
+    },
+    {
+     "child_key": "pos_MS1",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1"
+    },
+    {
+     "child_key": "pos_DDA",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA"
+    },
+    {
+     "child_key": "pos_DIA",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA"
+    }
+   ],
+   "flags": [
+    {
+     "code": "ms1_only",
+     "certainty": "suspected",
+     "detail": "The *_NEGATIVE and *_POSITIVE folders hold full-scan dilution series.",
+     "groups": [
+      "RN1S",
+      "RP1S",
+      "RN1Q",
+      "RP1Q"
+     ]
+    },
+    {
+     "code": "mixed_acquisition",
+     "certainty": "suspected",
+     "detail": "Full scan, DDA (whole range and m/z-segmented) and DIA in two window schemes in one unit."
+    }
+   ],
+   "needs_person": [
+    {
+     "code": "scope_ms1_only",
+     "question": "Leave the full-scan dilution series out, and which MS2 scheme forms the run?",
+     "groups": [
+      "RN1S",
+      "RP1S",
+      "RN1Q",
+      "RP1Q"
+     ]
+    }
+   ]
+  },
+  "AN004553": {
+   "status": "needs_person",
+   "confidence": "medium",
+   "rationale": "HILIC: both polarities in full-scan, DDA and two DIA window schemes; the full-scan series is out of scope unless a person decides.",
+   "unit_technical": {
+    "ion_mode": "both",
+    "chromatography": "HILIC",
+    "acquisition_mode": "mixed"
+   },
+   "children": [
+    {
+     "child_key": "neg_MS1",
+     "ion_mode": "negative",
+     "acquisition_mode": "MS1"
+    },
+    {
+     "child_key": "neg_DDA",
+     "ion_mode": "negative",
+     "acquisition_mode": "DDA"
+    },
+    {
+     "child_key": "neg_DIA",
+     "ion_mode": "negative",
+     "acquisition_mode": "DIA"
+    },
+    {
+     "child_key": "pos_MS1",
+     "ion_mode": "positive",
+     "acquisition_mode": "MS1"
+    },
+    {
+     "child_key": "pos_DDA",
+     "ion_mode": "positive",
+     "acquisition_mode": "DDA"
+    },
+    {
+     "child_key": "pos_DIA",
+     "ion_mode": "positive",
+     "acquisition_mode": "DIA"
+    }
+   ],
+   "flags": [
+    {
+     "code": "ms1_only",
+     "certainty": "suspected",
+     "detail": "The *_NEGATIVE and *_POSITIVE folders hold full-scan dilution series.",
+     "groups": [
+      "HN1S",
+      "HP1S",
+      "HN1Q",
+      "HP1Q"
+     ]
+    },
+    {
+     "code": "mixed_acquisition",
+     "certainty": "suspected",
+     "detail": "Full scan, DDA (whole range and m/z-segmented) and DIA in two window schemes in one unit."
+    }
+   ],
+   "needs_person": [
+    {
+     "code": "scope_ms1_only",
+     "question": "Leave the full-scan dilution series out, and which MS2 scheme forms the run?",
+     "groups": [
+      "HN1S",
+      "HP1S",
+      "HN1Q",
+      "HP1Q"
+     ]
+    }
+   ]
+  }
+ }
+}

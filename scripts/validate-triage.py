@@ -1,21 +1,29 @@
-"""Check one accession's msdial-unit-triage.v1 files before anything is planned or downloaded.
+"""Check one accession's msdial-unit-triage files (v1 or v2) and their decision records before anything is planned.
 
-A triage file (schemas/msdial-unit-triage.v1.json, written by the msdial-unit-triage skill) records which
-Catalog rows and archive members one analysis unit keeps. Every choice in it is a model inference. This
-script is the deterministic stage that stands between those inferences and a plan: it reads the triage
-files of one accession as a set and returns pass, hold or error.
+A triage file (schemas/msdial-unit-triage.v2.json, written by the msdial-unit-triage skill; v1 files stay readable)
+records which Catalog rows and archive members one analysis unit keeps. Every choice in it is a model inference. This
+script is the deterministic stage that stands between those inferences and a plan: it reads the triage files of one
+accession as a set, with the decision record (msdial-llm-decision-record.v1) beside each and the accession's
+review-log.jsonl, and returns pass, hold or error (docs/llm-assisted-curation.md sections 2.2 to 2.4).
 
     python scripts/validate-triage.py <triage dir>
         [--catalog <handoffs dir | catalog.json>]   Catalog rows (and handoff sha256) to check coverage against
         [--archive-listing <tsv>]...                 zip member listing(s): path, size, crc32 [, archive]
         [--ground-truth <ground_truth.json>]         score the assignment against a known answer (eval)
+        [--code-root <dir>]                          the released code (skill, prompt templates) at its commit,
+                                                     read in place of git at each record's repo_commit
+        [--release-bundle <dir>]                     the release bundle the triage dir sits in (found on its own
+                                                     when <dir>/release-index.json is two levels up)
+        [--emit-selection]                           add each unit's selection to the report and append a
+                                                     validator_verdict per decision to the review log
+        [--payload-only]                             the payloads alone: no record, transcript, context or revision
+                                                     check (the in-session spec check)
         [--json]
 
 The triage directory holds one <unit_id>.json per unit, all of one accession (in a campaign,
 <campaign dir>/triage/<accession>/). A unit redone is kept as a revision, <unit_id>.r<N>.json, and the highest
 N is the one checked (it supersedes <unit_id>.json and every earlier revision); a decision record beside a
-triage (<name>.record.json, the envelope naming the model and prompt) is not a triage, and only its inputs are read
-here, for the Class check below.
+triage (<name>.record.json, the envelope naming the model and prompt) is not a triage.
 --catalog takes either the campaign's handoffs directory
 (<unit_id>/handoff.json and samples.json, as msdial_catalog_reanalysis_handoff writes them; it may span many
 accessions, and only the units of the triaged accession are checked) or a catalog.json with
@@ -30,36 +38,104 @@ A kept row may name its file by member_path or only by raw_file. Both resolve to
 without one the member paths the triage files name, by exact name, then stem), so the same file is the
 same file in every check, and its name tokens and format are read from the member it resolves to.
 
+THE DECISION RECORD (section 2.3). Beside each payload the wrapper writes <name>.record.json. This script recomputes,
+refusing any mismatch (T-RECORD): decision_id and payload.sha256 from the payload's bytes; the sha256 and bytes of
+every inputs[] item, read relative to the record; skill.sha256 from SKILL.md at repo_commit (git show in this
+repository, or --code-root), and the skill's version; prompt.template_sha256 at repo_commit and
+prompt.rendered_sha256; wrapper.sha256 at its repo_commit; every tool_calls[].result_sha256; transcript.sha256 of the
+released redacted transcript. It refuses a tool call that is not on the skill's allowed-tools list (a call the harness
+did not offer and refused with "No such tool available" never ran: a note, not an error), and a tool_calls
+list that differs from the calls the released transcript shows in order, server-qualified name, arguments or stored
+result (T-TOOLS); a model_id or session_id the transcript does not name (T-RECORD); and a payload whose
+catalog_handoff_sha256 is not the catalog_handoff input its record binds (T-HANDOFF). A context that is not clean
+(configuration, context_files, memory, hooks, an MCP server the skill does not allow or one the calls use unlisted,
+empty harness_flags, a claude-code session without the clean flags) is a hold (T-CONTEXT). It fails closed: a check
+that cannot run holds (the skill, the template or the wrapper not readable at repo_commit, a wrapper that was not a
+commit's, a v2 payload without a record, a record without a released transcript (T-TRANSCRIPT), a model 'unknown', a
+tool call without a stored result, a record that binds no Catalog evidence or no archive listing, a listing the record
+binds that was not given or one given that no record binds). A v1 payload may have no record; it is reported
+rationale_not_recorded (a note, which changes no verdict).
+
+THE DERIVATION (section 2.2). A payload the wrapper expanded from the agent's spec (<accession>.spec.json, schemas/
+msdial-unit-triage-spec.v1.json) carries "derivation", and so does its record: the spec's path, sha256 and bytes, the
+expander (scripts/expand-triage-spec.py) and the digest script (scripts/triage-digest.py) by version, sha256 and commit,
+and the context (decided_at, model, agent, skill_version, purpose); each script binds in `tree` the sha256 of the files
+it reads beside itself (SPEC_CODE_TREE), and every record's hashes are checked against the bytes read (a mismatch is an
+error, unreadable code a hold). T-SPEC re-runs that expander at its commit (in this process when the commit's bytes are
+the running tree's, else from a scratch copy of the commit's files) over the inputs the record binds, and refuses any
+byte of difference, any X-* finding, a context that is not the record's, a payload with a derivation whose record binds
+none, a v2 payload without a derivation whose record names skill 1.2.0 or later or whose accession has a spec, a session
+that wrote its unit's payload itself, and a revision spec that changes a unit it does not revise (X-SCOPE, re-checked).
+T-DIGEST rebuilds inputs/digest.md from the same inputs with the digest script at its commit. Every other check runs on
+the expanded payload as on any other. A spec file is never read as a payload.
+
+THE REVIEW LOG (section 2.4). For a v2 payload, a ready unit that carries a blocking flag passes only when
+review-log.jsonl holds a person_answer whose question_code is the flag's code and whose decision_id is this payload or
+one it supersedes (by its record's supersedes, or a revision entry); v1 payloads keep their person_answers. A revision
+that drops a blocking flag the payload it supersedes carried passes only when the cause of its revision entry cites
+such a person_answer (T-REVISION). A review log whose hash chain is broken is an error (T-LOG).
+
+RELEASE-BUNDLE MODE (sections 3 and 5.3). In a release bundle a triage input that held an absolute path (a Catalog
+handoff) is released as a projection: release-index.json's triage_inputs names its original_sha256 and the
+release_sha256 of the released bytes. Such a file is checked through the index: its bytes must hash to
+release_sha256, and original_sha256 must be the sha256 the record (or, for --catalog, the triage) names.
+
 Levels:
 - error: the triage file breaks the contract (schema, coverage, a file in two units, byte-identical content
   settled by name, polarity or chromatography that disagrees with its unit or child, an unflagged MS1-only or
   mixed acquisition, a kept mzXML or mzData file, one acquisition kept twice in two formats, a member both
   kept and excluded, an exclusion reason the listing or the unit's own status and flags contradict, evidence or a
   decision-record input that cites the Class proposal (T-CLASS: the triage runs before the Class and never binds it,
-  WS0 decision F), ...).
+  WS0 decision F), a decision record that does not hash to what it names, a tool the skill does not allow, ...).
   The triage must be redone; nothing may be planned from it.
 - hold: the file is valid but something waits for a person: a unit that needs a person, abstained or is out
-  of scope, flagged shared content, a member nobody accounted for, a check that could not run.
+  of scope, flagged shared content, a member nobody accounted for, a kept file inferred at low confidence in a ready
+  unit without a person's inferred_low_confidence answer (T-CONFIDENCE), a context that was not clean, a check that
+  could not run.
 - pass: every unit is ready and nothing waits.
+- note: recorded, never a verdict (rationale_not_recorded).
 
-Exit status: 0 pass, 1 hold, 2 error. The script reads only; it writes nothing.
+Exit status: 0 pass, 1 hold, 2 error. The script reads only, except that --emit-selection appends validator_verdict
+entries to the accession's review-log.jsonl (through scripts/campaign/curated.append_review_log); a release bundle is
+never written to.
 """
 
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import hashlib
+import importlib.util
 import json
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_ID = "msdial-unit-triage.v1"
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "msdial-unit-triage.v1.json"
+SCHEMA_V2_ID = "msdial-unit-triage.v2"
+SCHEMA_PATH = REPO_ROOT / "schemas" / "msdial-unit-triage.v1.json"
+SCHEMA_PATHS = {SCHEMA_ID: SCHEMA_PATH, SCHEMA_V2_ID: REPO_ROOT / "schemas" / "msdial-unit-triage.v2.json"}
+RECORD_SCHEMA_ID = "msdial-llm-decision-record.v1"
+RECORD_SCHEMA_PATH = REPO_ROOT / "schemas" / "msdial-llm-decision-record.v1.json"
+SPEC_SCHEMA_ID = "msdial-unit-triage-spec.v1"
+EXPANDER_PATH = "scripts/expand-triage-spec.py"
+DIGEST_SCRIPT_PATH = "scripts/triage-digest.py"
+# What the expander and the digest script read beside themselves, at their commit (T-SPEC, T-DIGEST).
+SPEC_CODE_TREE = ("scripts/validate-triage.py", "schemas/msdial-unit-triage.v1.json", "schemas/msdial-unit-triage.v2.json",
+                  "schemas/msdial-unit-triage-spec.v1.json")
+SKILL_NAME = "msdial-unit-triage"
+REVIEW_LOG = "review-log.jsonl"
+RELEASE_INDEX = "release-index.json"
+TOOL_NAME = "validate-triage.py"
 
 RAW_EXTENSIONS = (".raw", ".mzml", ".mzxml", ".mzdata", ".wiff", ".wiff2", ".d", ".lcd", ".cdf", ".abf", ".ibf", ".baf", ".tdf")
 VENDOR_FOLDER = re.compile(r"(?i)^(.*?\.(?:d|raw))/.+")  # Agilent/Bruker .d and Waters .raw directories
@@ -74,10 +150,31 @@ BLOCKING_FLAGS = {
     "polarity_switching",
     "ms1_only",
     "mixed_acquisition",
-    "targeted_dda",
     "declared_technical_disputed",
     "name_token_disputed",
 }
+# Flags that only inform a report and never hold a unit (decision of 2026-11-18: inclusion- or exclusion-list DDA is
+# untargeted DDA and in scope, flagged targeted_dda so a report can name the MS2-selection bias; byte-identical copies
+# found only among excluded members are duplicate_copies_excluded, never shared_content).
+INFORMATIONAL_FLAGS = {
+    "targeted_dda",
+    "duplicate_copies_excluded",
+    "catalog_defect",
+    "target_omics_doubt",
+    "segmented_acquisition",
+}
+# The question code of a person's answer that lets a ready unit rest on a kept file inferred at low confidence
+# (T-CONFIDENCE): the person looked at it (scripts/record-person-answer.py, section 2.2).
+LOW_CONFIDENCE_CODE = "inferred_low_confidence"
+# What a claude-code session must have run with for its context to count as clean (scripts/run-triage-agent.py
+# CLEAN_FLAGS and its environment and settings, as agent.context.harness_flags lists them).
+CLAUDE_CODE_CLEAN_FLAGS = (
+    "--restricted", "--strict-mcp-config", "--tools", "--allowedTools", "--permission-mode", "dontAsk",
+    "--disable-slash-commands", "--no-session-persistence", "env CLAUDE_CODE_DISABLE_CLAUDE_MDS=1",
+    "env CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", 'settings {"disableAllHooks":true}',
+)
+# The roles a unit triage's record binds its Catalog evidence under.
+CATALOG_ROLES = ("catalog_handoff", "catalog_samples", "catalog_unit")
 
 
 # --------------------------------------------------------------------------------------------- findings
@@ -85,7 +182,7 @@ BLOCKING_FLAGS = {
 
 @dataclass
 class Finding:
-    level: str  # "error" or "hold"
+    level: str  # "error", "hold", or "note" (recorded, never a verdict)
     check: str
     unit: str | None
     message: str
@@ -101,6 +198,8 @@ class Report:
     findings: list[Finding] = field(default_factory=list)
     unit_status: dict[str, str] = field(default_factory=dict)
     score: dict[str, dict[str, int]] | None = None
+    payloads: dict[str, dict[str, Any]] = field(default_factory=dict)  # unit -> payload file name, schema, decision_id
+    extra: dict[str, Any] = field(default_factory=dict)  # --emit-selection: selection, review_log
 
     def add(self, level: str, check: str, unit: str | None, message: str) -> None:
         self.findings.append(Finding(level, check, unit, message))
@@ -118,18 +217,22 @@ class Report:
         out: dict[str, Any] = {
             "accession": self.accession,
             "verdict": self.verdict,
-            "units": {u: {"status": self.unit_status.get(u), "verdict": self.unit_verdict(u)} for u in self.units},
+            # The schema only: a payload's decision_id would tie every unit's report_sha256 to every other unit's bytes
+            # (the plan records the report's sha256 per unit). --emit-selection reports the decision ids.
+            "units": {u: {"status": self.unit_status.get(u), "verdict": self.unit_verdict(u),
+                          "schema": self.payloads.get(u, {}).get("schema")} for u in self.units},
             "findings": [f.as_dict() for f in self.findings],
         }
         if self.score is not None:
             out["score"] = self.score
+        out.update(self.extra)
         return out
 
 
 # ------------------------------------------------------------------------------- minimal schema checker
-# Only the keywords schemas/msdial-unit-triage.v1.json uses, so the result does not depend on which
-# jsonschema package (if any) is installed. tests/test_validate_triage.py checks the schema itself against
-# Draft 2020-12 when jsonschema is available.
+# Every keyword the schemas under schemas/ use, so the result does not depend on which jsonschema package (if any) is
+# installed. tests/test_validate_triage.py checks the schema itself against Draft 2020-12 when jsonschema is available,
+# and tests/test_validate_triage_v2.py that no schema uses a keyword this checker does not implement.
 
 _TYPES = {
     "object": dict,
@@ -176,6 +279,8 @@ def schema_errors(value: Any, schema: dict[str, Any], root: dict[str, Any], wher
     if isinstance(value, str):
         if len(value) < schema.get("minLength", 0):
             errors.append(f"{where}: must not be empty")
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append(f"{where}: longer than {schema['maxLength']} characters")
         if "pattern" in schema and not re.search(schema["pattern"], value):
             errors.append(f"{where}: {value!r} does not match {schema['pattern']}")
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -184,24 +289,39 @@ def schema_errors(value: Any, schema: dict[str, Any], root: dict[str, Any], wher
     if isinstance(value, list):
         if len(value) < schema.get("minItems", 0):
             errors.append(f"{where}: needs at least {schema['minItems']} item(s)")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append(f"{where}: at most {schema['maxItems']} item(s)")
+        if schema.get("uniqueItems") and len({canonical_json(item) for item in value}) != len(value):
+            errors.append(f"{where}: items must be unique")
         if "items" in schema:
             for i, item in enumerate(value):
                 errors += schema_errors(item, schema["items"], root, f"{where}[{i}]")
     if isinstance(value, dict):
+        if len(value) < schema.get("minProperties", 0):
+            errors.append(f"{where}: needs at least {schema['minProperties']} field(s); an empty object matches everything")
+        if "maxProperties" in schema and len(value) > schema["maxProperties"]:
+            errors.append(f"{where}: at most {schema['maxProperties']} field(s)")
         for key in schema.get("required", []):
             if key not in value:
                 errors.append(f"{where}: missing {key}")
         props = schema.get("properties", {})
+        extra = schema.get("additionalProperties")
         for key, item in value.items():
             if key in props:
                 errors += schema_errors(item, props[key], root, f"{where}.{key}")
-            elif schema.get("additionalProperties") is False:
+            elif extra is False:
                 errors.append(f"{where}: unexpected field {key}")
+            elif isinstance(extra, dict):
+                if "propertyNames" in schema:
+                    errors += schema_errors(key, schema["propertyNames"], root, f"{where} key {key!r}")
+                errors += schema_errors(item, extra, root, f"{where}.{key}")
     return errors
 
 
-def load_schema() -> dict[str, Any]:
-    return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+def load_schema(schema_id: str = SCHEMA_ID) -> dict[str, Any]:
+    """The JSON schema of a payload version (msdial-unit-triage.v1 or .v2) or of the decision record."""
+    path = RECORD_SCHEMA_PATH if schema_id == RECORD_SCHEMA_ID else SCHEMA_PATHS[schema_id]
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # ------------------------------------------------------------------------------------------- inputs
@@ -278,15 +398,27 @@ class CatalogUnit:
     declared: dict[str, Any]
     handoff_sha256: str | None
     accession: str | None = None
+    problem: str | None = None  # a handoff released as a projection whose bytes are not the ones the index names
 
 
-def read_catalog(path: Path) -> dict[str, CatalogUnit]:
+def read_catalog(path: Path, bundle: "ReleaseBundle | None" = None) -> dict[str, CatalogUnit]:
+    """The Catalog units a handoffs directory or a catalog.json holds. In a release bundle a handoff.json released as a
+    projection (release-index.json triage_inputs) stands for its original: its sha256 is the index's original_sha256,
+    once its bytes are checked against the index's release_sha256 (a mismatch is the unit's `problem`)."""
     units: dict[str, CatalogUnit] = {}
     if path.is_dir():
         for handoff in sorted(path.glob("*/handoff.json")):
             unit_dir = handoff.parent
             raw = handoff.read_bytes()
-            data = json.loads(raw.decode("utf-8"))
+            data = json.loads(raw.decode("utf-8-sig"))
+            handoff_sha = hashlib.sha256(raw).hexdigest()
+            problem = None
+            entry = bundle.projected(handoff) if bundle is not None else None
+            if entry is not None:
+                if handoff_sha != entry["release_sha256"]:
+                    problem = (f"{handoff.name} of {unit_dir.name} hashes to {handoff_sha}, not the release index's "
+                               f"release_sha256 {entry['release_sha256']}; its original sha256 is not taken on trust")
+                handoff_sha = entry["original_sha256"]
             samples_path = unit_dir / "samples.json"
             rows = json.loads(samples_path.read_text(encoding="utf-8")) if samples_path.exists() else data.get("sample_metadata") or []
             ts = data.get("technical_settings") or {}
@@ -294,8 +426,9 @@ def read_catalog(path: Path) -> dict[str, CatalogUnit]:
                 unit_id=unit_dir.name,
                 rows=rows,
                 declared={k: ts.get(k) for k in ("chromatography", "ion_mode", "acquisition_mode")},
-                handoff_sha256=hashlib.sha256(raw).hexdigest(),
+                handoff_sha256=handoff_sha,
                 accession=data.get("accession"),
+                problem=problem,
             )
         return units
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -354,6 +487,49 @@ def token_chromatography(path: str) -> str | None:
     if _RP_TOKEN.search(p):
         found.add("RP")
     return found.pop() if len(found) == 1 else None
+
+
+# Acquisition tokens a name may carry (the digest prints them, the spec expander compares them within a group). A
+# token is a fact about the name, not about the file: the headers settle what was acquired. A token starts where a word
+# starts: after a character that is not a letter, or after a lower-case letter when the token is written in capitals
+# (posDDA), so that Media, media1 or Claudia carry no DIA. PRM, SRM, MRM, SIM and tMS2 name a targeted method, which
+# the campaign does not run (TARGETED_TOKENS); tDDA, HERMES and targeted ddMS2 name inclusion-list DDA, which it does.
+_ACQ_TOKEN = re.compile(r"(?i)(t-?dd-?ms2?|t-?dda|targeted-?dd-?ms2?|hermes|dd-?ms2?|dda|dia[12](?![0-9])|dia|swath|aif|"
+                        r"scan0[1-9](?![0-9])|ms1(?![0-9])|full-?scan|prm|srm|mrm|sim|tms2)(?![a-z])")
+TARGETED_TOKENS = ("MRM", "PRM", "SIM", "SRM", "tMS2")
+INCLUSION_LIST_TOKENS = ("tDDA",)
+# The acquisition_mode a name token says (T-TOKEN); SCANnn and the targeted tokens say none a payload can hold.
+TOKEN_MODES = {"DDA": "DDA", "tDDA": "DDA", "DIA": "DIA", "DIA1": "DIA", "DIA2": "DIA", "SWATH": "SWATH", "AIF": "AIF",
+               "MS1": "MS1"}
+DIA_FAMILY = {"DIA", "SWATH", "AIF"}
+
+
+def _acq_name(token: str) -> str:
+    t = token.casefold().replace("-", "")
+    if t.startswith(("tdd", "targeted", "hermes")):
+        return "tDDA"
+    if t.startswith(("ddms", "dda")):
+        return "DDA"
+    if t in ("ms1", "fullscan"):
+        return "MS1"
+    if t == "tms2":
+        return "tMS2"
+    return t.upper()
+
+
+def _starts_a_word(text: str, match: re.Match[str]) -> bool:
+    before = text[match.start() - 1] if match.start() else ""
+    if not before.isalpha():
+        return True
+    letters = [c for c in match.group(1) if c.isalpha()]
+    return before.islower() and all(c.isupper() for c in letters[1:]) and letters[0].isupper()
+
+
+def token_acquisition(path: str) -> tuple[str, ...]:
+    """Every acquisition token the path carries (DDA, DIA, DIA1, DIA2, SWATH, AIF, SCAN01..09, MS1, tDDA, and the
+    targeted MRM, PRM, SIM, SRM, tMS2), sorted."""
+    text = _norm_path(path)
+    return tuple(sorted({_acq_name(m.group(1)) for m in _ACQ_TOKEN.finditer(text) if _starts_a_word(text, m)}))
 
 
 # --------------------------------------------------------------------------------------- the checks
@@ -489,16 +665,24 @@ def _triage_member_paths(triages: dict[str, dict[str, Any]]) -> list[str]:
     return paths
 
 
-def _cleared(triage: dict[str, Any], code: str) -> bool:
-    return any(a.get("code") == code for a in triage.get("person_answers", []))
-
-
 def _flag_codes(triage: dict[str, Any]) -> set[str]:
     return {f["code"] for f in triage.get("flags", [])}
 
 
 _REVISION = re.compile(r"^(?P<unit>.+)\.r(?P<n>[0-9]+)$")
 RECORD_SUFFIX = ".record.json"
+# The agent's compact spec (<accession>.spec.json, a revision <accession>.spec.r<N>.json; schemas/
+# msdial-unit-triage-spec.v1.json): bound by the records and expanded into the payloads, never a payload itself.
+SPEC_FILE = re.compile(r"^(?P<accession>.+)\.spec(?:\.r(?P<n>[0-9]+))?\.json$")
+
+
+def is_spec_file(name: str) -> bool:
+    return SPEC_FILE.match(name) is not None
+
+
+def is_payload_file(name: str) -> bool:
+    """A triage directory's *.json that is a payload: not index.json, a decision record or a spec."""
+    return name.endswith(".json") and name != "index.json" and not name.endswith(RECORD_SUFFIX) and not is_spec_file(name)
 
 
 def triage_file_unit(path: Path) -> str:
@@ -513,7 +697,7 @@ def current_triage_files(triage_dir: Path) -> list[Path]:
     revisions (<unit>.r<N>.json) only the highest, which supersedes <unit>.json and every earlier revision."""
     current: dict[str, tuple[int, Path]] = {}
     for path in sorted(triage_dir.glob("*.json")):
-        if path.name == "index.json" or path.name.endswith(RECORD_SUFFIX):
+        if not is_payload_file(path.name):
             continue
         match = _REVISION.match(path.stem)
         unit, number = (match.group("unit"), int(match.group("n"))) if match else (path.stem, 0)
@@ -575,22 +759,1079 @@ def record_class_citations(triage_path: Path) -> list[str]:
     return found
 
 
+# ------------------------------------------------------------------------------ the decision record (section 2.3)
+# The model writes only the payload; the wrapper writes the envelope from the harness's transcript. Everything the
+# envelope names by sha256 is recomputed here from the stored bytes. Nothing here runs a model or reads a Class.
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical_json(value: Any) -> bytes:
+    """Sorted keys, no spaces, UTF-8 (scripts/campaign/curated.canonical): the form every digest here is taken over."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+_ABSOLUTE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|/)")
+
+
+class CodeSource:
+    """The repository files a record names at its repo_commit (SKILL.md, the prompt template).
+
+    By default `git show <commit>:<path>` in the repository this script belongs to, so a record is checked against the
+    exact bytes it names; with --code-root, the file at <code root>/<path> (the released code, at its commit, for a third
+    party without the repository). read() gives (bytes, None) or (None, why it could not be read)."""
+
+    def __init__(self, code_root: Path | None = None, repo: Path = REPO_ROOT):
+        self.code_root = Path(code_root) if code_root is not None else None
+        self.repo = repo
+        self._cache: dict[tuple[str, str], tuple[bytes | None, str | None]] = {}
+
+    def read(self, commit: str, path: str) -> tuple[bytes | None, str | None]:
+        relative = str(path or "").replace("\\", "/").strip("/")
+        if not relative or _ABSOLUTE.match(str(path)) or ".." in relative.split("/"):
+            return None, f"{path!r} is not a path relative to the repository"
+        key = (commit, relative)
+        if key not in self._cache:
+            self._cache[key] = self._read(commit, relative)
+        return self._cache[key]
+
+    def _read(self, commit: str, relative: str) -> tuple[bytes | None, str | None]:
+        if self.code_root is not None:
+            try:
+                return (self.code_root / relative).read_bytes(), None
+            except OSError as error:
+                return None, f"{relative} is not in the code root ({type(error).__name__})"
+        if not re.fullmatch(r"[0-9a-f]{40}", str(commit or "")):
+            return None, f"repo_commit {commit!r} is not a commit id"
+        try:
+            done = subprocess.run(["git", "-C", str(self.repo), "show", f"{commit}:{relative}"],
+                                  capture_output=True, timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError) as error:
+            return None, f"git could not run ({type(error).__name__})"
+        if done.returncode != 0:
+            return None, f"{relative} at {commit[:12]} is not in this repository"
+        return done.stdout, None
+
+
+def code_commit(repo: Path = REPO_ROOT) -> str | None:
+    """The commit this validator runs at: HEAD, when the running script is the one HEAD holds (line endings aside);
+    None when it is not a commit's (an edited working tree) or git cannot say."""
+    try:
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, timeout=60, check=False)
+        if head.returncode != 0:
+            return None
+        commit = head.stdout.decode("ascii", "replace").strip()
+        shown = subprocess.run(["git", "-C", str(repo), "show", f"{commit}:scripts/validate-triage.py"],
+                               capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    running = Path(__file__).read_bytes().replace(b"\r\n", b"\n")
+    if shown.returncode != 0 or shown.stdout.replace(b"\r\n", b"\n") != running:
+        return None
+    return commit if re.fullmatch(r"[0-9a-f]{40}", commit) else None
+
+
+def skill_frontmatter(text: str) -> dict[str, Any]:
+    """The YAML front matter of a SKILL.md, as far as this contract reads it: scalars, and lists written either inline
+    (a, b) or as '- item' lines. Nothing beyond that is parsed."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return {}
+    out: dict[str, Any] = {}
+    key: str | None = None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        item = re.match(r"^\s+-\s+(.*\S)\s*$", line)
+        if item and key is not None:
+            if not isinstance(out.get(key), list):
+                out[key] = []
+            out[key].append(item.group(1).strip("'\""))
+            continue
+        pair = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", line)
+        if pair:
+            key, value = pair.group(1), pair.group(2)
+            out[key] = value.strip("'\"") if value else None
+    return out
+
+
+def skill_allowed_tools(text: str) -> list[str] | None:
+    """The skill's allowed-tools, in order, or None when it names none."""
+    value = skill_frontmatter(text).get("allowed-tools")
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",") if part.strip()]
+    return list(value) if value else None
+
+
+def skill_version(text: str) -> str | None:
+    match = re.search(r"Skill version: \*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*", text)
+    return match.group(1) if match else None
+
+
+_MCP_TOOL = re.compile(r"^mcp__(?P<server>.+?)__(?P<tool>.+)$")
+
+
+def tool_server(name: str) -> str | None:
+    match = _MCP_TOOL.match(name)
+    return match.group("server") if match else None
+
+
+def bare_tool(name: str) -> str:
+    """A tool's own name: mcp__<server>__<tool> is <tool>; a permission rule's '(...)' is dropped."""
+    base = str(name or "").split("(", 1)[0].strip()
+    match = _MCP_TOOL.match(base)
+    return match.group("tool") if match else base
+
+
+def tool_allowed(name: str, allowed: Iterable[str]) -> bool:
+    """A tool call against the skill's allowed-tools: a server-qualified name (mcp__<server>__<tool>) must be listed as
+    it is; a bare name (as a record may write an MCP tool, msdial_catalog_get_analysis_unit) matches a listed tool of
+    that name."""
+    allowed_bases = [str(item).split("(", 1)[0].strip() for item in allowed]
+    base = str(name or "").split("(", 1)[0].strip()
+    if _MCP_TOOL.match(base):
+        return base in allowed_bases
+    return base in allowed_bases or base in {bare_tool(item) for item in allowed_bases}
+
+
+def _result_text(content: Any) -> str:
+    """The text of a tool result's content: a string, or the text of its content blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(block.get("text") or "") for block in content if isinstance(block, dict))
+    return ""
+
+
+def _stored_result(data: bytes | None) -> dict[str, Any] | None:
+    """A stored tool result ({tool_use_id, tool, is_error, content}) from its bytes, or None."""
+    if data is None:
+        return None
+    try:
+        stored = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return stored if isinstance(stored, dict) else None
+
+
+def harness_refused(name: str, result: Mapping[str, Any] | None) -> bool:
+    """A tool result that is the harness's own refusal of a tool it does not offer (`No such tool available: <name>`):
+    the call never reached a tool. A model may still ask for a tool it was not given (Edit, to change the spec it
+    wrote); the attempt changes nothing, so it is a note, not a skill violation. Anything else that answers a call to a
+    tool the skill does not allow is an error."""
+    if not isinstance(result, Mapping) or not result.get("is_error"):
+        return False
+    text = _result_text(result.get("content"))
+    return re.search(r"No such tool available: " + re.escape(str(name)) + r"(?![\w-])", text) is not None
+
+
+def transcript_tool_names(data: bytes) -> list[str]:
+    """The tool calls a harness transcript (JSON lines) shows, in order: every {"type": "tool_use", "name": ...} block,
+    once per id."""
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "tool_use" and isinstance(value.get("name"), str):
+                ident = value.get("id")
+                if not (isinstance(ident, str) and ident in seen):
+                    if isinstance(ident, str):
+                        seen.add(ident)
+                    names.append(value["name"])
+                return
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    for line in data.decode("utf-8", "replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            walk(json.loads(line))
+        except ValueError:
+            continue
+    return names
+
+
+class ReleaseBundle:
+    """A release bundle (section 5.3): its root and the triage inputs release-index.json says were released as
+    projections, by bundle-relative path."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        index = json.loads((self.root / RELEASE_INDEX).read_text(encoding="utf-8-sig"))
+        self.inputs: dict[str, dict[str, str]] = {}
+        for item in index.get("triage_inputs") or []:
+            if isinstance(item, dict) and item.get("release"):
+                self.inputs[str(item["release"]).replace("\\", "/")] = {
+                    "original_sha256": str(item.get("original_sha256") or "").removeprefix("sha256:").casefold(),
+                    "release_sha256": str(item.get("release_sha256") or "").removeprefix("sha256:").casefold(),
+                }
+
+    @staticmethod
+    def find(triage_dir: Path) -> "ReleaseBundle | None":
+        """The bundle a triage directory (<bundle>/triage/<accession>) sits in, or None."""
+        root = Path(triage_dir).resolve().parent.parent
+        return ReleaseBundle(root) if (root / RELEASE_INDEX).is_file() else None
+
+    def projected(self, path: Path) -> dict[str, str] | None:
+        try:
+            relative = Path(path).resolve().relative_to(self.root.resolve()).as_posix()
+        except ValueError:
+            return None
+        return self.inputs.get(relative)
+
+
+@dataclass
+class Provenance:
+    """What the record checks need beyond the triage directory."""
+
+    code: CodeSource = field(default_factory=CodeSource)
+    bundle: ReleaseBundle | None = None
+    # The sha256 of each --archive-listing file given (None when the caller gave listings without their files), and
+    # the listings the records bind, so that the listings checked are the ones the decisions rested on.
+    listing_sha256: set[str] | None = None
+    bound_listings: set[str] = field(default_factory=set)
+    modules: dict[str, tuple[Any, str | None]] = field(default_factory=dict)
+    expansions: dict[str, Any] = field(default_factory=dict)
+    # Why every v2 payload of the accession must be expanded from a spec (a spec in the directory, a record that binds
+    # one), or None; and per unit every payload whose record binds a derivation: [(spec revision number, payload)].
+    derived_accession: str | None = None
+    derived: dict[str, list[tuple[int, dict[str, Any]]]] = field(default_factory=dict)
+    spec_units: dict[str, set[str]] = field(default_factory=dict)  # spec sha256 -> the units whose records bind it
+
+    def code_matches(self, data: bytes, expected: str) -> bool:
+        """`data` (a file the record names at its commit) hashes to `expected`; from a released code folder, also once
+        its line endings are LF, since a checkout with core.autocrlf writes CRLF where the commit holds LF."""
+        if sha256_bytes(data) == expected:
+            return True
+        return self.code.code_root is not None and sha256_bytes(data.replace(b"\r\n", b"\n")) == expected
+
+
+def transcript_events(data: bytes) -> dict[str, Any]:
+    """A harness transcript (stream JSON lines) as a record is checked against it: {init, calls: [{id, name, input,
+    result}] in order, once per id, each tool_result paired with its call, models (the init's and every assistant
+    message's)}."""
+    init: dict[str, Any] | None = None
+    calls: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    models: list[str] = []
+    for line in data.decode("utf-8-sig", "replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(message, dict):
+            continue
+        if message.get("type") == "system" and message.get("subtype") == "init" and init is None:
+            init = message
+            if message.get("model") and str(message["model"]) not in models:
+                models.append(str(message["model"]))
+        body = message.get("message") if isinstance(message.get("message"), dict) else {}
+        if message.get("type") == "assistant" and body.get("model") and str(body["model"]) not in models:
+            models.append(str(body["model"]))
+        for block in body.get("content") if isinstance(body.get("content"), list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and isinstance(block.get("id"), str):
+                if block["id"] not in calls:
+                    order.append(block["id"])
+                    calls[block["id"]] = {"id": block["id"], "name": str(block.get("name") or ""),
+                                          "input": block.get("input") if isinstance(block.get("input"), dict) else {},
+                                          "result": None}
+            elif block.get("type") == "tool_result" and block.get("tool_use_id") in calls:
+                calls[block["tool_use_id"]]["result"] = block
+    return {"init": init, "calls": [calls[i] for i in order], "models": models}
+
+
+def _file_check(report: "Report", unit: str, record: Path, label: str, path_text: Any, expected_sha: Any,
+                expected_bytes: Any, bundle: ReleaseBundle | None, check: str = "T-RECORD") -> bytes | None:
+    """One file a record names, against the sha256 (and bytes) it records. A file released as a projection is checked
+    through the release index. Returns its bytes when they could be read."""
+    text = str(path_text or "")
+    if not text:
+        report.add("error", check, unit, f"{record.name}: {label} names no path")
+        return None
+    if _ABSOLUTE.match(text):
+        report.add("error", check, unit, f"{record.name}: {label} is an absolute path; a record names its files relative "
+                   "to itself, because it is released byte for byte")
+        return None
+    location = record.parent / text
+    try:
+        data = location.read_bytes()
+    except OSError:
+        report.add("error", check, unit, f"{record.name}: {label} {text} is not there; the decision cannot be checked "
+                   "against what it rested on")
+        return None
+    expected = str(expected_sha or "").casefold()
+    entry = bundle.projected(location) if bundle is not None else None
+    if entry is not None:
+        if sha256_bytes(data) != entry["release_sha256"]:
+            report.add("error", check, unit, f"{record.name}: {label} {text} is released as a projection, but hashes to "
+                       f"{sha256_bytes(data)}, not the release index's release_sha256 {entry['release_sha256']}")
+        elif entry["original_sha256"] != expected:
+            report.add("error", check, unit, f"{record.name}: {label} {text}: the release index's original_sha256 "
+                       f"{entry['original_sha256']} is not the {expected or '(none)'} the record names")
+        return data
+    if sha256_bytes(data) != expected:
+        report.add("error", check, unit, f"{record.name}: {label} {text} hashes to {sha256_bytes(data)}; the record names "
+                   f"{expected or '(none)'}")
+    if expected_bytes is not None and len(data) != expected_bytes:
+        report.add("error", check, unit, f"{record.name}: {label} {text} is {len(data)} bytes; the record names {expected_bytes}")
+    return data
+
+
+def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Path, payload_bytes: bytes,
+                 payload: dict[str, Any], provenance: Provenance) -> dict[str, Any] | None:
+    """The decision record beside one payload (section 2.3). Returns the record when it could be read as one."""
+    record_path = payload_path.with_name(payload_path.name[: -len(".json")] + RECORD_SUFFIX)
+    v2 = payload.get("schema") == SCHEMA_V2_ID
+    if not record_path.is_file():
+        if v2:
+            report.add("hold", "T-RECORD", unit, f"{payload_path.name} has no decision record ({record_path.name}); what it "
+                       "rested on, the skill, the prompt and the tool calls cannot be checked")
+        return None
+    try:
+        record = json.loads(record_path.read_bytes().decode("utf-8-sig"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        report.add("error", "T-RECORD", unit, f"{record_path.name} is not readable JSON: {error}")
+        return None
+    schema = load_schema(RECORD_SCHEMA_ID)
+    problems = schema_errors(record, schema, schema)
+    if problems:
+        for problem in problems[:20]:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: {problem}")
+        if len(problems) > 20:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: {len(problems) - 20} more schema problem(s)")
+        return None
+    bundle = provenance.bundle
+    sha = sha256_bytes(payload_bytes)
+    named = record["payload"]
+    if record["decision_id"] != sha:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: decision_id {record['decision_id']} is not the payload's "
+                   f"sha256 {sha}")
+    if named["sha256"] != sha:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: payload.sha256 {named['sha256']} is not the payload's "
+                   f"sha256 {sha}")
+    if named["path"] != payload_path.name:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: payload.path {named['path']!r} is not {payload_path.name}")
+    if named["schema"] != payload.get("schema"):
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: payload.schema {named['schema']!r} is not the payload's "
+                   f"{payload.get('schema')!r}")
+    if record["kind"] != "unit_triage":
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: kind {record['kind']!r} beside a triage payload")
+    if record["accession"] != payload.get("accession") or record["unit_id"] != payload.get("unit_id"):
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: names {record['accession']}/{record['unit_id']}, the "
+                   f"payload {payload.get('accession')}/{payload.get('unit_id')}")
+    if record["supersedes"] == sha:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: a decision cannot supersede itself")
+
+    for index, item in enumerate(record["inputs"]):
+        _file_check(report, unit, record_path, f"inputs[{index}] ({item['role']})", item["path"], item["sha256"],
+                    item["bytes"], bundle)
+
+    # What the decision rested on must be bound: the unit's Catalog evidence and the archive listing. A record that
+    # binds neither states nothing a third party can check, so it never passes.
+    if record["kind"] == "unit_triage":
+        roles = [item["role"] for item in record["inputs"]]
+        if not set(roles) & set(CATALOG_ROLES):
+            report.add("hold", "T-RECORD", unit, f"{record_path.name} binds no Catalog evidence ({', '.join(CATALOG_ROLES)}); "
+                       "the rows the triage covers cannot be traced to what it read")
+        listings = [item for item in record["inputs"] if item["role"] == "archive_listing"]
+        if not listings:
+            report.add("hold", "T-RECORD", unit, f"{record_path.name} binds no archive listing; the selection's crc32 and "
+                       "size, and the byte-identical content check, have no bound source")
+        for item in listings:
+            provenance.bound_listings.add(str(item["sha256"]).casefold())
+            if provenance.listing_sha256 is not None and str(item["sha256"]).casefold() not in provenance.listing_sha256:
+                report.add("hold", "T-RECORD", unit, f"{record_path.name} binds the listing {item['path']}, which is not "
+                           "among the --archive-listing files given; the checks ran on listings the decision did not rest on")
+        own = [item for item in record["inputs"] if item["role"] == "catalog_handoff"
+               and str(item["path"]).replace("\\", "/") == f"inputs/{unit}/handoff.json"]
+        if own and payload.get("catalog_handoff_sha256") and own[0]["sha256"] != payload["catalog_handoff_sha256"]:
+            report.add("error", "T-HANDOFF", unit, f"{payload_path.name} names catalog_handoff_sha256 "
+                       f"{payload['catalog_handoff_sha256']}, but the handoff its record binds ({own[0]['path']}) is "
+                       f"{own[0]['sha256']}")
+
+    # The wrapper that wrote the record, at its commit: its acceptance, context and redaction rules made the record's
+    # statements about the session.
+    wrapper = record["wrapper"]
+    if wrapper["repo_commit"] is None:
+        report.add("hold", "T-RECORD", unit, f"{record_path.name}: the wrapper {wrapper['path']} that wrote it was not a "
+                   "commit's (an edited working tree), so the rules behind its tool_calls and context cannot be identified")
+    else:
+        wrapper_bytes, why = provenance.code.read(wrapper["repo_commit"], wrapper["path"])
+        if wrapper_bytes is None:
+            report.add("hold", "T-RECORD", unit, f"{record_path.name}: the wrapper cannot be read at its commit ({why})")
+        elif not provenance.code_matches(wrapper_bytes, wrapper["sha256"]):
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: {wrapper['path']} at {wrapper['repo_commit'][:12]} "
+                       f"hashes to {sha256_bytes(wrapper_bytes)}; the record names {wrapper['sha256']}")
+
+    # The skill at its commit: its bytes, its version and the tools it allows.
+    skill = record["skill"]
+    allowed: list[str] | None = None
+    if skill["name"] != SKILL_NAME:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: skill {skill['name']!r} is not {SKILL_NAME}")
+    skill_bytes, why = provenance.code.read(skill["repo_commit"], skill["path"])
+    if skill_bytes is None:
+        report.add("hold", "T-RECORD", unit, f"{record_path.name}: SKILL.md cannot be read at repo_commit ({why}); the "
+                   "skill and the tools it allows were not checked")
+    else:
+        text = skill_bytes.decode("utf-8", "replace")
+        if not provenance.code_matches(skill_bytes, skill["sha256"]):
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: {skill['path']} at {skill['repo_commit'][:12]} hashes "
+                       f"to {sha256_bytes(skill_bytes)}; the record names {skill['sha256']}")
+        version = skill_version(text)
+        if version != skill["version"]:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: the skill at its commit is version {version}, the "
+                       f"record names {skill['version']}")
+        written_by = (payload.get("decided_by") or {}).get("skill_version")
+        if v2 and written_by != skill["version"]:
+            report.add("error", "T-RECORD", unit, f"{record_path.name}: the payload was written by skill version "
+                       f"{written_by}, the record names {skill['version']}")
+        allowed = skill_allowed_tools(text)
+
+    # The prompt: the template at the commit, the rendered prompt beside the record.
+    prompt = record["prompt"]
+    template, why = provenance.code.read(skill["repo_commit"], prompt["template_path"])
+    if template is None:
+        report.add("hold", "T-RECORD", unit, f"{record_path.name}: the prompt template cannot be read at repo_commit ({why})")
+    elif not provenance.code_matches(template, prompt["template_sha256"]):
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: {prompt['template_path']} at its commit hashes to "
+                   f"{sha256_bytes(template)}; the record names {prompt['template_sha256']}")
+    _file_check(report, unit, record_path, "the rendered prompt", prompt["rendered_path"], prompt["rendered_sha256"], None,
+                bundle)
+
+    # The tool calls: in order, each allowed by the skill, each result as stored.
+    calls = record["tool_calls"]
+    for index, call in enumerate(calls, start=1):
+        if call["seq"] != index:
+            report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool_calls[{index - 1}] has seq {call['seq']}; the "
+                       "calls are numbered 1, 2, ... in the order the transcript shows them")
+        stored = None
+        has_result = call["result_path"] is not None or call["result_sha256"] is not None or call["status"] == "ok"
+        if has_result:
+            stored = _file_check(report, unit, record_path, f"the result of tool call {call['seq']}", call["result_path"],
+                                 call["result_sha256"], None, bundle, check="T-TOOLS")
+        else:
+            report.add("hold", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} ({call['tool']}) has no "
+                       "stored result; what it returned to the agent cannot be checked")
+        # A call to a tool the skill does not allow is an error, unless its stored result is the harness's refusal
+        # (no such tool): then it never ran. The transcript comparison below checks that the harness did not offer it.
+        if allowed is not None and not tool_allowed(call["tool"], allowed):
+            if call["status"] == "error" and harness_refused(call["tool"], _stored_result(stored)):
+                report.add("note", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} asked for {call['tool']}, "
+                           "which the skill does not allow; the harness refused it (no such tool), so it never ran")
+            else:
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} uses {call['tool']}, "
+                           f"which the skill does not allow ({', '.join(allowed)})")
+    if allowed is None and calls and skill_bytes is not None:
+        report.add("hold", "T-TOOLS", unit, f"{record_path.name}: the skill at its commit lists no allowed-tools, so its "
+                   f"{len(calls)} tool call(s) cannot be checked against it")
+
+    # The released redacted transcript: the harness's own account, which tool_calls, the model and the session must
+    # match. Without it they are the wrapper's statements, which nobody else can check, so the decision holds.
+    transcript = record["transcript"] or {}
+    released = transcript.get("released_path")
+    if not released or not transcript.get("sha256"):
+        report.add("hold", "T-TRANSCRIPT", unit, f"{record_path.name} names no released transcript; its tool_calls, model "
+                   "and session are the wrapper's statements, not checked against the harness's own record")
+    else:
+        candidates = [record_path.parent / released, Path(triage_dir).parent.parent / released]
+        if bundle is not None:
+            candidates.append(bundle.root / released)
+        found = None if _ABSOLUTE.match(str(released)) else next((p for p in candidates if p.is_file()), None)
+        if found is None:
+            report.add("hold", "T-TRANSCRIPT", unit, f"{record_path.name}: the redacted transcript {released} is not here; "
+                       "its sha256 and the tool calls it shows were not checked")
+        else:
+            data = found.read_bytes()
+            if sha256_bytes(data) != str(transcript.get("sha256") or ""):
+                report.add("error", "T-RECORD", unit, f"{record_path.name}: the released transcript {released} hashes to "
+                           f"{sha256_bytes(data)}; the record names {transcript.get('sha256')}")
+            else:
+                compare_transcript(report, unit, record_path, record, data, allowed)
+
+    # The derivation: a payload expanded from the agent's spec is that spec's deterministic image (T-SPEC), over a digest
+    # that is the digest script's image of the inputs (T-DIGEST).
+    if record.get("derivation") is not None:
+        check_derivation(report, unit, record_path, record, payload_bytes, provenance)
+    elif isinstance(payload.get("derivation"), dict):
+        report.add("error", "T-SPEC", unit, f"{payload_path.name} says it was expanded from {payload['derivation'].get('spec')}, "
+                   f"but its record {record_path.name} binds no derivation; nothing ties it to that spec")
+    elif v2:
+        # From skill 1.2.0 the agent writes a spec and code writes the payloads; in an accession whose payloads are
+        # expanded from a spec, none is written another way. A payload without a derivation there was not made by the
+        # expander, whatever its record says.
+        why = []
+        if _version(skill["version"]) >= SPEC_SKILL_VERSION:
+            why.append(f"its record names skill {skill['version']}, which writes a spec and never a payload")
+        if provenance.derived_accession:
+            why.append(provenance.derived_accession)
+        if why:
+            report.add("error", "T-SPEC", unit, f"{payload_path.name}'s record {record_path.name} binds no derivation, but "
+                       f"{'; and '.join(why)}; a payload that is not its spec's expansion is not accepted")
+    if v2 and (record.get("derivation") is not None or _version(skill["version"]) >= SPEC_SKILL_VERSION):
+        own = re.compile(rf"^{re.escape(unit)}(?:\.r[0-9]+)?\.json$", re.IGNORECASE)
+        for call in record["tool_calls"]:
+            target = str((call.get("arguments") or {}).get("file_path") or "").replace("\\", "/").rsplit("/", 1)[-1]
+            if bare_tool(str(call["tool"])) in ("Write", "Edit", "MultiEdit") and own.match(target):
+                report.add("error", "T-SPEC", unit, f"{record_path.name}: tool call {call['seq']} ({bare_tool(str(call['tool']))}) "
+                           f"writes {target} itself; a spec session writes the spec, and the payloads are the expander's")
+
+    # The context: clean, or a hold.
+    context = record["agent"]["context"]
+    if context["configuration"] != "clean":
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the agent ran in configuration "
+                   f"{context['configuration']!r}, not clean")
+    if context["context_files"]:
+        shown_files = ", ".join(item["path"] for item in context["context_files"][:3])
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the harness loaded {len(context['context_files'])} "
+                   f"context file(s) ({shown_files}); a clean run loads none")
+        for item in context["context_files"]:
+            location = record_path.parent / item["path"]
+            if not _ABSOLUTE.match(item["path"]) and location.is_file() and sha256_bytes(location.read_bytes()) != item["sha256"]:
+                report.add("error", "T-RECORD", unit, f"{record_path.name}: context file {item['path']} hashes to "
+                           f"{sha256_bytes(location.read_bytes())}; the record names {item['sha256']}")
+    if context["memory"] != "disabled":
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: memory was {context['memory']!r}, not disabled")
+    if context["hooks"]:
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the harness ran {len(context['hooks'])} hook(s)")
+    if allowed is not None:
+        servers = {tool_server(item.split("(", 1)[0].strip()) for item in allowed} - {None}
+        extra = sorted({item["name"] for item in context["mcp_servers"]} - servers)
+        if extra:
+            report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: MCP server(s) {', '.join(extra)} were loaded, which "
+                       "the skill does not allow")
+    called = sorted({tool_server(str(call["tool"]).split("(", 1)[0].strip()) for call in calls} - {None})
+    unlisted = [name for name in called if name not in {item["name"] for item in context["mcp_servers"]}]
+    if unlisted:
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: tool calls use MCP server(s) {', '.join(unlisted)}, "
+                   "which agent.context.mcp_servers does not list; the servers the session ran with are not stated")
+    flags = list(context["harness_flags"])
+    if not flags:
+        report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: agent.context.harness_flags is empty; how the session "
+                   "was made clean is not stated")
+    elif record["agent"]["harness"] == "claude-code":
+        missing = [flag for flag in CLAUDE_CODE_CLEAN_FLAGS if flag not in flags]
+        if missing:
+            report.add("hold", "T-CONTEXT", unit, f"{record_path.name}: the claude-code session's flags lack "
+                       f"{', '.join(missing)}, which a clean configuration sets")
+    return record
+
+
+_MATERIALISED: list[Path] = []
+
+
+def _cleanup_materialised() -> None:
+    for folder in _MATERIALISED:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+atexit.register(_cleanup_materialised)
+
+
+def _lf(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n")
+
+
+def load_code_module(provenance: Provenance, code_file: dict[str, Any]) -> tuple[Any, str | None, str]:
+    """The script a record names (derivation.expander or derivation.digest.script: path, sha256, repo_commit and tree, the
+    sha256 of each file it reads beside itself, SPEC_CODE_TREE), read at its commit (git show, or the --code-root) and
+    loaded as a module with those files, or (None, why, level). Every call checks the record's own hashes, the script's
+    and the tree's, against the bytes read: a hash that is not the file's is an error (level "error"); code that cannot
+    be read or loaded is a hold. The running tree's own files are used when every byte is the commit's (line endings
+    aside); otherwise the files are written to a scratch folder and loaded from there, so a record is re-derived by the
+    code it names, never by whatever runs today. A loaded module is cached by the bytes of its files."""
+    commit, path, expected_sha256 = code_file["repo_commit"], code_file["path"], code_file["sha256"]
+    main, why = provenance.code.read(commit, path)
+    if main is None:
+        return None, f"{path} cannot be read at {str(commit)[:12]} ({why})", "hold"
+    if not provenance.code_matches(main, expected_sha256):
+        return None, (f"{path} at {str(commit)[:12]} hashes to {sha256_bytes(main)}; the record names "
+                      f"{expected_sha256}"), "error"
+    named = code_file.get("tree")
+    if not isinstance(named, dict) or set(named) != set(SPEC_CODE_TREE):
+        return None, (f"the record binds {path} without the sha256 of every file it reads beside itself "
+                      f"({', '.join(SPEC_CODE_TREE)}); the helpers and schemas behind the re-derivation are not bound"), "error"
+    tree: dict[str, bytes] = {path: main}
+    for relative in SPEC_CODE_TREE:
+        data, why = provenance.code.read(commit, relative)
+        if data is None:
+            return None, f"{relative} cannot be read at {str(commit)[:12]} ({why})", "hold"
+        if not provenance.code_matches(data, str(named[relative])):
+            return None, (f"{relative} at {str(commit)[:12]} hashes to {sha256_bytes(data)}; the record's tree names "
+                          f"{named[relative]}"), "error"
+        tree[relative] = data
+    key = sha256_bytes(canonical_json({rel: sha256_bytes(_lf(data)) for rel, data in sorted(tree.items())}) + path.encode("utf-8"))
+    if key in provenance.modules:
+        module, why = provenance.modules[key]
+        return module, why, "hold"
+    here = all((REPO_ROOT / rel).is_file() and _lf((REPO_ROOT / rel).read_bytes()) == _lf(data) for rel, data in tree.items())
+    if here:
+        root = REPO_ROOT
+    else:
+        root = Path(tempfile.mkdtemp(prefix="triage-code-"))
+        _MATERIALISED.append(root)
+        for relative, data in tree.items():
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+    name = f"triage_code_{hashlib.sha256((str(root) + path).encode('utf-8')).hexdigest()[:16]}"
+    try:
+        spec = importlib.util.spec_from_file_location(name, root / path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    except Exception as error:  # noqa: BLE001 - code from another commit may fail in any way; that is a hold, not a crash
+        provenance.modules[key] = (None, f"{path} at {str(commit)[:12]} cannot be loaded ({type(error).__name__}: {error})")
+        return None, provenance.modules[key][1], "hold"
+    provenance.modules[key] = (module, None)
+    return module, None, "hold"
+
+
+def _bound_input_files(record_path: Path, record: dict[str, Any], bundle: "ReleaseBundle | None") -> tuple[dict[str, bytes], dict[str, str]]:
+    """({path under inputs/: bytes}, {path: original sha256 for a file released as a projection}) of the record's inputs.
+    Only files whose bytes are the ones the record names are taken; the record's own checks report the others."""
+    files: dict[str, bytes] = {}
+    originals: dict[str, str] = {}
+    for item in record["inputs"]:
+        text = str(item.get("path") or "").replace("\\", "/")
+        if not text.startswith("inputs/") or _ABSOLUTE.match(text):
+            continue
+        location = record_path.parent / text
+        try:
+            data = location.read_bytes()
+        except OSError:
+            continue
+        entry = bundle.projected(location) if bundle is not None else None
+        relative = text[len("inputs/"):]
+        if entry is not None:
+            if sha256_bytes(data) == entry["release_sha256"]:
+                files[relative] = data
+                originals[relative] = entry["original_sha256"]
+        elif sha256_bytes(data) == str(item.get("sha256") or ""):
+            files[relative] = data
+    return files, originals
+
+
+def check_derivation(report: "Report", unit: str, record_path: Path, record: dict[str, Any], payload_bytes: bytes,
+                     provenance: Provenance) -> None:
+    """T-SPEC and T-DIGEST: the payload is the expansion, by the expander at its commit, of the spec the record binds over
+    the inputs it binds and the context it states; the digest is the digest script's image of those inputs."""
+    derivation = record["derivation"]
+    bundle = provenance.bundle
+    spec_info = derivation["spec"]
+    spec_bytes = _file_check(report, unit, record_path, "the spec", spec_info["path"], spec_info["sha256"], spec_info["bytes"],
+                             bundle, check="T-SPEC")
+    context = derivation["context"]
+    for field_name, expected, label in (("decided_at", record["finished_at"], "the record's finished_at"),
+                                        ("model", record["agent"]["model_id"], "the record's model_id"),
+                                        ("skill_version", record["skill"]["version"], "the record's skill version")):
+        if context[field_name] != expected:
+            report.add("error", "T-SPEC", unit, f"{record_path.name}: derivation.context.{field_name} {context[field_name]!r} is "
+                       f"not {label} {expected!r}")
+    files, originals = _bound_input_files(record_path, record, bundle)
+
+    digest = derivation.get("digest")
+    if digest is not None:
+        digest_bytes = _file_check(report, unit, record_path, "the digest", digest["path"], digest["sha256"], None, bundle,
+                                   check="T-DIGEST")
+        script = digest["script"]
+        module, why, level = load_code_module(provenance, script)
+        if module is None:
+            report.add(level, "T-DIGEST", unit, f"{record_path.name}: the digest cannot be rebuilt ({why})")
+        elif str(getattr(module, "DIGEST_VERSION", "")) != script["version"]:
+            report.add("error", "T-DIGEST", unit, f"{record_path.name}: the digest script at its commit is version "
+                       f"{getattr(module, 'DIGEST_VERSION', None)}, the record names {script['version']}")
+        elif digest_bytes is not None:
+            try:
+                rebuilt = module.build_digest_from_files(files)
+            except Exception as error:  # noqa: BLE001
+                report.add("error", "T-DIGEST", unit, f"{record_path.name}: the digest script fails on the bound inputs "
+                           f"({type(error).__name__}: {error})")
+            else:
+                if _lf(rebuilt) != _lf(digest_bytes):
+                    report.add("error", "T-DIGEST", unit, f"{record_path.name}: {digest['path']} is not what the digest script "
+                               "at its commit builds from the inputs the record binds")
+
+    expander = derivation["expander"]
+    if spec_bytes is None:
+        return
+    module, why, level = load_code_module(provenance, expander)
+    if module is None:
+        report.add(level, "T-SPEC", unit, f"{record_path.name}: the payload cannot be re-derived from its spec ({why})")
+        return
+    if str(getattr(module, "EXPANDER_VERSION", "")) != expander["version"]:
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the expander at its commit is version "
+                   f"{getattr(module, 'EXPANDER_VERSION', None)}, the record names {expander['version']}")
+        return
+    key = sha256_bytes(canonical_json({"spec": sha256_bytes(spec_bytes), "name": Path(spec_info["path"]).name,
+                                       "expander": [expander["repo_commit"], expander["sha256"]], "context": context,
+                                       "files": {k: sha256_bytes(v) for k, v in sorted(files.items())}, "originals": originals}))
+    if key not in provenance.expansions:
+        try:
+            inputs = module.inputs_from_files(files)
+            for relative, original in originals.items():
+                parts = relative.split("/")
+                if len(parts) == 2 and parts[1] == "handoff.json" and parts[0] in inputs.units:
+                    inputs.units[parts[0]].handoff_sha256 = original
+            ctx = module.ExpansionContext(decided_at=context["decided_at"], model=context["model"],
+                                          skill_version=context["skill_version"], agent=context["agent"],
+                                          purpose=context["purpose"])
+            provenance.expansions[key] = module.expand(spec_bytes, inputs, ctx, spec_name=Path(spec_info["path"]).name)
+        except Exception as error:  # noqa: BLE001
+            provenance.expansions[key] = error
+    expansion = provenance.expansions[key]
+    if isinstance(expansion, Exception):
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the expander fails on the spec and the bound inputs "
+                   f"({type(expansion).__name__}: {expansion})")
+        return
+    if expansion.findings:
+        shown = "; ".join(f"{f.code} {f.unit or '-'}: {f.message[:160]}" for f in expansion.findings[:3])
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the spec does not expand over the bound inputs "
+                   f"({len(expansion.findings)} finding(s): {shown})")
+        return
+    check_revision_scope(report, unit, record_path, record, spec_bytes, expansion, module, provenance)
+    expanded = expansion.payloads.get(unit)
+    if expanded is None:
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the spec expands to no payload for unit {unit}")
+    elif expanded != payload_bytes:
+        try:
+            payload = json.loads(payload_bytes.decode("utf-8"))
+            spec = json.loads(spec_bytes.decode("utf-8-sig"))
+            ids = {g.get("id") for g in spec.get("groups") or []} | {e.get("id") for e in spec.get("exceptions") or []}
+            stray = sorted({str(i.get("rule_id")) for key_ in ("rows", "added_members", "excluded_rows", "excluded_members")
+                            for i in payload.get(key_) or [] if i.get("rule_id") not in ids})
+        except (UnicodeDecodeError, ValueError, AttributeError):
+            stray = []
+        report.add("error", "T-SPEC", unit, f"{record_path.name}: the payload is not the spec's expansion byte for byte"
+                   + (f"; rule_id(s) {', '.join(stray[:5])} are not in the spec" if stray else "")
+                   + "; a payload is written by the expander, never by hand")
+
+
+def spec_number(name: str) -> int | None:
+    """The revision number of a spec file name: 0 for <accession>.spec.json, N for .spec.r<N>.json, None otherwise."""
+    match = SPEC_FILE.match(Path(str(name)).name)
+    return None if match is None else int(match.group("n") or 0)
+
+
+def check_revision_scope(report: "Report", unit: str, record_path: Path, record: dict[str, Any], spec_bytes: bytes,
+                         expansion: Any, module: Any, provenance: Provenance) -> None:
+    """X-SCOPE, re-checked (T-SPEC): a revision spec (<accession>.spec.r<N>.json) expands every unit it does not revise
+    to that unit's payload as it stood before the revision (its latest payload expanded from an earlier spec), decision
+    fields aside. The units it revises are those whose records bind the same spec."""
+    number = spec_number(record["derivation"]["spec"]["path"])
+    if not number:
+        return
+    revised = provenance.spec_units.get(sha256_bytes(spec_bytes), set()) | {unit}
+    for other, data in sorted(expansion.payloads.items()):
+        if other in revised:
+            continue
+        earlier = [(n, doc) for n, doc in provenance.derived.get(other, []) if n < number]
+        if not earlier:
+            report.add("hold", "T-SPEC", unit, f"{record_path.name}: the revision spec also expands {other}, which has no "
+                       "payload expanded from an earlier spec; that the revision leaves it as it was is not checked")
+            continue
+        before = max(earlier, key=lambda item: item[0])[1]
+        if module.comparable(json.loads(data.decode("utf-8"))) != module.comparable(before):
+            report.add("error", "T-SPEC", unit, f"{record_path.name}: the revision spec changes {other}, which it does not "
+                       f"revise (X-SCOPE): its expansion of {other} is not {other}'s payload before the revision")
+
+
+def compare_transcript(report: "Report", unit: str, record_path: Path, record: dict[str, Any], data: bytes,
+                       allowed: list[str] | None) -> None:
+    """The record against the released transcript: every tool call in order with its server-qualified name, its
+    arguments and its stored result; every call the transcript shows on the skill's allowed list; the model and the
+    session the transcript names."""
+    shown = transcript_events(data)
+    calls = record["tool_calls"]
+    names = [item["name"] for item in shown["calls"]]
+    listed = [str(call["tool"]) for call in calls]
+    if allowed is not None:
+        offered = {str(t) for t in ((shown["init"] or {}).get("tools") or [])}
+        for name in sorted(set(names)):
+            if tool_allowed(name, allowed):
+                continue
+            attempts = [item for item in shown["calls"] if item["name"] == name]
+            if name not in offered and attempts and all(
+                    item["result"] is not None and item["result"].get("is_error")
+                    and harness_refused(name, item["result"]) for item in attempts):
+                report.add("note", "T-TOOLS", unit, f"{record_path.name}: the released transcript shows {len(attempts)} "
+                           f"call(s) to {name}, which the harness did not offer and refused (no such tool); none ran")
+            else:
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: the released transcript shows a call to {name}, "
+                           f"which the skill does not allow")
+    if names != listed:
+        report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool_calls ({len(listed)}: "
+                   f"{', '.join(bare_tool(n) for n in listed[:8]) or 'none'}) differ from the {len(names)} tool call(s) the "
+                   f"released transcript shows ({', '.join(bare_tool(n) for n in names[:8]) or 'none'})")
+    else:
+        for call, seen in zip(calls, shown["calls"]):
+            if canonical_json(call["arguments"]) != canonical_json(seen["input"]):
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: the arguments of tool call {call['seq']} are not "
+                           "the ones the released transcript shows")
+            result = seen["result"]
+            if result is None:
+                if call["result_path"] is not None:
+                    report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} has a stored result, "
+                               "but the released transcript shows none")
+                continue
+            stored = None
+            if call["result_path"] and not _ABSOLUTE.match(str(call["result_path"])):
+                try:
+                    stored = json.loads((record_path.parent / call["result_path"]).read_bytes().decode("utf-8-sig"))
+                except (OSError, UnicodeDecodeError, ValueError):
+                    stored = None
+            if not isinstance(stored, dict) or "content" not in stored:
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: the stored result of tool call {call['seq']} is "
+                           "not readable as {tool_use_id, tool, is_error, content}")
+            elif (canonical_json(stored.get("content")) != canonical_json(result.get("content"))
+                  or bool(stored.get("is_error")) != bool(result.get("is_error"))
+                  or stored.get("tool_use_id") != seen["id"]):
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: the stored result of tool call {call['seq']} is "
+                           "not the result the released transcript shows")
+            elif bool(stored.get("is_error")) != (call["status"] == "error"):
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} is {call['status']}, its "
+                           "result says otherwise")
+    agent = record["agent"]
+    if agent["model_id"] == "unknown" or not shown["models"]:
+        report.add("hold", "T-RECORD", unit, f"{record_path.name}: the model is not known (the record names "
+                   f"{agent['model_id']!r}, the transcript {', '.join(shown['models']) or 'none'})")
+    elif agent["model_id"] not in shown["models"]:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: model_id {agent['model_id']!r} is not a model the "
+                   f"released transcript names ({', '.join(shown['models'])})")
+    init_session = (shown["init"] or {}).get("session_id")
+    if init_session and str(init_session) != agent["session_id"]:
+        report.add("error", "T-RECORD", unit, f"{record_path.name}: session_id {agent['session_id']!r} is not the session "
+                   "the released transcript names")
+
+
+# ------------------------------------------------------------------------------ the review log (section 2.4)
+
+
+def read_review_log(triage_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """(the entries of the accession's review-log.jsonl, why its hash chain does not hold). No log is no entry."""
+    path = Path(triage_dir) / REVIEW_LOG
+    if not path.is_file():
+        return [], []
+    entries: list[dict[str, Any]] = []
+    problems: list[str] = []
+    previous = None
+    for index, line in enumerate([item for item in path.read_bytes().split(b"\n") if item.strip()], start=1):
+        try:
+            entry = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            problems.append(f"line {index} does not parse")
+            entry = None
+        if isinstance(entry, dict):
+            if entry.get("seq") != index:
+                problems.append(f"line {index} has seq {entry.get('seq')}")
+            if entry.get("prev_sha256") != previous:
+                problems.append(f"line {index} does not chain to line {index - 1}")
+            entries.append(entry)
+        elif entry is not None:
+            problems.append(f"line {index} is not an object")
+        previous = sha256_bytes(line)
+    return entries, problems
+
+
+def _revision_entries(log: list[dict[str, Any]], decision_id: str) -> list[dict[str, Any]]:
+    return [e for e in log if e.get("kind") == "revision" and e.get("new_decision_id") == decision_id]
+
+
+def lineage(decision_id: str, supersedes: dict[str, str | None], log: list[dict[str, Any]]) -> set[str]:
+    """This decision and every one it supersedes, by the records' supersedes and the review log's revision entries."""
+    found = {decision_id}
+    queue = [decision_id]
+    while queue:
+        current = queue.pop()
+        earlier = {supersedes.get(current)} | {e.get("supersedes") for e in _revision_entries(log, current)}
+        for item in earlier:
+            if isinstance(item, str) and item and item not in found:
+                found.add(item)
+                queue.append(item)
+    return found
+
+
+def answered_codes(decision_id: str, payload: dict[str, Any], supersedes: dict[str, str | None],
+                   log: list[dict[str, Any]]) -> set[str]:
+    """The question codes a named person answered for this payload or one it supersedes (review-log person_answer
+    entries); a v1 payload's own person_answers count as well."""
+    ids = lineage(decision_id, supersedes, log)
+    codes = {str(e.get("question_code")) for e in log
+             if e.get("kind") == "person_answer" and e.get("decision_id") in ids and str(e.get("by") or "").strip()
+             and str(e.get("question_code") or "").strip()}
+    if payload.get("schema") != SCHEMA_V2_ID:
+        codes |= {str(a.get("code")) for a in payload.get("person_answers", []) if str(a.get("by") or "").strip()}
+    return codes
+
+
+def _blocking(payload: dict[str, Any] | None) -> set[str]:
+    return {f.get("code") for f in (payload or {}).get("flags", []) if isinstance(f, dict)} & BLOCKING_FLAGS
+
+
+def check_revision(report: "Report", unit: str, path: Path, decision_id: str, payload: dict[str, Any],
+                   payloads: dict[str, tuple[Path, dict[str, Any] | None]], supersedes: dict[str, str | None],
+                   log: list[dict[str, Any]], unit_files: list[tuple[int, Path]]) -> None:
+    """A v2 revision may drop a blocking flag of the payload it supersedes only on a person's answer: the cause of its
+    revision entry must be a person_answer with that flag's question_code, for this decision or one it supersedes."""
+    earlier = {supersedes.get(decision_id)} | {e.get("supersedes") for e in _revision_entries(log, decision_id)}
+    earlier = {item for item in earlier if isinstance(item, str) and item}
+    if not earlier:
+        # No record or log entry names what it revises: the revision before it by name (<unit>.r<N-1>.json, ...).
+        match = _REVISION.match(path.stem)
+        number = int(match.group("n")) if match else 0
+        lower = [(n, p) for n, p in unit_files if n < number]
+        if not lower:
+            return
+        before = max(lower)[1]
+        earlier = {sha for sha, (p, _) in payloads.items() if p == before}
+    ids = lineage(decision_id, supersedes, log)
+    by_seq = {e.get("seq"): e for e in log}
+    cited = set()
+    for entry in _revision_entries(log, decision_id):
+        cause = entry.get("cause") if isinstance(entry.get("cause"), dict) else {}
+        answer = by_seq.get(cause.get("seq"))
+        if (cause.get("kind") == "person_answer" and answer is not None and answer.get("kind") == "person_answer"
+                and answer.get("decision_id") in ids and str(answer.get("by") or "").strip()):
+            cited.add(str(answer.get("question_code")))
+    for sha in sorted(earlier):
+        if sha not in payloads:
+            report.add("hold", "T-REVISION", unit, f"{path.name} supersedes {sha}, which is not in this directory; the flags "
+                       "it dropped cannot be checked")
+            continue
+        dropped = _blocking(payloads[sha][1]) - _blocking(payload)
+        for code in sorted(dropped - cited):
+            report.add("error", "T-REVISION", unit, f"{path.name} drops the blocking flag {code} that "
+                       f"{payloads[sha][0].name} carried, but no revision entry of the review log cites a person's answer "
+                       f"to {code} as its cause; a flag is cleared by a person, not by a revision")
+
+
+def _payload_files(triage_dir: Path) -> dict[str, list[tuple[int, Path]]]:
+    """Every payload of the directory, current or superseded, by unit: [(revision number, path)], 0 for <unit>.json."""
+    out: dict[str, list[tuple[int, Path]]] = defaultdict(list)
+    for path in sorted(triage_dir.glob("*.json")):
+        if not is_payload_file(path.name):
+            continue
+        match = _REVISION.match(path.stem)
+        unit, number = (match.group("unit"), int(match.group("n"))) if match else (path.stem, 0)
+        out[unit].append((number, path))
+    return {unit: sorted(items) for unit, items in out.items()}
+
+
+def _version(text: Any) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(text).split("."))
+    except ValueError:
+        return ()
+
+
+# The first skill version whose agent writes a spec and never a payload (docs/llm-assisted-curation.md section 2.2).
+SPEC_SKILL_VERSION = (1, 2, 0)
+
+
+def _derivation_context(triage_dir: Path, all_files: dict[str, list[tuple[int, Path]]], provenance: Provenance) -> None:
+    """What the accession's files say about derivation (T-SPEC): whether a spec sits in the directory or a record binds
+    one (then no v2 payload of it may lack a derivation), every unit's payloads expanded from a spec by revision number
+    (X-SCOPE), and the units each spec's records name."""
+    specs = sorted(p.name for p in triage_dir.glob("*.json") if is_spec_file(p.name))
+    binding: list[str] = []
+    for unit, items in all_files.items():
+        for _number, path in items:
+            try:
+                record = json.loads(path.with_name(path.name[: -len(".json")] + RECORD_SUFFIX).read_bytes().decode("utf-8-sig"))
+                payload = json.loads(path.read_bytes().decode("utf-8-sig"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            derivation = record.get("derivation") if isinstance(record, dict) else None
+            if not isinstance(derivation, dict) or not isinstance(derivation.get("spec"), dict):
+                continue
+            binding.append(record.get("payload", {}).get("path") or path.name)
+            number = spec_number(derivation["spec"].get("path") or "")
+            if number is not None and isinstance(payload, dict):
+                provenance.derived.setdefault(unit, []).append((number, payload))
+            provenance.spec_units.setdefault(str(derivation["spec"].get("sha256")), set()).add(unit)
+    reasons = []
+    if specs:
+        reasons.append(f"the directory holds the spec {specs[0]}")
+    if binding:
+        reasons.append(f"the record of {sorted(binding)[0]} binds a spec")
+    provenance.derived_accession = ", and ".join(reasons) or None
+
+
 def validate(
     triage_dir: Path,
     catalog: dict[str, CatalogUnit] | None = None,
     listings: Iterable[ListedMember] = (),
+    *,
+    code_root: Path | None = None,
+    bundle: ReleaseBundle | None = None,
+    listing_files: Iterable[Path] | None = None,
+    payload_only: bool = False,
 ) -> Report:
+    """The accession's triage files as a set, with their decision records and review log.
+
+    `code_root` is the released code (SKILL.md, the prompt templates) read in place of git at each record's repo_commit;
+    `bundle` the release bundle the directory sits in (found on its own when <triage dir>/../../release-index.json
+    exists), through whose index projected inputs are checked. `listing_files` are the files `listings` were read from
+    (the CLI's --archive-listing): each record's archive_listing inputs must be among them, and each of them bound by a
+    record (T-RECORD, T-DUP); without them that tie is not checked. `payload_only` checks the payloads alone (the in-session
+    spec check, scripts/triage-spec-server.py): no decision record, transcript, context or revision check runs."""
     report = Report()
-    schema = load_schema()
+    triage_dir = Path(triage_dir)
+    if bundle is None:
+        bundle = ReleaseBundle.find(triage_dir)
+    given = None if listing_files is None else {sha256_bytes(Path(p).read_bytes()): Path(p) for p in listing_files}
+    provenance = Provenance(CodeSource(code_root), bundle, None if given is None else set(given))
     triages: dict[str, dict[str, Any]] = {}
     files = current_triage_files(triage_dir)
     if not files:
         report.add("error", "T-SET", None, f"no triage files in {triage_dir}")
         return report
+
+    # Every payload of the directory, superseded ones included, by sha256, with what its record says it supersedes.
+    all_files = _payload_files(triage_dir)
+    payloads: dict[str, tuple[Path, dict[str, Any] | None]] = {}
+    supersedes: dict[str, str | None] = {}
+    for items in all_files.values():
+        for _number, path in items:
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            sha = sha256_bytes(raw)
+            try:
+                value = json.loads(raw.decode("utf-8-sig"))
+            except (UnicodeDecodeError, ValueError):
+                value = None
+            payloads[sha] = (path, value if isinstance(value, dict) else None)
+            try:
+                named = json.loads(path.with_name(path.name[: -len(".json")] + RECORD_SUFFIX).read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                named = None
+            if isinstance(named, dict) and isinstance(named.get("supersedes"), str):
+                supersedes[sha] = named["supersedes"]
+    if not payload_only:
+        _derivation_context(triage_dir, all_files, provenance)
+    log, log_problems = read_review_log(triage_dir)
+    for problem in log_problems:
+        report.add("error", "T-LOG", None, f"{REVIEW_LOG}: {problem}; the answers and revisions it records cannot be trusted")
+    answered: dict[str, set[str]] = {}
+
     for path in files:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            raw = path.read_bytes()
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             report.add("error", "T-SCHEMA", path.stem, f"{path.name} is not readable JSON: {exc}")
             continue
         unit = data.get("unit_id") if isinstance(data, dict) else None
@@ -599,6 +1840,13 @@ def validate(
             report.add("error", "T-SET", unit, f"unit {unit} is triaged twice")
             continue
         report.units.append(unit)
+        decision_id = sha256_bytes(raw)
+        schema_id = data.get("schema") if isinstance(data, dict) else None
+        report.payloads[unit] = {"payload": path.name, "schema": schema_id, "decision_id": decision_id}
+        if schema_id not in SCHEMA_PATHS:
+            report.add("error", "T-SCHEMA", unit, f"{path.name}: schema {schema_id!r} is not one of {sorted(SCHEMA_PATHS)}")
+            continue
+        schema = load_schema(schema_id)
         problems = schema_errors(data, schema, schema)
         if problems:
             for problem in problems[:20]:
@@ -610,10 +1858,18 @@ def validate(
             report.add("error", "T-SET", unit, f"{path.name} holds unit {unit}; name the file {unit}.json (or {unit}.r<N>.json)")
         triages[unit] = data
         report.unit_status[unit] = data["status"]
-        for citation in class_citations(data) + record_class_citations(path):
+        for citation in class_citations(data) + ([] if payload_only else record_class_citations(path)):
             report.add("error", "T-CLASS", unit, f"{path.name}: {citation}; the triage binds the Catalog's rows, files and "
                        "listing and never the Class, which runs after it and binds through its own ratification "
                        "(WS0 decision F)")
+        if schema_id == SCHEMA_ID:
+            report.add("note", "T-RATIONALE", unit, f"rationale_not_recorded: {path.name} is {SCHEMA_ID}, which carries no "
+                       "confidence or rationale")
+        if not payload_only:
+            check_record(report, unit, triage_dir, path, raw, data, provenance)
+        answered[unit] = answered_codes(decision_id, data, supersedes, log)
+        if schema_id == SCHEMA_V2_ID and not payload_only:
+            check_revision(report, unit, path, decision_id, data, payloads, supersedes, log, all_files.get(unit, []))
 
     accessions = {t["accession"] for t in triages.values()}
     if len(accessions) > 1:
@@ -631,9 +1887,14 @@ def validate(
         catalog = {u: cu for u, cu in catalog.items() if u in triages or (cu.accession is not None and cu.accession == report.accession)}
 
     for unit, triage in triages.items():
-        _check_unit(report, unit, triage, triages, catalog, by_key if listed else None, resolver)
+        _check_unit(report, unit, triage, triages, catalog, by_key if listed else None, resolver, answered[unit])
 
-    _check_cross_unit(report, triages, listed, resolver)
+    _check_cross_unit(report, triages, listed, resolver, answered)
+    if given is not None and provenance.bound_listings:
+        for digest, path in sorted(given.items(), key=lambda item: item[1].name):
+            if digest not in provenance.bound_listings:
+                report.add("hold", "T-DUP", None, f"the listing {path.name} was given, but no decision record binds it; "
+                           "the coverage checks ran on a listing no decision rested on")
     if catalog is not None:
         missing = sorted(set(catalog) - set(triages))
         if missing and report.accession is not None:
@@ -648,6 +1909,23 @@ def validate(
     return report
 
 
+def acquisition_token_problem(name: str, acquisition_mode: str) -> str | None:
+    """What a name's acquisition tokens say against a kept file's acquisition_mode (T-TOKEN), or None: a targeted method
+    (PRM, SRM, MRM, SIM, tMS2), which the campaign does not run, or an MS1, DDA, DIA, SWATH or AIF token that is not the
+    mode the triage gives (DIA, SWATH and AIF count as one family; SCANnn says no mode; unknown and mixed are not
+    contradicted)."""
+    found = token_acquisition(name)
+    targeted = [t for t in found if t in TARGETED_TOKENS]
+    if targeted:
+        return (f"{name} names a targeted method ({', '.join(targeted)}), which the campaign does not run (untargeted DDA or "
+                "DIA with an MS1 survey); exclude it as out_of_scope")
+    modes = {TOKEN_MODES[t] for t in found if t in TOKEN_MODES}
+    mode = "DDA" if acquisition_mode == "targeted_DDA" else acquisition_mode
+    if not modes or mode in ("unknown", "mixed") or mode in modes or (mode in DIA_FAMILY and modes & DIA_FAMILY):
+        return None
+    return f"{name} says {'+'.join(sorted(modes))}, the triage says {acquisition_mode}"
+
+
 def _check_unit(
     report: Report,
     unit: str,
@@ -656,7 +1934,10 @@ def _check_unit(
     catalog: dict[str, CatalogUnit] | None,
     listed: dict[str, ListedMember] | None,
     resolver: Resolver,
+    answered: set[str] | None = None,
 ) -> None:
+    answered = set(answered or ())
+    v2 = t.get("schema") == SCHEMA_V2_ID
     status = t["status"]
     flags = _flag_codes(t)
     ut = t["unit_technical"]
@@ -686,6 +1967,8 @@ def _check_unit(
             report.add("error", "T-COVER", unit, f"the Catalog has no unit {unit}")
         elif cu.accession is not None and cu.accession != t["accession"]:
             report.add("error", "T-COVER", unit, f"the Catalog puts unit {unit} in {cu.accession}, the triage in {t['accession']}")
+        elif cu.problem:
+            report.add("error", "T-HANDOFF", unit, cu.problem)
         else:
             if cu.handoff_sha256 and cu.handoff_sha256 != t["catalog_handoff_sha256"]:
                 report.add("error", "T-HANDOFF", unit, "catalog_handoff_sha256 does not match the Catalog handoff; triage again from the current handoff")
@@ -776,8 +2059,17 @@ def _check_unit(
         if unit_chrom == "unknown":
             report.add("error", "T-CHROM", unit, "a ready unit cannot have unknown chromatography")
         for code in sorted(flags & BLOCKING_FLAGS):
-            if not _cleared(t, code):
-                report.add("error", "T-STATUS", unit, f"flag {code} keeps the unit from being ready until a person answers it (person_answers code {code})")
+            if code not in answered:
+                where = (f"a person_answer in {REVIEW_LOG} with question_code {code} for this payload or one it supersedes"
+                         if v2 else f"person_answers code {code}")
+                report.add("error", "T-STATUS", unit, f"flag {code} keeps the unit from being ready until a person answers it ({where})")
+        if v2 and LOW_CONFIDENCE_CODE not in answered:
+            for item in [*t["rows"], *t.get("added_members", [])]:
+                if item.get("basis") == "inferred" and item.get("confidence") == "low":
+                    label = item.get("member_path") or item.get("raw_file")
+                    report.add("hold", "T-CONFIDENCE", unit, f"{label} is kept on an inferred reading at low confidence; a "
+                               "ready unit does not rest on it until a person has looked (a person_answer in "
+                               f"{REVIEW_LOG} with question_code {LOW_CONFIDENCE_CODE})")
         if unit_ion == "both" and not t.get("children"):
             report.add("error", "T-POL", unit, "a ready unit with both polarities needs children, one per polarity and acquisition")
     else:
@@ -813,6 +2105,7 @@ def _check_unit(
 
     # Per file: polarity, chromatography, acquisition, format, evidence, tokens, headers.
     acqs: set[str] = set()
+    inclusion_list: list[str] = []
     for k in kept:
         item = k.item
         label = k.path
@@ -859,6 +2152,13 @@ def _check_unit(
                 if tok_chrom and chrom in ("HILIC", "RP") and tok_chrom != chrom:
                     report.add("error", "T-TOKEN", unit, f"{shown}: {name} says {tok_chrom}, the triage says {chrom} (flag name_token_disputed and ask a person if that is meant)")
                     break
+            for name in names:
+                problem = acquisition_token_problem(name, item["acquisition_mode"])
+                if problem:
+                    report.add("error", "T-TOKEN", unit, f"{shown}: {problem} (flag name_token_disputed and ask a person if that is meant)")
+                    break
+        if any(t in INCLUSION_LIST_TOKENS for name in names for t in token_acquisition(name)):
+            inclusion_list.append(shown)
 
         for e in item["evidence"]:
             if e["source"] != "raw_header":
@@ -872,7 +2172,7 @@ def _check_unit(
                 header_acq = {"FULLSCAN": "MS1", "MS1": "MS1"}.get(value.upper(), value.upper())
                 if header_acq.replace("-", "_") not in (item["acquisition_mode"].upper(),):
                     disagrees = True
-            if disagrees and not ("folder_header_disagreement" in flags and status != "ready" or _cleared(t, "folder_header_disagreement")):
+            if disagrees and not ("folder_header_disagreement" in flags and status != "ready" or "folder_header_disagreement" in answered):
                 report.add("error", "T-HEADER", unit, f"{label}: the raw header says {e['field']}={value}, the triage says otherwise; a folder/header disagreement goes to a person")
 
         if listed is not None and item.get("member_path") and member_key(item["member_path"]) not in listed:
@@ -885,8 +2185,14 @@ def _check_unit(
         report.add("error", "T-ACQ", unit, "MS1-only files are kept without an ms1_only flag")
     if "targeted_DDA" in acqs and "targeted_dda" not in flags:
         report.add("error", "T-ACQ", unit, "targeted DDA files are kept without a targeted_dda flag")
-    if len(acqs - {"unknown"}) > 1 and "mixed_acquisition" not in flags:
-        report.add("error", "T-ACQ", unit, f"kept files mix acquisition modes {sorted(acqs - {'unknown'})} without a mixed_acquisition flag")
+    if inclusion_list and "targeted_dda" not in flags:
+        report.add("error", "T-ACQ", unit, f"{len(inclusion_list)} kept file(s) carry an inclusion-list DDA name token (tDDA, "
+                   f"HERMES, targeted ddMS2; first: {inclusion_list[0]}) without a targeted_dda flag; inclusion-list DDA is "
+                   "in scope, and the flag (informational, suspected is enough) is how a report names the MS2-selection bias")
+    # Inclusion- or exclusion-list DDA is DDA (decision of 2026-11-18): targeted_DDA beside DDA is not a mix.
+    modes = {"DDA" if a == "targeted_DDA" else a for a in acqs} - {"unknown"}
+    if len(modes) > 1 and "mixed_acquisition" not in flags:
+        report.add("error", "T-ACQ", unit, f"kept files mix acquisition modes {sorted(modes)} without a mixed_acquisition flag")
     if "unknown" in acqs and status == "ready" and unit_acq == "unknown":
         report.add("error", "T-ACQ", unit, "a ready unit with unknown acquisition")
 
@@ -909,7 +2215,121 @@ def _check_unit(
             report.add("error", "T-PERSON", unit, "a person answer must name the person")
 
 
-def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed: list[ListedMember], resolver: Resolver) -> None:
+def content_twins(listed: Iterable[ListedMember]) -> dict[str, set[str]]:
+    """Every member key with a byte-identical twin (CRC32 and size, at least MIN_DUPLICATE_BYTES, raw-like; a vendor folder
+    by the signature of its parts) and the keys of its twins. The one code path behind T-DUP, the digest's twin groups
+    and the spec expander."""
+    content: dict[tuple[str, int], list[ListedMember]] = defaultdict(list)
+    folders: dict[str, list[tuple[str, str, int]]] = defaultdict(list)
+    for m in listed:
+        mk = member_key(m.path)
+        if VENDOR_FOLDER.match(_norm_path(m.path)):
+            inner = _norm_path(m.path)[len(mk) :].casefold()
+            folders[mk].append((inner, m.crc32, m.size))
+        elif m.size >= MIN_DUPLICATE_BYTES and m.crc32 and is_raw_like(m.path):
+            content[(m.crc32, m.size)].append(m)
+    twins: dict[str, set[str]] = defaultdict(set)
+    for group in content.values():
+        keys = {member_key(m.path) for m in group}
+        if len(keys) > 1:
+            for k in keys:
+                twins[k] |= keys - {k}
+    by_signature: dict[tuple, list[str]] = defaultdict(list)
+    for folder, parts in folders.items():
+        by_signature[tuple(sorted(parts))].append(folder)
+    for group in by_signature.values():
+        if len(group) > 1:
+            for k in group:
+                twins[k] |= set(group) - {k}
+    return dict(twins)
+
+
+# Exclusion reasons that hold a file for a person rather than leave it out for good: a shared_content flag about copies a
+# unit holds this way still waits for a person (decision of 2026-11-18, D2).
+HELD_REASONS = {"needs_person"}
+# Archive members that may hold raw data of their own, unopened: a row excluded as not_in_archive may be inside one.
+NESTED_ARCHIVE_EXTENSIONS = (".zip", ".7z", ".rar", ".tar", ".tgz", ".gz", ".bz2", ".xz")
+
+
+def _item_key(item: dict[str, Any], resolver: Resolver) -> str | None:
+    if item.get("member_path"):
+        return member_key(item["member_path"])
+    if item.get("raw_file"):
+        return resolver.resolve(item["raw_file"])
+    return None
+
+
+def held_keys(triages: dict[str, dict[str, Any]], resolver: Resolver) -> dict[str, set[str]]:
+    """The files units hold for a person (excluded with a HELD_REASONS reason), and by which units."""
+    out: dict[str, set[str]] = defaultdict(set)
+    for unit, t in triages.items():
+        for item in [*t["excluded_rows"], *t.get("excluded_members", [])]:
+            if item["reason"] in HELD_REASONS:
+                key = _item_key(item, resolver)
+                if key:
+                    out[key].add(unit)
+    return out
+
+
+def shared_content_subject(t: dict[str, Any], flag: dict[str, Any], resolver: Resolver) -> set[str]:
+    """The files a shared_content flag is about: those it names (member_paths, row_indices); else those the unit's
+    shared_content questions name; else the unit's own files: kept, held, and its rows excluded as duplicate_content.
+    Never every file the payload lists: an expanded payload lists the accession's unreferenced members in every unit, so
+    a member's exclusion says nothing about whose it is."""
+    def named(entry: dict[str, Any]) -> set[str]:
+        keys = {member_key(p) for p in entry.get("member_paths") or []}
+        indices = set(entry.get("row_indices") or [])
+        for item in [*t.get("rows", []), *t["excluded_rows"]]:
+            if item["row_index"] in indices:
+                key = _item_key(item, resolver)
+                if key:
+                    keys.add(key)
+        return keys
+
+    keys = named(flag)
+    if not keys:
+        for question in t.get("needs_person", []):
+            if question.get("code") == "shared_content":
+                keys |= named(question)
+    if not keys:
+        for item in [*t.get("rows", []), *t.get("added_members", [])]:
+            key = _item_key(item, resolver)
+            if key:
+                keys.add(key)
+        for item in [*t["excluded_rows"], *t.get("excluded_members", [])]:
+            if item["reason"] in HELD_REASONS or ("row_index" in item and item["reason"] == "duplicate_content"):
+                key = _item_key(item, resolver)
+                if key:
+                    keys.add(key)
+    return keys
+
+
+def shared_content_without_keepers(triages: dict[str, dict[str, Any]], twins: dict[str, set[str]],
+                                   resolver: Resolver) -> list[tuple[str, bool]]:
+    """(unit, whether its files have twins at all) for each shared_content flag none of whose byte-identical groups has a
+    file that a unit keeps or holds for a person (D2): copies only among files excluded for good are
+    duplicate_copies_excluded, informational. The expander (X-DUP-NOKEPT) and T-DUP share this."""
+    taken = {k.key for unit, t in triages.items() for k in _kept(unit, t, resolver)} | set(held_keys(triages, resolver))
+    out = []
+    for unit, t in triages.items():
+        for flag in t.get("flags", []):
+            if flag.get("code") != "shared_content":
+                continue
+            concerned: set[str] = set()
+            for key in shared_content_subject(t, flag, resolver) & set(twins):
+                concerned |= {key} | twins[key]
+            if not concerned & taken:
+                out.append((unit, bool(concerned)))
+    return out
+
+
+def _folder_key(key: str) -> str:
+    return key.rsplit("/", 1)[0] if "/" in key else ""
+
+
+def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed: list[ListedMember], resolver: Resolver,
+                      answered: dict[str, set[str]] | None = None) -> None:
+    answered = answered or {}
     owners: dict[str, list[Kept]] = defaultdict(list)
     for unit, t in triages.items():
         for k in _kept(unit, t, resolver):
@@ -967,53 +2387,79 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
         return
 
     # T-DUP: byte-identical content (CRC32 + size) anywhere in the listing.
-    content: dict[tuple[str, int], list[ListedMember]] = defaultdict(list)
-    folders: dict[str, list[tuple[str, str, int]]] = defaultdict(list)
-    for m in listed:
-        mk = member_key(m.path)
-        if VENDOR_FOLDER.match(_norm_path(m.path)):
-            inner = _norm_path(m.path)[len(mk) :].casefold()
-            folders[mk].append((inner, m.crc32, m.size))
-        elif m.size >= MIN_DUPLICATE_BYTES and m.crc32 and is_raw_like(m.path):
-            content[(m.crc32, m.size)].append(m)
-    twins: dict[str, set[str]] = defaultdict(set)
-    for group in content.values():
-        keys = {member_key(m.path) for m in group}
-        if len(keys) > 1:
-            for k in keys:
-                twins[k] |= keys - {k}
-    by_signature: dict[tuple, list[str]] = defaultdict(list)
-    for folder, parts in folders.items():
-        by_signature[tuple(sorted(parts))].append(folder)
-    for group in by_signature.values():
-        if len(group) > 1:
-            for k in group:
-                twins[k] |= set(group) - {k}
+    twins = content_twins(listed)
+
+    # shared_content is for content a unit keeps or holds for a person (decision of 2026-11-18, D2): a flag none of
+    # whose twin groups (of the files it is about) has such a file flags copies among files excluded for good, which
+    # hold nothing (duplicate_copies_excluded, informational).
+    for unit, has_twins in shared_content_without_keepers(triages, twins, resolver):
+        report.add("error", "T-DUP", unit, "shared_content is flagged, but no unit keeps or holds for a person a file of "
+                   "the byte-identical groups the flag is about" + ("" if has_twins else " (none of those files has a twin)")
+                   + "; copies found only among files excluded for good are duplicate_copies_excluded (informational)")
+
+    # One kept copy whose twins no unit keeps (K = 1) blocks only when a twin is another arm's: it lies in a folder where
+    # another unit keeps or holds a file, or its name's polarity or chromatography token is not the kept copy's. A twin
+    # in no other arm's place (a backup folder, a second export) is a copy excluded for good: duplicate_copies_excluded.
+    held = held_keys(triages, resolver)
+    placed: dict[str, set[str]] = defaultdict(set)
+    for key, holders in owners.items():
+        if not key.startswith("raw:"):
+            placed[_folder_key(key)] |= {h.unit for h in holders}
+    for key, units in held.items():
+        placed[_folder_key(key)] |= units
+
+    def other_arm(key: str, holder: Kept) -> str | None:
+        for twin in sorted(twins[key]):
+            if placed.get(_folder_key(twin), set()) - {holder.unit}:
+                return twin
+            path = resolver.original.get(twin, twin)
+            polarity, chromatography = token_polarity(path), token_chromatography(path)
+            if polarity and holder.item["ion_mode"] in ("positive", "negative") and polarity != holder.item["ion_mode"]:
+                return twin
+            if chromatography and holder.item["chromatography"] in ("HILIC", "RP") and chromatography != holder.item["chromatography"]:
+                return twin
+        return None
 
     owner_of = {key: sorted({h.unit for h in holders}) for key, holders in owners.items()}
-    reported: set[tuple[str, frozenset[str]]] = set()
+    reported: set[tuple[str, frozenset[str], str]] = set()
     for key, holders in owners.items():
         if key not in twins:
             continue
         for unit in sorted({h.unit for h in holders}):
             t = triages[unit]
+            holder = next(h for h in holders if h.unit == unit)
             twin_units = sorted({u for tw in twins[key] for u in owner_of.get(tw, [])} - {unit})
             twin_inside = any(unit in owner_of.get(tw, []) for tw in twins[key])
-            tag = (unit, frozenset(twin_units))
-            settled = "shared_content" in _flag_codes(t) and (t["status"] != "ready" or _cleared(t, "shared_content"))
+            arm = other_arm(key, holder) if not twin_units and not twin_inside else None
+            kind = "copy" if not twin_units and not twin_inside and arm is None else "shared"
+            tag = (unit, frozenset(twin_units), kind)
+            settled = "shared_content" in _flag_codes(t) and (t["status"] != "ready" or "shared_content" in answered.get(unit, set()))
             if twin_inside and not settled:
                 report.add("error", "T-DUP", unit, f"{holders[0].path} has a byte-identical twin kept by the same unit")
             if tag in reported:
                 continue
             reported.add(tag)
-            where = f"kept by {', '.join(twin_units)}" if twin_units else "elsewhere in the archive"
+            if kind == "copy" and not settled:
+                if "duplicate_copies_excluded" not in _flag_codes(t):
+                    report.add("error", "T-DUP", unit, f"{holders[0].path} is byte-identical (CRC32 and size) to a copy no unit "
+                               "keeps, in no other arm's folder and under no other arm's name tokens; exclude the copy as "
+                               "duplicate_content and flag duplicate_copies_excluded (informational), or flag shared_content "
+                               "if the copy may be another arm's")
+                continue
+            where = (f"kept by {', '.join(twin_units)}" if twin_units else
+                     f"elsewhere in the archive, in another arm's place ({resolver.original.get(arm, arm)})" if arm else
+                     "elsewhere in the archive")
             if settled:
                 report.add("hold", "T-DUP", unit, f"byte-identical content shared with files {where} (first: {holders[0].path}); flagged, waiting for a person")
             else:
                 report.add("error", "T-DUP", unit, f"{holders[0].path} is byte-identical (CRC32 and size) to a file {where}; shared content is never settled by name: flag shared_content and send the unit to a person")
 
-    # T-EXCL against the listing: an exclusion reason the listing contradicts drops a file silently.
+    # T-EXCL against the listing: an exclusion reason the listing contradicts drops a file silently. A file said not to be
+    # in the archive may be inside an archive the listing holds unopened: a person looks first.
+    nested = sorted({_norm_path(m.path) for m in listed if _norm_path(m.path).casefold().endswith(NESTED_ARCHIVE_EXTENSIONS)
+                     and is_raw_like(m.path) is False and not basename(m.path).startswith("._")})
     for unit, t in triages.items():
+        unopened = 0
         for item in t["excluded_rows"] + t.get("excluded_members", []):
             name = item.get("member_path") or item.get("raw_file") or ""
             what = f"row {item['row_index']} ({name})" if "row_index" in item else name
@@ -1021,10 +2467,16 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
                 there = {member_key(item["member_path"])} & resolver.members if item.get("member_path") else resolver.hits(name)
                 if there:
                     report.add("error", "T-EXCL", unit, f"{what} is excluded as not_in_archive, but the listing has {sorted(there)[0]}")
+                elif nested:
+                    unopened += 1
             elif item["reason"] == "duplicate_content":
                 key = member_key(item["member_path"]) if item.get("member_path") else resolver.resolve(name)
                 if key is None or key not in twins:
                     report.add("error", "T-EXCL", unit, f"{what} is excluded as duplicate_content, but the listing shows no byte-identical twin (CRC32 and size) for it")
+        if unopened:
+            report.add("hold", "T-EXCL", unit, f"{unopened} row(s) are excluded as not_in_archive, but the listing holds "
+                       f"{len(nested)} unopened archive(s) ({', '.join(nested[:3])}); their files may be inside one, so a "
+                       "person looks before they are dropped")
 
     # Raw-looking members that no unit kept or excluded. A row without a member path accounts for the
     # member of the same name, or of the same stem when the row's raw_file carries no extension.
@@ -1053,7 +2505,22 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
 
 
 def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str, int]]:
-    """Per unit: correct, wrong_included, wrongly_left_out, against ground_truth.json (eval fixtures)."""
+    """Per unit: correct, wrong_included, wrongly_left_out, held_for_person, against ground_truth.json (eval fixtures).
+
+    held_for_person counts the ground truth's members the unit excludes as needs_person: held for the person its
+    question asks (shared byte-identical copies, skill 1.2.0), neither kept nor dropped, so not wrongly left out.
+
+    A ground-truth unit is named by its public analysis id. The eval fixtures' payloads are named the same way; a
+    campaign's are named by the Catalog unit id and carry the analysis id as source_subrecord_id, so the current
+    payload whose source_subrecord_id is the analysis id is the one scored when no <analysis id>.json exists."""
+    by_subrecord: dict[str, Path] = {}
+    for current in current_triage_files(triage_dir):
+        try:
+            subrecord = json.loads(current.read_text(encoding="utf-8")).get("source_subrecord_id")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(subrecord, str) and subrecord:
+            by_subrecord.setdefault(subrecord, current)
     unchecked = {member_key(m["path"]) for m in ground_truth.get("unchecked_members", [])}
     unchecked_names = {basename(m["path"]).casefold() for m in ground_truth.get("unchecked_members", [])}
     overrides = {k: _norm_path(v) for k, v in ground_truth.get("row_member_overrides", {}).items()}
@@ -1066,10 +2533,16 @@ def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str,
             truth_by_name.setdefault(basename(m["path"]).casefold(), member_key(m["path"]))
             truth_by_name.setdefault(stem(m["path"]).casefold(), member_key(m["path"]))
         path = triage_dir / f"{uid}.json"
+        if not path.exists() and uid in by_subrecord:
+            path = by_subrecord[uid]
         kept: set[str] = set()
         other: set[str] = set()
+        held: set[str] = set()
         if path.exists():
             t = json.loads(path.read_text(encoding="utf-8"))
+            for item in [*t.get("excluded_rows", []), *t.get("excluded_members", [])]:
+                if item.get("reason") == "needs_person" and item.get("member_path"):
+                    held.add(member_key(item["member_path"]))
             for row in t.get("rows", []):
                 if row.get("member_path"):
                     kept.add(member_key(row["member_path"]))
@@ -1087,10 +2560,12 @@ def score(triage_dir: Path, ground_truth: dict[str, Any]) -> dict[str, dict[str,
             for member in t.get("added_members", []):
                 kept.add(member_key(member["member_path"]))
         kept -= unchecked
+        held = (held - kept) & truth
         out[uid] = {
             "correct": len(kept & truth),
             "wrong_included": len(kept - truth) + len(other),
-            "wrongly_left_out": len(truth - kept),
+            "wrongly_left_out": len(truth - kept - held),
+            "held_for_person": len(held),
         }
     return out
 
@@ -1114,8 +2589,96 @@ def _render(report: Report) -> str:
     if report.score is not None:
         lines.append("  score against ground truth:")
         for unit, s in report.score.items():
-            lines.append(f"    {unit}: correct {s['correct']}, wrong_included {s['wrong_included']}, wrongly_left_out {s['wrongly_left_out']}")
+            lines.append(f"    {unit}: correct {s['correct']}, wrong_included {s['wrong_included']}, wrongly_left_out "
+                         f"{s['wrongly_left_out']}, held_for_person {s['held_for_person']}")
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------------------ --emit-selection (section 2.4)
+
+
+def _curated():
+    """scripts/campaign/curated.py, the runner's reader and the review log's only writer."""
+    scripts = str(Path(__file__).resolve().parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from campaign import curated  # noqa: PLC0415
+
+    return curated
+
+
+def emit_selection(report: Report, triage_dir: Path, *, at: str | None = None, commit: str | None = None,
+                   append: bool = True) -> dict[str, Any]:
+    """Each judged decision's selection and its validator_verdict entry in the review log.
+
+    The selection is msdial-selection-canonical.v1 over the archive listing the unit's decision record binds
+    (curated.record_inputs, as the plan and Interactive read it; none without a record), per unit and per child. The
+    verdict entry (tool, code_commit, verdict, findings_sha256, findings) is appended once per decision through
+    curated.append_review_log, the unit's findings with the accession's own; an entry that would repeat the decision's
+    last verdict entry (same code_commit, verdict and findings) is not appended again. A review log whose chain is
+    broken is not appended to."""
+    curated = _curated()
+    triage_dir = Path(triage_dir)
+    at = at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    log, problems = read_review_log(triage_dir)
+    last: dict[str, dict[str, Any]] = {}
+    for entry in log:
+        if entry.get("kind") == "validator_verdict":
+            last[str(entry.get("decision_id"))] = entry
+    selection: dict[str, Any] = {}
+    appended, repeated = [], []
+    for unit in report.units:
+        info = report.payloads.get(unit)
+        if not info:
+            continue
+        decision_id = info["decision_id"]
+        items = [{"check": f.check, "level": f.level, "message": f.message} for f in report.findings if f.unit in (unit, None)]
+        levels = {item["level"] for item in items}
+        verdict = "error" if "error" in levels else "hold" if "hold" in levels else "pass"
+        findings_sha256 = sha256_bytes(canonical_json(items))
+        block: dict[str, Any] = {"decision_id": decision_id, "verdict": verdict,
+                                 "selection_canonical_form": curated.SELECTION_CANONICAL_FORM}
+        path = triage_dir / info["payload"]
+        if unit in report.unit_status:
+            triage = json.loads(path.read_bytes().decode("utf-8"))
+            # What a report notes and nothing holds (targeted_dda: the MS2-selection bias of inclusion-list DDA).
+            block["report_flags"] = [{"code": f["code"], "certainty": f["certainty"], "detail": f["detail"]}
+                                     for f in triage.get("flags", []) if f.get("code") in INFORMATIONAL_FLAGS]
+            record = curated.record_path(path)
+            bound = curated.record_inputs(record, decision_id) if record.is_file() else None
+            if bound is not None and bound["problem"]:
+                block.update(selection_sha256=None, problem=bound["problem"])
+            else:
+                listing = bound["listing"] if bound is not None else {}
+                block.update(
+                    record=record.name if bound is not None else None,
+                    selection_listings=(bound or {}).get("archive_listings") or [],
+                    selection_count=len(curated.selection_canonical(triage, listing)),
+                    selection_sha256=curated.selection_sha256(triage, listing),
+                    children={str(child["child_key"]): curated.selection_sha256(triage, listing, str(child["child_key"]))
+                              for child in triage.get("children") or []},
+                )
+        else:
+            block.update(selection_sha256=None, problem="the payload is not a valid triage")
+        selection[unit] = block
+        previous = last.get(decision_id)
+        if previous is not None and (previous.get("code_commit"), previous.get("verdict"), previous.get("findings_sha256")) \
+                == (commit, verdict, findings_sha256):
+            repeated.append(unit)
+            continue
+        if append and not problems:
+            curated.append_review_log(triage_dir, "validator_verdict", decision_id, at, tool=TOOL_NAME, code_commit=commit,
+                                      verdict=verdict, findings_sha256=findings_sha256, findings=items)
+            appended.append(unit)
+    review_log: dict[str, Any] = {"path": REVIEW_LOG, "appended": appended, "already_recorded": repeated,
+                                  "head_sha256": curated.review_log_head(triage_dir)}
+    if problems:
+        review_log["refused"] = f"{REVIEW_LOG}'s chain does not hold ({problems[0]}); nothing was appended"
+    elif not append:
+        review_log["refused"] = "a release bundle is never written to; nothing was appended"
+    report.extra["selection"] = selection
+    report.extra["review_log"] = review_log
+    return report.extra
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1124,22 +2687,46 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--catalog", type=Path, help="handoffs directory or catalog.json")
     parser.add_argument("--archive-listing", type=Path, action="append", default=[], help="archive member TSV (repeatable)")
     parser.add_argument("--ground-truth", type=Path, help="ground_truth.json to score against")
+    parser.add_argument("--code-root", type=Path, help="the released code (skill, prompt templates) at the records' commit, "
+                        "read in place of git")
+    parser.add_argument("--release-bundle", type=Path, help="the release bundle the triage directory sits in (found on "
+                        "its own when <triage dir>/../../release-index.json exists)")
+    parser.add_argument("--emit-selection", action="store_true", help="add each unit's selection to the report and append "
+                        "a validator_verdict per decision to the accession's review-log.jsonl")
+    parser.add_argument("--payload-only", action="store_true", help="check the payloads alone: no decision record, "
+                        "transcript, context or revision check (the in-session spec check)")
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     args = parser.parse_args(argv)
 
     if not args.triage_dir.is_dir():
         print(f"not a directory: {args.triage_dir}", file=sys.stderr)
         return 2
-    catalog = read_catalog(args.catalog) if args.catalog else None
+    bundle = None
+    if args.release_bundle is not None:
+        if not (args.release_bundle / RELEASE_INDEX).is_file():
+            print(f"not a release bundle (no {RELEASE_INDEX}): {args.release_bundle}", file=sys.stderr)
+            return 2
+        bundle = ReleaseBundle(args.release_bundle)
+    else:
+        bundle = ReleaseBundle.find(args.triage_dir)
+    catalog = read_catalog(args.catalog, bundle) if args.catalog else None
     listed: list[ListedMember] = []
     for path in args.archive_listing:
         listed += read_listing(path)
-    report = validate(args.triage_dir, catalog, listed)
+    report = validate(args.triage_dir, catalog, listed, code_root=args.code_root, bundle=bundle,
+                      listing_files=args.archive_listing, payload_only=args.payload_only)
     if args.ground_truth:
         report.score = score(args.triage_dir, json.loads(args.ground_truth.read_text(encoding="utf-8")))
+    if args.emit_selection:
+        emit_selection(report, args.triage_dir, commit=code_commit(), append=bundle is None)
     print(json.dumps(report.as_dict(), indent=2, ensure_ascii=False) if args.json else _render(report))
+    if args.emit_selection and bundle is not None:
+        print("--emit-selection does not write into a release bundle; the review log was left as it is", file=sys.stderr)
+        return 2
     return {"pass": 0, "hold": 1, "error": 2}[report.verdict]
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     sys.exit(main())

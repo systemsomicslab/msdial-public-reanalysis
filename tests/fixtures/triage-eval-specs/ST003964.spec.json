@@ -1,0 +1,52 @@
+{
+ "schema": "msdial-unit-triage-spec.v1",
+ "accession": "ST003964",
+ "phase": "pre_download",
+ "structure": "One folder of vendor .raw files whose names carry the arm as x<HILIC|RP><pos|neg>_, and one mzml folder holding an mzML copy of each.",
+ "evidence_sources": [{"source": "archive_listing", "detail": "Zip central directory listing read before download."}],
+ "groups": [
+  {"id": "HP", "applies_to": "rows",
+   "match": {"resolved_member": {"folder": "160_0003_raw", "token": {"polarity": "positive", "chromatography": "HILIC"}}},
+   "file": {"role": "sample", "ion_mode": "positive", "chromatography": "HILIC", "acquisition_mode": "DDA", "basis": "inferred"},
+   "evidence": [{"source": "filename_token", "field": "name", "value": "{member_path}"}],
+   "disposition": {"keep": "AN006515"}, "confidence": "medium",
+   "rationale": "The vendor file's name carries HILIC and pos."},
+  {"id": "HN", "applies_to": "rows",
+   "match": {"resolved_member": {"folder": "160_0003_raw", "token": {"polarity": "negative", "chromatography": "HILIC"}}},
+   "file": {"role": "sample", "ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "DDA", "basis": "inferred"},
+   "evidence": [{"source": "filename_token", "field": "name", "value": "{member_path}"}],
+   "disposition": {"keep": "AN006516"}, "confidence": "medium",
+   "rationale": "The vendor file's name carries HILIC and neg."},
+  {"id": "RPP", "applies_to": "rows",
+   "match": {"resolved_member": {"folder": "160_0003_raw", "token": {"polarity": "positive", "chromatography": "RP"}}},
+   "file": {"role": "sample", "ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "DDA", "basis": "inferred"},
+   "evidence": [{"source": "filename_token", "field": "name", "value": "{member_path}"}],
+   "disposition": {"keep": "AN006517"}, "confidence": "medium",
+   "rationale": "The vendor file's name carries RP and pos."},
+  {"id": "RPN", "applies_to": "rows",
+   "match": {"resolved_member": {"folder": "160_0003_raw", "token": {"polarity": "negative", "chromatography": "RP"}}},
+   "file": {"role": "sample", "ion_mode": "negative", "chromatography": "RP", "acquisition_mode": "DDA", "basis": "inferred"},
+   "evidence": [{"source": "filename_token", "field": "name", "value": "{member_path}"}],
+   "disposition": {"keep": "AN006518"}, "confidence": "medium",
+   "rationale": "The vendor file's name carries RP and neg."},
+  {"id": "MZML", "applies_to": "members",
+   "match": {"folder": "mzml", "ext": ".mzml"},
+   "disposition": {"exclude": "alternative_format_copy", "detail": "An mzML copy of a vendor file the unit keeps; its conversion is not documented."},
+   "confidence": "high",
+   "rationale": "The mzml folder repeats every vendor file as mzML; one acquisition is kept once, as the vendor file."}
+ ],
+ "shared_flags": [
+  {"units": ["AN006515", "AN006516", "AN006517", "AN006518"], "code": "catalog_defect", "certainty": "suspected",
+   "detail": "The Catalog's abstention on the Class may be wrong: the repository declares factors."}
+ ],
+ "units": {
+  "AN006515": {"status": "ready", "confidence": "high", "rationale": "HILIC positive vendor files by name token.",
+   "unit_technical": {"ion_mode": "positive", "chromatography": "HILIC", "acquisition_mode": "DDA"}},
+  "AN006516": {"status": "ready", "confidence": "high", "rationale": "HILIC negative vendor files by name token.",
+   "unit_technical": {"ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "DDA"}},
+  "AN006517": {"status": "ready", "confidence": "high", "rationale": "Reversed-phase positive vendor files by name token.",
+   "unit_technical": {"ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "DDA"}},
+  "AN006518": {"status": "ready", "confidence": "high", "rationale": "Reversed-phase negative vendor files by name token.",
+   "unit_technical": {"ion_mode": "negative", "chromatography": "RP", "acquisition_mode": "DDA"}}
+ }
+}

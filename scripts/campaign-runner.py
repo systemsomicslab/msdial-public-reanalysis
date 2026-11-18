@@ -46,6 +46,8 @@ THE ORDER OF USE
     python scripts/campaign-runner.py release --campaign ID --out <empty folder>
         write the release bundle replay-campaign.py replays (section 5.3): the release projection of the campaign
         manifest and of each unit's run manifest, the triage directory, the decision ledger and release-index.json.
+        Every file it writes is checked by scripts/check-release-redaction.py first; a bundle with a finding gets no
+        release-index.json.
     python scripts/campaign-runner.py decisions --campaign ID
         export the decision ledger (<campaign dir>\\decision-ledger.jsonl): the campaign's triage, validation,
         approval, reopening, curated selection, header reconciliation, cross-unit and terminal refusal events, each
@@ -637,8 +639,13 @@ def command_release(args: argparse.Namespace) -> int:
     except (OSError, ValueError, curated.TriageError) as error:
         print(f"The release bundle was not written: {error}", file=sys.stderr)
         return EXIT_REFUSED
+    check = curated.redaction_check()
     _print({"out": str(args.out), "manifests": len(index["manifests"]),
-            "approved_manifest_digest": index["approved_manifest_digest"]})
+            "approved_manifest_digest": index["approved_manifest_digest"],
+            # The bundle passed scripts/check-release-redaction.py (write_release refuses one that does not); run it again
+            # over the whole deposit after anything is added beside the bundle.
+            "redaction": {"tool": check.TOOL, "version": check.VERSION, "script_sha256": check.script_sha256(),
+                          "verdict": "pass"}})
     return EXIT_OK
 
 
