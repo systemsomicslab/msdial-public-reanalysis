@@ -15,7 +15,8 @@ writes (hooks registered, memory off) to --debug-file. FAKE_CLAUDE_SCENARIO pick
   hang      sleeps past any test timeout before writing anything
   outside   also writes a file into its working directory
   unclean   reports a plugin from outside the harness in its init message
-  bash      also calls Bash (refused), a tool the skill does not allow
+  bash      also calls Bash, a tool the skill does not allow and the harness does not offer: refused, it never runs
+  bashran   also calls Bash and shows it answering, as a harness that ran a tool the skill does not allow would
   nodeny    reports a server tool the skill does not list, as a session without --disallowedTools would
   nodebug   writes no debug log
   readout   also reads a file outside the session's folders
@@ -132,7 +133,11 @@ def main() -> int:
     if digest.is_file():
         calls.append(("Read", {"file_path": str(digest)}, digest.read_text(encoding="utf-8")[:2000], False))
     if scenario == "bash":
-        calls.append(("Bash", {"command": "dir"}, "No such tool available: Bash", True))
+        calls.append(("Bash", {"command": "dir"},
+                      "<tool_use_error>Error: No such tool available: Bash. Bash is disabled for this session.</tool_use_error>",
+                      True))
+    if scenario == "bashran":
+        calls.append(("Bash", {"command": "dir"}, "Volume in drive F has no label.", False))
     if scenario == "readout":
         calls.append(("Read", {"file_path": str((cwd / ".." / ".." / "MEMORY.md").resolve())}, "remembered", False))
     for unit in units:

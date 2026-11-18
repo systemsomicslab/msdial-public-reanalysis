@@ -32,9 +32,10 @@ manifest digest that carries it. Never describe it as decided, accepted or confi
 
 ## Tools and boundaries
 
-- `Read`, `Glob`, `Grep`: this skill, the spec schema beside it, the input directory, the output directory.
+- `Read`, `Glob`, `Grep`: this skill, the spec schema (`schemas/msdial-unit-triage-spec.v1.json` in the working
+  directory), the input directory, the output directory.
 - `Write`: the spec, `<accession>.spec.json` (a revision: the name the task gives), in the output directory only.
-  Rewrite it as often as you need before you answer; the last bytes count.
+  There is no `Edit`: to change the spec, write it whole again, as often as you need; the last bytes count.
 - `triage_spec_check` (server `msdial-triage-spec`): expands your spec over the inputs and runs the validator's
   payload checks; it returns at most 30 findings and per-unit counts. Call it after writing the spec, fix what it
   reports, and call it again until it reports no error. Holds are for a person, not for you to remove.

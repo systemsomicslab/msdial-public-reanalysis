@@ -516,14 +516,25 @@ class SessionTests(WrapperCase):
         self.assertIsNone(record["transcript"]["released_path"], "a run that is not clean is not released")
 
     def test_a_tool_the_skill_does_not_allow_is_a_validator_error(self) -> None:
-        code, [summary] = self.run_wrapper("bash")
+        code, [summary] = self.run_wrapper("bashran")
         self.assertEqual(code, 2, summary)
         self.assertEqual(summary["verdict"], "error")
         record = json.loads((self.triage_dir() / "AN004454.record.json").read_text(encoding="utf-8"))
         bash = [c for c in record["tool_calls"] if c["tool"] == "Bash"]
-        self.assertEqual(bash[0]["status"], "error")
+        self.assertEqual(bash[0]["status"], "ok")
         report = self.validate()
         self.assertTrue([f for f in report.findings if f.check == "T-TOOLS" and f.level == "error" and "Bash" in f.message])
+
+    def test_a_tool_the_harness_refused_is_a_note(self) -> None:
+        # The 2026-11-18 re-pilot asked for Edit, which the harness does not offer; the refusal changed nothing.
+        code, [summary] = self.run_wrapper("bash")
+        self.assertEqual((code, summary["verdict"]), (0, "pass"), summary)
+        record = json.loads((self.triage_dir() / "AN004454.record.json").read_text(encoding="utf-8"))
+        bash = [c for c in record["tool_calls"] if c["tool"] == "Bash"]
+        self.assertEqual(bash[0]["status"], "error")
+        report = self.validate()
+        self.assertFalse([f for f in report.findings if f.check == "T-TOOLS" and f.level == "error"])
+        self.assertTrue([f for f in report.findings if f.check == "T-TOOLS" and f.level == "note" and "Bash" in f.message])
 
 
 class RobustnessTests(WrapperCase):

@@ -40,7 +40,8 @@ The person's stated analysis purpose (context only; `null` means none was stated
 ## Output
 
 Write one spec, `{{output_dir}}/{{spec_name}}`, and nothing else: no payload, no decision record, no review log.
-Check it with `triage_spec_check` and rewrite it until the check reports no error. Then reply with the single word
+Check it with `triage_spec_check` and rewrite it whole with `Write` (there is no `Edit`) until the check reports no
+error. Then reply with the single word
 `done`.
 
 ## Boundaries

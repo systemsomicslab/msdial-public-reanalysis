@@ -144,17 +144,18 @@ def stored_result(seq: int, tool: str, result: Any, is_error: bool = False) -> b
                       indent=1).encode("utf-8")
 
 
-def transcript_lines(calls: Iterable[tuple[str, Mapping[str, Any], Any]], *, model: str = MODEL,
-                     session: str = SESSION) -> bytes:
-    """A redacted stream-JSON transcript showing `calls` (tool, arguments, result) in order, as the wrapper releases it."""
-    lines = [{"type": "system", "subtype": "init", "session_id": session, "model": model, "tools": [], "mcp_servers": [],
-              "plugins": []}]
-    for seq, (tool, arguments, result) in enumerate(calls, start=1):
+def transcript_lines(calls: Iterable[tuple], *, model: str = MODEL, session: str = SESSION,
+                     tools: Iterable[str] = ()) -> bytes:
+    """A redacted stream-JSON transcript showing `calls` (tool, arguments, result[, is_error]) in order, as the wrapper
+    releases it; `tools` are the tools its init message says the harness offered."""
+    lines = [{"type": "system", "subtype": "init", "session_id": session, "model": model, "tools": list(tools),
+              "mcp_servers": [], "plugins": []}]
+    for seq, (tool, arguments, result, *error) in enumerate(calls, start=1):
         ident = f"toolu_{seq:03d}"
         lines.append({"type": "assistant", "message": {"model": model, "content": [
             {"type": "tool_use", "id": ident, "name": tool, "input": dict(arguments)}]}})
         lines.append({"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": ident, "content": result, "is_error": False}]}})
+            {"type": "tool_result", "tool_use_id": ident, "content": result, "is_error": bool(error and error[0])}]}})
     lines.append({"type": "result", "subtype": "success", "is_error": False, "session_id": session})
     return ("\n".join(json.dumps(line, separators=(",", ":")) for line in lines) + "\n").encode("utf-8")
 
@@ -175,7 +176,8 @@ def write_record(
     code: Code,
     *,
     inputs: Iterable[Mapping[str, Any]] = (),
-    tool_calls: Iterable[tuple[str, Mapping[str, Any], Any]] = (),
+    tool_calls: Iterable[tuple] = (),
+    offered_tools: Iterable[str] = (),
     supersedes: str | None = None,
     context: Mapping[str, Any] | None = None,
     transcript: Mapping[str, Any] | None | str = AUTO,
@@ -186,7 +188,7 @@ def write_record(
 
     `inputs` are {role, path (relative to the payload's folder), ...}; sha256 and bytes are filled from the file unless
     given. Unless one of them binds Catalog evidence (or catalog=False), inputs/catalog.json is bound as catalog_unit.
-    `tool_calls` are (tool, arguments, result): each result is stored as inputs\\<unit_id>\\calls\\<seq>.json. The
+    `tool_calls` are (tool, arguments, result[, is_error]): each result is stored as inputs\\<unit_id>\\calls\\<seq>.json. The
     transcript is released as transcripts/<payload stem>.redacted.jsonl unless `transcript` is given (None: none).
     `overrides` replace top-level fields of the record as written."""
     payload = Path(payload)
@@ -215,16 +217,17 @@ def write_record(
     calls = []
     listed = list(tool_calls)
     calls_name = f"calls.{revision.group(1)}" if revision else "calls"
-    for seq, (tool, arguments, result) in enumerate(listed, start=1):
+    for seq, (tool, arguments, result, *error) in enumerate(listed, start=1):
         calls_dir = unit_inputs / calls_name
         calls_dir.mkdir(parents=True, exist_ok=True)
-        stored = stored_result(seq, tool, result)
+        is_error = bool(error and error[0])
+        stored = stored_result(seq, tool, result, is_error)
         (calls_dir / f"{seq}.json").write_bytes(stored)
-        calls.append({"seq": seq, "tool": tool, "arguments": dict(arguments), "status": "ok",
+        calls.append({"seq": seq, "tool": tool, "arguments": dict(arguments), "status": "error" if is_error else "ok",
                       "result_path": f"inputs/{unit}/{calls_name}/{seq}.json", "result_sha256": sha(stored)})
     if transcript == AUTO:
         released = f"transcripts/{payload.stem}.redacted.jsonl"
-        lines = transcript_lines(listed)
+        lines = transcript_lines(listed, tools=offered_tools)
         (folder / released).parent.mkdir(parents=True, exist_ok=True)
         (folder / released).write_bytes(lines)
         transcript = {"sha256": sha(lines), "released_path": released, "unredacted_sha256": "a" * 64,

@@ -43,7 +43,8 @@ refusing any mismatch (T-RECORD): decision_id and payload.sha256 from the payloa
 every inputs[] item, read relative to the record; skill.sha256 from SKILL.md at repo_commit (git show in this
 repository, or --code-root), and the skill's version; prompt.template_sha256 at repo_commit and
 prompt.rendered_sha256; wrapper.sha256 at its repo_commit; every tool_calls[].result_sha256; transcript.sha256 of the
-released redacted transcript. It refuses a tool call that is not on the skill's allowed-tools list, and a tool_calls
+released redacted transcript. It refuses a tool call that is not on the skill's allowed-tools list (a call the harness
+did not offer and refused with "No such tool available" never ran: a note, not an error), and a tool_calls
 list that differs from the calls the released transcript shows in order, server-qualified name, arguments or stored
 result (T-TOOLS); a model_id or session_id the transcript does not name (T-RECORD); and a payload whose
 catalog_handoff_sha256 is not the catalog_handoff input its record binds (T-HANDOFF). A context that is not clean
@@ -116,7 +117,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_ID = "msdial-unit-triage.v1"
@@ -895,6 +896,37 @@ def tool_allowed(name: str, allowed: Iterable[str]) -> bool:
     return base in allowed_bases or base in {bare_tool(item) for item in allowed_bases}
 
 
+def _result_text(content: Any) -> str:
+    """The text of a tool result's content: a string, or the text of its content blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(block.get("text") or "") for block in content if isinstance(block, dict))
+    return ""
+
+
+def _stored_result(data: bytes | None) -> dict[str, Any] | None:
+    """A stored tool result ({tool_use_id, tool, is_error, content}) from its bytes, or None."""
+    if data is None:
+        return None
+    try:
+        stored = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return stored if isinstance(stored, dict) else None
+
+
+def harness_refused(name: str, result: Mapping[str, Any] | None) -> bool:
+    """A tool result that is the harness's own refusal of a tool it does not offer (`No such tool available: <name>`):
+    the call never reached a tool. A model may still ask for a tool it was not given (Edit, to change the spec it
+    wrote); the attempt changes nothing, so it is a note, not a skill violation. Anything else that answers a call to a
+    tool the skill does not allow is an error."""
+    if not isinstance(result, Mapping) or not result.get("is_error"):
+        return False
+    text = _result_text(result.get("content"))
+    return re.search(r"No such tool available: " + re.escape(str(name)) + r"(?![\w-])", text) is not None
+
+
 def transcript_tool_names(data: bytes) -> list[str]:
     """The tool calls a harness transcript (JSON lines) shows, in order: every {"type": "tool_use", "name": ...} block,
     once per id."""
@@ -1183,15 +1215,23 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
         if call["seq"] != index:
             report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool_calls[{index - 1}] has seq {call['seq']}; the "
                        "calls are numbered 1, 2, ... in the order the transcript shows them")
-        if allowed is not None and not tool_allowed(call["tool"], allowed):
-            report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} uses {call['tool']}, which "
-                       f"the skill does not allow ({', '.join(allowed)})")
-        if call["result_path"] is not None or call["result_sha256"] is not None or call["status"] == "ok":
-            _file_check(report, unit, record_path, f"the result of tool call {call['seq']}", call["result_path"],
-                        call["result_sha256"], None, bundle, check="T-TOOLS")
+        stored = None
+        has_result = call["result_path"] is not None or call["result_sha256"] is not None or call["status"] == "ok"
+        if has_result:
+            stored = _file_check(report, unit, record_path, f"the result of tool call {call['seq']}", call["result_path"],
+                                 call["result_sha256"], None, bundle, check="T-TOOLS")
         else:
             report.add("hold", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} ({call['tool']}) has no "
                        "stored result; what it returned to the agent cannot be checked")
+        # A call to a tool the skill does not allow is an error, unless its stored result is the harness's refusal
+        # (no such tool): then it never ran. The transcript comparison below checks that the harness did not offer it.
+        if allowed is not None and not tool_allowed(call["tool"], allowed):
+            if call["status"] == "error" and harness_refused(call["tool"], _stored_result(stored)):
+                report.add("note", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} asked for {call['tool']}, "
+                           "which the skill does not allow; the harness refused it (no such tool), so it never ran")
+            else:
+                report.add("error", "T-TOOLS", unit, f"{record_path.name}: tool call {call['seq']} uses {call['tool']}, "
+                           f"which the skill does not allow ({', '.join(allowed)})")
     if allowed is None and calls and skill_bytes is not None:
         report.add("hold", "T-TOOLS", unit, f"{record_path.name}: the skill at its commit lists no allowed-tools, so its "
                    f"{len(calls)} tool call(s) cannot be checked against it")
@@ -1517,8 +1557,17 @@ def compare_transcript(report: "Report", unit: str, record_path: Path, record: d
     names = [item["name"] for item in shown["calls"]]
     listed = [str(call["tool"]) for call in calls]
     if allowed is not None:
+        offered = {str(t) for t in ((shown["init"] or {}).get("tools") or [])}
         for name in sorted(set(names)):
-            if not tool_allowed(name, allowed):
+            if tool_allowed(name, allowed):
+                continue
+            attempts = [item for item in shown["calls"] if item["name"] == name]
+            if name not in offered and attempts and all(
+                    item["result"] is not None and item["result"].get("is_error")
+                    and harness_refused(name, item["result"]) for item in attempts):
+                report.add("note", "T-TOOLS", unit, f"{record_path.name}: the released transcript shows {len(attempts)} "
+                           f"call(s) to {name}, which the harness did not offer and refused (no such tool); none ran")
+            else:
                 report.add("error", "T-TOOLS", unit, f"{record_path.name}: the released transcript shows a call to {name}, "
                            f"which the skill does not allow")
     if names != listed:

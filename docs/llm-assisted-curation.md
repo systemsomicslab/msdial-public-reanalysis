@@ -302,7 +302,10 @@ released redacted transcript; the sha256 of each `context_files` item. A release
 checked out with CRLF line endings is read as its commit's LF bytes. In a release bundle, an `inputs[]` file
 released as a projection (section 5.3) is checked through `release-index.json` instead: its bytes must hash to
 the index's `release_sha256`, and the index's `original_sha256` must be the item's `sha256`. Against the released
-transcript it refuses a tool call, by its server-qualified name, that is not on the skill's allowed list; a
+transcript it refuses a tool call, by its server-qualified name, that is not on the skill's allowed list, except a
+call the harness never ran: a tool the transcript's init message does not offer, answered with the harness's own
+`No such tool available: <name>` error (the 2026-11-18 re-pilot asked for `Edit` to change its spec), which is a
+note; a
 `tool_calls` list that differs from the tool calls the released transcript shows, in order, names, arguments or
 stored results; a `model_id` the transcript does not name; and a `session_id` other than the transcript's. The payload's
 `catalog_handoff_sha256` must be the record's own `catalog_handoff` input. It does not recompute
