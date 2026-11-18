@@ -59,7 +59,7 @@
    "confidence": "high",
    "rationale": "A copy of a lipid negative QC under the HILIC negative folder."},
   {"id": "HNB", "applies_to": "members", "match": {"folder": "AB_Human_Bone/Human_Hilic_Neg", "twin": false},
-   "disposition": {"exclude": "needs_person", "detail": "The only unique file of the HILIC negative folder; with no HILIC negative sample data it serves no run until a person decides."},
+   "disposition": {"exclude": "other", "detail": "The blank of the HILIC negative folder, an arm this unit does not run."},
    "confidence": "medium",
    "rationale": "A blank whose arm has no sample data of its own in the deposit."}
  ],
@@ -79,6 +79,7 @@
   "AN003729": {"status": "needs_person", "confidence": "medium",
    "rationale": "Its folder holds copies of the lipid negative files, so the deposit may have no HILIC negative data; nothing is kept until a person decides.",
    "unit_technical": {"ion_mode": "negative", "chromatography": "HILIC", "acquisition_mode": "unknown"},
+   "exclude": [{"groups": ["HNB"], "reason": "needs_person", "detail": "The only unique file of the HILIC negative folder; with no HILIC negative sample data it serves no run until a person decides."}],
    "needs_person": [{"code": "shared_content", "question": "The HILIC negative files are byte-identical to the lipid negative files. Which arm is the content (mzML sourceFile, elution order)?", "groups": ["HN"]}]},
   "AN003730": {"status": "ready", "confidence": "high", "rationale": "Reversed-phase positive: the Human_Lipid_Pos rows with their QC and blank, one row through a name-drift exception.",
    "unit_technical": {"ion_mode": "positive", "chromatography": "RP", "acquisition_mode": "DDA"}},

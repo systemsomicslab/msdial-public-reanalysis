@@ -154,15 +154,16 @@
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "code_file": {
-      "description": "A script of this repository at a commit: its path, version, sha256 at repo_commit and the commit.",
+      "description": "A script of this repository at a commit: its path, version, sha256 at repo_commit and the commit, and in tree the sha256 at that commit of every file it reads beside itself (validate-triage.py SPEC_CODE_TREE: scripts/validate-triage.py and the triage schemas). validate-triage.py checks each of them, read through git or from --code-root, before it re-runs the script.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "version", "sha256", "repo_commit"],
+      "required": ["path", "version", "sha256", "repo_commit", "tree"],
       "properties": {
         "path": {"type": "string", "minLength": 1},
         "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
         "sha256": {"$ref": "#/$defs/sha256"},
-        "repo_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        "repo_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tree": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/sha256"}}
       }
     },
     "input": {

@@ -58,11 +58,15 @@ rationale_not_recorded (a note, which changes no verdict).
 THE DERIVATION (section 2.2). A payload the wrapper expanded from the agent's spec (<accession>.spec.json, schemas/
 msdial-unit-triage-spec.v1.json) carries "derivation", and so does its record: the spec's path, sha256 and bytes, the
 expander (scripts/expand-triage-spec.py) and the digest script (scripts/triage-digest.py) by version, sha256 and commit,
-and the context (decided_at, model, agent, skill_version, purpose). T-SPEC re-runs that expander at its commit (in this
-process when the commit's bytes are the running tree's, else from a scratch copy of the commit's files) over the inputs
-the record binds, and refuses any byte of difference, any X-* finding, a context that is not the record's, and a payload
-with a derivation whose record binds none. T-DIGEST rebuilds inputs/digest.md from the same inputs with the digest script
-at its commit. Every other check runs on the expanded payload as on any other. A spec file is never read as a payload.
+and the context (decided_at, model, agent, skill_version, purpose); each script binds in `tree` the sha256 of the files
+it reads beside itself (SPEC_CODE_TREE), and every record's hashes are checked against the bytes read (a mismatch is an
+error, unreadable code a hold). T-SPEC re-runs that expander at its commit (in this process when the commit's bytes are
+the running tree's, else from a scratch copy of the commit's files) over the inputs the record binds, and refuses any
+byte of difference, any X-* finding, a context that is not the record's, a payload with a derivation whose record binds
+none, a v2 payload without a derivation whose record names skill 1.2.0 or later or whose accession has a spec, a session
+that wrote its unit's payload itself, and a revision spec that changes a unit it does not revise (X-SCOPE, re-checked).
+T-DIGEST rebuilds inputs/digest.md from the same inputs with the digest script at its commit. Every other check runs on
+the expanded payload as on any other. A spec file is never read as a payload.
 
 THE REVIEW LOG (section 2.4). For a v2 payload, a ready unit that carries a blocking flag passes only when
 review-log.jsonl holds a person_answer whose question_code is the flag's code and whose decision_id is this payload or
@@ -225,9 +229,9 @@ class Report:
 
 
 # ------------------------------------------------------------------------------- minimal schema checker
-# Only the keywords schemas/msdial-unit-triage.v1.json uses, so the result does not depend on which
-# jsonschema package (if any) is installed. tests/test_validate_triage.py checks the schema itself against
-# Draft 2020-12 when jsonschema is available.
+# Every keyword the schemas under schemas/ use, so the result does not depend on which jsonschema package (if any) is
+# installed. tests/test_validate_triage.py checks the schema itself against Draft 2020-12 when jsonschema is available,
+# and tests/test_validate_triage_v2.py that no schema uses a keyword this checker does not implement.
 
 _TYPES = {
     "object": dict,
@@ -284,12 +288,18 @@ def schema_errors(value: Any, schema: dict[str, Any], root: dict[str, Any], wher
     if isinstance(value, list):
         if len(value) < schema.get("minItems", 0):
             errors.append(f"{where}: needs at least {schema['minItems']} item(s)")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append(f"{where}: at most {schema['maxItems']} item(s)")
         if schema.get("uniqueItems") and len({canonical_json(item) for item in value}) != len(value):
             errors.append(f"{where}: items must be unique")
         if "items" in schema:
             for i, item in enumerate(value):
                 errors += schema_errors(item, schema["items"], root, f"{where}[{i}]")
     if isinstance(value, dict):
+        if len(value) < schema.get("minProperties", 0):
+            errors.append(f"{where}: needs at least {schema['minProperties']} field(s); an empty object matches everything")
+        if "maxProperties" in schema and len(value) > schema["maxProperties"]:
+            errors.append(f"{where}: at most {schema['maxProperties']} field(s)")
         for key in schema.get("required", []):
             if key not in value:
                 errors.append(f"{where}: missing {key}")
@@ -479,25 +489,46 @@ def token_chromatography(path: str) -> str | None:
 
 
 # Acquisition tokens a name may carry (the digest prints them, the spec expander compares them within a group). A
-# token is a fact about the name, not about the file: the headers settle what was acquired.
-_ACQ_TOKEN = re.compile(r"(?i)(t-?dda|targeted-?dd-?ms2?|hermes|dd-?ms2?|dda|dia[12](?![0-9])|dia|swath|aif|"
-                        r"scan0[1-9](?![0-9])|ms1(?![0-9])|full-?scan)(?![a-z])")
+# token is a fact about the name, not about the file: the headers settle what was acquired. A token starts where a word
+# starts: after a character that is not a letter, or after a lower-case letter when the token is written in capitals
+# (posDDA), so that Media, media1 or Claudia carry no DIA. PRM, SRM, MRM, SIM and tMS2 name a targeted method, which
+# the campaign does not run (TARGETED_TOKENS); tDDA, HERMES and targeted ddMS2 name inclusion-list DDA, which it does.
+_ACQ_TOKEN = re.compile(r"(?i)(t-?dd-?ms2?|t-?dda|targeted-?dd-?ms2?|hermes|dd-?ms2?|dda|dia[12](?![0-9])|dia|swath|aif|"
+                        r"scan0[1-9](?![0-9])|ms1(?![0-9])|full-?scan|prm|srm|mrm|sim|tms2)(?![a-z])")
+TARGETED_TOKENS = ("MRM", "PRM", "SIM", "SRM", "tMS2")
+INCLUSION_LIST_TOKENS = ("tDDA",)
+# The acquisition_mode a name token says (T-TOKEN); SCANnn and the targeted tokens say none a payload can hold.
+TOKEN_MODES = {"DDA": "DDA", "tDDA": "DDA", "DIA": "DIA", "DIA1": "DIA", "DIA2": "DIA", "SWATH": "SWATH", "AIF": "AIF",
+               "MS1": "MS1"}
+DIA_FAMILY = {"DIA", "SWATH", "AIF"}
 
 
 def _acq_name(token: str) -> str:
     t = token.casefold().replace("-", "")
-    if t.startswith(("tdda", "targeted", "hermes")):
+    if t.startswith(("tdd", "targeted", "hermes")):
         return "tDDA"
     if t.startswith(("ddms", "dda")):
         return "DDA"
     if t in ("ms1", "fullscan"):
         return "MS1"
+    if t == "tms2":
+        return "tMS2"
     return t.upper()
 
 
+def _starts_a_word(text: str, match: re.Match[str]) -> bool:
+    before = text[match.start() - 1] if match.start() else ""
+    if not before.isalpha():
+        return True
+    letters = [c for c in match.group(1) if c.isalpha()]
+    return before.islower() and all(c.isupper() for c in letters[1:]) and letters[0].isupper()
+
+
 def token_acquisition(path: str) -> tuple[str, ...]:
-    """Every acquisition token the path carries (DDA, DIA, DIA1, DIA2, SWATH, AIF, SCAN01..09, MS1, tDDA), sorted."""
-    return tuple(sorted({_acq_name(m.group(1)) for m in _ACQ_TOKEN.finditer(_norm_path(path))}))
+    """Every acquisition token the path carries (DDA, DIA, DIA1, DIA2, SWATH, AIF, SCAN01..09, MS1, tDDA, and the
+    targeted MRM, PRM, SIM, SRM, tMS2), sorted."""
+    text = _norm_path(path)
+    return tuple(sorted({_acq_name(m.group(1)) for m in _ACQ_TOKEN.finditer(text) if _starts_a_word(text, m)}))
 
 
 # --------------------------------------------------------------------------------------- the checks
@@ -934,8 +965,13 @@ class Provenance:
     # the listings the records bind, so that the listings checked are the ones the decisions rested on.
     listing_sha256: set[str] | None = None
     bound_listings: set[str] = field(default_factory=set)
-    modules: dict[tuple[str, str], tuple[Any, str | None]] = field(default_factory=dict)
+    modules: dict[str, tuple[Any, str | None]] = field(default_factory=dict)
     expansions: dict[str, Any] = field(default_factory=dict)
+    # Why every v2 payload of the accession must be expanded from a spec (a spec in the directory, a record that binds
+    # one), or None; and per unit every payload whose record binds a derivation: [(spec revision number, payload)].
+    derived_accession: str | None = None
+    derived: dict[str, list[tuple[int, dict[str, Any]]]] = field(default_factory=dict)
+    spec_units: dict[str, set[str]] = field(default_factory=dict)  # spec sha256 -> the units whose records bind it
 
     def code_matches(self, data: bytes, expected: str) -> bool:
         """`data` (a file the record names at its commit) hashes to `expected`; from a released code folder, also once
@@ -1190,6 +1226,25 @@ def check_record(report: "Report", unit: str, triage_dir: Path, payload_path: Pa
     elif isinstance(payload.get("derivation"), dict):
         report.add("error", "T-SPEC", unit, f"{payload_path.name} says it was expanded from {payload['derivation'].get('spec')}, "
                    f"but its record {record_path.name} binds no derivation; nothing ties it to that spec")
+    elif v2:
+        # From skill 1.2.0 the agent writes a spec and code writes the payloads; in an accession whose payloads are
+        # expanded from a spec, none is written another way. A payload without a derivation there was not made by the
+        # expander, whatever its record says.
+        why = []
+        if _version(skill["version"]) >= SPEC_SKILL_VERSION:
+            why.append(f"its record names skill {skill['version']}, which writes a spec and never a payload")
+        if provenance.derived_accession:
+            why.append(provenance.derived_accession)
+        if why:
+            report.add("error", "T-SPEC", unit, f"{payload_path.name}'s record {record_path.name} binds no derivation, but "
+                       f"{'; and '.join(why)}; a payload that is not its spec's expansion is not accepted")
+    if v2 and (record.get("derivation") is not None or _version(skill["version"]) >= SPEC_SKILL_VERSION):
+        own = re.compile(rf"^{re.escape(unit)}(?:\.r[0-9]+)?\.json$", re.IGNORECASE)
+        for call in record["tool_calls"]:
+            target = str((call.get("arguments") or {}).get("file_path") or "").replace("\\", "/").rsplit("/", 1)[-1]
+            if bare_tool(str(call["tool"])) in ("Write", "Edit", "MultiEdit") and own.match(target):
+                report.add("error", "T-SPEC", unit, f"{record_path.name}: tool call {call['seq']} ({bare_tool(str(call['tool']))}) "
+                           f"writes {target} itself; a spec session writes the spec, and the payloads are the expander's")
 
     # The context: clean, or a hold.
     context = record["agent"]["context"]
@@ -1247,29 +1302,38 @@ def _lf(data: bytes) -> bytes:
     return data.replace(b"\r\n", b"\n")
 
 
-def load_code_module(provenance: Provenance, commit: str, path: str, expected_sha256: str) -> tuple[Any, str | None]:
-    """The script `path` of this repository at `commit` (git show, or the --code-root), loaded as a module with the files
-    it reads beside itself at the same commit (SPEC_CODE_TREE), or (None, why). The running tree's own file is used when
-    every byte it reads is the commit's (line endings aside); otherwise the commit's files are written to a scratch folder
-    and loaded from there, so a record is re-derived by the code it names, never by whatever runs today."""
-    key = (commit, path)
-    if key in provenance.modules:
-        return provenance.modules[key]
+def load_code_module(provenance: Provenance, code_file: dict[str, Any]) -> tuple[Any, str | None, str]:
+    """The script a record names (derivation.expander or derivation.digest.script: path, sha256, repo_commit and tree, the
+    sha256 of each file it reads beside itself, SPEC_CODE_TREE), read at its commit (git show, or the --code-root) and
+    loaded as a module with those files, or (None, why, level). Every call checks the record's own hashes, the script's
+    and the tree's, against the bytes read: a hash that is not the file's is an error (level "error"); code that cannot
+    be read or loaded is a hold. The running tree's own files are used when every byte is the commit's (line endings
+    aside); otherwise the files are written to a scratch folder and loaded from there, so a record is re-derived by the
+    code it names, never by whatever runs today. A loaded module is cached by the bytes of its files."""
+    commit, path, expected_sha256 = code_file["repo_commit"], code_file["path"], code_file["sha256"]
     main, why = provenance.code.read(commit, path)
     if main is None:
-        provenance.modules[key] = (None, f"{path} cannot be read at {str(commit)[:12]} ({why})")
-        return provenance.modules[key]
+        return None, f"{path} cannot be read at {str(commit)[:12]} ({why})", "hold"
     if not provenance.code_matches(main, expected_sha256):
-        provenance.modules[key] = (None, f"{path} at {str(commit)[:12]} hashes to {sha256_bytes(main)}; the record names "
-                                         f"{expected_sha256}")
-        return provenance.modules[key]
+        return None, (f"{path} at {str(commit)[:12]} hashes to {sha256_bytes(main)}; the record names "
+                      f"{expected_sha256}"), "error"
+    named = code_file.get("tree")
+    if not isinstance(named, dict) or set(named) != set(SPEC_CODE_TREE):
+        return None, (f"the record binds {path} without the sha256 of every file it reads beside itself "
+                      f"({', '.join(SPEC_CODE_TREE)}); the helpers and schemas behind the re-derivation are not bound"), "error"
     tree: dict[str, bytes] = {path: main}
     for relative in SPEC_CODE_TREE:
         data, why = provenance.code.read(commit, relative)
         if data is None:
-            provenance.modules[key] = (None, f"{relative} cannot be read at {str(commit)[:12]} ({why})")
-            return provenance.modules[key]
+            return None, f"{relative} cannot be read at {str(commit)[:12]} ({why})", "hold"
+        if not provenance.code_matches(data, str(named[relative])):
+            return None, (f"{relative} at {str(commit)[:12]} hashes to {sha256_bytes(data)}; the record's tree names "
+                          f"{named[relative]}"), "error"
         tree[relative] = data
+    key = sha256_bytes(canonical_json({rel: sha256_bytes(_lf(data)) for rel, data in sorted(tree.items())}) + path.encode("utf-8"))
+    if key in provenance.modules:
+        module, why = provenance.modules[key]
+        return module, why, "hold"
     here = all((REPO_ROOT / rel).is_file() and _lf((REPO_ROOT / rel).read_bytes()) == _lf(data) for rel, data in tree.items())
     if here:
         root = REPO_ROOT
@@ -1289,9 +1353,9 @@ def load_code_module(provenance: Provenance, commit: str, path: str, expected_sh
         spec.loader.exec_module(module)
     except Exception as error:  # noqa: BLE001 - code from another commit may fail in any way; that is a hold, not a crash
         provenance.modules[key] = (None, f"{path} at {str(commit)[:12]} cannot be loaded ({type(error).__name__}: {error})")
-        return provenance.modules[key]
+        return None, provenance.modules[key][1], "hold"
     provenance.modules[key] = (module, None)
-    return provenance.modules[key]
+    return module, None, "hold"
 
 
 def _bound_input_files(record_path: Path, record: dict[str, Any], bundle: "ReleaseBundle | None") -> tuple[dict[str, bytes], dict[str, str]]:
@@ -1342,9 +1406,9 @@ def check_derivation(report: "Report", unit: str, record_path: Path, record: dic
         digest_bytes = _file_check(report, unit, record_path, "the digest", digest["path"], digest["sha256"], None, bundle,
                                    check="T-DIGEST")
         script = digest["script"]
-        module, why = load_code_module(provenance, script["repo_commit"], script["path"], script["sha256"])
+        module, why, level = load_code_module(provenance, script)
         if module is None:
-            report.add("hold", "T-DIGEST", unit, f"{record_path.name}: the digest cannot be rebuilt ({why})")
+            report.add(level, "T-DIGEST", unit, f"{record_path.name}: the digest cannot be rebuilt ({why})")
         elif str(getattr(module, "DIGEST_VERSION", "")) != script["version"]:
             report.add("error", "T-DIGEST", unit, f"{record_path.name}: the digest script at its commit is version "
                        f"{getattr(module, 'DIGEST_VERSION', None)}, the record names {script['version']}")
@@ -1362,9 +1426,9 @@ def check_derivation(report: "Report", unit: str, record_path: Path, record: dic
     expander = derivation["expander"]
     if spec_bytes is None:
         return
-    module, why = load_code_module(provenance, expander["repo_commit"], expander["path"], expander["sha256"])
+    module, why, level = load_code_module(provenance, expander)
     if module is None:
-        report.add("hold", "T-SPEC", unit, f"{record_path.name}: the payload cannot be re-derived from its spec ({why})")
+        report.add(level, "T-SPEC", unit, f"{record_path.name}: the payload cannot be re-derived from its spec ({why})")
         return
     if str(getattr(module, "EXPANDER_VERSION", "")) != expander["version"]:
         report.add("error", "T-SPEC", unit, f"{record_path.name}: the expander at its commit is version "
@@ -1396,6 +1460,7 @@ def check_derivation(report: "Report", unit: str, record_path: Path, record: dic
         report.add("error", "T-SPEC", unit, f"{record_path.name}: the spec does not expand over the bound inputs "
                    f"({len(expansion.findings)} finding(s): {shown})")
         return
+    check_revision_scope(report, unit, record_path, record, spec_bytes, expansion, module, provenance)
     expanded = expansion.payloads.get(unit)
     if expanded is None:
         report.add("error", "T-SPEC", unit, f"{record_path.name}: the spec expands to no payload for unit {unit}")
@@ -1411,6 +1476,35 @@ def check_derivation(report: "Report", unit: str, record_path: Path, record: dic
         report.add("error", "T-SPEC", unit, f"{record_path.name}: the payload is not the spec's expansion byte for byte"
                    + (f"; rule_id(s) {', '.join(stray[:5])} are not in the spec" if stray else "")
                    + "; a payload is written by the expander, never by hand")
+
+
+def spec_number(name: str) -> int | None:
+    """The revision number of a spec file name: 0 for <accession>.spec.json, N for .spec.r<N>.json, None otherwise."""
+    match = SPEC_FILE.match(Path(str(name)).name)
+    return None if match is None else int(match.group("n") or 0)
+
+
+def check_revision_scope(report: "Report", unit: str, record_path: Path, record: dict[str, Any], spec_bytes: bytes,
+                         expansion: Any, module: Any, provenance: Provenance) -> None:
+    """X-SCOPE, re-checked (T-SPEC): a revision spec (<accession>.spec.r<N>.json) expands every unit it does not revise
+    to that unit's payload as it stood before the revision (its latest payload expanded from an earlier spec), decision
+    fields aside. The units it revises are those whose records bind the same spec."""
+    number = spec_number(record["derivation"]["spec"]["path"])
+    if not number:
+        return
+    revised = provenance.spec_units.get(sha256_bytes(spec_bytes), set()) | {unit}
+    for other, data in sorted(expansion.payloads.items()):
+        if other in revised:
+            continue
+        earlier = [(n, doc) for n, doc in provenance.derived.get(other, []) if n < number]
+        if not earlier:
+            report.add("hold", "T-SPEC", unit, f"{record_path.name}: the revision spec also expands {other}, which has no "
+                       "payload expanded from an earlier spec; that the revision leaves it as it was is not checked")
+            continue
+        before = max(earlier, key=lambda item: item[0])[1]
+        if module.comparable(json.loads(data.decode("utf-8"))) != module.comparable(before):
+            report.add("error", "T-SPEC", unit, f"{record_path.name}: the revision spec changes {other}, which it does not "
+                       f"revise (X-SCOPE): its expansion of {other} is not {other}'s payload before the revision")
 
 
 def compare_transcript(report: "Report", unit: str, record_path: Path, record: dict[str, Any], data: bytes,
@@ -1585,6 +1679,46 @@ def _payload_files(triage_dir: Path) -> dict[str, list[tuple[int, Path]]]:
     return {unit: sorted(items) for unit, items in out.items()}
 
 
+def _version(text: Any) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(text).split("."))
+    except ValueError:
+        return ()
+
+
+# The first skill version whose agent writes a spec and never a payload (docs/llm-assisted-curation.md section 2.2).
+SPEC_SKILL_VERSION = (1, 2, 0)
+
+
+def _derivation_context(triage_dir: Path, all_files: dict[str, list[tuple[int, Path]]], provenance: Provenance) -> None:
+    """What the accession's files say about derivation (T-SPEC): whether a spec sits in the directory or a record binds
+    one (then no v2 payload of it may lack a derivation), every unit's payloads expanded from a spec by revision number
+    (X-SCOPE), and the units each spec's records name."""
+    specs = sorted(p.name for p in triage_dir.glob("*.json") if is_spec_file(p.name))
+    binding: list[str] = []
+    for unit, items in all_files.items():
+        for _number, path in items:
+            try:
+                record = json.loads(path.with_name(path.name[: -len(".json")] + RECORD_SUFFIX).read_bytes().decode("utf-8-sig"))
+                payload = json.loads(path.read_bytes().decode("utf-8-sig"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            derivation = record.get("derivation") if isinstance(record, dict) else None
+            if not isinstance(derivation, dict) or not isinstance(derivation.get("spec"), dict):
+                continue
+            binding.append(record.get("payload", {}).get("path") or path.name)
+            number = spec_number(derivation["spec"].get("path") or "")
+            if number is not None and isinstance(payload, dict):
+                provenance.derived.setdefault(unit, []).append((number, payload))
+            provenance.spec_units.setdefault(str(derivation["spec"].get("sha256")), set()).add(unit)
+    reasons = []
+    if specs:
+        reasons.append(f"the directory holds the spec {specs[0]}")
+    if binding:
+        reasons.append(f"the record of {sorted(binding)[0]} binds a spec")
+    provenance.derived_accession = ", and ".join(reasons) or None
+
+
 def validate(
     triage_dir: Path,
     catalog: dict[str, CatalogUnit] | None = None,
@@ -1637,6 +1771,8 @@ def validate(
                 named = None
             if isinstance(named, dict) and isinstance(named.get("supersedes"), str):
                 supersedes[sha] = named["supersedes"]
+    if not payload_only:
+        _derivation_context(triage_dir, all_files, provenance)
     log, log_problems = read_review_log(triage_dir)
     for problem in log_problems:
         report.add("error", "T-LOG", None, f"{REVIEW_LOG}: {problem}; the answers and revisions it records cannot be trusted")
@@ -1722,6 +1858,23 @@ def validate(
         if not listed:
             report.add("hold", "T-DUP", unit, "no archive listing was given (--archive-listing): byte-identical content and members no unit accounts for cannot be ruled out; a person decides whether to go on without one")
     return report
+
+
+def acquisition_token_problem(name: str, acquisition_mode: str) -> str | None:
+    """What a name's acquisition tokens say against a kept file's acquisition_mode (T-TOKEN), or None: a targeted method
+    (PRM, SRM, MRM, SIM, tMS2), which the campaign does not run, or an MS1, DDA, DIA, SWATH or AIF token that is not the
+    mode the triage gives (DIA, SWATH and AIF count as one family; SCANnn says no mode; unknown and mixed are not
+    contradicted)."""
+    found = token_acquisition(name)
+    targeted = [t for t in found if t in TARGETED_TOKENS]
+    if targeted:
+        return (f"{name} names a targeted method ({', '.join(targeted)}), which the campaign does not run (untargeted DDA or "
+                "DIA with an MS1 survey); exclude it as out_of_scope")
+    modes = {TOKEN_MODES[t] for t in found if t in TOKEN_MODES}
+    mode = "DDA" if acquisition_mode == "targeted_DDA" else acquisition_mode
+    if not modes or mode in ("unknown", "mixed") or mode in modes or (mode in DIA_FAMILY and modes & DIA_FAMILY):
+        return None
+    return f"{name} says {'+'.join(sorted(modes))}, the triage says {acquisition_mode}"
 
 
 def _check_unit(
@@ -1903,6 +2056,7 @@ def _check_unit(
 
     # Per file: polarity, chromatography, acquisition, format, evidence, tokens, headers.
     acqs: set[str] = set()
+    inclusion_list: list[str] = []
     for k in kept:
         item = k.item
         label = k.path
@@ -1949,6 +2103,13 @@ def _check_unit(
                 if tok_chrom and chrom in ("HILIC", "RP") and tok_chrom != chrom:
                     report.add("error", "T-TOKEN", unit, f"{shown}: {name} says {tok_chrom}, the triage says {chrom} (flag name_token_disputed and ask a person if that is meant)")
                     break
+            for name in names:
+                problem = acquisition_token_problem(name, item["acquisition_mode"])
+                if problem:
+                    report.add("error", "T-TOKEN", unit, f"{shown}: {problem} (flag name_token_disputed and ask a person if that is meant)")
+                    break
+        if any(t in INCLUSION_LIST_TOKENS for name in names for t in token_acquisition(name)):
+            inclusion_list.append(shown)
 
         for e in item["evidence"]:
             if e["source"] != "raw_header":
@@ -1975,6 +2136,10 @@ def _check_unit(
         report.add("error", "T-ACQ", unit, "MS1-only files are kept without an ms1_only flag")
     if "targeted_DDA" in acqs and "targeted_dda" not in flags:
         report.add("error", "T-ACQ", unit, "targeted DDA files are kept without a targeted_dda flag")
+    if inclusion_list and "targeted_dda" not in flags:
+        report.add("error", "T-ACQ", unit, f"{len(inclusion_list)} kept file(s) carry an inclusion-list DDA name token (tDDA, "
+                   f"HERMES, targeted ddMS2; first: {inclusion_list[0]}) without a targeted_dda flag; inclusion-list DDA is "
+                   "in scope, and the flag (informational, suspected is enough) is how a report names the MS2-selection bias")
     # Inclusion- or exclusion-list DDA is DDA (decision of 2026-11-18): targeted_DDA beside DDA is not a mix.
     modes = {"DDA" if a == "targeted_DDA" else a for a in acqs} - {"unknown"}
     if len(modes) > 1 and "mixed_acquisition" not in flags:
@@ -2028,6 +2193,89 @@ def content_twins(listed: Iterable[ListedMember]) -> dict[str, set[str]]:
             for k in group:
                 twins[k] |= set(group) - {k}
     return dict(twins)
+
+
+# Exclusion reasons that hold a file for a person rather than leave it out for good: a shared_content flag about copies a
+# unit holds this way still waits for a person (decision of 2026-11-18, D2).
+HELD_REASONS = {"needs_person"}
+# Archive members that may hold raw data of their own, unopened: a row excluded as not_in_archive may be inside one.
+NESTED_ARCHIVE_EXTENSIONS = (".zip", ".7z", ".rar", ".tar", ".tgz", ".gz", ".bz2", ".xz")
+
+
+def _item_key(item: dict[str, Any], resolver: Resolver) -> str | None:
+    if item.get("member_path"):
+        return member_key(item["member_path"])
+    if item.get("raw_file"):
+        return resolver.resolve(item["raw_file"])
+    return None
+
+
+def held_keys(triages: dict[str, dict[str, Any]], resolver: Resolver) -> dict[str, set[str]]:
+    """The files units hold for a person (excluded with a HELD_REASONS reason), and by which units."""
+    out: dict[str, set[str]] = defaultdict(set)
+    for unit, t in triages.items():
+        for item in [*t["excluded_rows"], *t.get("excluded_members", [])]:
+            if item["reason"] in HELD_REASONS:
+                key = _item_key(item, resolver)
+                if key:
+                    out[key].add(unit)
+    return out
+
+
+def shared_content_subject(t: dict[str, Any], flag: dict[str, Any], resolver: Resolver) -> set[str]:
+    """The files a shared_content flag is about: those it names (member_paths, row_indices); else those the unit's
+    shared_content questions name; else the unit's own files: kept, held, and its rows excluded as duplicate_content.
+    Never every file the payload lists: an expanded payload lists the accession's unreferenced members in every unit, so
+    a member's exclusion says nothing about whose it is."""
+    def named(entry: dict[str, Any]) -> set[str]:
+        keys = {member_key(p) for p in entry.get("member_paths") or []}
+        indices = set(entry.get("row_indices") or [])
+        for item in [*t.get("rows", []), *t["excluded_rows"]]:
+            if item["row_index"] in indices:
+                key = _item_key(item, resolver)
+                if key:
+                    keys.add(key)
+        return keys
+
+    keys = named(flag)
+    if not keys:
+        for question in t.get("needs_person", []):
+            if question.get("code") == "shared_content":
+                keys |= named(question)
+    if not keys:
+        for item in [*t.get("rows", []), *t.get("added_members", [])]:
+            key = _item_key(item, resolver)
+            if key:
+                keys.add(key)
+        for item in [*t["excluded_rows"], *t.get("excluded_members", [])]:
+            if item["reason"] in HELD_REASONS or ("row_index" in item and item["reason"] == "duplicate_content"):
+                key = _item_key(item, resolver)
+                if key:
+                    keys.add(key)
+    return keys
+
+
+def shared_content_without_keepers(triages: dict[str, dict[str, Any]], twins: dict[str, set[str]],
+                                   resolver: Resolver) -> list[tuple[str, bool]]:
+    """(unit, whether its files have twins at all) for each shared_content flag none of whose byte-identical groups has a
+    file that a unit keeps or holds for a person (D2): copies only among files excluded for good are
+    duplicate_copies_excluded, informational. The expander (X-DUP-NOKEPT) and T-DUP share this."""
+    taken = {k.key for unit, t in triages.items() for k in _kept(unit, t, resolver)} | set(held_keys(triages, resolver))
+    out = []
+    for unit, t in triages.items():
+        for flag in t.get("flags", []):
+            if flag.get("code") != "shared_content":
+                continue
+            concerned: set[str] = set()
+            for key in shared_content_subject(t, flag, resolver) & set(twins):
+                concerned |= {key} | twins[key]
+            if not concerned & taken:
+                out.append((unit, bool(concerned)))
+    return out
+
+
+def _folder_key(key: str) -> str:
+    return key.rsplit("/", 1)[0] if "/" in key else ""
 
 
 def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed: list[ListedMember], resolver: Resolver,
@@ -2092,56 +2340,77 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
     # T-DUP: byte-identical content (CRC32 + size) anywhere in the listing.
     twins = content_twins(listed)
 
-    # shared_content is for content a unit keeps (decision of 2026-11-18): a unit that flags it, where no file of the
-    # twin groups its items fall in is kept by any unit, flags copies among excluded members, which hold nothing
-    # (duplicate_copies_excluded, informational). One kept copy whose twins are excluded (K = 1) stays blocking.
-    kept_anywhere = set(owners)
-    for unit, t in triages.items():
-        if "shared_content" not in _flag_codes(t):
-            continue
-        mentioned: set[str] = set()
-        for item in [*t.get("rows", []), *t.get("added_members", []), *t["excluded_rows"], *t.get("excluded_members", [])]:
-            if item.get("member_path"):
-                mentioned.add(member_key(item["member_path"]))
-            elif item.get("raw_file"):
-                found = resolver.resolve(item["raw_file"])
-                if found:
-                    mentioned.add(found)
-        for flag in t.get("flags", []):
-            if flag.get("code") == "shared_content":
-                mentioned |= {member_key(p) for p in flag.get("member_paths") or []}
-        concerned = set()
-        for key in mentioned & set(twins):
-            concerned |= {key} | twins[key]
-        if not concerned & kept_anywhere:
-            report.add("error", "T-DUP", unit, "shared_content is flagged, but no unit keeps a file of the byte-identical "
-                       "groups this unit's files fall in" + ("" if concerned else " (none of its files has a twin)")
-                       + "; copies found only among excluded members are duplicate_copies_excluded (informational)")
+    # shared_content is for content a unit keeps or holds for a person (decision of 2026-11-18, D2): a flag none of
+    # whose twin groups (of the files it is about) has such a file flags copies among files excluded for good, which
+    # hold nothing (duplicate_copies_excluded, informational).
+    for unit, has_twins in shared_content_without_keepers(triages, twins, resolver):
+        report.add("error", "T-DUP", unit, "shared_content is flagged, but no unit keeps or holds for a person a file of "
+                   "the byte-identical groups the flag is about" + ("" if has_twins else " (none of those files has a twin)")
+                   + "; copies found only among files excluded for good are duplicate_copies_excluded (informational)")
+
+    # One kept copy whose twins no unit keeps (K = 1) blocks only when a twin is another arm's: it lies in a folder where
+    # another unit keeps or holds a file, or its name's polarity or chromatography token is not the kept copy's. A twin
+    # in no other arm's place (a backup folder, a second export) is a copy excluded for good: duplicate_copies_excluded.
+    held = held_keys(triages, resolver)
+    placed: dict[str, set[str]] = defaultdict(set)
+    for key, holders in owners.items():
+        if not key.startswith("raw:"):
+            placed[_folder_key(key)] |= {h.unit for h in holders}
+    for key, units in held.items():
+        placed[_folder_key(key)] |= units
+
+    def other_arm(key: str, holder: Kept) -> str | None:
+        for twin in sorted(twins[key]):
+            if placed.get(_folder_key(twin), set()) - {holder.unit}:
+                return twin
+            path = resolver.original.get(twin, twin)
+            polarity, chromatography = token_polarity(path), token_chromatography(path)
+            if polarity and holder.item["ion_mode"] in ("positive", "negative") and polarity != holder.item["ion_mode"]:
+                return twin
+            if chromatography and holder.item["chromatography"] in ("HILIC", "RP") and chromatography != holder.item["chromatography"]:
+                return twin
+        return None
 
     owner_of = {key: sorted({h.unit for h in holders}) for key, holders in owners.items()}
-    reported: set[tuple[str, frozenset[str]]] = set()
+    reported: set[tuple[str, frozenset[str], str]] = set()
     for key, holders in owners.items():
         if key not in twins:
             continue
         for unit in sorted({h.unit for h in holders}):
             t = triages[unit]
+            holder = next(h for h in holders if h.unit == unit)
             twin_units = sorted({u for tw in twins[key] for u in owner_of.get(tw, [])} - {unit})
             twin_inside = any(unit in owner_of.get(tw, []) for tw in twins[key])
-            tag = (unit, frozenset(twin_units))
+            arm = other_arm(key, holder) if not twin_units and not twin_inside else None
+            kind = "copy" if not twin_units and not twin_inside and arm is None else "shared"
+            tag = (unit, frozenset(twin_units), kind)
             settled = "shared_content" in _flag_codes(t) and (t["status"] != "ready" or "shared_content" in answered.get(unit, set()))
             if twin_inside and not settled:
                 report.add("error", "T-DUP", unit, f"{holders[0].path} has a byte-identical twin kept by the same unit")
             if tag in reported:
                 continue
             reported.add(tag)
-            where = f"kept by {', '.join(twin_units)}" if twin_units else "elsewhere in the archive"
+            if kind == "copy" and not settled:
+                if "duplicate_copies_excluded" not in _flag_codes(t):
+                    report.add("error", "T-DUP", unit, f"{holders[0].path} is byte-identical (CRC32 and size) to a copy no unit "
+                               "keeps, in no other arm's folder and under no other arm's name tokens; exclude the copy as "
+                               "duplicate_content and flag duplicate_copies_excluded (informational), or flag shared_content "
+                               "if the copy may be another arm's")
+                continue
+            where = (f"kept by {', '.join(twin_units)}" if twin_units else
+                     f"elsewhere in the archive, in another arm's place ({resolver.original.get(arm, arm)})" if arm else
+                     "elsewhere in the archive")
             if settled:
                 report.add("hold", "T-DUP", unit, f"byte-identical content shared with files {where} (first: {holders[0].path}); flagged, waiting for a person")
             else:
                 report.add("error", "T-DUP", unit, f"{holders[0].path} is byte-identical (CRC32 and size) to a file {where}; shared content is never settled by name: flag shared_content and send the unit to a person")
 
-    # T-EXCL against the listing: an exclusion reason the listing contradicts drops a file silently.
+    # T-EXCL against the listing: an exclusion reason the listing contradicts drops a file silently. A file said not to be
+    # in the archive may be inside an archive the listing holds unopened: a person looks first.
+    nested = sorted({_norm_path(m.path) for m in listed if _norm_path(m.path).casefold().endswith(NESTED_ARCHIVE_EXTENSIONS)
+                     and is_raw_like(m.path) is False and not basename(m.path).startswith("._")})
     for unit, t in triages.items():
+        unopened = 0
         for item in t["excluded_rows"] + t.get("excluded_members", []):
             name = item.get("member_path") or item.get("raw_file") or ""
             what = f"row {item['row_index']} ({name})" if "row_index" in item else name
@@ -2149,10 +2418,16 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
                 there = {member_key(item["member_path"])} & resolver.members if item.get("member_path") else resolver.hits(name)
                 if there:
                     report.add("error", "T-EXCL", unit, f"{what} is excluded as not_in_archive, but the listing has {sorted(there)[0]}")
+                elif nested:
+                    unopened += 1
             elif item["reason"] == "duplicate_content":
                 key = member_key(item["member_path"]) if item.get("member_path") else resolver.resolve(name)
                 if key is None or key not in twins:
                     report.add("error", "T-EXCL", unit, f"{what} is excluded as duplicate_content, but the listing shows no byte-identical twin (CRC32 and size) for it")
+        if unopened:
+            report.add("hold", "T-EXCL", unit, f"{unopened} row(s) are excluded as not_in_archive, but the listing holds "
+                       f"{len(nested)} unopened archive(s) ({', '.join(nested[:3])}); their files may be inside one, so a "
+                       "person looks before they are dropped")
 
     # Raw-looking members that no unit kept or excluded. A row without a member path accounts for the
     # member of the same name, or of the same stem when the row's raw_file carries no extension.
@@ -2307,6 +2582,9 @@ def emit_selection(report: Report, triage_dir: Path, *, at: str | None = None, c
         path = triage_dir / info["payload"]
         if unit in report.unit_status:
             triage = json.loads(path.read_bytes().decode("utf-8"))
+            # What a report notes and nothing holds (targeted_dda: the MS2-selection bias of inclusion-list DDA).
+            block["report_flags"] = [{"code": f["code"], "certainty": f["certainty"], "detail": f["detail"]}
+                                     for f in triage.get("flags", []) if f.get("code") in INFORMATIONAL_FLAGS]
             record = curated.record_path(path)
             bound = curated.record_inputs(record, decision_id) if record.is_file() else None
             if bound is not None and bound["problem"]:

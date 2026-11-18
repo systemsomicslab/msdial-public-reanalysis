@@ -233,8 +233,11 @@ class CodeSnapshot:
         return folder
 
     def identity(self, path: str, version: str) -> dict[str, Any]:
-        """A CODE_FILES script as a record binds it: path, version, sha256 at the commit, the commit."""
-        return {"path": path, "version": version, "sha256": sha256_bytes(self.files[path]), "repo_commit": self.commit}
+        """A CODE_FILES script as a record binds it: path, version, sha256 at the commit, the commit, and the sha256 of
+        each file it reads beside itself (validate-triage.py SPEC_CODE_TREE), which the validator checks before it re-runs
+        the script."""
+        return {"path": path, "version": version, "sha256": sha256_bytes(self.files[path]), "repo_commit": self.commit,
+                "tree": {relative: sha256_bytes(self.files[relative]) for relative in validator.SPEC_CODE_TREE}}
 
 
 def load_module(folder: Path, relative: str) -> Any:

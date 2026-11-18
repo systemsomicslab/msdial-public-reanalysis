@@ -53,6 +53,10 @@ MODEL = "synthetic-model"
 SESSION = "synthetic-session"
 AUTO = "auto"
 CATALOG_ROLES = ("catalog_handoff", "catalog_samples", "catalog_unit")
+# The skill version whose agent wrote the payload itself (msdial-unit-triage.v2 by hand). From 1.2.0 the agent writes a
+# spec and a payload without a derivation is refused (T-SPEC), so tests of hand-written v2 payloads name this version:
+# Code.from_root(..., skill_version=HAND_WRITTEN_SKILL_VERSION) and triage_eval.to_v2's default.
+HAND_WRITTEN_SKILL_VERSION = "1.1.0"
 
 
 def sha(data: bytes) -> str:
@@ -87,9 +91,13 @@ class Code:
 
     @staticmethod
     def from_root(folder: Path, *, skill: bytes | None = None, template: bytes | None = None,
-                  commit: str = "c" * 40) -> "Code":
-        """A released-code folder holding the working tree's SKILL.md, templates and wrapper (or the bytes given)."""
+                  commit: str = "c" * 40, skill_version: str | None = None) -> "Code":
+        """A released-code folder holding the working tree's SKILL.md, templates and wrapper (or the bytes given). With
+        `skill_version` the SKILL.md names that version instead (a synthetic skill of an earlier release)."""
         skill = skill if skill is not None else (ROOT / SKILL_PATH).read_bytes()
+        if skill_version is not None:
+            skill, count = re.subn(rb"Skill version: \*\*[0-9.]+\*\*", f"Skill version: **{skill_version}**".encode("utf-8"), skill)
+            assert count == 1, "SKILL.md names no version"
         template = template if template is not None else (ROOT / TEMPLATE_PATH).read_bytes()
         wrapper = (ROOT / WRAPPER_PATH).read_bytes()
         revision = (ROOT / REVISION_TEMPLATE_PATH).read_bytes()
@@ -267,6 +275,14 @@ def _module(name: str, path: Path) -> Any:
 
 
 FINISHED_AT = "2026-11-16T09:10:00+09:00"  # write_record's finished_at: the expansion's decided_at
+# What the expander and the digest script read beside themselves (validate-triage.py SPEC_CODE_TREE), bound by sha256.
+SPEC_CODE_TREE = ("scripts/validate-triage.py", "schemas/msdial-unit-triage.v1.json", "schemas/msdial-unit-triage.v2.json",
+                  SCHEMA_PATH)
+
+
+def tree(files: Mapping[str, bytes]) -> dict[str, str]:
+    """A derivation code_file's tree: the sha256 of each SPEC_CODE_TREE file at the commit."""
+    return {relative: sha(files[relative]) for relative in SPEC_CODE_TREE}
 
 
 def spec_triage(folder: Path, accession: str, code: Code, *, spec_bytes: bytes | None = None, digest: bool = True,
@@ -299,13 +315,14 @@ def spec_triage(folder: Path, accession: str, code: Code, *, spec_bytes: bytes |
     derivation: dict[str, Any] = {
         "spec": {"path": spec_name, "schema": "msdial-unit-triage-spec.v1", "sha256": sha(spec_bytes), "bytes": len(spec_bytes)},
         "expander": {"path": EXPANDER_PATH, "version": expander.EXPANDER_VERSION, "sha256": sha(files[EXPANDER_PATH]),
-                     "repo_commit": code.commit},
+                     "repo_commit": code.commit, "tree": tree(files)},
         "context": context,
     }
     if digest:
         derivation["digest"] = {"path": "inputs/digest.md", "sha256": sha(digest_bytes),
                                 "script": {"path": DIGEST_PATH, "version": digest_module.DIGEST_VERSION,
-                                           "sha256": sha(files[DIGEST_PATH]), "repo_commit": code.commit}}
+                                           "sha256": sha(files[DIGEST_PATH]), "repo_commit": code.commit,
+                                           "tree": tree(files)}}
     if record:
         units = sorted(result.payloads)
         listing = next(p.name for p in inputs.glob("*.tsv"))
@@ -322,4 +339,42 @@ def spec_triage(folder: Path, accession: str, code: Code, *, spec_bytes: bytes |
             options = dict(record_options)
             options.setdefault("derivation", derivation)
             write_record(folder / f"{unit}.json", code, inputs=bound, **options)
+    return folder
+
+
+def revise_spec(folder: Path, accession: str, code: Code, spec_bytes: bytes, units: Iterable[str]) -> Path:
+    """A revision as the wrapper commits it, on a spec_triage directory: <accession>.spec.r<N>.json, and for each unit
+    named <unit>.r<M>.json (the unit's next revision) with a record that supersedes its current payload and binds the
+    revision spec. The expansion is not checked against the units the revision does not name (that is X-SCOPE, which
+    the wrapper runs and validate-triage.py re-checks)."""
+    import triage_eval as te  # noqa: PLC0415,F401
+
+    folder = Path(folder)
+    root = code.root or ROOT
+    expander = _module(f"expander_for_records_{sha(str(root).encode())[:12]}", root / EXPANDER_PATH)
+    numbers = [int(m.group(1) or 0) for p in folder.glob(f"{accession}.spec*.json")
+               for m in [re.match(rf"^{re.escape(accession)}\.spec(?:\.r([0-9]+))?\.json$", p.name)] if m]
+    spec_name = f"{accession}.spec.r{max(numbers, default=0) + 1}.json"
+    (folder / spec_name).write_bytes(spec_bytes)
+    context = {"decided_at": FINISHED_AT, "model": MODEL, "agent": "claude-code", "skill_version": code.skill_version,
+               "purpose": None}
+    result = expander.expand(spec_bytes, expander.inputs_from_dir(folder / "inputs"), expander.ExpansionContext(**context),
+                             spec_name=spec_name)
+    assert result.ok, [f.as_dict() for f in result.findings]
+    for unit in units:
+        current = sorted(folder.glob(f"{unit}.r*.json"))
+        current = [p for p in current if not p.name.endswith(".record.json")]
+        base = folder / f"{unit}.json"
+        previous = max(current, key=lambda p: int(p.stem.rsplit(".r", 1)[1])) if current else base
+        number = int(previous.stem.rsplit(".r", 1)[1]) + 1 if previous != base else 1
+        record = json.loads(previous.with_name(previous.name[: -len(".json")] + ".record.json").read_text(encoding="utf-8"))
+        target = folder / f"{unit}.r{number}.json"
+        target.write_bytes(result.payloads[unit])
+        derivation = dict(record["derivation"])
+        derivation["spec"] = {"path": spec_name, "schema": "msdial-unit-triage-spec.v1", "sha256": sha(spec_bytes),
+                              "bytes": len(spec_bytes)}
+        derivation["context"] = context
+        inputs = [{"role": item["role"], "path": item["path"]} for item in record["inputs"]]
+        write_record(target, code, inputs=inputs, supersedes=sha(previous.read_bytes()), derivation=derivation,
+                     catalog=False)
     return folder

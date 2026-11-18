@@ -17,7 +17,9 @@ What it holds (docs/llm-assisted-curation.md section 2.2):
   c) per analysis the mwTab CH:, MS:, SP:SAMPLEPREP_SUMMARY and AN:ANALYSIS_TYPE lines and the Samples-line count, a
      value over 600 characters cut with its line number, and an extract equal to another's given once;
   d) the listing by folder (count, extensions, size range) with each member marked [row] (some row resolves to it),
-     [twin:Tn] and [nonraw];
+     [twin:Tn], [small:<size>] (a raw-like member under a tenth of its folder's median raw-like size: a failed or cut
+     injection is evidence), [archive] (an archive inside the archive, unopened: its files are not in the listing) and
+     [nonraw];
   e) the byte-identical groups Tn (CRC32 and size, validate-triage.py's T-DUP code path), pairs between two folders
      summarised by folder pair;
   f) rows that resolve to no member or to more than one, and raw-like members no row names.
@@ -376,6 +378,12 @@ def build_digest_from_files(files: Mapping[str, bytes]) -> bytes:
     if metadata:
         out.append(f"Archive metadata (__MACOSX/, ._*): {len(metadata)} member(s), not listed below.")
     out.append("")
+    if listed:
+        out.append("Marks: [row] a row resolves to it; [twin:Tn] byte-identical group; [small:<size>] a raw-like member "
+                   "under a tenth of its folder's median raw-like size; [archive] an archive inside the archive, unopened "
+                   "(its files are not listed here, so a row may resolve to none of them and still be inside it); "
+                   "[nonraw] not raw data.")
+        out.append("")
     skipped = {id(m) for m in metadata}
     by_folder: dict[str, list[Any]] = defaultdict(list)
     for m in listed:
@@ -392,17 +400,23 @@ def build_digest_from_files(files: Mapping[str, bytes]) -> bytes:
             size = unique.get(shown_path, (shown_path, key, 0))[2] + m.size
             unique[shown_path] = (shown_path, key, size)
         sizes = [u[2] for u in unique.values()]
+        raw_sizes = sorted(u[2] for u in unique.values() if vt.is_raw_like(u[0]))
+        median = raw_sizes[len(raw_sizes) // 2] if len(raw_sizes) >= 3 else 0
         exts = sorted({_ext(u[0]) for u in unique.values()})
         out.append(f"### {folder}/ ({len(unique)} member(s); {', '.join(exts)}; {_size(min(sizes))} to {_size(max(sizes))})")
         out.append("")
         out.append("```text")
-        for shown_path, key, _size_ in sorted(unique.values(), key=lambda u: (u[0].casefold(), u[0])):
+        for shown_path, key, member_size in sorted(unique.values(), key=lambda u: (u[0].casefold(), u[0])):
             marks = []
             if key in referenced:
                 marks.append("[row]")
             if key in twin_id:
                 marks.append(f"[twin:{twin_id[key]}]")
-            if not vt.is_raw_like(shown_path):
+            if vt.is_raw_like(shown_path) and member_size * 10 < median:
+                marks.append(f"[small:{_size(member_size)}]")
+            if shown_path.casefold().endswith(vt.NESTED_ARCHIVE_EXTENSIONS) and not vt.is_raw_like(shown_path):
+                marks.append("[archive]")
+            elif not vt.is_raw_like(shown_path):
                 marks.append("[nonraw]")
             out.append(vt.basename(shown_path) + ((" " + " ".join(marks)) if marks else ""))
         out += ["```", ""]

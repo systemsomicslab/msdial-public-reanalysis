@@ -147,6 +147,36 @@ class DigestTests(unittest.TestCase):
             (inputs / "digest.md").write_bytes(self.data)
             self.assertEqual(dg.build_digest(inputs), self.data)
 
+    def test_small_members_and_nested_archives_are_marked(self) -> None:
+        # Review of the token diet (2026-11-18): a 3 kB injection among 500 MB files, and raw data shipped in an inner
+        # zip, reach the agent as evidence, not as a folder's size range and a [nonraw] line.
+        files = synthetic_files()
+        extra = ["ST000001.zip\tPOS/A_pos.raw\t524288000\tBBBB0001", "ST000001.zip\tPOS/B_pos.raw\t524288001\tBBBB0002",
+                 "ST000001.zip\tPOS/C_pos.raw\t524288002\tBBBB0003", "ST000001.zip\tPOS/D_pos.raw\t3072\tBBBB0004",
+                 "ST000001.zip\tNEG.zip\t104857600\tBBBB0005"]
+        files["ST000001.members.tsv"] += ("\n".join(extra) + "\n").encode("utf-8")
+        text = dg.build_digest_from_files(files).decode("utf-8")
+        self.assertIn("D_pos.raw [small:3.0 kB]", text)
+        self.assertIn("A_pos.raw\n", text)
+        self.assertIn("NEG.zip [archive]", text)
+        self.assertNotIn("NEG.zip [nonraw]", text)
+        self.assertIn("notes.xlsx [nonraw]", text)
+
+    def test_acquisition_tokens_start_a_word(self) -> None:
+        self.assertEqual(vt.token_acquisition("RP_POS/SpentMedia_03_pos.raw"), ())
+        self.assertEqual(vt.token_acquisition("media1_pos.raw"), ())
+        self.assertEqual(vt.token_acquisition("Claudia_Comedia_Encyclopedia.raw"), ())
+        self.assertEqual(vt.token_acquisition("Media_Blank_DDA_pos.raw"), ("DDA",))
+        self.assertEqual(vt.token_acquisition("S01_posDDA.raw"), ("DDA",))
+        self.assertEqual(vt.token_acquisition("QC_tddMS2_pos.raw"), ("tDDA",))
+        self.assertEqual(vt.token_acquisition("QC_ddMS2_pos.raw"), ("DDA",))
+        self.assertEqual(vt.token_acquisition("Pool_HERMES.raw"), ("tDDA",))
+        for name, token in (("S01_PRM.raw", "PRM"), ("S01_tMS2.raw", "tMS2"), ("S01_SRM.raw", "SRM"), ("S01_MRM.raw", "MRM"),
+                            ("S01_SIM_pos.raw", "SIM")):
+            self.assertEqual(vt.token_acquisition(name), (token,), name)
+            self.assertIn(token, vt.TARGETED_TOKENS)
+        self.assertEqual(vt.token_acquisition("Simvastatin_DIA.raw"), ("DIA",))
+
     def test_the_cli(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             inputs = Path(folder) / "inputs"

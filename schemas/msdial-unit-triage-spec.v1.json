@@ -144,7 +144,7 @@
    }
   },
   "reason": {
-   "description": "Why an item is left out. A reason one item kind lacks is written as the nearest one it has (rows: not_raw_data, archive_metadata, alternative_format_copy, out_of_scope become other; members: out_of_scope_ms1_only and polarity_switching become out_of_scope, not_in_archive and needs_person become other), with the detail kept.",
+   "description": "Why an item is left out. Rows have no not_raw_data, archive_metadata, alternative_format_copy or out_of_scope; such a row reason is written as other, with the detail kept. A member keeps its reason, needs_person, out_of_scope_ms1_only and polarity_switching included, so the validator checks it as on a row; not_in_archive is never a member's reason (X-SCHEMA).",
    "enum": ["no_signal_abstained", "duplicate_content", "out_of_scope_ms1_only", "polarity_switching", "requires_conversion", "not_in_archive", "needs_person", "not_raw_data", "archive_metadata", "alternative_format_copy", "out_of_scope", "other"]
   },
   "disposition": {
@@ -182,7 +182,7 @@
    }
   },
   "exception": {
-   "description": "One item treated on its own: a row (in the units named, or in every unit whose table holds it) or a member no row resolves to. It overrides any group that matches the item, inherits the group it names (disposition, file fields, evidence) and may override them.",
+   "description": "One item treated on its own: a row (in the units named, or in every unit whose table holds it; at most one row of each unit's table, X-EXCEPTION) or a member no row resolves to. A row targeted by index names exactly one unit, since indices are per unit. It overrides any group that matches the item, inherits the group it names (disposition, file fields, evidence) and may override them.",
    "type": "object",
    "additionalProperties": false,
    "required": ["id", "confidence", "rationale"],

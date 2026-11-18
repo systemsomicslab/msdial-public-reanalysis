@@ -386,6 +386,172 @@ class FindingTests(unittest.TestCase):
                                  [f"{U1}.json", f"{U2}.json"] if expected == 0 else [])
 
 
+class ReviewFindingTests(unittest.TestCase):
+    """The review of the token diet (2026-11-18): catch-all matches, per-unit row indices, member reasons that must keep
+    their guards, odd files in broad groups, and shared_content judged on the files a flag is about."""
+
+    def assertFinds(self, document, code, input_files=None, ctx=CTX):
+        result = run(document, input_files=input_files, ctx=ctx)
+        self.assertFalse(result.ok)
+        self.assertIn(code, codes(result), [f.as_dict() for f in result.findings])
+        return [f for f in result.findings if f.code == code]
+
+    def test_an_empty_match_or_row_target_is_a_schema_error(self) -> None:
+        document = spec()
+        document["groups"][4]["match"] = {}
+        self.assertFinds(document, "X-SCHEMA")
+        document = spec()
+        document["groups"][0]["match"] = {"attribute": {}}
+        self.assertFinds(document, "X-SCHEMA")
+        document = spec()
+        document["exceptions"].append({"id": "E2", "unit": U1, "row": {}, "disposition": {"exclude": "other", "detail": "x"},
+                                       "confidence": "high", "rationale": "x"})
+        self.assertFinds(document, "X-SCHEMA")
+        document = spec()
+        document["exceptions"][0]["file"] = {}
+        self.assertFinds(document, "X-SCHEMA")
+        self.assertIn("minProperties", json.dumps(json.loads((ROOT / "schemas" / "msdial-unit-triage-spec.v1.json").read_text(encoding="utf-8"))))
+        self.assertTrue(vt.schema_errors({}, {"type": "object", "minProperties": 1}, {}))
+
+    def test_a_row_exception_by_index_names_one_unit(self) -> None:
+        document = spec()
+        document["exceptions"].append({"id": "X0", "row": {"index": 0}, "disposition": {"exclude": "other", "detail": "Injection failed in AN000001."},
+                                       "confidence": "high", "rationale": "One bad injection."})
+        [finding] = self.assertFinds(document, "X-EXCEPTION")
+        self.assertIn("per unit", finding.message)
+        document["exceptions"][-1]["unit"] = U1
+        result = run(document)
+        self.assertTrue(result.ok, [f.as_dict() for f in result.findings])
+        one, two = (json.loads(result.payloads[u]) for u in (U1, U2))
+        self.assertEqual([r["rule_id"] for r in one["excluded_rows"] if r["row_index"] == 0], ["X0"])
+        self.assertNotIn(0, [r["row_index"] for r in two["excluded_rows"] if r["rule_id"] == "X0"])
+
+    def test_an_exception_is_one_row_per_unit(self) -> None:
+        rows = ROWS + [dict(ROWS[0])]
+        document = spec()
+        document["exceptions"].append({"id": "E2", "row": {"sample_id": "S01_HILIC_pos"}, "group": "G1",
+                                       "confidence": "high", "rationale": "One row."})
+        found = self.assertFinds(document, "X-EXCEPTION", input_files=files(rows=rows))
+        self.assertTrue(all("covers 2 rows" in f.message for f in found))
+
+    def test_member_reasons_keep_their_guards(self) -> None:
+        # needs_person in a ready unit, or MS1-only with no ms1_only flag, on members: the reason reaches the payload as
+        # written, and the validator refuses it as it refuses it on a row.
+        document = spec()
+        for entry in document["units"].values():
+            entry.update(status="ready", needs_person=[], flags=[])
+        document["groups"][6]["disposition"] = {"exclude": "needs_person", "detail": "Whose blank is it?"}
+        document["groups"][6].pop("file")
+        document["groups"][3]["disposition"] = {"exclude": "out_of_scope_ms1_only", "detail": "A full-scan QC."}
+        result = run(document)
+        self.assertTrue(result.ok, [f.as_dict() for f in result.findings])
+        doc = json.loads(result.payloads[U1])
+        reasons = {m["member_path"]: m["reason"] for m in doc["excluded_members"]}
+        self.assertEqual(reasons["SHARED/Blank_01.mzML"], "needs_person")
+        self.assertEqual(reasons["HILIC_POS/QC_HILIC_pos.mzML"], "out_of_scope_ms1_only")
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            for unit, data in result.payloads.items():
+                (directory / f"{unit}.json").write_bytes(data)
+            listed = ex.inputs_from_files(files()).listed
+            report = vt.validate(directory, None, listed, payload_only=True)
+        messages = [f.message for f in report.findings if f.check == "T-EXCL" and f.level == "error"]
+        self.assertTrue(any("Blank_01.mzML is excluded as needs_person" in m for m in messages), messages)
+        self.assertTrue(any("out_of_scope_ms1_only without an ms1_only flag" in m for m in messages), messages)
+        # A member is in the archive: not_in_archive is never its reason.
+        document = spec()
+        document["groups"][4]["disposition"] = {"exclude": "not_in_archive", "detail": "x"}
+        self.assertFinds(document, "X-SCHEMA")
+
+    def test_a_kept_group_does_not_sweep_in_an_odd_acquisition_token(self) -> None:
+        for odd in ("HILIC_POS/QC_HILIC_pos_MS1.mzML", "HILIC_POS/QC_HILIC_pos_tDDA.mzML"):
+            with self.subTest(odd):
+                [finding] = self.assertFinds(spec(), "X-HETERO", input_files=files(LISTING + [(odd, 2000097, "00000097")]))
+                self.assertIn("acquisition tokens (none);", finding.message)
+
+    def test_shared_content_is_judged_on_the_files_the_flag_names(self) -> None:
+        # A QC copied into a second folder, kept by U1, its twin excluded; and the mzXML copies, all excluded. U2 flags
+        # shared_content about the mzXML copies only: nobody keeps or holds them, whatever else U2's payload lists.
+        listing = LISTING + [("QCCOPY/QC_HILIC_pos.mzML", 2000003, "00000003")]
+        document = spec()
+        document["groups"].append({"id": "M5", "applies_to": "members", "match": {"folder": "QCCOPY"},
+                                   "disposition": {"exclude": "duplicate_content", "detail": "A second copy of the QC."},
+                                   "confidence": "high", "rationale": "Byte-identical to the kept QC."})
+        document["units"][U1]["flags"].append({"code": "duplicate_copies_excluded", "certainty": "confirmed",
+                                                "detail": "The QC copy is excluded."})
+        document["units"][U2]["flags"] = [{"code": "shared_content", "certainty": "confirmed",
+                                            "detail": "The mzXML copies are identical.", "groups": ["M2", "M3"]}]
+        [finding] = self.assertFinds(document, "X-DUP-NOKEPT", input_files=files(listing))
+        self.assertEqual(finding.unit, U2)
+        # Named on the QC copy, whose twin U1 keeps, the flag stands.
+        document["units"][U2]["flags"][0]["groups"] = ["M5"]
+        self.assertNotIn("X-DUP-NOKEPT", codes(run(document, input_files=files(listing))))
+
+    def test_copies_held_for_a_person_may_be_shared_content(self) -> None:
+        # Two arms' files are byte-identical; each unit holds its own copy for a person (needs_person) and asks.
+        listing = [(p, s, c) if p != "RP_NEG/S01_RP_neg.mzML" else (p, 2000001, "00000001") for p, s, c in LISTING]
+        document = spec()
+        for unit, group in ((U1, "G1"), (U2, "G2")):
+            document["units"][unit].setdefault("exclude", []).append(
+                {"groups": [group], "reason": "needs_person", "detail": "Byte-identical to the other arm's file."})
+            document["units"][unit]["flags"] = [{"code": "shared_content", "certainty": "confirmed",
+                                                  "detail": "Two arms' files are identical.", "groups": [group]}]
+            document["units"][unit]["needs_person"] = [{"code": "shared_content", "question": "Which arm is it?", "groups": [group]}]
+        document["groups"][1]["match"] = {"resolved_member": {"folder": "RP_NEG"}, "sample_id": {"regex": "^S0"}}
+        document["groups"][0]["match"] = {"resolved_member": {"folder": "HILIC_POS"}, "sample_id": {"regex": "^S0"}}
+        document["groups"].append({"id": "G5", "applies_to": "rows", "match": {"sample_id": "X_Lip_neg"},
+                                   "disposition": {"exclude": "other", "detail": "Left out here."}, "confidence": "high",
+                                   "rationale": "Not part of this test."})
+        document["exceptions"] = []
+        document["groups"].append({"id": "M6", "applies_to": "members", "match": {"paths": ["RP_NEG/X__LipNeg.mzML"]},
+                                   "disposition": {"exclude": "other", "detail": "Left out here."}, "confidence": "high",
+                                   "rationale": "Not part of this test."})
+        result = run(document, input_files=files(listing))
+        self.assertTrue(result.ok, [f.as_dict() for f in result.findings])
+
+
+class DuplicateDecisionTests(unittest.TestCase):
+    """D2 as decided: shared_content blocks only when kept copies of more than one arm are involved. One kept copy whose
+    twin no unit keeps is another arm's (blocking) only when the twin lies in a folder where another unit keeps or holds
+    files, or under another arm's name tokens; otherwise it is a copy excluded for good (duplicate_copies_excluded)."""
+
+    def validate(self, document, listing):
+        result = run(document, input_files=files(listing))
+        self.assertTrue(result.ok, [f.as_dict() for f in result.findings])
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            for unit, data in result.payloads.items():
+                (directory / f"{unit}.json").write_bytes(data)
+            return vt.validate(directory, None, ex.inputs_from_files(files(listing)).listed, payload_only=True)
+
+    def dup(self, report, level=None):
+        return [f.message for f in report.findings if f.check == "T-DUP" and f.unit == U1 and (level is None or f.level == level)]
+
+    def with_copy(self, path):
+        document = spec()
+        document["groups"].append({"id": "M5", "applies_to": "members", "match": {"paths": [path]},
+                                   "disposition": {"exclude": "duplicate_content", "detail": "A second copy."},
+                                   "confidence": "high", "rationale": "Byte-identical to a kept file."})
+        return document, LISTING + [(path, 2000001, "00000001")]
+
+    def test_a_backup_copy_needs_only_the_informational_flag(self) -> None:
+        document, listing = self.with_copy("BACKUP/S01_HILIC_pos_backup.mzML")
+        found = self.dup(self.validate(document, listing), "error")
+        self.assertTrue(any("duplicate_copies_excluded" in m for m in found), found)
+        document["units"][U1]["flags"].append({"code": "duplicate_copies_excluded", "certainty": "confirmed",
+                                                "detail": "A backup copy of one file is excluded."})
+        self.assertEqual(self.dup(self.validate(document, listing)), [])
+
+    def test_a_copy_in_another_arms_place_still_blocks(self) -> None:
+        for path in ("RP_NEG/S01_copy.mzML", "MISC/S01_RP_neg_copy.mzML"):
+            with self.subTest(path):
+                document, listing = self.with_copy(path)
+                document["units"][U1]["flags"].append({"code": "duplicate_copies_excluded", "certainty": "confirmed",
+                                                        "detail": "A copy is excluded."})
+                found = self.dup(self.validate(document, listing), "error")
+                self.assertTrue(any("another arm's place" in m and "flag shared_content" in m for m in found), found)
+
+
 class EvalSpecTests(unittest.TestCase):
     """The spec language expresses every eval layout: each hand-written spec expands to payloads that keep no wrong file,
     leave nothing out (an abstained unit apart, which keeps nothing before headers exist) and reach the expected

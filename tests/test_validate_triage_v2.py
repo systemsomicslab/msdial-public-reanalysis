@@ -59,7 +59,8 @@ class V2Case(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
-        self.code = records.Code.from_root(self.tmp / "code")
+        # Hand-written v2 payloads are what skill 1.1.0 wrote; from 1.2.0 a payload without a derivation is refused.
+        self.code = records.Code.from_root(self.tmp / "code", skill_version=records.HAND_WRITTEN_SKILL_VERSION)
         self._n = 0
 
     def tearDown(self) -> None:
@@ -269,16 +270,19 @@ class RecordTests(V2Case):
         self.assertTrue(any("cannot be read at repo_commit" in m for m in self.found(report, "T-RECORD", "hold")))
 
     def test_the_skill_at_head_is_read_through_git(self) -> None:
+        # The skill at HEAD writes a spec, so its records come from the expander (records.spec_triage).
         head = records.Code.from_head()
-        directory = self.make()
-        bound = {"role": "archive_listing", "path": "inputs/archive-members.tsv"}
-        for unit in te.build_good(self.ACCESSION):
-            records.write_record(directory / f"{unit}.json", head, inputs=[bound])
-        report = self.validate(directory, code_root=None)
+        directory = records.spec_triage(self.tmp / "head", self.ACCESSION, head)
+        inputs = directory / "inputs"
+
+        def run() -> "vt.Report":
+            return vt.validate(directory, vt.read_catalog(inputs), [m for t in sorted(inputs.glob("*.tsv")) for m in vt.read_listing(t)],
+                               listing_files=sorted(inputs.glob("*.tsv")), code_root=None)
+        report = run()
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
         # The working tree's SKILL.md is not what is read: a record naming another sha256 is refused.
         self.rewrite_record(directory, self.UNIT, lambda r: r["skill"].update(sha256=sha(b"another skill")))
-        self.assertTrue(self.found(self.validate(directory, code_root=None), "T-RECORD", "error", self.UNIT))
+        self.assertTrue(self.found(run(), "T-RECORD", "error", self.UNIT))
 
 
 class ToolTests(V2Case):
@@ -642,6 +646,76 @@ class InScopeDecisionTests(V2Case):
         report = self.validate(self.make(docs=docs))
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
 
+    def test_an_inclusion_list_token_needs_the_targeted_dda_flag(self) -> None:
+        docs = te.to_v2(te.build_good(self.ACCESSION))
+        row = docs[self.UNIT]["rows"][0]
+        row["raw_file"] = row["raw_file"] + "_tDDA"
+        row["member_path"] = None
+        report = self.validate(self.make(docs=docs))
+        found = self.found(report, "T-ACQ", "error", self.UNIT)
+        self.assertTrue(any("inclusion-list DDA name token" in m for m in found), found)
+        docs[self.UNIT]["flags"].append({"code": "targeted_dda", "certainty": "suspected", "detail": "tDDA in the name."})
+        self.assertFalse(self.found(self.validate(self.make(docs=docs)), "T-ACQ"))
+
+    def test_the_informational_flags_reach_the_selection(self) -> None:
+        docs = te.to_v2(te.build_good(self.ACCESSION))
+        docs[self.UNIT]["flags"].append({"code": "targeted_dda", "certainty": "suspected", "detail": "Inclusion list."})
+        directory = self.make(docs=docs)
+        report = self.validate(directory)
+        vt.emit_selection(report, directory, append=False)
+        self.assertEqual(report.extra["selection"][self.UNIT]["report_flags"],
+                         [{"code": "targeted_dda", "certainty": "suspected", "detail": "Inclusion list."}])
+        self.assertEqual(report.extra["selection"]["AN004455"]["report_flags"], [])
+
+    def test_acquisition_tokens_that_contradict_the_file_are_refused(self) -> None:
+        for suffix, mode, expected in (("_MS1", "DDA", "says MS1"), ("_DIA", "DDA", "says DIA"), ("_PRM", "DDA", "targeted method"),
+                                       ("_SWATH", "DIA", None), ("_SpentMedia", "DDA", None)):
+            with self.subTest(suffix):
+                docs = te.to_v2(te.build_good(self.ACCESSION))
+                row = docs[self.UNIT]["rows"][0]
+                row["raw_file"] = row["raw_file"] + suffix
+                row["member_path"] = None
+                row["acquisition_mode"] = mode
+                found = [m for m in self.found(self.validate(self.make(docs=docs)), "T-TOKEN", "error", self.UNIT)]
+                if expected is None:
+                    self.assertFalse([m for m in found if "says" in m or "targeted" in m], found)
+                else:
+                    self.assertTrue(any(expected in m for m in found), found)
+
+    def test_a_row_said_not_in_the_archive_waits_while_an_archive_inside_is_unopened(self) -> None:
+        listing = self.tmp / "nested.tsv"
+        listing.write_bytes(te.load(self.ACCESSION)[2].read_bytes().rstrip(b"\r\n") + b"\nST002747.zip\tNEG.zip\t104857600\tBBBB0005\n")
+        docs = te.to_v2(te.build_good(self.ACCESSION))
+        doc = docs[self.UNIT]
+        moved = doc["rows"].pop(0)
+        doc["excluded_rows"].append({"row_index": moved["row_index"], "sample_id": moved["sample_id"],
+                                     "raw_file": "Missing_file.mzML", "member_path": None, "reason": "not_in_archive",
+                                     "belongs_to_unit": None, "detail": "No member of this name.", "confidence": "high",
+                                     "rationale": "The listing has no such file."})
+        directory = te.write(docs, self.tmp / "nested")
+        report = vt.validate(directory, None, vt.read_listing(listing), payload_only=True)
+        found = [f.message for f in report.findings if f.check == "T-EXCL" and f.level == "hold" and f.unit == self.UNIT]
+        self.assertTrue(any("unopened archive" in m and "NEG.zip" in m for m in found), found)
+
+    def test_every_schema_keyword_is_implemented(self) -> None:
+        implemented = {"$defs", "$id", "$ref", "$schema", "additionalProperties", "allOf", "anyOf", "const", "description",
+                       "enum", "format", "items", "maxItems", "maxLength", "maxProperties", "minItems", "minLength",
+                       "minProperties", "minimum", "pattern", "properties", "propertyNames", "required", "title", "type"}
+        used: set[str] = set()
+
+        def walk(value) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    used.add(key)
+                    for sub in (item.values() if key in ("properties", "$defs") and isinstance(item, dict) else [item]):
+                        walk(sub)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+        for path in sorted((ROOT / "schemas").glob("*.json")):
+            walk(json.loads(path.read_text(encoding="utf-8")))
+        self.assertEqual(used - implemented, set())
+
     def test_copies_among_excluded_members_need_no_flag(self) -> None:
         # ST002747's mzXML copies have byte-identical twins, all excluded: nobody keeps the content (K empty).
         twins = vt.content_twins(vt.read_listing(te.load(self.ACCESSION)[2]))
@@ -679,6 +753,11 @@ class InScopeDecisionTests(V2Case):
 class SpecDerivationTests(V2Case):
     """T-SPEC and T-DIGEST: a payload expanded from the agent's spec is that spec's deterministic image over the inputs
     its record binds, by the expander at its commit; the digest is the digest script's image of the same inputs."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.code = records.Code.from_root(self.tmp / "spec-code")
+        self.assertEqual(self.code.skill_version, "1.2.0")
 
     def spec_dir(self, accession: str | None = None, code: records.Code | None = None) -> Path:
         self._n += 1
@@ -739,7 +818,8 @@ class SpecDerivationTests(V2Case):
         report = self.validate_dir(directory, code_root=other.root)
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
         report = self.validate_dir(directory, code_root=self.code.root)
-        self.assertTrue(any("cannot be re-derived" in m for m in self.found(report, "T-SPEC", "hold", "AN004454")))
+        self.assertTrue(any("cannot be re-derived" in m for m in self.found(report, "T-SPEC", "error", "AN004454")),
+                        "a sha256 that is not the file's at its commit is an error, not a hold")
         # An expander at the record's commit that writes other bytes than the payload holds is refused.
         changed = expander.read_bytes().replace(b'f"Kept by {owner} (', b'f"Held by {owner} (', 1)
         self.assertNotEqual(changed, expander.read_bytes())
@@ -766,6 +846,95 @@ class SpecDerivationTests(V2Case):
     def rewrite_records(self, directory: Path, change) -> None:
         for path in sorted(directory.glob("*.record.json")):
             self.rewrite_record(directory, path.name[: -len(".record.json")], change)
+
+    # Review of the token diet (2026-11-18).
+    def test_a_payload_and_record_stripped_of_their_derivation_are_refused(self) -> None:
+        # The record rewrite the one-byte test uses, with `derivation` dropped from both: the sibling records still bind
+        # the spec, the spec sits in the directory, and the record names skill 1.2.0, so it is refused.
+        directory = self.spec_dir()
+        path = directory / "AN004454.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc.pop("derivation")
+        doc["rows"][0]["confidence"] = "low" if doc["rows"][0]["confidence"] != "low" else "high"
+        doc["rows"][0]["rationale"] = "Rewritten by hand."
+        for item in [*doc["rows"], *doc["added_members"], *doc["excluded_rows"], *doc["excluded_members"]]:
+            item.pop("rule_id", None)
+        data = json.dumps(doc, indent=1).encode("utf-8")
+        path.write_bytes(data)
+        self.rewrite_record(directory, "AN004454", lambda r: (r.pop("derivation"), r.update(decision_id=sha(data)),
+                                                              r["payload"].update(sha256=sha(data))))
+        found = self.found(self.validate_dir(directory), "T-SPEC", "error", "AN004454")
+        self.assertTrue(any("binds no derivation" in m and "skill 1.2.0" in m and "binds a spec" in m for m in found), found)
+
+    def test_a_skill_1_2_0_payload_needs_a_derivation_even_alone(self) -> None:
+        code = records.Code.from_root(self.tmp / "current-code")
+        directory = te.write(te.to_v2(te.build_good(self.ACCESSION), skill_version=code.skill_version), self.tmp / "alone")
+        bound = records.copy_listing(te.load(self.ACCESSION)[2], directory)
+        for unit in te.build_good(self.ACCESSION):
+            records.write_record(directory / f"{unit}.json", code, inputs=[bound])
+        found = self.found(self.validate(directory, code_root=code.root), "T-SPEC", "error", "AN004454")
+        self.assertTrue(any("which writes a spec and never a payload" in m for m in found), found)
+        # The skill that wrote payloads by hand still may.
+        legacy = records.Code.from_root(self.tmp / "legacy-code", skill_version=records.HAND_WRITTEN_SKILL_VERSION)
+        directory = te.write(te.to_v2(te.build_good(self.ACCESSION)), self.tmp / "legacy")
+        bound = records.copy_listing(te.load(self.ACCESSION)[2], directory)
+        for unit in te.build_good(self.ACCESSION):
+            records.write_record(directory / f"{unit}.json", legacy, inputs=[bound])
+        report = self.validate(directory, code_root=legacy.root)
+        self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
+
+    def test_a_spec_session_that_writes_a_payload_is_refused(self) -> None:
+        directory = self.spec_dir()
+        write = ("Write", {"file_path": "../out/AN004455.json", "content": "{}"}, "File created")
+        options = {"derivation": json.loads((directory / "AN004455.record.json").read_text(encoding="utf-8"))["derivation"]}
+        records.write_record(directory / "AN004455.json", self.code, tool_calls=[write],
+                             inputs=json.loads((directory / "AN004455.record.json").read_text(encoding="utf-8"))["inputs"],
+                             **options)
+        found = self.found(self.validate_dir(directory), "T-SPEC", "error", "AN004455")
+        self.assertTrue(any("writes AN004455.json itself" in m for m in found), found)
+
+    def test_every_record_has_its_expander_hash_checked(self) -> None:
+        # The module cache must not skip the hash check of later records, nor carry an earlier record's wrong hash
+        # onto records whose hash is right.
+        for wrong in ("AN004457", "AN004454"):
+            with self.subTest(wrong):
+                directory = self.spec_dir()
+                self.rewrite_record(directory, wrong, lambda r: (r["derivation"]["expander"].update(sha256="0" * 64),
+                                                                 r["derivation"]["digest"]["script"].update(sha256="1" * 64)))
+                report = self.validate_dir(directory)
+                self.assertTrue(self.found(report, "T-SPEC", "error", wrong))
+                self.assertTrue(self.found(report, "T-DIGEST", "error", wrong))
+                for unit in {"AN004454", "AN004455", "AN004456", "AN004457"} - {wrong}:
+                    self.assertFalse(self.found(report, "T-SPEC", unit=unit), unit)
+                    self.assertFalse(self.found(report, "T-DIGEST", unit=unit), unit)
+
+    def test_the_files_the_expander_reads_are_bound_by_sha256(self) -> None:
+        directory = self.spec_dir()
+        tree = json.loads((directory / "AN004454.record.json").read_text(encoding="utf-8"))["derivation"]["expander"]["tree"]
+        self.assertEqual(sorted(tree), sorted(vt.SPEC_CODE_TREE))
+        # A helper edited in the code root, the expander unchanged: its sha256 alone would hold; the tree does not.
+        other = records.Code.from_root(self.tmp / "edited-helper")
+        helper = other.root / "scripts" / "validate-triage.py"
+        helper.write_bytes(helper.read_bytes() + b"\n# edited after the records were written\n")
+        found = self.found(self.validate_dir(directory, code_root=other.root), "T-SPEC", "error", "AN004454")
+        self.assertTrue(any("the record's tree names" in m for m in found), found)
+        # A record that binds no tree binds no helper.
+        self.rewrite_record(directory, "AN004455", lambda r: r["derivation"]["expander"].pop("tree"))
+        self.assertTrue(self.found(self.validate_dir(directory), "T-RECORD", "error", "AN004455"))
+
+    def test_a_revision_spec_must_leave_the_units_it_does_not_revise(self) -> None:
+        directory = self.spec_dir()
+        spec = json.loads(te.spec_path(self.ACCESSION).read_text(encoding="utf-8"))
+        spec["units"]["AN004454"]["rationale"] = "Revised: the rationale names the answer it rests on."
+        records.revise_spec(directory, self.ACCESSION, self.code, json.dumps(spec, indent=1).encode("utf-8"), ["AN004454"])
+        self.assertFalse(self.found(self.validate_dir(directory), "T-SPEC"))
+        # The same revision, but a group change that also moves AN004455's payload, which the revision does not name.
+        directory = self.spec_dir()
+        group = next(g for g in spec["groups"] if g["applies_to"] == "rows" and "AN004455" in json.dumps(g["disposition"]))
+        group["rationale"] = group["rationale"] + " Reworded."
+        records.revise_spec(directory, self.ACCESSION, self.code, json.dumps(spec, indent=1).encode("utf-8"), ["AN004454"])
+        found = self.found(self.validate_dir(directory), "T-SPEC", "error", "AN004454")
+        self.assertTrue(any("X-SCOPE" in m and "AN004455" in m for m in found), found)
 
 
 SYNTHETIC_ACCESSION = "ST000001"
@@ -978,15 +1147,10 @@ class RunValidatorContractTests(V2Case):
     accession's inputs\\ hold and no --code-root: the records are checked against git at their repo_commit."""
 
     def accession_dir(self) -> Path:
+        # As the wrapper commits it under the skill at HEAD: the spec, the payloads the expander makes of it, and records
+        # whose derivation binds the expander and the digest script at HEAD.
         head = records.Code.from_head()
-        folder = self.tmp / "triage" / self.ACCESSION
-        te.write(te.to_v2(te.build_good(self.ACCESSION), skill_version=head.skill_version), folder)
-        (folder / "inputs").mkdir(exist_ok=True)
-        (folder / "inputs" / "catalog.json").write_bytes((te.fixture_dir(self.ACCESSION) / "catalog.json").read_bytes())
-        bound = records.copy_listing(te.load(self.ACCESSION)[2], folder)
-        for unit in te.build_good(self.ACCESSION):
-            records.write_record(folder / f"{unit}.json", head, inputs=[bound])
-        return folder
+        return records.spec_triage(self.tmp / "triage" / self.ACCESSION, self.ACCESSION, head)
 
     def test_the_output_contract_the_plan_reads_is_unchanged(self) -> None:
         folder = self.accession_dir()
@@ -1005,15 +1169,16 @@ class RunValidatorContractTests(V2Case):
         self.assertEqual((result["verdict"], result["exit_code"]), ("hold", 1))
 
     def test_one_payload_changed_does_not_change_another_units_report(self) -> None:
-        # The plan records the report's sha256 per unit; it must not move when only another unit's bytes move.
+        # The plan records the report's sha256 per unit; it must not move when only payload bytes move (a spec whose
+        # one change is a note of AN004455, expanded and recorded as the wrapper does).
         folder = self.accession_dir()
         first = curated.run_validator(folder)["report_sha256"]
-        doc = json.loads((folder / "AN004455.json").read_text(encoding="utf-8"))
-        doc["notes"] = "a reworded note"
-        (folder / "AN004455.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
-        records.write_record(folder / "AN004455.json", records.Code.from_head(),
-                             inputs=[{"role": "archive_listing", "path": "inputs/archive-members.tsv"}])
-        self.assertEqual(curated.run_validator(folder)["report_sha256"], first)
+        spec = json.loads(te.spec_path(self.ACCESSION).read_text(encoding="utf-8"))
+        spec["units"]["AN004455"]["notes"] = "a reworded note"
+        other = records.spec_triage(self.tmp / "other" / "triage" / self.ACCESSION, self.ACCESSION, records.Code.from_head(),
+                                    spec_bytes=json.dumps(spec, indent=1).encode("utf-8"))
+        self.assertNotEqual((other / "AN004455.json").read_bytes(), (folder / "AN004455.json").read_bytes())
+        self.assertEqual(curated.run_validator(other)["report_sha256"], first)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 sys.path.insert(0, str(TESTS))
+import decision_records as records  # noqa: E402
 import triage_eval as te  # noqa: E402
 
 SKILL_VERSION = "1.2.0"
@@ -74,7 +75,12 @@ class VersionTests(unittest.TestCase):
     def test_one_skill_version(self) -> None:
         skill = (ROOT / ".claude/skills/msdial-unit-triage/SKILL.md").read_text(encoding="utf-8")
         self.assertIn(f"Skill version: **{SKILL_VERSION}**", skill)
-        self.assertEqual(te.to_v2(te.build_good("ST002747"))["AN004454"]["decided_by"]["skill_version"], SKILL_VERSION)
+        # Hand-written v2 fixtures name the skill that wrote payloads by hand, never the current one (T-SPEC refuses a
+        # payload without a derivation from skill 1.2.0 on).
+        self.assertEqual(te.to_v2(te.build_good("ST002747"))["AN004454"]["decided_by"]["skill_version"],
+                         records.HAND_WRITTEN_SKILL_VERSION)
+        self.assertLess(tuple(int(p) for p in records.HAND_WRITTEN_SKILL_VERSION.split(".")),
+                        tuple(int(p) for p in SKILL_VERSION.split(".")))
         for relative in ("tests/test_run_triage_agent.py", "tests/test_validate_triage_v2.py"):
             text = (ROOT / relative).read_text(encoding="utf-8")
             self.assertIn(f'"{SKILL_VERSION}"', text, relative)

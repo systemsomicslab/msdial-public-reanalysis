@@ -19,6 +19,8 @@ It is pure: no I/O beyond its arguments, no network, no clock, no randomness. Fi
   X-SCHEMA            the spec breaks schemas/msdial-unit-triage-spec.v1.json, or a rule the schema cannot state
   X-UNITS             the spec's units are not the units of the inputs
   X-UNKNOWN-REF       a group, unit, child or exception target that does not exist
+  X-EXCEPTION         an exception that is not one item: a row exception that targets by index without naming exactly
+                      one unit (indices are per unit), or one that covers more than one row of a unit's table
   X-UNCOVERED-ROW     a Catalog row of a unit that no row group and no exception covers
   X-OVERLAP-ROW       a Catalog row that two row groups cover
   X-UNCOVERED-MEMBER  a raw-like listed member no row resolves to that no member group covers
@@ -27,10 +29,11 @@ It is pure: no I/O beyond its arguments, no network, no clock, no randomness. Fi
   X-UNRESOLVED        a kept row whose file resolves to no listed member (within the group's resolve.within)
   X-AMBIGUOUS         a kept row whose file resolves to more than one listed member
   X-PLACEHOLDER       an evidence placeholder with no value for an item
-  X-HETERO            a kept group whose items carry differing name tokens, extensions or top folders, with no
-                      "heterogeneous" reason
-  X-DUP-NOKEPT        shared_content on a unit whose byte-identical groups have no kept member (copies among excluded
-                      members are duplicate_copies_excluded)
+  X-HETERO            a kept group (or exception) whose items carry differing name tokens, extensions or top folders,
+                      with no "heterogeneous" reason; for acquisition a name without a token differs from one with
+  X-DUP-NOKEPT        a shared_content flag whose byte-identical groups (of the items it names, else of the unit's own
+                      kept and held items) have no member any unit keeps or holds for a person (excluded needs_person);
+                      copies only among members excluded for good are duplicate_copies_excluded
   X-CHILD             a kept item of a unit with children that is in no child, or a child key the unit lacks
   X-SCOPE             a revision whose expansion changes a unit the revision does not name
   X-PAYLOAD-SCHEMA    an expanded payload that breaks schemas/msdial-unit-triage.v2.json (an expander bug)
@@ -437,10 +440,12 @@ def fill(value: Any, item: Mapping[str, Any], view: RowView | None, inputs: Expa
 
 ROW_REASONS = {"belongs_to_other_unit", "no_signal_abstained", "duplicate_content", "out_of_scope_ms1_only",
                "polarity_switching", "requires_conversion", "not_in_archive", "needs_person", "other"}
+# A member keeps the spec's reason, so the validator's T-EXCL guards (needs_person in a unit that asks, an MS1-only or
+# polarity-switching exclusion with its flag) hold for members as for rows. not_in_archive is never a member's reason
+# (a member is in the archive): X-SCHEMA.
 MEMBER_REASONS = {"not_raw_data", "archive_metadata", "alternative_format_copy", "requires_conversion",
-                  "duplicate_content", "belongs_to_other_unit", "no_signal_abstained", "out_of_scope", "other"}
-MEMBER_REASON_MAP = {"out_of_scope_ms1_only": "out_of_scope", "polarity_switching": "out_of_scope",
-                     "not_in_archive": "other", "needs_person": "other"}
+                  "duplicate_content", "belongs_to_other_unit", "no_signal_abstained", "out_of_scope",
+                  "out_of_scope_ms1_only", "polarity_switching", "needs_person", "other"}
 
 
 def row_reason(reason: str) -> str:
@@ -448,7 +453,7 @@ def row_reason(reason: str) -> str:
 
 
 def member_reason(reason: str) -> str:
-    return reason if reason in MEMBER_REASONS else MEMBER_REASON_MAP.get(reason, "other")
+    return reason if reason in MEMBER_REASONS else "other"
 
 
 def _keepers(disposition: Mapping[str, Any]) -> list[str]:
@@ -527,6 +532,8 @@ class Expander:
                 self.find("X-SCHEMA", problem)
             self._check_regexes(g["match"], f"group {g['id']}")
             self._check_disposition(g["disposition"], f"group {g['id']}", g.get("file"), g.get("evidence"))
+            if g["applies_to"] == "members" and g["disposition"].get("exclude") == "not_in_archive":
+                self.find("X-SCHEMA", f"group {g['id']}: a member is in the archive; not_in_archive is a row's reason")
             resolve = g.get("resolve") or {}
             groups[g["id"]] = Rule(g["id"], g["applies_to"], dict(g["disposition"]), g.get("file"), list(g.get("evidence") or []),
                                    g["confidence"], g["rationale"], tuple(_strings(resolve.get("within"))),
@@ -545,6 +552,10 @@ class Expander:
                 self.find("X-UNKNOWN-REF", f"exception {e['id']} names group {e['group']}, which the spec does not have")
                 continue
             applies = "rows" if "row" in e else "members"
+            if "index" in (e.get("row") or {}) and len(_strings(e.get("unit"))) != 1:
+                self.find("X-EXCEPTION", f"exception {e['id']} targets row index {e['row']['index']}, which is per unit, "
+                          "without naming exactly one unit; name the unit, or target the row by sample_id or raw_file")
+                continue
             if base is not None and base.applies_to != applies:
                 self.find("X-UNKNOWN-REF", f"exception {e['id']} is for {applies} but names {base.applies_to} group {base.id}")
                 continue
@@ -556,6 +567,8 @@ class Expander:
             file.update(e.get("file") or {})
             evidence = list(e.get("evidence") or (base.evidence if base else []))
             self._check_disposition(disposition, f"exception {e['id']}", file or None, evidence)
+            if applies == "members" and disposition.get("exclude") == "not_in_archive":
+                self.find("X-SCHEMA", f"exception {e['id']}: a member is in the archive; not_in_archive is a row's reason")
             if "member_path" in e and applies != "rows":
                 self.find("X-SCHEMA", f"exception {e['id']}: member_path is for a row exception")
             exceptions[e["id"]] = Rule(e["id"], applies, disposition, file or None, evidence, e["confidence"], e["rationale"],
@@ -629,6 +642,16 @@ class Expander:
         overlap: dict[str, list[str]] = {}
         unplaced: set[str] = set()  # the files of rows no rule placed: reported once, as rows, not again as members
         row_exceptions = [(e, exceptions[e["id"]]) for e in self.spec.get("exceptions") or [] if e["id"] in exceptions and "row" in e]
+        for unit in self.units:
+            for e, rule in row_exceptions:
+                covered = [index for index, row in enumerate(self.inputs.units[unit].rows)
+                           if self._targets_row(e, RowView(unit, index, row, "none", []))]
+                if len(covered) > 1:
+                    self.find("X-EXCEPTION", f"exception {rule.id} covers {len(covered)} rows of this unit's table "
+                              f"({', '.join(str(i) for i in covered[:6])}); an exception is one item, a group covers several",
+                              unit)
+        if self.findings:
+            return {}
         for unit in self.units:
             items: list[Item] = []
             for index, row in enumerate(self.inputs.units[unit].rows):
@@ -752,6 +775,9 @@ class Expander:
             for x in entry.get("exclude") or []:
                 if x["reason"] == "belongs_to_other_unit":
                     self.find("X-SCHEMA", f"unit {unit}: an exclude entry gives its own reason, never belongs_to_other_unit", unit)
+                if x["reason"] == "not_in_archive" and any(rule_of[g].applies_to == "members" for g in x["groups"] if g in rule_of):
+                    self.find("X-SCHEMA", f"unit {unit}: an exclude entry gives not_in_archive for a member group; a member "
+                              "is in the archive", unit)
         for flag in self.spec.get("shared_flags") or []:
             for unit in flag["units"]:
                 if unit not in self.inputs.units:
@@ -801,25 +827,27 @@ class Expander:
         paths: dict[str, list[str]] = {}
         for items in rows.values():
             for item in items:
-                if item.rule.is_exception or not _keepers(item.rule.disposition):
+                if not _keepers(item.rule.disposition):
                     continue
                 path = self.listing.path(item.key) if item.key else (item.view.raw_file if item.view else "")
                 paths.setdefault(item.rule.id, [])
                 if path not in paths[item.rule.id]:
                     paths[item.rule.id].append(path)
         for item in members:
-            if item.rule.is_exception or not _keepers(item.rule.disposition):
+            if not _keepers(item.rule.disposition):
                 continue
             paths.setdefault(item.rule.id, []).append(self.listing.path(item.key or ""))
         for rid, found in paths.items():
-            rule = self.groups[rid]
+            rule = self.groups.get(rid) or self.exceptions[rid]
             if rule.heterogeneous:
                 continue
             problems = []
-            # Per item, every token its path carries; items whose token sets differ make the group heterogeneous.
+            # Per item, every token its path carries; items whose token sets differ make the group heterogeneous. For
+            # acquisition a name with no token differs from one with a token: a group of untokened DDA files does not
+            # sweep in a QC_MS1 or a _tDDA file under its own acquisition_mode, confidence and rationale.
             polarity = sorted({p for p in (polarity_tokens(x) for x in found) if p})
             chromatography = sorted({c for c in (chromatography_tokens(x) for x in found) if c})
-            acquisition = sorted({a for a in (vt.token_acquisition(x) for x in found) if a})
+            acquisition = sorted({vt.token_acquisition(x) for x in found})
             extensions = sorted({_ext(vt.member_key(x)) for x in found})
             tops = sorted({vt._norm_path(x).split("/", 1)[0] if "/" in vt._norm_path(x) else "" for x in found})  # noqa: SLF001
             if len(polarity) > 1:
@@ -827,7 +855,7 @@ class Expander:
             if len(chromatography) > 1:
                 problems.append("chromatography tokens " + "; ".join("+".join(c) for c in chromatography[:6]))
             if len(acquisition) > 1:
-                problems.append("acquisition tokens " + "; ".join("+".join(a) for a in acquisition[:6]))
+                problems.append("acquisition tokens " + "; ".join("+".join(a) or "(none)" for a in acquisition[:6]))
             if len(extensions) > 1:
                 problems.append(f"extensions {', '.join(e or '(none)' for e in extensions)}")
             if len(tops) > 1:
@@ -837,28 +865,13 @@ class Expander:
                           "\"heterogeneous\" (and flag what makes the run inhomogeneous)")
 
     def _dup_nokept(self, payloads: dict[str, dict[str, Any]]) -> None:
-        twins = self.listing.twins
-        kept: set[str] = set()
-        for document in payloads.values():
-            for item in [*document["rows"], *document["added_members"]]:
-                if item.get("member_path"):
-                    kept.add(vt.member_key(item["member_path"]))
-        for unit, document in payloads.items():
-            flagged = [f for f in document["flags"] if f["code"] == "shared_content"]
-            if not flagged:
-                continue
-            mentioned = {vt.member_key(i["member_path"]) for i in [*document["rows"], *document["added_members"],
-                                                                     *document["excluded_rows"], *document["excluded_members"]]
-                         if i.get("member_path")}
-            for flag in flagged:
-                mentioned |= {vt.member_key(p) for p in flag.get("member_paths") or []}
-            concerned: set[str] = set()
-            for key in mentioned & set(twins):
-                concerned |= {key} | twins[key]
-            if not concerned & kept:
-                self.find("X-DUP-NOKEPT", "shared_content is flagged, but no unit keeps a file of the byte-identical groups "
-                          "this unit's files fall in; copies only among excluded members are duplicate_copies_excluded "
-                          "(informational)", unit)
+        # validate-triage.py's T-DUP test, on the expanded payloads: each flag is judged on the files it is about (its
+        # groups, else the unit's shared_content questions' groups, else the unit's own kept and held files).
+        for unit, has_twins in vt.shared_content_without_keepers(payloads, self.listing.twins, self.listing.resolver):
+            self.find("X-DUP-NOKEPT", "shared_content is flagged, but no unit keeps or holds for a person (excluded "
+                      "needs_person) a file of the byte-identical groups the flag is about"
+                      + ("" if has_twins else " (none of those files has a twin)")
+                      + "; copies only among files excluded for good are duplicate_copies_excluded (informational)", unit)
 
     def _scope(self, payloads: dict[str, dict[str, Any]]) -> None:
         if self.ctx.revise is None or self.ctx.current is None:

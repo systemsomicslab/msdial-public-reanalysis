@@ -190,7 +190,7 @@ def build_good(accession: str) -> dict[str, dict[str, Any]]:
     return docs
 
 
-def to_v2(docs: dict[str, dict[str, Any]], skill_version: str = "1.2.0") -> dict[str, dict[str, Any]]:
+def to_v2(docs: dict[str, dict[str, Any]], skill_version: str = "1.1.0") -> dict[str, dict[str, Any]]:
     """The same triage written as msdial-unit-triage.v2 (hand-written, as skill 1.1.0 wrote it): a confidence and a rationale on every kept and
     excluded row and member and on the unit, and no person_answers (a person's answer is a review-log entry). A kept file
     resting on a declaration is high confidence, one resting on names medium; an exclusion is high."""

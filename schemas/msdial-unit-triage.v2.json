@@ -328,6 +328,7 @@
         "member_path": {"type": "string", "minLength": 1},
         "archive": {"type": ["string", "null"]},
         "reason": {
+          "description": "needs_person (a member held for a person: the unit is not ready and asks), out_of_scope_ms1_only (with an ms1_only flag) and polarity_switching (with its flag) are checked as on a row; out_of_scope is any other scope exclusion.",
           "enum": [
             "not_raw_data",
             "archive_metadata",
@@ -337,6 +338,9 @@
             "belongs_to_other_unit",
             "no_signal_abstained",
             "out_of_scope",
+            "out_of_scope_ms1_only",
+            "polarity_switching",
+            "needs_person",
             "other"
           ]
         },
