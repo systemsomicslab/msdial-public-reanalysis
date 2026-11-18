@@ -14,6 +14,8 @@ writes (hooks registered, memory off) to --debug-file. FAKE_CLAUDE_SCENARIO pick
   fail      writes the spec, then ends in an error result with exit status 1
   hang      sleeps past any test timeout before writing anything
   outside   also writes a file into its working directory
+  edit      writes the spec, then changes its `structure` with Edit, as a session fixing what the check found does
+  editout   also calls Edit on a file in its working directory
   unclean   reports a plugin from outside the harness in its init message
   bash      also calls Bash, a tool the skill does not allow and the harness does not offer: refused, it never runs
   bashran   also calls Bash and shows it answering, as a harness that ran a tool the skill does not allow would
@@ -155,12 +157,21 @@ def main() -> int:
             spec["groups"] = spec["groups"][:-1]
         if scenario == "pathpay":
             spec["structure"] = "Read from " + str(inputs / units[0] / "samples.json")
-        calls.append(("Write", {"file_path": str(out / spec_name), "content": json.dumps(spec, indent=1, ensure_ascii=False)},
-                      "File created", False))
+        text = json.dumps(spec, indent=1, ensure_ascii=False)
+        calls.append(("Write", {"file_path": str(out / spec_name), "content": text}, "File created", False))
+        if scenario == "edit":
+            old = json.dumps({"structure": spec["structure"]}, ensure_ascii=False)[1:-1]
+            new = json.dumps({"structure": spec["structure"] + " Checked."}, ensure_ascii=False)[1:-1]
+            assert text.count(old) == 1, old
+            calls.append(("Edit", {"file_path": str(out / spec_name), "old_string": old, "new_string": new},
+                          "The file has been updated successfully.", False))
     if scenario == "record":
         calls.append(("Write", {"file_path": str(out / f"{units[0]}.record.json"), "content": "{}"}, "File created", False))
     if scenario == "outside":
         calls.append(("Write", {"file_path": str(cwd / "notes.md"), "content": "x"}, "File created", False))
+    if scenario == "editout":
+        calls.append(("Edit", {"file_path": str(cwd / ".claude" / "skills" / "msdial-unit-triage" / "SKILL.md"),
+                               "old_string": "x", "new_string": "y"}, "String not found", True))
     check_after = scenario == "check" and spec_name and "msdial-triage-spec" in servers
     for seq, (name, arguments, result, error) in enumerate(calls, start=1):
         ident = f"toolu_fake_{seq:03d}"
@@ -168,6 +179,10 @@ def main() -> int:
             {"type": "tool_use", "id": ident, "name": name, "input": arguments}]}, "session_id": session_id})
         if name == "Write":
             Path(arguments["file_path"]).write_text(arguments["content"], encoding="utf-8")
+        if name == "Edit" and not error:
+            target = Path(arguments["file_path"])
+            target.write_text(target.read_text(encoding="utf-8").replace(arguments["old_string"], arguments["new_string"], 1),
+                              encoding="utf-8")
         emit({"type": "user", "message": {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": ident, "content": result, "is_error": error}]},
             "session_id": session_id})

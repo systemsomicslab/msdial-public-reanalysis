@@ -7,6 +7,7 @@ allowed-tools:
   - Glob
   - Grep
   - Write
+  - Edit
   - mcp__msdial-triage-spec__triage_spec_check
 ---
 
@@ -34,8 +35,9 @@ manifest digest that carries it. Never describe it as decided, accepted or confi
 
 - `Read`, `Glob`, `Grep`: this skill, the spec schema (`schemas/msdial-unit-triage-spec.v1.json` in the working
   directory), the input directory, the output directory.
-- `Write`: the spec, `<accession>.spec.json` (a revision: the name the task gives), in the output directory only.
-  There is no `Edit`: to change the spec, write it whole again, as often as you need; the last bytes count.
+- `Write`, `Edit`: the spec, `<accession>.spec.json` (a revision: the name the task gives), in the output directory
+  only. Write it once; fix what the check reports with `Edit`, which changes only the text it names (writing the whole
+  spec again costs as much as the first draft). The last bytes count.
 - `triage_spec_check` (server `msdial-triage-spec`): expands your spec over the inputs and runs the validator's
   payload checks; it returns at most 30 findings and per-unit counts. Call it after writing the spec, fix what it
   reports, and call it again until it reports no error. Holds are for a person, not for you to remove.
@@ -128,7 +130,7 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
 8. **Units**: `status`, `confidence`, `rationale`, `unit_technical`; `children` for a unit of both polarities;
    `flags` and `needs_person` naming the `groups` they concern; `shared_with` for a deliberately shared file; `notes`.
    A flag raised the same way on several units is written once in `shared_flags`.
-9. Write the spec, call `triage_spec_check`, fix every error, and repeat until it reports none.
+9. Write the spec, call `triage_spec_check`, fix every error with `Edit`, and repeat until it reports none.
 10. Reply with the single word `done`. The wrapper summarises from the payloads.
 
 ## Hard rules

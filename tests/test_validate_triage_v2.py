@@ -43,6 +43,7 @@ ALLOWED_TOOLS = [
     "Glob",
     "Grep",
     "Write",
+    "Edit",
     "mcp__msdial-triage-spec__triage_spec_check",
 ]
 CHECK = "mcp__msdial-triage-spec__triage_spec_check"
@@ -295,7 +296,7 @@ class ToolTests(V2Case):
         self.assertEqual(vt.skill_frontmatter(text)["name"], "msdial-unit-triage")
         for tool in ALLOWED_TOOLS:
             self.assertNotIn(tool.split("__")[-1], ("msdial_catalog_save_class_proposal", "msdial_catalog_reanalysis_handoff"))
-        for name in ("Bash", "WebFetch", "Edit", "mcp__msdial-interactive__msdial_download_repository_raw",
+        for name in ("Bash", "WebFetch", "MultiEdit", "NotebookEdit", "mcp__msdial-interactive__msdial_download_repository_raw",
                      "mcp__msdial-repository-catalog__msdial_catalog_save_class_proposal",
                      "mcp__msdial-repository-catalog__msdial_catalog_get_analysis_unit"):
             self.assertFalse(vt.tool_allowed(name, ALLOWED_TOOLS), name)
@@ -388,32 +389,34 @@ class ToolTests(V2Case):
                 errors = self.found(self.validate(directory), check, "error", self.UNIT)
                 self.assertTrue(any(words in m for m in errors), (label, errors))
 
-    REFUSED = "<tool_use_error>Error: No such tool available: Edit. Edit is disabled for this session.</tool_use_error>"
+    REFUSED = ("<tool_use_error>Error: No such tool available: MultiEdit. MultiEdit is disabled for this session."
+               "</tool_use_error>")
 
     def test_a_call_the_harness_refused_is_a_note_not_an_error(self) -> None:
-        # The 2026-11-18 re-pilot: the model asked for Edit to change the spec it wrote; the harness had not offered Edit
-        # and answered "No such tool available". Nothing ran, so the triage stands.
-        offered = ["Read", "Glob", "Grep", "Write", CHECK]
-        refused = [*self.CALLS, ("Edit", {"file_path": "../out/ST002747.spec.json"}, self.REFUSED, True)]
+        # The 2026-11-18 re-pilot (skill 1.2.0 before Edit was allowed): the model asked for Edit to change the spec it
+        # wrote; the harness had not offered it and answered "No such tool available". Nothing ran, so the triage stands.
+        # MultiEdit stands for any tool the skill does not allow.
+        offered = ["Read", "Glob", "Grep", "Write", "Edit", CHECK]
+        refused = [*self.CALLS, ("MultiEdit", {"file_path": "../out/ST002747.spec.json"}, self.REFUSED, True)]
         report = self.validate(self.make(tool_calls=refused, offered_tools=offered))
         self.assertEqual(report.verdict, "pass", [f.as_dict() for f in report.findings])
         notes = self.found(report, "T-TOOLS", "note", self.UNIT)
-        self.assertTrue(any("refused" in m and "Edit" in m for m in notes), notes)
+        self.assertTrue(any("refused" in m and "MultiEdit" in m for m in notes), notes)
         # Offered by the harness, the same text does not prove the call never ran.
-        report = self.validate(self.make(tool_calls=refused, offered_tools=[*offered, "Edit"]))
-        self.assertTrue(any("shows a call to Edit" in m for m in self.found(report, "T-TOOLS", "error", self.UNIT)))
+        report = self.validate(self.make(tool_calls=refused, offered_tools=[*offered, "MultiEdit"]))
+        self.assertTrue(any("shows a call to MultiEdit" in m for m in self.found(report, "T-TOOLS", "error", self.UNIT)))
         # Another error, or a refusal that names another tool, is not the harness's refusal of this call.
         for result in ("<tool_use_error>File has not been read yet</tool_use_error>",
-                       "<tool_use_error>Error: No such tool available: Editor</tool_use_error>"):
+                       "<tool_use_error>Error: No such tool available: MultiEditor</tool_use_error>"):
             with self.subTest(result=result):
-                calls = [*self.CALLS, ("Edit", {"file_path": "../out/ST002747.spec.json"}, result, True)]
+                calls = [*self.CALLS, ("MultiEdit", {"file_path": "../out/ST002747.spec.json"}, result, True)]
                 errors = self.found(self.validate(self.make(tool_calls=calls, offered_tools=offered)), "T-TOOLS", "error",
                                     self.UNIT)
-                self.assertTrue(any("uses Edit" in m for m in errors), errors)
+                self.assertTrue(any("uses MultiEdit" in m for m in errors), errors)
         # A result that is not an error ran, whatever its text says.
-        calls = [*self.CALLS, ("Edit", {"file_path": "../out/ST002747.spec.json"}, self.REFUSED, False)]
+        calls = [*self.CALLS, ("MultiEdit", {"file_path": "../out/ST002747.spec.json"}, self.REFUSED, False)]
         errors = self.found(self.validate(self.make(tool_calls=calls, offered_tools=offered)), "T-TOOLS", "error", self.UNIT)
-        self.assertTrue(any("uses Edit" in m for m in errors), errors)
+        self.assertTrue(any("uses MultiEdit" in m for m in errors), errors)
 
     def test_a_record_without_a_released_transcript_holds(self) -> None:
         # Fail closed: without the harness's own account, tool_calls and the context are only the wrapper's word.

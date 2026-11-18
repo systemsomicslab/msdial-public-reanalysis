@@ -246,7 +246,9 @@ launched the agent (`scripts/run-triage-agent.py`), from the harness's own trans
 `inputs[]` also binds `inputs/digest.md` (role `triage_digest`). `derivation` ties the payload to the spec the
 session wrote (released byte for byte beside it) and to the code that expanded it. Every unit's record of one session
 binds the same spec; `decision_id` stays the payload's sha256. A record now carries only the spec as a Write
-argument, about 30 to 50 kB where a skill 1.1.0 record carried every hand-written payload (about 300 kB).
+argument (and the `Edit` calls that fixed it), about 50 kB in the 2026-11-18 re-pilot where a skill 1.1.0 record carried
+every hand-written payload (about 200 to 300 kB). The skill allows `Edit` on the spec because that re-pilot, without it,
+wrote a 26 kB spec three times over to correct what the check reported and one sentence of a rationale.
 
 Every input the LLM read is copied into `inputs\` and hashed, so a later change at the repository cannot
 change what the decision rested on; so are the rendered prompt and every tool result. Tool arguments are
@@ -263,8 +265,8 @@ bytes with `check-release-redaction.py` and, when nothing is found, writes them 
 transcript of a run that was not clean, or one the check refuses, is not released, and the validator holds.
 
 **Acceptance.** The wrapper accepts a session whole or not at all. Beyond a failed or timed-out session, it
-refuses one that read outside its working directory, inputs and output folder (`Read`, `Glob`, `Grep`), wrote
-anything but the spec it asked for (a payload above all: code writes those), or wrote a spec holding an absolute
+refuses one that read outside its working directory, inputs and output folder (`Read`, `Glob`, `Grep`), wrote or
+edited (`Write`, `Edit`) anything but the spec it asked for (a payload above all: code writes those), or wrote a spec holding an absolute
 path, an e-mail address, a secret or the operator's name, since a spec is released byte for byte and never rewritten.
 The accepted spec is then expanded with the session's context; any `X-*` finding refuses the session the same way
 (`harness\expansion.json` lists the findings, nothing is committed, and the accession is run again). Each accepted

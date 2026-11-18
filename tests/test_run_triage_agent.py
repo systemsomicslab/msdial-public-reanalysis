@@ -50,7 +50,7 @@ CATALOG = "msdial-repository-catalog"
 SPEC_SERVER = "msdial-triage-spec"
 SERVER_TOOLS = ["msdial_catalog_status", "msdial_catalog_search", "msdial_catalog_get_analysis_unit",
                 "msdial_catalog_save_class_proposal", "msdial_catalog_reanalysis_handoff"]
-ALLOWED = ["Read", "Glob", "Grep", "Write", f"mcp__{SPEC_SERVER}__triage_spec_check"]
+ALLOWED = ["Read", "Glob", "Grep", "Write", "Edit", f"mcp__{SPEC_SERVER}__triage_spec_check"]
 
 
 def sha(data: bytes) -> str:
@@ -238,7 +238,7 @@ class DryRunTests(WrapperCase):
         self.assertEqual(flags, [
             "-p", "--output-format", "stream-json", "--verbose", "--restricted",
             "--settings", "../harness/settings.json", "--strict-mcp-config", "--mcp-config", "../harness/mcp.json",
-            "--tools", "Read,Glob,Grep,Write", "--allowedTools", ",".join(ALLOWED),
+            "--tools", "Read,Glob,Grep,Write,Edit", "--allowedTools", ",".join(ALLOWED),
             "--permission-mode", "dontAsk", "--permission-prompts", "none", "--disable-slash-commands",
             "--no-session-persistence", "--session-id", "<session_id>", "--debug-file", "../harness/debug.log",
             "--add-dir", "../inputs", "../out", "--model", "some-model", "--effort", "medium"])
@@ -399,6 +399,22 @@ class SessionTests(WrapperCase):
         code, [summary] = self.run_wrapper("hang", *argv_timeout)
         self.assertEqual(code, 3)
         self.assertTrue(any("timed out" in p for p in summary["problems"]), summary)
+        self.assertEqual(self.payload_files(), [])
+
+    def test_the_spec_may_be_changed_with_edit(self) -> None:
+        # The 2026-11-18 re-pilot rewrote a 26 kB spec whole to correct one sentence; Edit changes only what it names.
+        code, [summary] = self.run_wrapper("edit")
+        self.assertEqual((code, summary["verdict"]), (0, "pass"), summary)
+        spec = json.loads((self.triage_dir() / "ST002747.spec.json").read_text(encoding="utf-8"))
+        self.assertTrue(spec["structure"].endswith(" Checked."), "the spec accepted is the one the Edit left")
+        record = json.loads((self.triage_dir() / "AN004454.record.json").read_text(encoding="utf-8"))
+        self.assertEqual([c["tool"] for c in record["tool_calls"] if c["tool"] in ("Write", "Edit")], ["Write", "Edit"])
+        self.assertFalse([f for f in self.validate().findings if f.check == "T-TOOLS" and f.level == "error"])
+
+    def test_an_edit_outside_the_output_folder_refuses_the_session(self) -> None:
+        code, [summary] = self.run_wrapper("editout")
+        self.assertEqual(code, 3)
+        self.assertTrue(any("Edit wrote outside the output folder" in p for p in summary["problems"]), summary)
         self.assertEqual(self.payload_files(), [])
 
     def test_a_write_outside_the_output_folder_refuses_the_session(self) -> None:

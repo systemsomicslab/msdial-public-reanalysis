@@ -52,9 +52,9 @@ The analysis purpose (context only; `null` means none was stated):
 ## Output
 
 Write the whole spec again as `{{output_dir}}/{{spec_name}}`, and nothing else. Check it with `triage_spec_check` and
-rewrite it whole with `Write` (there is no `Edit`) until the check reports no error; the check does not
-compare the units you leave alone, so keep their groups, flags and questions as the current spec has them. Then reply
-with the single word `done`.
+fix what it reports with `Edit` until the check reports no error; the check does not compare the units you
+leave alone, so keep their groups, flags and questions as the current spec has them. Then reply with the single word
+`done`.
 
 ## Boundaries
 
