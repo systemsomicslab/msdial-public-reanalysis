@@ -1092,7 +1092,9 @@ def unit_entries(
 
 # The author's decision of 2026-11-19: "Polarity switching units are analysed: for each file run a POS process and a NEG
 # process separately." validate-triage.py holds the rule (polarity_split_refusal) and the derivation
-# (derive_polarity_split); this side writes the two children and reads the validator's verdict on them.
+# (derive_polarity_split); this side writes the two children and reads the validator's verdict on them. A unit the
+# decision of 2026-11-20 runs at its own polarity beside a partner unit over the same files (polarity_own_refusal) gets
+# one child of its own polarity naming the partner (polarity_derivations), written and checked the same way.
 POLARITY_SPLIT_FILE = "{unit_id}.polarity-split.json"
 POLARITY_SPLIT_KEY_SUFFIX = {"positive": "pos", "negative": "neg"}
 
@@ -1103,7 +1105,8 @@ def polarity_split_key(unit_id: str, ion_mode: str) -> str:
 
 
 def polarity_split_refusal(accession_dir: Path, unit_id: str) -> str:
-    """Why the unit's current payload is not split by polarity (validate-triage.py polarity_split_refusal), or ""."""
+    """Why the unit's current payload is neither split by polarity nor run at its own polarity (validate-triage.py
+    polarity_derivations, beside the accession's other current payloads), or ""."""
     payload = payload_path(accession_dir, unit_id) if accession_dir.is_dir() else None
     if payload is None:
         return "no triage file"
@@ -1113,14 +1116,15 @@ def polarity_split_refusal(accession_dir: Path, unit_id: str) -> str:
         return f"{payload.name} is not readable JSON: {error}"
     if not isinstance(triage, dict) or triage.get("unit_id") != unit_id:
         return f"{payload.name} is not a triage of {unit_id}"
-    return str(validator_module().polarity_split_refusal(triage))
+    module = validator_module()
+    return str(module.polarity_derivations(triage, {**module.accession_payloads(accession_dir), unit_id: triage})[1])
 
 
 def write_polarity_split_children(*, accession_dir: Path, triage_root: Path, unit_id: str, out_dir: Path
                                   ) -> dict[str, dict[str, Any]]:
     """Write the unit's two polarity-split children, <out_dir>\\handoffs\\<unit_id>-pos|neg\\<unit_id>.polarity-split.json
-    (beside the copy the runner makes there at the handoff, <unit_id>.json), and return {ion_mode: split} for
-    unit_entries. Each is derive_polarity_split of the current payload, deterministic, so a plan made again writes the
+    (beside the copy the runner makes there at the handoff, <unit_id>.json), or its one child at its own polarity
+    (2026-11-20, with partner_unit_id in the split), and return {ion_mode: split} for unit_entries. Each is derive_polarity_split of the current payload, deterministic, so a plan made again writes the
     same bytes. Raises TriageError where the payload is not split (polarity_split_refusal says why)."""
     refusal = polarity_split_refusal(accession_dir, unit_id)
     if refusal:
@@ -1132,11 +1136,12 @@ def write_polarity_split_children(*, accession_dir: Path, triage_root: Path, uni
     record = record_path(payload)
     relative = payload.resolve().relative_to(triage_root.resolve()).as_posix()
     module = validator_module()
+    derivations, _ = module.polarity_derivations(triage, {**module.accession_payloads(accession_dir), unit_id: triage})
     out: dict[str, dict[str, Any]] = {}
-    for mode in module.POLARITY_SPLIT_MODES:
+    for mode, options in derivations:
         child = module.derive_polarity_split(
             triage, mode, triage_relative_path=relative, triage_sha256=sha256_bytes(raw),
-            triage_record_sha256=sha256_file(record) if record.is_file() else None)
+            triage_record_sha256=sha256_file(record) if record.is_file() else None, **options)
         folder = Path(out_dir) / "handoffs" / polarity_split_key(unit_id, mode)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / POLARITY_SPLIT_FILE.format(unit_id=unit_id)
@@ -1146,7 +1151,7 @@ def write_polarity_split_children(*, accession_dir: Path, triage_root: Path, uni
             temporary.write_bytes(data)
             os.replace(temporary, path)
         out[mode] = {"path": path, "relative_path": f"handoffs/{folder.name}/{path.name}", "parent_path": payload,
-                     "parent_relative_path": relative, "ion_mode": mode}
+                     "parent_relative_path": relative, "ion_mode": mode, **options}
     return out
 
 
