@@ -18,6 +18,11 @@ THE ORDER OF USE
         each unit carries its curated_selection, so the digest covers the selection. --reopen <tsv> (columns
         unit_key, reason_code, evidence_path; with --replan-from and --triage-dir) plans named done units of the
         earlier campaign again, each into a workspace of its own, <unit_key>@<campaign id>.
+        --download-only-held (with --triage-dir; the author's decision of 2026-11-19) plans every unit the triage would
+        leave out as triage_missing or triage_not_pass (needs a person, abstained, out of scope, mzXML only, ...) as a
+        download-only unit: downloaded on the handoff's whole file list, never preflighted or run, ended kept with its
+        reasons, its raw data never deleted by the campaign. The summary counts them and their bytes apart; the
+        approval covers boundary 1 for them, never 4 or 5.
         The extractor defaults to the newest built pin of Interactive's PINNED_BUILDS beside the Interactive
         checkout; a manifest is approvable only with a verified, pinned extractor and clean checkouts.
     python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
@@ -421,6 +426,7 @@ def command_plan(args: argparse.Namespace) -> int:
             catalog_database=str(catalog_path), progress=lambda message: print(message, file=sys.stderr),
             replan=replan, unit_ids=unit_ids, policy_overrides=sorted(overrides or {}), libraries_not_pinned=not_pinned,
             library_paths={name: libraries[name] for name in pinned}, triage_dir=triage_dir, reopen=reopen,
+            download_only_held=bool(args.download_only_held),
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
@@ -1223,6 +1229,9 @@ def parser() -> argparse.ArgumentParser:
                       help="an earlier campaign, its approval revoked, whose units that did not end done are planned again")
     plan.add_argument("--triage-dir", help="plan from the frozen triage files under this folder (<accession>\\<unit_id>.json); "
                       "only an accession scripts/validate-triage.py passes is planned")
+    plan.add_argument("--download-only-held", action="store_true",
+                      help="with --triage-dir: plan a unit the triage holds (triage_missing, triage_not_pass) as download-only, "
+                           "downloaded and kept with its reasons, never run and never deleted (2026-11-19)")
     plan.add_argument("--reopen", help="a TSV of done units of a --replan-from campaign to plan again (unit_key, reason_code, "
                       "evidence_path); needs --triage-dir")
     plan.set_defaults(handler=command_plan)

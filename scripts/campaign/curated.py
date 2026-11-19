@@ -92,6 +92,8 @@ STANDINGS = (SOURCE_FACT, MODEL_INFERENCE, DETERMINISTIC_CHECK, ACCEPTED_DECISIO
 DECISION_KINDS = (
     "triage_recorded", "triage_validated", "manifest_approved", "unit_reopened", "triage_checked",
     "curated_selection_applied", "header_reconciliation", "cross_unit_verdict", "terminal_refusal", "person_answer",
+    # A download-only unit (plan --download-only-held, 2026-11-19): planned so under the approval, and kept once downloaded.
+    "download_only_planned", "download_only_kept",
 )
 # The fields of a person_answer (a named person's answer to a question the triage or a gate raised): only a request
 # that carries a question_code and a named person becomes one (WS0 decision 8).
@@ -1053,6 +1055,92 @@ def unit_entries(
             "triage": triage,
         })
     return entries, None, ""
+
+
+# ---- a unit held for a person, planned download-only (plan --download-only-held) ------------------------------------
+
+# The plan reasons a unit may be planned download-only for instead of being left out (the author's decision of
+# 2026-11-19: in Pool A a doubtful or hard unit may be downloaded and kept without a run, provided each is recorded with
+# its reason; an mzXML-only unit is downloaded and kept, its conversion to mzML comes later). Every other reason
+# (triage_unreadable, triage_member_unresolved, triage_record_mismatch, class_contrast_lost_after_triage,
+# triage_unit_excluded) still leaves the unit out.
+DOWNLOAD_ONLY_FROM = (TRIAGE_MISSING, TRIAGE_NOT_PASS)
+# The triage statuses that wait for a person: a unit planned download-only for one of them says so in its reasons.
+HELD_STATUSES = ("needs_person", "abstained", "out_of_scope")
+_VALIDATOR_MODULE: Any = None
+
+
+def validator_module() -> Any:
+    """scripts/validate-triage.py, loaded once as a module (its blocking flags, blocking_flags_for)."""
+    global _VALIDATOR_MODULE
+    if _VALIDATOR_MODULE is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("validate_triage", VALIDATOR)
+        if spec is None or spec.loader is None:
+            raise TriageError(f"{VALIDATOR.name} cannot be loaded.")
+        module = importlib.util.module_from_spec(spec)
+        # Its dataclasses look their module up in sys.modules as they are made.
+        sys.modules.setdefault(spec.name, module)
+        spec.loader.exec_module(module)
+        _VALIDATOR_MODULE = module
+    return _VALIDATOR_MODULE
+
+
+def download_only_record(
+    *, accession_dir: Path, triage_root: Path, unit_id: str, reason: str, detail: str,
+    validation: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The download_only block of a unit the plan would leave out as `reason` (DOWNLOAD_ONLY_FROM), or None where it
+    stays out: a reason not in DOWNLOAD_ONLY_FROM, or a triage whose own status is excluded (the triage policy of
+    2026-11-18 leaves such a unit out whatever its accession's verdict).
+
+    reasons lists, as codes: the plan reason, the validator's verdict (validator:<verdict>), the triage's status
+    (status:<status>), each question for a person (question:<code>), each blocking flag (blocking_flag:<code>) and each
+    reason rows were left out for (excluded_rows:<reason>, requires_conversion and polarity_switching among them). The
+    rest of the block is the same, structured, with the triage's path and sha256 where there is one. Nothing here is a
+    decision: it records why the unit is not run, for the person who will decide."""
+    if reason not in DOWNLOAD_ONLY_FROM:
+        return None
+    reasons = [reason]
+    verdict = None if validation is None else str(validation.get("verdict") or "error")
+    if verdict is not None:
+        reasons.append(f"validator:{verdict}")
+    block: dict[str, Any] = {
+        "plan_reason": reason, "detail": detail, "validator_verdict": verdict, "triage_status": None,
+        "question_codes": [], "blocking_flags": [], "excluded_row_reasons": {}, "triage_relative_path": None,
+        "triage_sha256": None,
+    }
+    payload = payload_path(accession_dir, unit_id) if accession_dir.is_dir() else None
+    triage: Any = None
+    if payload is not None:
+        raw = payload.read_bytes()
+        try:
+            triage = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            triage = None
+        block["triage_relative_path"] = payload.resolve().relative_to(triage_root.resolve()).as_posix()
+        block["triage_sha256"] = sha256_bytes(raw)
+    if isinstance(triage, Mapping) and triage.get("unit_id") == unit_id:
+        status = str(triage.get("status") or "")
+        if status == "excluded":
+            return None
+        block["triage_status"] = status or None
+        questions = sorted({str(item.get("code")) for item in triage.get("needs_person") or []
+                            if isinstance(item, Mapping) and item.get("code")})
+        flags = {str(item.get("code")) for item in triage.get("flags") or [] if isinstance(item, Mapping) and item.get("code")}
+        try:
+            blocking = sorted(flags & set(validator_module().blocking_flags_for(dict(triage))))
+        except Exception:  # noqa: BLE001 - the validator's own list unreadable: every flag is named, none dropped
+            blocking = sorted(flags)
+        rows = _counts(triage.get("excluded_rows") or [], "reason")
+        block.update(question_codes=questions, blocking_flags=blocking, excluded_row_reasons=rows)
+        if status:
+            reasons.append(f"status:{status}")
+        reasons += [f"question:{code}" for code in questions]
+        reasons += [f"blocking_flag:{code}" for code in blocking]
+        reasons += [f"excluded_rows:{code}" for code in rows]
+    return {"reasons": list(dict.fromkeys(reasons)), **block}
 
 
 # ---- --reopen ------------------------------------------------------------------------------------------------------
