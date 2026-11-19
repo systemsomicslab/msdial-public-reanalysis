@@ -88,7 +88,11 @@ and archive listing the agent read (<accession>\\inputs\\), and the unit is furt
 - triage_member_unresolved: a kept row names no archive member, which Interactive needs to declare the input;
 - triage_record_mismatch: the triage's decision record names another payload, or an archive listing it binds is
   missing or holds other bytes (Interactive would refuse it, curated_selection_record_mismatch);
-- class_contrast_lost_after_triage: the approved Class, cut to the kept rows, loses a side of its contrast.
+- class_contrast_lost_after_triage: the approved Class, cut to the kept rows, loses a side of its contrast;
+- triage_unit_excluded: the triage left the unit out by the policy of 2026-11-18 (status excluded), with its own reason
+  as the detail: no_product_ion_files (no file with product-ion spectra once its MS1-only files are left out),
+  no_files (no raw file of the unit in the deposit) or shared_content_unassigned (its arm's copies are byte-identical
+  to another arm's, until a post-download reassignment exists).
 
 A planned unit carries curated_selection (the triage path and sha256, its decision record's and the review log head's
 sha256, the Catalog handoff and rows it was made from, the validator's sha256 and verdict, the rows kept and dropped by
@@ -2709,6 +2713,7 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
             "catalog_handoff_sha256": chosen.get("catalog_handoff_sha256"), "catalog_rows_sha256": chosen.get("catalog_rows_sha256"),
             "archive_listings": found.get("listings") or [], "rows_kept": chosen.get("rows_kept"),
             "members_added": chosen.get("members_added"), "rows_dropped_by_reason": chosen.get("rows_dropped_by_reason"),
+            "members_excluded_by_reason": chosen.get("members_excluded_by_reason"),
             "kept_by_basis": chosen.get("kept_by_basis"), "kept_by_confidence": chosen.get("kept_by_confidence"),
             "flags": chosen.get("flags"), "selection_sha256": chosen.get("selection_sha256"),
             "selection_canonical_form": chosen.get("selection_canonical_form"),
@@ -2919,11 +2924,15 @@ def curated_selection_text(manifest: Mapping[str, Any]) -> list[str]:
             if not isinstance(chosen, Mapping):
                 continue
             dropped = ", ".join(f"{reason} {count}" for reason, count in (chosen.get("rows_dropped_by_reason") or {}).items())
+            # Members a unit leaves out for a reason a reader must see (P1's MS1-only runs, raw files without metadata).
+            members = ", ".join(f"{reason} {count}" for reason, count in (chosen.get("members_excluded_by_reason") or {}).items()
+                                if reason in ("ms1_only_no_msms", "no_sample_metadata", "other", "out_of_scope"))
             cut = unit.get("class_on_triaged_rows") or {}
             lines.append(
                 f"    {unit.get('unit_key', unit['unit_id'])} ({unit['accession']}): kept {chosen.get('rows_kept')} rows"
                 + (f" + {chosen['members_added']} members" if chosen.get("members_added") else "")
                 + f", dropped {chosen.get('rows_dropped')}" + (f" ({dropped})" if dropped else "")
+                + (f"; members left out: {members}" if members else "")
                 + f"; {chosen.get('ion_mode')} {chosen.get('acquisition_mode')}"
                 + (f"; flags {', '.join(chosen['flags'])}" if chosen.get("flags") else "")
                 + (f"; Class after the cut {cut.get('counts_after')}" if cut.get("evaluated") else "")

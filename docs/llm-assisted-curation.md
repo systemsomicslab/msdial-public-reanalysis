@@ -84,7 +84,9 @@ payloads:
   number; the listing by folder with `[row]`, `[twin:Tn]`, `[small:<size>]` (a raw-like member under a tenth of its
   folder's median raw-like size), `[archive]` (an archive inside the archive, unopened) and `[nonraw]` marks; the
   byte-identical groups (the
-  validator's T-DUP code path), pairs between two folders summarised; and what does not pair. The raw inputs stay
+  validator's T-DUP code path), pairs between two folders summarised; from 1.1.0 the MS-level words of raw names and
+  vendor method folders (MS, MS1, FullScan, Prof, Profile against MSMS, MS2, ddMS2, counted with examples) and each
+  method folder with the number of vendor folders holding it; and what does not pair. The raw inputs stay
   readable and win where they disagree.
 - **The spec** (`schemas/msdial-unit-triage-spec.v1.json`, `<accession>.spec.json`, a revision
   `<accession>.spec.r<N>.json`) is written by the agent: a `structure` paragraph; `groups` of rows or of members, each
@@ -136,9 +138,91 @@ method with no MS1 survey (SRM/MRM, SIM, PRM, tMS2 only) stays out of scope: a k
 as is a kept file whose MS1, DDA, DIA, SWATH or AIF token is not its `acquisition_mode` (DIA, SWATH and AIF count as
 one family) without `name_token_disputed`. A token starts a word (after a non-letter, or in capitals after a
 lower-case letter, as in `posDDA`), so `Media` or `Claudia` carry no DIA. The flags that block `ready` until a person answers are
-`shared_content`, the folder and header disagreement flag, `polarity_switching`, `ms1_only`, `mixed_acquisition`,
-`declared_technical_disputed` and `name_token_disputed`; `targeted_dda`, `duplicate_copies_excluded`,
-`catalog_defect`, `target_omics_doubt` and `segmented_acquisition` inform only.
+`shared_content`, the folder and header disagreement flag, `polarity_switching`, `ms1_only` (an MS1-only file kept),
+`mixed_acquisition` (modes mixed within one run) and `name_token_disputed`; `targeted_dda`,
+`duplicate_copies_excluded`, `catalog_defect`, `target_omics_doubt`, `segmented_acquisition`,
+`declared_technical_disputed`, `ms1_only_excluded` and `ms1_only_suspected` inform only (the triage policy below).
+
+**The triage policy of 2026-11-18 (skill 1.3.0).** The stage4 triage run (`stage4-triage-20261118`, code 14a9f14) was
+stopped after 26 accessions: every validator verdict was hold, and 47 of its 48 units waited for a person. Its
+questions were `scope_ms1_only` 36, `mixed_acquisition` 34, `other` 24, `declared_technical_disputed` 17 and
+`format_choice` 3. The typical case was a Fiehn-laboratory CSH lipidomics study: its sample and QC injections were
+acquired MS1 only (names `_MS_`, `MSProfile` or `Prof`, method folders `..._MSb_...`, mwTab `MS_COMMENTS` "runs are
+MS1 data"), only its pooled `_MSMS_` injections carry auto MS/MS, and the Catalog declares DDA for the whole unit. The
+person who owns the campaign decided on 2026-11-18, for ST002798 and in words whose reasoning is general, to take the
+recommended answers throughout ("yes, everything as recommended"). The campaign's `analysis_purpose` is to annotate
+every experimental MS/MS spectrum. Skill 1.3.0 encodes those answers as rules, so these cases are no longer questions:
+
+- **P1, MS1-only files.** A file without product-ion spectra adds nothing to the purpose. It is excluded as
+  `ms1_only_no_msms` with the informational flag `ms1_only_excluded`, whose detail records the evidence and its
+  certainty. Evidence that counts: mwTab `MS_mode` or `MS:` lines declaring MS1 or full scan for those runs; a name or
+  method-folder word that contrasts with sibling MS/MS runs of the same study (`_MS_` against `_MSMS_`, `MSProfile`
+  or `Prof` against `MSMS`; the digest 1.1.0 counts these words and lists each vendor method folder); declared method
+  text. Profile-mode MS1 injections of pools (the former `format_choice` cases) are MS1-only files. A weak reading (a
+  name alone, with no contrasting MS/MS sibling and no declaration) keeps the file and flags `ms1_only_suspected`
+  (informational): the header preflight decides. The validator refuses `ms1_only_no_msms` without a `confirmed`
+  `ms1_only_excluded` flag about the file, at low confidence, or on a file whose own name says product-ion spectra: a
+  DDA, DIA, SWATH, AIF or MSe token, or an MS/MS word (MSMS, AutoMSMS, MS2, ddMS2, MSe, HDMSe, SONAR, MSn, IDA;
+  validate-triage.py `ms_level_words`, the table the digest reads). Such a file is kept, or, if the evidence still
+  reads MS1 only, the unit carries `name_token_disputed` and goes to a person. A unit left with no file that has
+  product-ion spectra is `excluded` (`no_product_ion_files`); its own rows go only as `ms1_only_no_msms`,
+  `belongs_to_other_unit`, `not_in_archive` or `duplicate_content`, and a raw member the accession drops for good
+  (`other`, `no_sample_metadata`, `out_of_scope`, ...) whose name says product-ion spectra and no other arm's polarity
+  or chromatography holds the accession for a person (T-STATUS).
+- **P2, mixed acquisition.** Split into children: one per acquisition mode and polarity, and one per separately
+  acquired DIA folder or batch. The validator judges the mixing test per child, so children of one mode each need no
+  `mixed_acquisition`; mixing inside one run still does. It stays a question only when the evidence cannot assign
+  the files to a mode.
+- **P3, m/z-segmented DDA** (`SCAN01`..`SCAN06` of one sample): kept as separate files with the informational flag
+  `segmented_acquisition`.
+- **P4, file evidence against the Catalog.** Where mwTab, method or name evidence contradicts the Catalog's declared
+  acquisition, chromatography, polarity or instrument model, the file evidence wins (header-first acquisition, the
+  campaign rule since 2026-10-06) and `declared_technical_disputed` records the disagreement. It is informational from
+  skill 1.3.0, judged by the payload's `decided_by.skill_version`: a payload an earlier skill wrote is judged by the
+  rules its agent was given, so the flag still blocks it and its children are still judged together for mixed modes.
+  T-DECL accepts a unit reading that differs from the declaration when it is flagged, and the flag never holds the
+  unit. The raw header decides at preflight. A folder against a header (its own blocking flag) and a name token
+  against a file-level declaration (`name_token_disputed`) stay blocking.
+- **P5, byte-identical copies under two arms' folders.** Until a post-download reassignment exists, every affected
+  unit is `excluded` (`shared_content_unassigned`): its affected files are excluded as `shared_content_unassigned`
+  (the validator requires a CRC32-and-size twin in the listing for each), and the `shared_content` flag stays on the
+  unit as evidence. Which cases count is the D2 rule below, unchanged; a copy excluded as `shared_content_unassigned`
+  counts as held, as a `needs_person` copy does, but only for another unit's flag. Each such file needs a twin in
+  another arm's place (kept or held by another unit in its folder, or under another arm's polarity or chromatography
+  token, the T-DUP test); a twin inside the unit's own files or only in a backup folder is a D2 copy
+  (`duplicate_content`, `duplicate_copies_excluded`) and the unit stays (T-EXCL, X-DUP-NOKEPT).
+- **No files, files without metadata.** A unit whose deposit holds no raw file (its rows name files the listing lacks,
+  or only another unit's: a polarity never deposited) is `excluded` (`no_files`); an unopened nested archive still
+  holds it for a person (T-EXCL), and so does a raw member dropped for good (`no_sample_metadata`, `other`, ...) that
+  no other unit keeps and that may be the unit's own: nothing in its name puts it in another arm, or its stem matches a
+  row the unit says the archive lacks once case and a polarity infix are set aside (T-STATUS). A raw member of a sample no Catalog row and no mwTab Samples line names is left out
+  as `no_sample_metadata` with a detail, never asked: samples need metadata.
+
+`excluded` is a new status (v2 and spec schemas, additions only) with a required `exclusion` `{reason, detail}`,
+reason `no_product_ion_files`, `no_files` or `shared_content_unassigned` (validate-triage.py `UNIT_EXCLUSION_REASONS`,
+curated.py the same tuple). An excluded unit keeps no file, asks nothing, holds nothing as `needs_person`, has no
+children and carries no blocking flag other than `shared_content` in a `shared_content_unassigned` unit (T-STATUS): a
+unit in doubt is `needs_person` with the question, not excluded. It is not a hold: its accession can pass, and the plan leaves the unit out as
+`triage_unit_excluded`, with the triage's reason as the detail. `out_of_scope` keeps its meaning (polarity switching,
+GC, SRM) and stays a hold.
+
+What stays a question is what the evidence cannot settle and no rule decides: which of two batches or injections of a
+sample belongs to an analysis; which archive file is which Catalog row when nothing ties them (sample codes mapped only
+in a spreadsheet inside the archive); a listing that cannot be read before download (a 7z, a nested zip); a folder
+against a header; a name token against a file-level declaration; polarity switching; files no evidence assigns to an
+acquisition mode.
+
+| question code | from skill 1.3.0 |
+|---|---|
+| `scope_ms1_only` | not asked: P1 (`ms1_only_no_msms`, `ms1_only_excluded`; a unit left without MS/MS is `excluded`) |
+| `mixed_acquisition` | not asked when the files can be assigned to a mode: P2 (children); asked otherwise |
+| `declared_technical_disputed` | not asked: P4 (informational flag) |
+| `format_choice` | not asked for profile-mode MS1 injections: P1 |
+| `shared_content` | not asked for copies in two arms' places: P5 (`excluded`, `shared_content_unassigned`) |
+| `other`: no raw file for a unit | not asked: `excluded` (`no_files`) |
+| `other`: raw files with no row | not asked: `no_sample_metadata` |
+| `other`: batch choice, row-to-file mapping, unreadable listing | asked |
+| a folder against a header, `name_token_disputed`, `polarity_switching`, `no_signal` | asked |
 
 **Shared content is for kept copies (decision of 2026-11-18).** Let K be the units that keep a member of a
 byte-identical group. A copy a unit holds for a person (excluded as `needs_person`) counts as kept here: two arms
@@ -211,7 +295,7 @@ launched the agent (`scripts/run-triage-agent.py`), from the harness's own trans
     {"role": "metadata_text", "path": "inputs/AN004552.mwtab.txt", "sha256": "...", "bytes": 0,
      "source_url": "https://www.metabolomicsworkbench.org/rest/study/analysis_id/AN004552/mwtab/txt"}
   ],
-  "skill": {"name": "msdial-unit-triage", "version": "1.2.0", "path": ".claude/skills/msdial-unit-triage/SKILL.md",
+  "skill": {"name": "msdial-unit-triage", "version": "1.3.0", "path": ".claude/skills/msdial-unit-triage/SKILL.md",
             "sha256": "...", "repo_commit": "<40 hex>"},
   "wrapper": {"path": "scripts/run-triage-agent.py", "sha256": "...", "repo_commit": "<40 hex, or null>"},
   "prompt": {"template_path": "prompts/unit-triage-task.v2.md", "template_sha256": "...",
@@ -220,7 +304,7 @@ launched the agent (`scripts/run-triage-agent.py`), from the harness's own trans
             "sampling": "harness default, not exposed", "session_id": "...",
             "context": {"configuration": "clean", "working_directory": "<empty directory holding only the skill>",
                         "context_files": [], "memory": "disabled", "hooks": [],
-                        "mcp_servers": [{"name": "msdial-triage-spec", "version": "1.0.0"}],
+                        "mcp_servers": [{"name": "msdial-triage-spec", "version": "1.1.0"}],
                         "harness_flags": ["..."]}},
   "started_at": "2026-11-16T09:12:00+09:00", "finished_at": "...",
   "tool_calls": [{"seq": 1, "tool": "mcp__msdial-triage-spec__triage_spec_check",
@@ -233,12 +317,12 @@ launched the agent (`scripts/run-triage-agent.py`), from the harness's own trans
   "rationale": "Plain language summary of the unit decision.",
   "derivation": {
     "spec": {"path": "ST002798.spec.json", "schema": "msdial-unit-triage-spec.v1", "sha256": "...", "bytes": 0},
-    "expander": {"path": "scripts/expand-triage-spec.py", "version": "1.0.0", "sha256": "...", "repo_commit": "<40 hex>"},
+    "expander": {"path": "scripts/expand-triage-spec.py", "version": "1.1.0", "sha256": "...", "repo_commit": "<40 hex>"},
     "digest": {"path": "inputs/digest.md", "sha256": "...",
-               "script": {"path": "scripts/triage-digest.py", "version": "1.0.0", "sha256": "...",
+               "script": {"path": "scripts/triage-digest.py", "version": "1.1.0", "sha256": "...",
                           "repo_commit": "<40 hex>"}},
     "context": {"decided_at": "<finished_at>", "model": "claude-opus-5-5", "agent": "claude-code",
-                "skill_version": "1.2.0", "purpose": null}
+                "skill_version": "1.3.0", "purpose": null}
   }
 }
 ```
@@ -436,12 +520,15 @@ Each entry has a `curated_selection` block:
 - the selection: `selection_listings` (path, sha256 and entry count of each listing the record binds),
   `selection_canonical_form`, `selection_count`, `selection_sha256` (section 3.1, over the record's listing),
   `analysis_inputs_sha256`;
-- the rows: `child_key`, `rows_kept`, `members_added`, `rows_dropped`, `rows_dropped_by_reason`.
+- the rows: `child_key`, `rows_kept`, `members_added`, `rows_dropped`, `rows_dropped_by_reason`,
+  `members_excluded`, `members_excluded_by_reason` (the plan digest names the members left out as
+  `ms1_only_no_msms`, `no_sample_metadata`, `other` or `out_of_scope`; an excluded unit's detail counts what it
+  left out, rows and members, by reason).
 
 The digest a person approves therefore covers the frozen decisions and every review entry before it. The
 plan leaves a unit out, with its reason, when its triage is `triage_missing`, `triage_unreadable`,
-`triage_not_pass`, `triage_member_unresolved`, `triage_record_mismatch` or
-`class_contrast_lost_after_triage`.
+`triage_not_pass`, `triage_member_unresolved`, `triage_record_mismatch`,
+`class_contrast_lost_after_triage` or `triage_unit_excluded` (the triage's `excluded` status, section 2.2).
 
 **The handoff step.** The runner copies the Catalog handoff and the triage into `handoffs\<unit_key>\`
 (section 2.1). The triage copy must hash to `triage_sha256` and the record copy to `triage_record_sha256`.
@@ -1287,6 +1374,12 @@ Built:
     and `--payload-only`; inclusion- and exclusion-list DDA in scope (`targeted_dda` informational,
     `scope_targeted_dda` removed); `shared_content` only for kept copies (`duplicate_copies_excluded`); the blind
     evaluation test.
+- **The triage policy of 2026-11-18** (branch `feat/triage-policy-ms1-acquisition`, section 2.2): skill 1.3.0 (P1 to
+  P5); the `excluded` status with its `exclusion`, the exclusion reasons `ms1_only_no_msms`,
+  `shared_content_unassigned` and `no_sample_metadata`, and the flags `ms1_only_excluded` and `ms1_only_suspected`
+  (additions to both schemas); `declared_technical_disputed` informational; the mixing test per child;
+  `expand-triage-spec.py` 1.1.0; `triage-digest.py` 1.1.0 (MS-level words and method folders); the plan's
+  `triage_unit_excluded`.
 
 To build:
 - the pilot replay of the token diet (no download): ST002747, ST002798 and ST002283 triaged again into a new pilot

@@ -90,8 +90,18 @@
       }
     },
     "status": {
-      "description": "ready: the selection can go to the plan. needs_person: a question in needs_person must be answered first. abstained: names carry no signal, nothing is assigned. out_of_scope: the unit is outside the campaign scope (for a person to accept).",
-      "enum": ["ready", "needs_person", "abstained", "out_of_scope"]
+      "description": "ready: the selection can go to the plan. needs_person: a question in needs_person must be answered first. abstained: names carry no signal, nothing is assigned. out_of_scope: the unit is outside the campaign scope (for a person to accept). excluded: the unit is left out by a rule a person already accepted (the triage policy of 2026-11-18), with its reason in exclusion; it keeps nothing, asks nothing and holds nothing, and the plan leaves it out (triage_unit_excluded).",
+      "enum": ["ready", "needs_person", "abstained", "out_of_scope", "excluded"]
+    },
+    "exclusion": {
+      "description": "Present exactly when status is excluded: why the triage policy of 2026-11-18 leaves the unit out with no question (docs/llm-assisted-curation.md section 2.2). no_product_ion_files: once its MS1-only files are left out (ms1_only_no_msms) no file with product-ion spectra is left. no_files: the deposit holds no raw file of the unit (its rows name files the archive lacks or another unit's). shared_content_unassigned: the unit's arm's copies are byte-identical to another arm's and no post-download reassignment exists yet; both units are excluded and keep the shared_content flag as evidence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "detail"],
+      "properties": {
+        "reason": {"enum": ["no_product_ion_files", "no_files", "shared_content_unassigned"]},
+        "detail": {"type": "string", "minLength": 1}
+      }
     },
     "confidence": {"description": "How sure the agent is of the unit's decision as a whole.", "$ref": "#/$defs/confidence"},
     "rationale": {"description": "The unit's decision in plain language, one or two sentences.", "$ref": "#/$defs/rationale"},
@@ -306,10 +316,12 @@
             "no_signal_abstained",
             "duplicate_content",
             "out_of_scope_ms1_only",
+            "ms1_only_no_msms",
             "polarity_switching",
             "requires_conversion",
             "not_in_archive",
             "needs_person",
+            "shared_content_unassigned",
             "other"
           ]
         },
@@ -328,7 +340,7 @@
         "member_path": {"type": "string", "minLength": 1},
         "archive": {"type": ["string", "null"]},
         "reason": {
-          "description": "needs_person (a member held for a person: the unit is not ready and asks), out_of_scope_ms1_only (with an ms1_only flag) and polarity_switching (with its flag) are checked as on a row; out_of_scope is any other scope exclusion.",
+          "description": "needs_person (a member held for a person: the unit is not ready and asks), out_of_scope_ms1_only (with an ms1_only flag), ms1_only_no_msms (an MS1-only file, which carries no product-ion spectra, with the informational flag ms1_only_excluded), shared_content_unassigned (in a unit excluded as shared_content_unassigned) and polarity_switching (with its flag) are checked as on a row; no_sample_metadata is a raw file no Catalog row or mwTab Samples line names, left out with no question; out_of_scope is any other scope exclusion.",
           "enum": [
             "not_raw_data",
             "archive_metadata",
@@ -339,8 +351,11 @@
             "no_signal_abstained",
             "out_of_scope",
             "out_of_scope_ms1_only",
+            "ms1_only_no_msms",
             "polarity_switching",
             "needs_person",
+            "shared_content_unassigned",
+            "no_sample_metadata",
             "other"
           ]
         },
@@ -378,7 +393,7 @@
       ]
     },
     "flag_code": {
-      "description": "Blocking until a person answers: shared_content, folder_header_disagreement, polarity_switching, ms1_only, mixed_acquisition, declared_technical_disputed, name_token_disputed. Informational, never blocking: targeted_dda (inclusion- or exclusion-list DDA, in scope; reports note the MS2-selection bias), duplicate_copies_excluded (byte-identical copies among excluded members only), catalog_defect, target_omics_doubt, segmented_acquisition.",
+      "description": "Blocking until a person answers: shared_content (in a unit that is not excluded), folder_header_disagreement, polarity_switching, ms1_only (MS1-only files kept), mixed_acquisition (modes mixed within one run), name_token_disputed. Informational, never blocking: targeted_dda (inclusion- or exclusion-list DDA, in scope; reports note the MS2-selection bias), duplicate_copies_excluded (byte-identical copies among excluded members only), catalog_defect, target_omics_doubt, segmented_acquisition (m/z-segmented DDA kept as separate files), declared_technical_disputed (file evidence contradicts the Catalog's declared technical fields and wins; informational since 2026-11-18), ms1_only_excluded (MS1-only files left out as ms1_only_no_msms), ms1_only_suspected (a weak MS1-only reading; the file is kept for the header preflight to decide).",
       "enum": [
         "mixed_acquisition",
         "ms1_only",
@@ -393,6 +408,8 @@
         "name_token_disputed",
         "catalog_defect",
         "target_omics_doubt",
+        "ms1_only_excluded",
+        "ms1_only_suspected",
         "other"
       ]
     },

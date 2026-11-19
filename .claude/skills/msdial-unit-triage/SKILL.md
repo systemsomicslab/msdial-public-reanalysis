@@ -13,7 +13,7 @@ allowed-tools:
 
 # MS-DIAL unit triage
 
-Skill version: **1.2.0**.
+Skill version: **1.3.0**.
 
 ## Why this exists
 
@@ -59,7 +59,8 @@ manifest digest that carries it. Never describe it as decided, accepted or confi
   Catalog, which analysis's Samples line names it, name tokens, and the member it resolves to), the mwTab method lines
   per analysis, the listing by folder with `[row]`, `[twin:Tn]`, `[small:<size>]` (far below its folder's median: a
   failed or cut injection), `[archive]` (an archive inside the archive, unopened) and `[nonraw]` marks, the
-  byte-identical groups, and what does not pair. It states facts only, never a grouping.
+  byte-identical groups, the MS-level words of raw names and vendor method folders (MS, MS1, Prof, Profile against
+  MSMS, MS2, with counts and examples), and what does not pair. It states facts only, never a grouping.
 - The raw inputs: `<unit_id>/handoff.json` and `samples.json`, `<analysis id>.mwtab.txt`, `*.members.tsv`. Read them
   where the digest cuts a value (`[cut; <file> line N]`) or leaves something unclear. **Where the digest and a raw
   input disagree, the raw input wins**; say so in the unit's `notes`.
@@ -110,14 +111,21 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
    blanks a unit keeps (only when folder and name tie them to exactly one unit, or `keep: [units]` with
    `shared_reason` when the study really shares one), and exclusions: `archive_metadata`, `not_raw_data`,
    `alternative_format_copy` (an mzML copy beside vendor files), `requires_conversion` (mzXML, mzData),
-   `duplicate_content` (a CRC32-and-size twin). A member is in the archive: `not_in_archive` is a row's reason only.
+   `duplicate_content` (a CRC32-and-size twin), `ms1_only_no_msms` (rule 3), and `no_sample_metadata`: a raw file of
+   a sample no Catalog row and no mwTab Samples line names (a repeat injection, another submission's run) is left out
+   with a detail saying what it seems to be; samples need metadata, so it is never a question. A member is in the
+   archive: `not_in_archive` is a row's reason only.
    An `[archive]` member may hold files no row resolves to; a row excluded as `not_in_archive` then waits for a person.
 5. **Dispositions.** `keep: <unit>` (with `child` when the unit has children), or `exclude: <reason>` with a `detail`.
    A group one unit keeps appears in every other unit as `belongs_to_other_unit` by itself. A unit's own `exclude`
-   list leaves a group out of that unit for its own reason (`needs_person`, `out_of_scope_ms1_only`,
-   `polarity_switching`, ...). These reasons are checked on members as on rows: `needs_person` only in a unit that is
-   not `ready` and asks, `out_of_scope_ms1_only` only with an `ms1_only` flag, `polarity_switching` only with its flag.
-   A group's own `exclude` applies in every unit, so give `needs_person` in the `exclude` list of the unit that asks.
+   list leaves a group out of that unit for its own reason (`needs_person`, `ms1_only_no_msms`,
+   `shared_content_unassigned`, `polarity_switching`, ...). These reasons are checked on members as on rows:
+   `needs_person` only in a unit that is not `ready` and asks, `ms1_only_no_msms` only with a `confirmed`
+   `ms1_only_excluded` flag, never at low confidence and never on a file whose own name says product-ion spectra,
+   `shared_content_unassigned` only in a unit excluded for it and only for a file with a twin in another arm's place,
+   `polarity_switching` only with its flag.
+   A group's own `exclude` applies in every unit, so give `needs_person` in the `exclude` list of the unit that asks,
+   and flag `ms1_only_excluded` on every unit (`shared_flags`) for a group excluded as `ms1_only_no_msms`.
 6. **File fields** of a kept group: `role`, `ion_mode`, `chromatography` (HILIC, RP, normal_phase, other, unknown),
    `acquisition_mode` (DDA, DIA, SWATH, AIF, MS1, unknown), `basis`; and at least one `evidence` item `{source, field,
    value}`. A value may use placeholders the expander fills per item, so evidence stays true per row:
@@ -127,8 +135,10 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
    `member_path`, the `group` it joins), or an outlier a group must not sweep in. An exception is one row of a unit's
    table: by `sample_id` or `raw_file` it applies in every unit whose table holds that row; by `index` (indices are
    per unit) it names exactly one `unit`. Every match and target names at least one predicate.
-8. **Units**: `status`, `confidence`, `rationale`, `unit_technical`; `children` for a unit of both polarities;
-   `flags` and `needs_person` naming the `groups` they concern; `shared_with` for a deliberately shared file; `notes`.
+8. **Units**: `status`, `confidence`, `rationale`, `unit_technical`; `exclusion` (`reason`, `detail`) exactly when
+   the status is `excluded`; `children` for a unit of both polarities, of more than one acquisition mode, or of
+   separately acquired DIA batches; `flags` and `needs_person` naming the `groups` they concern; `shared_with` for a
+   deliberately shared file; `notes`.
    A flag raised the same way on several units is written once in `shared_flags`.
 9. Write the spec, call `triage_spec_check`, fix every error with `Edit`, and repeat until it reports none.
 10. Reply with the single word `done`. The wrapper summarises from the payloads.
@@ -137,27 +147,47 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
 
 1. **Shared byte-identical content is never settled by name.** When a member a unit keeps has a CRC32-and-size twin
    elsewhere in the listing (another folder, another unit), flag `shared_content` (`confirmed`) on every unit
-   involved, set each to `needs_person`, and say what would settle it (the mzML `sourceFile`, the elution order after
-   preflight). Example of the failure: two arm-named folders held byte-identical files; the folder pointed one way,
-   the headers the other, and keeping one folder's copy by its name put the other arm's data in the wrong unit.
-   A unit that cannot tell which arm a copy is holds its own copy for a person (`needs_person` in its `exclude` list)
-   and asks; such held copies are shared content too. The flag names the `groups` it is about.
-   Copies **excluded for good** hold nothing: copies only among excluded members (for example an mzXML copy and its
-   twin, both excluded), or one kept file whose twin no unit keeps and which lies in no other arm's place (a backup
-   folder, a second export: not in a folder where another unit keeps or holds files, and not under another arm's
-   polarity or chromatography tokens). Exclude such a copy as `duplicate_content` and flag
+   involved, naming its `groups`. Example of the failure: two arm-named folders held byte-identical files; the folder
+   pointed one way, the headers the other, and keeping one folder's copy by its name put the other arm's data in the
+   wrong unit. **Copies in two arms' places exclude both units** (policy of 2026-11-18, P5): until a post-download
+   reassignment exists, every unit whose arm holds such copies is `excluded` with `exclusion.reason`
+   `shared_content_unassigned`; its affected rows and members are excluded as `shared_content_unassigned`, its other
+   files with their own reasons, and the `shared_content` flag stays as evidence, saying what would settle it (the
+   mzML `sourceFile`, the elution order after preflight). It asks nothing.
+   Which copies count is unchanged. Copies **excluded for good** hold nothing: copies only among excluded members (for
+   example an mzXML copy and its twin, both excluded), or one kept file whose twin no unit keeps and which lies in no
+   other arm's place (a backup folder, a second export: not in a folder where another unit keeps or holds files, and
+   not under another arm's polarity or chromatography tokens). Exclude such a copy as `duplicate_content` and flag
    `duplicate_copies_excluded` (informational), never `shared_content`. A twin in another arm's place stays
-   `shared_content`.
+   `shared_content`; copies held as `needs_person` or `shared_content_unassigned` count as kept here.
 2. **Abstain rather than guess.** When names carry no polarity or chromatography signal (rows such as `Sample_1_1`
    .. `Sample_1_6` with nothing else to go on), set the unit `abstained`: one row group excluded as
    `no_signal_abstained`, and a `no_signal` question saying which header evidence will settle it. A hypothesis such as
    "odd suffixes look positive" belongs in `notes`.
-3. **Flag what makes a run inhomogeneous**, even when membership is clear. These block `ready` until a person answers:
-   - `ms1_only`: full-scan files without product-ion spectra; question `scope_ms1_only`;
-   - `mixed_acquisition`: MS1 with DDA or DIA in one unit, different DIA window schemes, m/z-segmented DDA
-     (SCAN01..06), batches acquired years apart; question `mixed_acquisition`;
-   - `polarity_switching`: a unit declared UNSPECIFIED or Both whose files may switch polarity; such files never go to
-     a run; question `polarity_switching`.
+3. **Acquisition, by the policy of 2026-11-18.** The campaign annotates every experimental MS/MS spectrum, so a file
+   without product-ion spectra adds nothing to it. None of these is a question:
+   - **MS1-only files are left out** (P1): exclude them as `ms1_only_no_msms` and flag `ms1_only_excluded`
+     (informational; its detail states the evidence, and its certainty is `confirmed`: the evidence that counts
+     settles it). Evidence that counts: mwTab `MS_mode` or `MS:` lines (`MS_COMMENTS`, the method) declaring MS1 or full
+     scan for those runs; a name or method-folder word that contrasts with sibling MS/MS runs of the same study (`_MS_`
+     against `_MSMS_`, `MSProfile` or `Prof` against `MSMS`; the digest counts them); declared method text. Profile-mode
+     MS1 injections of pools are MS1-only files too. When the evidence is weak (a name alone, with no contrasting
+     MS/MS sibling and no declaration), keep the file with its declared mode and flag `ms1_only_suspected`: the header
+     preflight decides. A file whose own name says product-ion spectra (an MS/MS word such as MSMS, AutoMSMS, MS2,
+     ddMS2, MSe, HDMSe, SONAR, MSn or IDA, or a DDA, DIA, SWATH or AIF token) is never left out as MS1-only; if the
+     evidence still reads MS1 only, flag `name_token_disputed` and ask. If no file with product-ion spectra is left
+     once the MS1-only files are out, the unit is `excluded` (`no_product_ion_files`): its own rows go only as
+     `ms1_only_no_msms`, `belongs_to_other_unit`, `not_in_archive` or `duplicate_content`, and a raw file of its arm
+     that names product-ion spectra but is dropped for another reason holds it for a person. Keeping an MS1-only file (`acquisition_mode` `MS1`) needs the blocking
+     `ms1_only` flag and a person: do not.
+   - **Mixed acquisition is split into children** (P2): one child per acquisition mode (DDA, DIA, SWATH, AIF) and
+     polarity, and a child of its own for each separately acquired DIA folder or batch (different window schemes,
+     batches months apart). Children of one mode each are not a mix. Flag `mixed_acquisition` and ask it only when the
+     evidence cannot assign the files to a mode.
+   - **m/z-segmented DDA** (`SCAN01`..`SCAN06` files of one sample) is kept as separate files, with the informational
+     flag `segmented_acquisition` (P3).
+   - **Polarity switching** stays blocking: a unit declared UNSPECIFIED or Both whose files may switch polarity flags
+     `polarity_switching` and asks it; such files never go to a run.
    **Inclusion- or exclusion-list DDA is untargeted DDA and in scope** (AcquireX, inclusion-list-prioritised MS2,
    background exclusion lists, tDDA, HERMES): set `acquisition_mode` `DDA` and add the informational flag
    `targeted_dda` (`suspected` or `confirmed`, naming its groups) so reports can note the MS2-selection bias. Never
@@ -165,10 +195,12 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
    A method with no MS1 survey (SRM/MRM, SIM, PRM, tMS2 only) stays `out_of_scope`, and a kept file named so is
    refused. A kept file's acquisition token (MS1, DDA, DIA, SWATH, AIF) must agree with its `acquisition_mode` unless
    `name_token_disputed` is flagged; a group of untokened files that sweeps in one tokened file is refused.
-   Use `certainty: suspected` until headers confirm.
-4. **A folder and a header that disagree go to a person** (`folder_header_disagreement`). Neither wins silently. The
-   same holds for a name token against a declaration (`name_token_disputed`) and for files that contradict the unit's
-   declared settings (`declared_technical_disputed`).
+4. **File evidence wins over the Catalog's declared settings** (P4; header-first acquisition since 2026-10-06): when
+   mwTab, method or name evidence contradicts the Catalog's declared acquisition, chromatography, polarity or
+   instrument model, follow the file evidence and record the disagreement as `declared_technical_disputed`
+   (informational, never a question); the raw header decides at preflight. **A folder and a header that disagree go
+   to a person** (`folder_header_disagreement`), and so does a name token against a file-level declaration
+   (`name_token_disputed`): neither wins silently.
 5. **One polarity per run.** A unit of both polarities can be `ready` only with `children`, one per polarity and
    acquisition mode, that partition its kept files. A unit declared positive or negative never keeps the other
    polarity.
@@ -182,6 +214,18 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
    current payload and the review-log entry that causes it. Write the whole spec again, changing only what the cause
    settles: the expansion of a unit the task does not name must stay as it was (`X-SCOPE`). A blocking flag is dropped,
    or a question answered, only on a person's answer to that code, followed as worded.
+10. **A unit the deposit cannot serve is excluded, not asked.** A unit with no raw file in the archive (its rows name
+    files the listing lacks, or only another unit's: a polarity never deposited) is `excluded` with
+    `exclusion.reason` `no_files`; its rows stay `not_in_archive` or `belongs_to_other_unit`. When an unopened archive
+    inside the archive may hold them, or a raw file left out (`no_sample_metadata`, `other`, ...) may be one of its
+    files under a name the Catalog writes differently (case, a polarity infix), the validator holds the unit for a
+    person anyway: resolve such a file to its row instead.
+    An excluded unit carries no blocking flag (except `shared_content` in a `shared_content_unassigned` unit): a unit
+    in doubt is `needs_person` with the question, not excluded.
+11. **What stays a question.** Only what the evidence cannot settle and no rule above decides: which of two batches or
+    injections of one sample belongs to an analysis; which archive file is which Catalog row when no name, mwTab line
+    or listing ties them; a listing that cannot be read before download; a folder against a header; a name token
+    against a file-level declaration; polarity switching; files no evidence assigns to an acquisition mode.
 
 ## Status
 
@@ -190,7 +234,8 @@ tokens, extensions or top folders is refused unless it states why (`heterogeneou
 | `ready` | can go to the plan: no question open, no blocking flag unanswered, no kept file inferred at low confidence | pass |
 | `needs_person` | at least one question in `needs_person` | hold |
 | `abstained` | nothing assigned, because names give no signal | hold |
-| `out_of_scope` | outside the campaign (MS1 only, polarity switching, GC, SRM); a person accepts the exclusion | hold |
+| `out_of_scope` | outside the campaign (polarity switching, GC, SRM); a person accepts the exclusion | hold |
+| `excluded` | left out by the policy of 2026-11-18 (`exclusion`: `no_product_ion_files`, `no_files`, `shared_content_unassigned`); keeps, asks and holds nothing | pass; the plan leaves it out (`triage_unit_excluded`) |
 
 ## What is checked
 

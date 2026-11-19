@@ -268,6 +268,18 @@ class PrototypeFailureModeTest(TriageCase):
         report, _ = self.run_validator("ST002798", docs)
         messages = [f.message for f in report.findings if f.check == "T-ACQ" and f.unit == "AN004552"]
         self.assertTrue(any("MS1-only" in m for m in messages))
+        # The fixture is a skill 1.0.0 payload, judged by its own rules: its children still mix modes in one unit.
+        self.assertTrue(any("mix acquisition modes" in m for m in messages))
+        # Under skill 1.3.0, children of one acquisition mode each split the unit's acquisition (P2, 2026-11-18).
+        docs["AN004552"]["decided_by"]["skill_version"] = "1.3.0"
+        report, _ = self.run_validator("ST002798", docs)
+        messages = [f.message for f in report.findings if f.check == "T-ACQ" and f.unit == "AN004552"]
+        self.assertTrue(any("MS1-only" in m for m in messages))
+        self.assertFalse(any("mix acquisition modes" in m for m in messages))
+        # Without the children, the kept files mix modes in one run.
+        docs["AN004552"].pop("children")
+        report, _ = self.run_validator("ST002798", docs)
+        messages = [f.message for f in report.findings if f.check == "T-ACQ" and f.unit == "AN004552"]
         self.assertTrue(any("mix acquisition modes" in m for m in messages))
 
     def test_targeted_dda_must_be_flagged(self) -> None:

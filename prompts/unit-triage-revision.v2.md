@@ -1,6 +1,6 @@
 <!--
 unit-triage-revision.v2: the task prompt scripts/run-triage-agent.py --revise renders for one revision session under
-skill 1.2.0 (docs/llm-assisted-curation.md sections 2.4 and 6). A revision rewrites the accession's spec as
+skill 1.3.0 (docs/llm-assisted-curation.md sections 2.4 and 6). A revision rewrites the accession's spec as
 <accession>.spec.r<N>.json because of review-log entries (a person's answer, or a validator verdict) about named units;
 code expands it, and only the named units' payloads may change (X-SCOPE). The skill states the procedure; this prompt
 states only the accession, the units, their causes, the directories and the boundaries.

@@ -17,6 +17,7 @@ Library: expand(spec_bytes, inputs, ctx, spec_name=...) -> Expansion(payloads {u
 It is pure: no I/O beyond its arguments, no network, no clock, no randomness. Findings (each refuses the expansion):
 
   X-SCHEMA            the spec breaks schemas/msdial-unit-triage-spec.v1.json, or a rule the schema cannot state
+                      (an exclusion given on a unit that is not excluded, or none on one that is)
   X-UNITS             the spec's units are not the units of the inputs
   X-UNKNOWN-REF       a group, unit, child or exception target that does not exist
   X-EXCEPTION         an exception that is not one item: a row exception that targets by index without naming exactly
@@ -52,7 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-EXPANDER_VERSION = "1.0.0"
+EXPANDER_VERSION = "1.1.0"
 SPEC_SCHEMA_ID = "msdial-unit-triage-spec.v1"
 PAYLOAD_SCHEMA_ID = "msdial-unit-triage.v2"
 SKILL_NAME = "msdial-unit-triage"
@@ -439,13 +440,16 @@ def fill(value: Any, item: Mapping[str, Any], view: RowView | None, inputs: Expa
 # ------------------------------------------------------------------------------------------------ the expansion
 
 ROW_REASONS = {"belongs_to_other_unit", "no_signal_abstained", "duplicate_content", "out_of_scope_ms1_only",
-               "polarity_switching", "requires_conversion", "not_in_archive", "needs_person", "other"}
+               "ms1_only_no_msms", "polarity_switching", "requires_conversion", "not_in_archive", "needs_person",
+               "shared_content_unassigned", "other"}
 # A member keeps the spec's reason, so the validator's T-EXCL guards (needs_person in a unit that asks, an MS1-only or
-# polarity-switching exclusion with its flag) hold for members as for rows. not_in_archive is never a member's reason
+# polarity-switching exclusion with its flag, a shared_content_unassigned copy only in a unit excluded for it) hold for
+# members as for rows. not_in_archive is never a member's reason
 # (a member is in the archive): X-SCHEMA.
 MEMBER_REASONS = {"not_raw_data", "archive_metadata", "alternative_format_copy", "requires_conversion",
                   "duplicate_content", "belongs_to_other_unit", "no_signal_abstained", "out_of_scope",
-                  "out_of_scope_ms1_only", "polarity_switching", "needs_person", "other"}
+                  "out_of_scope_ms1_only", "ms1_only_no_msms", "polarity_switching", "needs_person",
+                  "shared_content_unassigned", "no_sample_metadata", "other"}
 
 
 def row_reason(reason: str) -> str:
@@ -778,6 +782,9 @@ class Expander:
                 if x["reason"] == "not_in_archive" and any(rule_of[g].applies_to == "members" for g in x["groups"] if g in rule_of):
                     self.find("X-SCHEMA", f"unit {unit}: an exclude entry gives not_in_archive for a member group; a member "
                               "is in the archive", unit)
+            if (entry["status"] == "excluded") != ("exclusion" in entry):
+                self.find("X-SCHEMA", f"unit {unit}: an exclusion is given exactly when the status is excluded "
+                          f"(status {entry['status']}, {'an' if 'exclusion' in entry else 'no'} exclusion)", unit)
         for flag in self.spec.get("shared_flags") or []:
             for unit in flag["units"]:
                 if unit not in self.inputs.units:
@@ -1047,6 +1054,8 @@ class Expander:
             "purpose": self.ctx.purpose,
             "unit_technical": technical,
             "status": entry["status"],
+            **({"exclusion": {"reason": entry["exclusion"]["reason"], "detail": entry["exclusion"]["detail"]}}
+               if entry.get("exclusion") else {}),
             "confidence": entry["confidence"],
             "rationale": entry["rationale"],
             "rows": kept_rows,
