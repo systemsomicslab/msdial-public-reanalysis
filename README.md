@@ -36,8 +36,10 @@ install locations and private MSP library paths on the development machine.
 
 - Claude workspace: `D:\13_MSDIAL_Public_Reanalysis\code`
 - Repository reanalysis data: the workspace root chosen for each campaign and
-  passed explicitly (below); `D:\13_MSDIAL_Public_Reanalysis\analysis` is the
-  archive of the pilots and preflights
+  passed explicitly (below); the MB-POST and Pool A campaigns use
+  `F:\MSDIAL_Public_Reanalysis\analysis`, and
+  `D:\13_MSDIAL_Public_Reanalysis\analysis` is the archive of the pilots and
+  preflights
 - Interactive: `D:\0_SourceCode\msdial_interactive_app`
 - Catalog: `D:\0_SourceCode\msdial_repository_catalog`
 - Full catalog: `D:\0_SourceCode\msdial_repository_catalog\catalog-data\native-smoke.sqlite`
@@ -154,8 +156,23 @@ following actions require a separate explicit human confirmation:
   (`scripts/record-reading.py --digest`), only after that person has read them
   and said what they found.
 
-The default retention policy is `keep`. Never combine different analysis units
-in one MS-DIAL run. Never redistribute the laboratory's private MSP libraries.
+Inside a campaign there are no per-unit confirmations. The user records one
+approval of the campaign manifest's digest (`scripts/campaign-runner.py
+approve`), and it stands in for the first, third and fourth of these, for the
+automatic split, and for the fifth when the manifest deletes raw data after
+validated output, for the units that manifest lists; it never stands in for
+the second or the last. Nor is it the user's go: the production campaign
+starts only when the user gives it, asked for in the conversation once
+everything is ready (2026-10-01). `CLAUDE.md` states the rules in force, among
+them the raw-data retention by kind of run, the workspace root chosen per
+campaign, the annotation tiers and which `before-production` gate FAILs stop a
+campaign unit's run.
+
+Outside a campaign the default retention policy is `keep`; a campaign approval
+states its own (full-repository reanalysis deletes raw data after validated
+mzTab-M, trials keep them).
+Never combine different analysis units in one MS-DIAL run. Never redistribute
+the laboratory's private MSP libraries.
 
 ## Run gates
 
@@ -636,7 +653,9 @@ has no execution time limit (a task made with `schtasks /SC` alone is stopped
 after 72 hours), runs one instance, restarts on failure, and starts again every
 hour, so a runner that ended comes back. It runs the runner with `pythonw.exe`,
 which runs itself again in a console with no window, and writes the runner's
-output to the campaign's `logs\runner.log`.
+output to the campaign's `logs\runner.log`. Never launch the runner through a
+visible console window either (a WMI `cmd /c`, say): an empty console looks
+like debris, and on 2026-11-13 closing such windows stopped the stage3b runner.
 
 The runner starts the Interactive backend through WMI (`Win32_Process.Create`):
 a broker (`scripts/campaign/backend_launch.py`) starts the backend and exits. The
@@ -766,6 +785,27 @@ One started for another root, for none, or whose root cannot be read is refused,
 naming both roots (`run` exits with code 3; a campaign paused for its backend
 stays paused): a backend left running for a campaign on the archive root would
 otherwise take the new campaign's jobs into the old campaign's job registry.
+
+The plan orders the download groups smallest first, and puts a group with any
+object of unknown size after every group of known size (gate #55): Stage 3
+(2026-11-05) had opened with 21 MetaboLights units of unknown size, fetched at
+about 0.6 MB/s, ahead of every Workbench unit. A unit whose downloads are all
+archives of known size that together hold under 50 kB per sample is excluded at
+plan time as `archive_too_small_for_raw_data` (gate #56): some Workbench
+studies list only their methods or supplementary tables as the download.
+
+Input coverage is not yet checked. A unit can end done, its raw data deleted,
+with only part of its declared samples admitted: in stage3b the
+leading-identifier pairing admitted only blanks for some units (ST002512
+negative ran 5 blank files of 110 samples). The user's decision of 2026-11-15:
+the campaign finishes, a coverage gate (admitted analysis rows against declared
+rows; Interactive 0.5.67, branch `fix/attribution-coverage-gate`) is added, and
+the units admitted below the coverage it requires, with the name-mismatch
+failures whose files exist, run again in a follow-up campaign. The threshold
+is not yet decided by the user; the branch proposes half of the analytical rows
+of the unit's polarity, with at least one biological sample. The follow-up
+campaign also needs a runner change: the plan never takes up a `done` unit
+again, even with `--replan-from`. `CLAUDE.md` states the rule as pending.
 
 ## Codex pre-audit
 
