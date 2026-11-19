@@ -485,11 +485,42 @@ verdicts are recorded here, not in the review log:
 | `triage_checked` | deterministic_check | the runner, at the handoff step | `verdict` (`pass`, `refused`, `held`), `handoff_identity` (`handoff_identical`, `values_identical` or `class_only`) with the `class` record (both sides' Class, as Interactive's `original_handoff.class`), `class_binding` (whether the copy's Class is the approved proposal, accepted and ratified under this campaign), the reason (`triage_digest_changed`, `triage_record_digest_changed`, `class_digest_changed`, `class_not_ratified`, `handoff_copy_changed`, `triage_handoff_changed` with `rows_identical` and `differing_keys`, `sidecar` or `triaged_bytes_found`), the copies' paths and the handoff hashes |
 | `curated_selection_applied` | accepted_decision | the runner, after the download | `plan_selection_sha256`, `interactive_selection_sha256`, `selection_sha256_equal`, `selection_canonical_form`, rows kept and dropped, what Interactive recorded (`manifest_digest`, `standing`, `child_key`, `analysis_unit_key`, `catalog_handoff_verification`, `triage_record_sha256`), and `handoff_class`, Interactive's `original_handoff.class` |
 | `header_reconciliation` | deterministic_check | the runner, after the preflight | Interactive's reconciliation block (section 6): `schema`, `verdict` (or `not_recorded`), `reason`, `inspected`, `agree`, `disagree`, `kept_rows_not_inspected`, `disagreements_by_field`, and every per file item copied whole |
-| `cross_unit_verdict` | deterministic_check | the runner, once per download group, and once for a curated unit alone in its group | `group`, `units`, `manifest_paths`, `verdict` (`passed`, `refused`, or `not_applicable` with reason `single_member`), `refused` (per unit `reason_code`, `reasons`, `rule` P, C, S or D, `refused_against`), `refused_after_pass` (units an earlier check passed), `unit_verdicts`, and `interactive` (`verdict`, `rule`, the rule id such as `cross_unit_attribution_2026_11_16b`, `schema`, `overlaps`, `version`) |
+| `cross_unit_verdict` | deterministic_check | the runner, once per download group, and once for a curated unit alone in its group | `group`, `units`, `manifest_paths`, `verdict` (`passed`, `refused`, or `not_applicable` with reason `single_member`, or `polarity_split_sibling` where its only sibling with inputs is its own polarity-split sibling), `refused` (per unit `reason_code`, `reasons`, `rule` P, C, S or D, `refused_against`), `refused_after_pass` (units an earlier check passed), `unit_verdicts`, and `interactive` (`verdict`, `rule`, the rule id such as `cross_unit_attribution_2026_11_16b`, `schema`, `overlaps`, `version`) |
 | `terminal_refusal` | deterministic_check | the runner | a refusal that ends the unit: attribution coverage; `attribution_refused` (a curated selection Interactive refuses, the cross-unit check), with `invalidated_after_done: true`, `outputs: kept_flagged_invalid` and `question_code: cross_unit_refused_after_done` for a unit that had run (section 6); and policy drift (`reason: policy_drift` with the code, for a unit stopped on a changed manifest, triage, record, handoff or Class decision, `class_digest_changed`) |
 | `person_answer` | person_answer | the runner | `by`, `question_code`, `answer`, `channel`, and what the request did (`action`, `request_id`, `requested_at`, `state_before`, `state_after`, `result`) |
 | `download_only_planned` | accepted_decision | the approval (`approve`) | a unit planned download-only (`plan --download-only-held`, the decision of 2026-11-19): its `reasons` (plan reason, validator verdict, triage status, question codes, blocking flags, excluded-row reasons), the triage's relative path and sha256; the approval covers its download, never a run or a deletion |
 | `download_only_kept` | deterministic_check | the runner | a download-only unit downloaded and ended `kept` (terminal reason `download_only_kept`), with no preflight and no Console: its `reasons`, its raw directories (workspace-relative) and `downloaded_bytes`; its raw data are never deleted by the campaign |
+| `polarity_split_planned` | accepted_decision | the approval (`approve`) | one polarity of a polarity-switching unit (`plan --polarity-split`, the decision of 2026-11-19): `parent_unit_id`, `ion_mode`, `sibling_unit_key`, the decision, the child's path (under the campaign's `handoffs\`) and sha256, the parent payload's path, sha256 and record sha256, and the validator's verdict on the child |
+
+**Polarity-split units (the author's decision of 2026-11-19).** "Polarity switching units are analysed: for each
+file run a POS process and a NEG process separately." With `plan --triage-dir ... --polarity-split` (combinable with
+`--download-only-held`), a unit whose payload waits for a person on `polarity_switching` alone (status
+`needs_person`, every question `polarity_switching`, no other blocking flag, no children, unit ion mode `switching`,
+every row left out for the question naming its member: `validate-triage.py` `polarity_split_refusal`) becomes two
+run units, `<unit_id>-pos` and `<unit_id>-neg`, in its download group, both with the unit's Class. Each runs on a
+child payload `derive_polarity_split` makes of the parent, deterministically: the rows left out for polarity switching
+are kept (each file's own ion mode stays `switching`), status `ready`, `needs_person` empty,
+`unit_technical.ion_mode` the child's, `polarity_split` `{ion_mode, reason, parent_unit_id, sibling_ion_mode}` (the
+contract Interactive reads) and `derived_from` (the parent's relative path, sha256 and record sha256, and the
+decision). The plan writes each child to `<campaign dir>\handoffs\<unit_key>\<unit_id>.polarity-split.json` and runs
+`validate-triage.py --polarity-split <child>` over the parent's accession: the parent's own file, record and revision
+are checked as they are, the child must be byte for byte the derivation of that parent (`T-SPLIT`), every content
+check then runs on the child with the decision as the answer to `polarity_switching`, and the child passes when no
+finding names its unit or the accession and nothing in the accession is an error (a hold another unit carries alone
+does not hold it). A child binds no decision record of its own, so its selection's crc32 and size are null, as
+Interactive reads a triage without one; the triaged handoff and the review log are the parent's. The `triage_recorded`
+line of a child carries `polarity_split` and `derived_from`, and `verify-decision-log.py` checks the parent payload.
+The two children run one after the other; the cross-unit barrier makes the first wait until its sibling has
+downloaded, so neither runs before both hold their raw trees (hardlinks to one store copy), and each child's cleanup
+or discard deletes only its own tree: the bytes go once both have ended, by the rules of any shared download group
+(a sibling that ends before its download releases its claims, and the other downloads alone). Interactive (0.5.70)
+keys each child `<unit_id>-pos` or `<unit_id>-neg`: its analysis_unit_id, its manifest and approval entry (each with
+its own triage sha256) and its store claims, which the runner pre-claims and releases under that key. A child whose
+files hold no scan of its polarity is excluded at its preflight (`polarity_split_no_scans_of_child_polarity`) like any
+excluded unit, and its sibling still runs. The cross-unit check
+never compares the two children with each other (rule D would refuse the second for identical inputs). A unit the
+decision does not reach, or whose children do not pass, is planned as before: download-only with
+`--download-only-held`, else left out, its detail naming why.
 
 `scripts/verify-decision-log.py <campaign dir>` walks every review log and the ledger. It refuses a broken
 link; a `decision_id` without its payload; a revision whose `cause` names no entry of the stated kind; a

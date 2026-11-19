@@ -23,6 +23,10 @@ THE ORDER OF USE
         download-only unit: downloaded on the handoff's whole file list, never preflighted or run, ended kept with its
         reasons, its raw data never deleted by the campaign. The summary counts them and their bytes apart; the
         approval covers boundary 1 for them, never 4 or 5.
+        --polarity-split (with --triage-dir, combinable with --download-only-held; the author's decision of
+        2026-11-19) plans a unit held on polarity_switching alone as two run units, <unit_id>-pos and <unit_id>-neg, on
+        the same files, each with a derived curated selection written under the campaign's handoffs\\<unit_key>\\ and
+        validated in place of the parent; they run one after the other and their shared raw data go after both end.
         The extractor defaults to the newest built pin of Interactive's PINNED_BUILDS beside the Interactive
         checkout; a manifest is approvable only with a verified, pinned extractor and clean checkouts.
     python scripts/campaign-runner.py approve --campaign ID --digest sha256:... --approval-id ID \\
@@ -427,6 +431,7 @@ def command_plan(args: argparse.Namespace) -> int:
             replan=replan, unit_ids=unit_ids, policy_overrides=sorted(overrides or {}), libraries_not_pinned=not_pinned,
             library_paths={name: libraries[name] for name in pinned}, triage_dir=triage_dir, reopen=reopen,
             download_only_held=bool(args.download_only_held),
+            polarity_split_dir=directory if args.polarity_split else None,
         )
     except plan.PlanError as error:
         print(str(error), file=sys.stderr)
@@ -1232,6 +1237,10 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--download-only-held", action="store_true",
                       help="with --triage-dir: plan a unit the triage holds (triage_missing, triage_not_pass) as download-only, "
                            "downloaded and kept with its reasons, never run and never deleted (2026-11-19)")
+    plan.add_argument("--polarity-split", action="store_true",
+                      help="with --triage-dir: plan a unit held on polarity_switching alone as two run units, positive "
+                           "and negative, on the same files, each with a derived curated selection written under the "
+                           "campaign's handoffs (2026-11-19)")
     plan.add_argument("--reopen", help="a TSV of done units of a --replan-from campaign to plan again (unit_key, reason_code, "
                       "evidence_path); needs --triage-dir")
     plan.set_defaults(handler=command_plan)

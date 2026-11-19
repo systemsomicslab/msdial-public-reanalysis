@@ -18,6 +18,8 @@ review-log.jsonl, and returns pass, hold or error (docs/llm-assisted-curation.md
                                                      validator_verdict per decision to the review log
         [--payload-only]                             the payloads alone: no record, transcript, context or revision
                                                      check (the in-session spec check)
+        [--polarity-split <child payload>]...        a polarity-split child (the author's decision of 2026-11-19),
+                                                     checked in place of its parent's payload (POLARITY SPLIT below)
         [--json]
 
 The triage directory holds one <unit_id>.json per unit, all of one accession (in a campaign,
@@ -105,6 +107,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import copy
 import csv
 import hashlib
 import importlib.util
@@ -208,6 +211,199 @@ CLAUDE_CODE_CLEAN_FLAGS = (
 )
 # The roles a unit triage's record binds its Catalog evidence under.
 CATALOG_ROLES = ("catalog_handoff", "catalog_samples", "catalog_unit")
+
+
+# ------------------------------------------------------------------------------------------ polarity split
+# POLARITY SPLIT (the author's decision of 2026-11-19): "Polarity switching units are analysed: for each file run a POS
+# process and a NEG process separately." MS-DIAL 5 LC-MS reads only the scans whose polarity matches the project's ion
+# mode, so the files of a unit acquired in polarity switching are run twice, once positive and once negative. A unit is
+# split only where the decision is all that holds it (polarity_split_refusal): status needs_person, every question
+# polarity_switching, no other blocking flag, no children, its unit_technical ion mode switching, and every row it left
+# out for the question naming its archive member. Each child is derived from the parent payload by
+# derive_polarity_split alone, deterministically: the rows left out for polarity switching are kept (each file's own
+# ion mode stays switching), status ready, needs_person empty, unit_technical.ion_mode the child's, a polarity_split
+# object {ion_mode, reason, parent_unit_id, sibling_ion_mode} (the contract Interactive reads), and derived_from (the
+# parent payload's path and sha256, its decision record's sha256, and the decision). A child is validated with
+# --polarity-split beside its parent's accession: the parent's file, record, derivation and revision are checked as
+# they are, the child must be exactly what derive_polarity_split makes of that parent (T-SPLIT), and every content
+# check then runs on the child, the decision standing as the answer to polarity_switching.
+POLARITY_SPLIT_REASON = "polarity_switching"
+POLARITY_SPLIT_MODES = ("positive", "negative")
+POLARITY_SPLIT_DECISION = {
+    "date": "2026-11-19",
+    "decided_by": "author",
+    "reason": POLARITY_SPLIT_REASON,
+    "statement": "Polarity switching units are analysed: for each file run a POS process and a NEG process separately.",
+}
+POLARITY_SPLIT_KEYS = ("ion_mode", "reason", "parent_unit_id", "sibling_ion_mode")
+DERIVED_FROM_KEYS = ("kind", "triage_relative_path", "triage_sha256", "triage_record_sha256", "decision")
+
+
+def _split_question_rows(payload: Mapping[str, Any]) -> set[int]:
+    rows: set[int] = set()
+    for question in payload.get("needs_person") or []:
+        if isinstance(question, Mapping) and question.get("code") == POLARITY_SPLIT_REASON:
+            rows |= {int(i) for i in question.get("row_indices") or [] if isinstance(i, int)}
+    return rows
+
+
+def polarity_split_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The rows a payload left out for polarity switching: reason polarity_switching, or needs_person on a row a
+    polarity_switching question names."""
+    asked = _split_question_rows(payload)
+    return [dict(item) for item in payload.get("excluded_rows") or [] if isinstance(item, Mapping) and (
+        item.get("reason") == POLARITY_SPLIT_REASON or (item.get("reason") == "needs_person" and item.get("row_index") in asked))]
+
+
+def polarity_split_refusal(payload: Mapping[str, Any] | None) -> str:
+    """Why a parent payload is not split by polarity under the decision of 2026-11-19, or "" where it is."""
+    if not isinstance(payload, Mapping) or payload.get("schema") != SCHEMA_V2_ID:
+        return f"not a {SCHEMA_V2_ID} payload"
+    if payload.get("polarity_split") is not None:
+        return "a polarity-split child is not split again"
+    if payload.get("status") != "needs_person":
+        return f"status {payload.get('status')}, not needs_person"
+    codes = {str(q.get("code")) for q in payload.get("needs_person") or [] if isinstance(q, Mapping)}
+    if codes != {POLARITY_SPLIT_REASON}:
+        return "its questions are " + (", ".join(sorted(codes)) or "none") + f", not {POLARITY_SPLIT_REASON} alone"
+    if payload.get("children"):
+        return "a unit with children is not split by polarity"
+    ion = normalise_ion((payload.get("unit_technical") or {}).get("ion_mode"))
+    if ion != "switching":
+        return f"its unit ion mode is {ion}, not switching"
+    flags = {str(f.get("code")) for f in payload.get("flags") or [] if isinstance(f, Mapping)}
+    if POLARITY_SPLIT_REASON not in flags:
+        return f"no {POLARITY_SPLIT_REASON} flag"
+    others = sorted((flags & blocking_flags_for(dict(payload))) - {POLARITY_SPLIT_REASON})
+    if others:
+        return "other blocking flags: " + ", ".join(others)
+    taken = polarity_split_rows(payload)
+    if not taken:
+        return "no row is left out for polarity switching"
+    unresolved = [item.get("row_index") for item in taken if not item.get("member_path")]
+    if unresolved:
+        return f"{len(unresolved)} row(s) left out for polarity switching name no archive member"
+    indices = {item.get("row_index") for item in taken}
+    held = [item for item in payload.get("excluded_rows") or [] if isinstance(item, Mapping)
+            and item.get("reason") == "needs_person" and item.get("row_index") not in indices]
+    if held:
+        return f"{len(held)} row(s) are held for a person on another question"
+    members = [item for item in payload.get("excluded_members") or [] if isinstance(item, Mapping)
+               and item.get("reason") in (POLARITY_SPLIT_REASON, "needs_person")]
+    if members:
+        return f"{len(members)} archive member(s) are left out for polarity switching or a person"
+    return ""
+
+
+def derive_polarity_split(
+    payload: Mapping[str, Any], ion_mode: str, *, triage_relative_path: str, triage_sha256: str,
+    triage_record_sha256: str | None,
+) -> dict[str, Any]:
+    """The child payload of `ion_mode` (positive or negative) of a parent that polarity_split_refusal passes."""
+    if ion_mode not in POLARITY_SPLIT_MODES:
+        raise ValueError(f"a polarity-split child is positive or negative, not {ion_mode!r}")
+    out = copy.deepcopy(dict(payload))
+    technical = out["unit_technical"]
+    taken = polarity_split_rows(payload)
+    indices = {item["row_index"] for item in taken}
+    kept = []
+    for item in taken:
+        row = {key: item[key] for key in ("row_index", "sample_id", "raw_file", "member_path")}
+        row.update({
+            "ion_mode": "switching",
+            "chromatography": technical["chromatography"],
+            "acquisition_mode": technical["acquisition_mode"],
+            "basis": "declared",
+            "evidence": [{"source": "catalog_row", "field": "raw_file", "value": item["raw_file"]}],
+            "confidence": item["confidence"],
+            "rationale": (f"Kept for the {ion_mode} run of a polarity-switching file under the author's decision of "
+                          f"{POLARITY_SPLIT_DECISION['date']}; left out before as {item['reason']}: {item['detail']}"),
+        })
+        if item.get("rule_id"):
+            row["rule_id"] = item["rule_id"]
+        kept.append(row)
+    out["rows"] = sorted([*out.get("rows", []), *kept], key=lambda row: row["row_index"])
+    out["excluded_rows"] = [item for item in out.get("excluded_rows", []) if item.get("row_index") not in indices]
+    out["status"] = "ready"
+    out["needs_person"] = []
+    technical["ion_mode"] = ion_mode
+    out["polarity_split"] = {
+        "ion_mode": ion_mode, "reason": POLARITY_SPLIT_REASON, "parent_unit_id": str(payload["unit_id"]),
+        "sibling_ion_mode": POLARITY_SPLIT_MODES[1 - POLARITY_SPLIT_MODES.index(ion_mode)],
+    }
+    out["derived_from"] = {
+        "kind": "polarity_split", "triage_relative_path": triage_relative_path, "triage_sha256": triage_sha256,
+        "triage_record_sha256": triage_record_sha256, "decision": dict(POLARITY_SPLIT_DECISION),
+    }
+    return out
+
+
+def polarity_split_shape_problems(payload: Mapping[str, Any]) -> list[str]:
+    """What is wrong with a payload's polarity_split and derived_from, judged on the payload alone."""
+    split = payload.get("polarity_split")
+    if not isinstance(split, Mapping):
+        return ["polarity_split is not an object"]
+    problems = []
+    if sorted(split) != sorted(POLARITY_SPLIT_KEYS):
+        problems.append(f"polarity_split has keys {sorted(split)}, not {sorted(POLARITY_SPLIT_KEYS)}")
+    mode = split.get("ion_mode")
+    if mode not in POLARITY_SPLIT_MODES:
+        problems.append(f"polarity_split.ion_mode is {mode!r}, not positive or negative")
+    elif split.get("sibling_ion_mode") != POLARITY_SPLIT_MODES[1 - POLARITY_SPLIT_MODES.index(mode)]:
+        problems.append(f"polarity_split.sibling_ion_mode is {split.get('sibling_ion_mode')!r}; the sibling of a "
+                        f"{mode} child is the other polarity")
+    if split.get("reason") != POLARITY_SPLIT_REASON:
+        problems.append(f"polarity_split.reason is {split.get('reason')!r}, not {POLARITY_SPLIT_REASON}")
+    if split.get("parent_unit_id") != payload.get("unit_id"):
+        problems.append(f"polarity_split.parent_unit_id {split.get('parent_unit_id')!r} is not the unit "
+                        f"{payload.get('unit_id')!r}")
+    if (payload.get("unit_technical") or {}).get("ion_mode") != mode:
+        problems.append(f"unit_technical.ion_mode is {(payload.get('unit_technical') or {}).get('ion_mode')!r}, "
+                        f"polarity_split.ion_mode {mode!r}")
+    if payload.get("status") != "ready":
+        problems.append(f"a polarity-split child is ready, not {payload.get('status')}")
+    if payload.get("needs_person"):
+        problems.append("a polarity-split child asks nothing")
+    if payload.get("children"):
+        problems.append("a polarity-split child has no children")
+    if POLARITY_SPLIT_REASON not in {str(f.get("code")) for f in payload.get("flags") or [] if isinstance(f, Mapping)}:
+        problems.append(f"a polarity-split child keeps its {POLARITY_SPLIT_REASON} flag")
+    derived = payload.get("derived_from")
+    if not isinstance(derived, Mapping) or sorted(derived) != sorted(DERIVED_FROM_KEYS) \
+            or derived.get("kind") != "polarity_split" or derived.get("decision") != POLARITY_SPLIT_DECISION:
+        problems.append("derived_from does not name the parent payload and the decision of "
+                        f"{POLARITY_SPLIT_DECISION['date']} ({', '.join(DERIVED_FROM_KEYS)})")
+    return problems
+
+
+def check_polarity_split(report: "Report", unit: str, parent: Mapping[str, Any], parent_sha256: str,
+                         parent_relative_path: str, record_sha256: str | None, child: Any) -> bool:
+    """Whether `child` may stand for its parent in the checks (T-SPLIT): a payload of the right shape that is exactly
+    what derive_polarity_split makes of this parent, which the decision must reach."""
+    if not isinstance(child, dict):
+        report.add("error", "T-SPLIT", unit, "the polarity-split child is not one JSON object")
+        return False
+    if child.get("unit_id") != unit:
+        report.add("error", "T-SPLIT", unit, f"the polarity-split child is of unit {child.get('unit_id')!r}, not {unit}")
+        return False
+    refusal = polarity_split_refusal(parent)
+    if refusal:
+        report.add("error", "T-SPLIT", unit, f"the decision of {POLARITY_SPLIT_DECISION['date']} does not split this "
+                   f"unit: {refusal}")
+        return False
+    problems = polarity_split_shape_problems(child)
+    for problem in problems:
+        report.add("error", "T-SPLIT", unit, problem)
+    if problems:
+        return False
+    expected = derive_polarity_split(parent, child["polarity_split"]["ion_mode"], triage_relative_path=parent_relative_path,
+                                     triage_sha256=parent_sha256, triage_record_sha256=record_sha256)
+    if canonical_json(expected) != canonical_json(child):
+        differ = sorted(key for key in set(expected) | set(child) if expected.get(key) != child.get(key))
+        report.add("error", "T-SPLIT", unit, "the polarity-split child is not what the decision makes of its parent "
+                   f"{parent_relative_path} (sha256 {parent_sha256}); it differs in {', '.join(differ)}")
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------------------------- findings
@@ -1865,6 +2061,7 @@ def validate(
     bundle: ReleaseBundle | None = None,
     listing_files: Iterable[Path] | None = None,
     payload_only: bool = False,
+    polarity_split: Iterable[Path] = (),
 ) -> Report:
     """The accession's triage files as a set, with their decision records and review log.
 
@@ -1873,7 +2070,9 @@ def validate(
     exists), through whose index projected inputs are checked. `listing_files` are the files `listings` were read from
     (the CLI's --archive-listing): each record's archive_listing inputs must be among them, and each of them bound by a
     record (T-RECORD, T-DUP); without them that tie is not checked. `payload_only` checks the payloads alone (the in-session
-    spec check, scripts/triage-spec-server.py): no decision record, transcript, context or revision check runs."""
+    spec check, scripts/triage-spec-server.py): no decision record, transcript, context or revision check runs. `polarity_split` names polarity-split children (the CLI's
+    --polarity-split; POLARITY SPLIT above), each checked in place of its parent's payload once the parent's own file,
+    record and revision are checked."""
     report = Report()
     triage_dir = Path(triage_dir)
     if bundle is None:
@@ -1910,6 +2109,20 @@ def validate(
                 supersedes[sha] = named["supersedes"]
     if not payload_only:
         _derivation_context(triage_dir, all_files, provenance)
+    split_children: dict[str, tuple[Path, Any]] = {}
+    for child_path in polarity_split:
+        child_path = Path(child_path)
+        try:
+            child_data = json.loads(child_path.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            report.add("error", "T-SPLIT", None, f"the polarity-split child {child_path.name} is not readable JSON: {exc}")
+            continue
+        child_unit = str(child_data.get("unit_id") or "") if isinstance(child_data, dict) else ""
+        if child_unit in split_children:
+            report.add("error", "T-SPLIT", child_unit or None, "two polarity-split children of one unit in one check; "
+                       "each polarity is checked on its own")
+            continue
+        split_children[child_unit] = (child_path, child_data)
     log, log_problems = read_review_log(triage_dir)
     for problem in log_problems:
         report.add("error", "T-LOG", None, f"{REVIEW_LOG}: {problem}; the answers and revisions it records cannot be trusted")
@@ -1924,6 +2137,10 @@ def validate(
             continue
         unit = data.get("unit_id") if isinstance(data, dict) else None
         unit = unit if isinstance(unit, str) and unit else triage_file_unit(path)
+        if isinstance(data, dict) and "polarity_split" in data:
+            report.add("error", "T-SPLIT", unit, f"{path.name} is a polarity-split child; a child is checked with "
+                       "--polarity-split beside its parent's payload, never as a triage file of its own")
+            continue
         if unit in triages:
             report.add("error", "T-SET", unit, f"unit {unit} is triaged twice")
             continue
@@ -1958,7 +2175,26 @@ def validate(
         answered[unit] = answered_codes(decision_id, data, supersedes, log)
         if schema_id == SCHEMA_V2_ID and not payload_only:
             check_revision(report, unit, path, decision_id, data, payloads, supersedes, log, all_files.get(unit, []))
+        if unit in split_children:
+            child_path, child_data = split_children.pop(unit)
+            record = path.with_name(path.name[: -len(".json")] + RECORD_SUFFIX)
+            record_sha = sha256_bytes(record.read_bytes()) if record.is_file() else None
+            if check_polarity_split(report, unit, data, decision_id, f"{triage_dir.name}/{path.name}", record_sha, child_data):
+                child_problems = schema_errors(child_data, schema, schema)
+                for problem in child_problems[:20]:
+                    report.add("error", "T-SCHEMA", unit, f"{child_path.name}: {problem}")
+                if not child_problems:
+                    # The child stands for its parent in every content check; the decision answers polarity_switching.
+                    triages[unit] = child_data
+                    report.unit_status[unit] = child_data["status"]
+                    answered[unit] = set(answered[unit]) | {POLARITY_SPLIT_REASON}
+                    report.payloads[unit]["polarity_split"] = {
+                        "child": child_path.name, "ion_mode": child_data["polarity_split"]["ion_mode"],
+                        "decision_id": sha256_bytes(canonical_json(child_data))}
 
+    for child_unit, (child_path, _child_data) in sorted(split_children.items()):
+        report.add("error", "T-SPLIT", child_unit or None, f"the polarity-split child {child_path.name} has no parent "
+                   "payload in this directory")
     accessions = {t["accession"] for t in triages.values()}
     if len(accessions) > 1:
         report.add("error", "T-SET", None, f"one directory must hold one accession; found {sorted(accessions)}")
@@ -2371,7 +2607,10 @@ def _check_unit(
             report.add("error", "T-POL", unit, f"{label} is polarity switching without a polarity_switching flag")
         if expected_ion in ("positive", "negative") and ion in ("positive", "negative") and ion != expected_ion:
             report.add("error", "T-POL", unit, f"{label} is {ion}, its {'child' if child else 'unit'} is {expected_ion}")
-        if expected_ion in ("positive", "negative") and ion in ("switching", "both"):
+        # A polarity-split child runs its switching files at its own polarity (the decision of 2026-11-19).
+        split_mode = (t.get("polarity_split") or {}).get("ion_mode")
+        if expected_ion in ("positive", "negative") and ion in ("switching", "both") and not (
+                ion == "switching" and split_mode == expected_ion and child is None):
             report.add("error", "T-POL", unit, f"{label} is {ion} inside a {expected_ion} {'child' if child else 'unit'}")
         if ion == "unknown":
             if status == "ready":
@@ -2985,6 +3224,9 @@ def main(argv: list[str] | None = None) -> int:
                         "a validator_verdict per decision to the accession's review-log.jsonl")
     parser.add_argument("--payload-only", action="store_true", help="check the payloads alone: no decision record, "
                         "transcript, context or revision check (the in-session spec check)")
+    parser.add_argument("--polarity-split", type=Path, action="append", default=[],
+                        help="a polarity-split child payload (the decision of 2026-11-19), checked in place of its "
+                        "parent's payload in this directory (repeatable, one per unit)")
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     args = parser.parse_args(argv)
 
@@ -3004,7 +3246,8 @@ def main(argv: list[str] | None = None) -> int:
     for path in args.archive_listing:
         listed += read_listing(path)
     report = validate(args.triage_dir, catalog, listed, code_root=args.code_root, bundle=bundle,
-                      listing_files=args.archive_listing, payload_only=args.payload_only)
+                      listing_files=args.archive_listing, payload_only=args.payload_only,
+                      polarity_split=args.polarity_split)
     if args.ground_truth:
         report.score = score(args.triage_dir, json.loads(args.ground_truth.read_text(encoding="utf-8")))
     if args.emit_selection:

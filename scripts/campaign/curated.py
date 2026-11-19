@@ -10,7 +10,8 @@ covers the selection itself (docs/llm-assisted-curation.md, section 2.5).
 WHAT IT NEVER DOES. It runs no model and imports no model client: everything here is deterministic over files and
 their sha256, which is what lets scripts/replay-campaign.py rebuild a unit's MS-DIAL inputs from the frozen decision
 files without any LLM. It writes nothing but the review log entries and the decision ledger export it is asked to
-append; it never edits a triage file, a handoff or a Catalog.
+append, and the polarity-split children plan --polarity-split derives (write_polarity_split_children, beside the
+campaign's handoff copies); it never edits a triage file, a handoff or a Catalog.
 
 LAYOUT OF ONE ACCESSION (the framework's section 2.1):
 
@@ -94,6 +95,8 @@ DECISION_KINDS = (
     "curated_selection_applied", "header_reconciliation", "cross_unit_verdict", "terminal_refusal", "person_answer",
     # A download-only unit (plan --download-only-held, 2026-11-19): planned so under the approval, and kept once downloaded.
     "download_only_planned", "download_only_kept",
+    # A polarity-split child (plan --polarity-split, 2026-11-19): planned so under the approval, linked to its parent.
+    "polarity_split_planned",
 )
 # The fields of a person_answer (a named person's answer to a question the triage or a gate raised): only a request
 # that carries a question_code and a named person becomes one (WS0 decision 8).
@@ -828,11 +831,14 @@ def validator_sha256() -> str:
 
 
 def run_validator(accession_dir: Path, *, python: str | None = None, timeout: float = 600.0,
-                  catalog_override: Path | None = None) -> dict[str, Any]:
+                  catalog_override: Path | None = None, polarity_split: Sequence[Path] = (),
+                  code_root: Path | None = None) -> dict[str, Any]:
     """scripts/validate-triage.py --json on one accession's directory, with the Catalog and listings its inputs\\
     hold: {verdict, exit_code, report, report_sha256, validator_sha256, catalog_source, listings}. `catalog_override`
     is a catalog.json read in place of inputs\\ (the replay's, for a release bundle whose handoffs were released as
-    projections: released_catalog).
+    projections: released_catalog). `polarity_split` names polarity-split children the validator checks in place of
+    their parents' payloads (--polarity-split); `code_root` the released code the records name, read in place of git
+    (--code-root).
 
     A verdict other than pass, a report that does not parse, or a validator that cannot run is never taken for a
     pass: verdict is "error" then, with why."""
@@ -844,6 +850,10 @@ def run_validator(accession_dir: Path, *, python: str | None = None, timeout: fl
         command += ["--catalog", str(catalog)]
     for listing in listings:
         command += ["--archive-listing", str(listing)]
+    for child in polarity_split:
+        command += ["--polarity-split", str(child)]
+    if code_root is not None:
+        command += ["--code-root", str(code_root)]
     record: dict[str, Any] = {
         "validator_sha256": validator_sha256(),
         "catalog_source": None if catalog is None else (
@@ -964,13 +974,19 @@ def _counts(items: Iterable[Mapping[str, Any]], key: str) -> dict[str, int]:
 
 def unit_entries(
     *, accession_dir: Path, triage_root: Path, unit_id: str, validation: Mapping[str, Any], catalog: Path | None,
+    split: Mapping[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, str]:
     """(campaign unit entries, exclusion reason or None, detail) for one Catalog unit planned from its triage.
 
     One entry for a unit without children; one per child for a unit split into single-polarity, single-acquisition
     children, keyed <unit_id>-<child_key> as a split part is. Every entry carries the curated_selection block the
-    manifest records; the plan adds the rest of the unit's fields."""
-    payload = payload_path(accession_dir, unit_id)
+    manifest records; the plan adds the rest of the unit's fields.
+
+    `split` ({path, relative_path, parent_path, parent_relative_path}, write_polarity_split_children) plans one
+    polarity-split child in place of the parent's payload: `validation` is the validator's run with the child
+    (--polarity-split), judged for this unit alone (polarity_split_verdict), and the selection binds no decision record
+    beside the child, so its crc32 and size are null, as Interactive reads a triage without one."""
+    payload = Path(split["path"]) if split is not None else payload_path(accession_dir, unit_id)
     if payload is None:
         return [], TRIAGE_MISSING, f"no triage file {accession_dir.name}/{unit_id}.json"
     raw = payload.read_bytes()
@@ -980,7 +996,12 @@ def unit_entries(
         return [], TRIAGE_UNREADABLE, f"{payload.name} is not readable JSON: {error}"
     if not isinstance(triage, dict) or triage.get("schema") not in TRIAGE_SCHEMAS or triage.get("unit_id") != unit_id:
         return [], TRIAGE_UNREADABLE, f"{payload.name} is not a triage of {unit_id} ({', '.join(TRIAGE_SCHEMAS)})"
-    if validation.get("verdict") != "pass":
+    if split is not None:
+        verdict, said = polarity_split_verdict(validation, unit_id)
+        if verdict != "pass":
+            return [], TRIAGE_NOT_PASS, (f"validate-triage.py says {verdict} for the {triage.get('unit_technical', {}).get('ion_mode')} "
+                                         f"polarity-split child of {unit_id}" + (f": {said}" if said else ""))
+    elif validation.get("verdict") != "pass":
         said = "; ".join(finding_lines(validation.get("report"))) or str(validation.get("problem") or "")
         return [], TRIAGE_NOT_PASS, f"validate-triage.py says {validation.get('verdict')} for {accession_dir.name}" + (f": {said}" if said else "")
     if triage.get("status") == "excluded":
@@ -996,7 +1017,7 @@ def unit_entries(
     if unresolved:
         return [], TRIAGE_MEMBER_UNRESOLVED, f"{len(unresolved)} kept row(s) name no archive member: {', '.join(unresolved[:5])}"
     record = record_path(payload)
-    bound = bound_listing(payload, sha256_bytes(raw))
+    bound = bound_listing(payload, sha256_bytes(raw))  # none beside a polarity-split child
     if bound["problem"]:
         return [], TRIAGE_RECORD_MISMATCH, bound["problem"]
     listing = bound["listing"]
@@ -1006,7 +1027,8 @@ def unit_entries(
     base = {
         "schema": str(triage["schema"]),
         "triage_path": str(payload.resolve()),
-        "triage_relative_path": payload.resolve().relative_to(triage_root.resolve()).as_posix(),
+        "triage_relative_path": (str(split["relative_path"]) if split is not None
+                                 else payload.resolve().relative_to(triage_root.resolve()).as_posix()),
         "triage_sha256": sha256_bytes(raw),
         "triage_record_sha256": sha256_file(record) if record.is_file() else None,
         # The listing(s) the record binds, which give the selection its crc32 and size (section 3.1).
@@ -1016,8 +1038,12 @@ def unit_entries(
         "catalog_handoff_sha256": triage.get("catalog_handoff_sha256"),
         "catalog_rows_sha256": rows_sha256(rows),
         "catalog_row_count": triage.get("catalog_row_count"),
-        "validator": {"script_sha256": validation.get("validator_sha256"), "verdict": validation.get("verdict"),
-                      "report_sha256": validation.get("report_sha256")},
+        "validator": {"script_sha256": validation.get("validator_sha256"),
+                      "verdict": polarity_split_verdict(validation, unit_id)[0] if split is not None else validation.get("verdict"),
+                      "report_sha256": validation.get("report_sha256"),
+                      # A polarity-split child's verdict is the unit's in the validator's run with the child.
+                      **({"scope": "polarity_split_unit", "accession_verdict": validation.get("verdict")}
+                         if split is not None else {})},
         "decided_by": dict(triage.get("decided_by") or {}),
         "phase": triage.get("phase"),
         "standing": "model_inference",
@@ -1029,6 +1055,11 @@ def unit_entries(
         "members_excluded": len(triage.get("excluded_members") or []),
         "members_excluded_by_reason": _counts(triage.get("excluded_members") or [], "reason"),
     }
+    if split is not None:
+        # The contract Interactive reads (polarity_split), and the parent the child was derived from: its payload in the
+        # accession directory (whose inputs\ and review log the runner reads) and its decision record.
+        base["polarity_split"] = dict(triage["polarity_split"])
+        base["derived_from"] = {**dict(triage["derived_from"]), "triage_path": str(Path(split["parent_path"]).resolve())}
     entries = []
     for child in children(triage) or [None]:
         mine = [item for item in kept if in_child(item, child)]
@@ -1055,6 +1086,99 @@ def unit_entries(
             "triage": triage,
         })
     return entries, None, ""
+
+
+# ---- a unit split by polarity (plan --polarity-split) ---------------------------------------------------------------
+
+# The author's decision of 2026-11-19: "Polarity switching units are analysed: for each file run a POS process and a NEG
+# process separately." validate-triage.py holds the rule (polarity_split_refusal) and the derivation
+# (derive_polarity_split); this side writes the two children and reads the validator's verdict on them.
+POLARITY_SPLIT_FILE = "{unit_id}.polarity-split.json"
+POLARITY_SPLIT_KEY_SUFFIX = {"positive": "pos", "negative": "neg"}
+
+
+def polarity_split_key(unit_id: str, ion_mode: str) -> str:
+    """A polarity-split child's unit key and workspace name: <unit_id>-pos or <unit_id>-neg."""
+    return f"{unit_id}-{POLARITY_SPLIT_KEY_SUFFIX[ion_mode]}"
+
+
+def polarity_split_refusal(accession_dir: Path, unit_id: str) -> str:
+    """Why the unit's current payload is not split by polarity (validate-triage.py polarity_split_refusal), or ""."""
+    payload = payload_path(accession_dir, unit_id) if accession_dir.is_dir() else None
+    if payload is None:
+        return "no triage file"
+    try:
+        triage = json.loads(payload.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        return f"{payload.name} is not readable JSON: {error}"
+    if not isinstance(triage, dict) or triage.get("unit_id") != unit_id:
+        return f"{payload.name} is not a triage of {unit_id}"
+    return str(validator_module().polarity_split_refusal(triage))
+
+
+def write_polarity_split_children(*, accession_dir: Path, triage_root: Path, unit_id: str, out_dir: Path
+                                  ) -> dict[str, dict[str, Any]]:
+    """Write the unit's two polarity-split children, <out_dir>\\handoffs\\<unit_id>-pos|neg\\<unit_id>.polarity-split.json
+    (beside the copy the runner makes there at the handoff, <unit_id>.json), and return {ion_mode: split} for
+    unit_entries. Each is derive_polarity_split of the current payload, deterministic, so a plan made again writes the
+    same bytes. Raises TriageError where the payload is not split (polarity_split_refusal says why)."""
+    refusal = polarity_split_refusal(accession_dir, unit_id)
+    if refusal:
+        raise TriageError(f"{unit_id} is not split by polarity: {refusal}")
+    payload = payload_path(accession_dir, unit_id)
+    assert payload is not None
+    raw = payload.read_bytes()
+    triage = json.loads(raw.decode("utf-8"))
+    record = record_path(payload)
+    relative = payload.resolve().relative_to(triage_root.resolve()).as_posix()
+    module = validator_module()
+    out: dict[str, dict[str, Any]] = {}
+    for mode in module.POLARITY_SPLIT_MODES:
+        child = module.derive_polarity_split(
+            triage, mode, triage_relative_path=relative, triage_sha256=sha256_bytes(raw),
+            triage_record_sha256=sha256_file(record) if record.is_file() else None)
+        folder = Path(out_dir) / "handoffs" / polarity_split_key(unit_id, mode)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / POLARITY_SPLIT_FILE.format(unit_id=unit_id)
+        data = json.dumps(child, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+        if not path.is_file() or path.read_bytes() != data:
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_bytes(data)
+            os.replace(temporary, path)
+        out[mode] = {"path": path, "relative_path": f"handoffs/{folder.name}/{path.name}", "parent_path": payload,
+                     "parent_relative_path": relative, "ion_mode": mode}
+    return out
+
+
+def polarity_split_verdict(validation: Mapping[str, Any], unit_id: str) -> tuple[str, str]:
+    """(verdict, why) for one polarity-split child in the validator's run with it (--polarity-split): pass only where the
+    run reported, nothing in the accession is an error, nothing is said of this unit and nothing of the accession as a
+    whole; a hold or an error another unit of the accession carries alone (one still waiting for a person, which the plan
+    leaves out or downloads only) does not hold the child."""
+    report = validation.get("report")
+    if not isinstance(report, Mapping):
+        return "error", str(validation.get("problem") or "the validator gave no report")
+    findings = [item for item in report.get("findings") or [] if isinstance(item, Mapping)]
+    errors = [item for item in findings if item.get("level") == "error"]
+    mine = [item for item in findings if item.get("level") in ("error", "hold") and item.get("unit") in (unit_id, None)]
+    unit = (report.get("units") or {}).get(unit_id) or {}
+    if errors or mine:
+        shown = (errors + [item for item in mine if item not in errors])[:5]
+        return ("error" if errors else "hold"), "; ".join(
+            f"[{item.get('level')}] {item.get('check')} {item.get('unit') or '-'}: {item.get('message')}" for item in shown)
+    if unit.get("status") != "ready":
+        return "error", f"the child's status in the report is {unit.get('status')!r}, not ready"
+    return "pass", ""
+
+
+def triage_home(selection: Mapping[str, Any]) -> tuple[Path, str | None, str | None]:
+    """(the payload in its accession directory, its sha256, its decision record's sha256) a selection was made from: the
+    triage itself, or a polarity-split child's parent, whose directory holds the inputs\\ and the review log."""
+    derived = selection.get("derived_from")
+    if isinstance(derived, Mapping) and derived.get("triage_path"):
+        return (Path(str(derived["triage_path"])), derived.get("triage_sha256"), derived.get("triage_record_sha256"))
+    return (Path(str(selection.get("triage_path") or "")), selection.get("triage_sha256"),
+            selection.get("triage_record_sha256"))
 
 
 # ---- a unit held for a person, planned download-only (plan --download-only-held) ------------------------------------

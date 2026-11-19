@@ -37,7 +37,7 @@ DOC = ROOT / "docs" / "llm-assisted-curation.md"
 LEDGER_KINDS = (
     "triage_recorded", "triage_validated", "manifest_approved", "unit_reopened", "triage_checked",
     "curated_selection_applied", "header_reconciliation", "cross_unit_verdict", "terminal_refusal", "person_answer",
-    "download_only_planned", "download_only_kept",
+    "download_only_planned", "download_only_kept", "polarity_split_planned",
 )
 # The review log's kinds and fields (scripts/campaign/curated.py REVIEW_LOG_KINDS at runner #60 64f7983).
 REVIEW_LOG_KINDS = {

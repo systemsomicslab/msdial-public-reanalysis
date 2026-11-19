@@ -176,6 +176,41 @@
       }
     },
     "notes": {"type": "string"},
+    "polarity_split": {
+      "description": "Present only on a polarity-split child (the author's decision of 2026-11-19), which the campaign plan derives from a needs_person parent whose only question is polarity_switching (validate-triage.py derive_polarity_split): the child's polarity, the reason, the parent's unit id and the sibling's polarity. Never written by the triage agent; a triage file holding it is refused (T-SPLIT).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ion_mode", "reason", "parent_unit_id", "sibling_ion_mode"],
+      "properties": {
+        "ion_mode": {"enum": ["positive", "negative"]},
+        "reason": {"enum": ["polarity_switching"]},
+        "parent_unit_id": {"type": "string", "minLength": 1},
+        "sibling_ion_mode": {"enum": ["positive", "negative"]}
+      }
+    },
+    "derived_from": {
+      "description": "Present only on a polarity-split child: the parent payload it was derived from (its path relative to the triage root, and its sha256), the parent's decision record sha256 (null without one), and the decision that split it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "triage_relative_path", "triage_sha256", "triage_record_sha256", "decision"],
+      "properties": {
+        "kind": {"enum": ["polarity_split"]},
+        "triage_relative_path": {"type": "string", "minLength": 1},
+        "triage_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "triage_record_sha256": {"type": ["string", "null"]},
+        "decision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["date", "decided_by", "reason", "statement"],
+          "properties": {
+            "date": {"type": "string"},
+            "decided_by": {"type": "string"},
+            "reason": {"type": "string"},
+            "statement": {"type": "string"}
+          }
+        }
+      }
+    },
     "derivation": {
       "description": "Present when the payload is the expansion of an agent-written spec (schemas/msdial-unit-triage-spec.v1.json) by scripts/expand-triage-spec.py, not hand-written: the spec's file name beside the payload, its sha256 and the expander's version. validate-triage.py re-runs the expander over the inputs the decision record binds and refuses any byte of difference (T-SPEC).",
       "type": "object",
