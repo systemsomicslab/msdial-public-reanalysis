@@ -94,6 +94,17 @@ and archive listing the agent read (<accession>\\inputs\\), and the unit is furt
   no_files (no raw file of the unit in the deposit) or shared_content_unassigned (its arm's copies are byte-identical
   to another arm's, until a post-download reassignment exists).
 
+DOWNLOAD-ONLY UNITS (plan --download-only-held, the author's decision of 2026-11-19: "In Pool A, doubtful or hard units
+may be downloaded and kept without a run, provided each is recorded with its reason"; mzXML-only units are downloaded
+and kept, their conversion to mzML comes later). With --triage-dir, a unit left out as triage_missing or triage_not_pass
+(it needs a person, abstained or is out of scope, holds mzXML only, or its accession holds for another unit) is planned
+download-only instead, unless its own triage's status is excluded or --reopen names it: no curated selection (the
+Catalog handoff's whole file list, as a plan before triage downloads), and download_only {reasons, plan_reason,
+validator_verdict, triage_status, question_codes, blocking_flags, excluded_row_reasons, triage path and sha256}. Every
+other reason still leaves a unit out. The totals and the summary count download-only units and their bytes apart from
+the run units, and say their raw data are kept; approving such a manifest covers boundary 1 (and the Class, 3) for them,
+never 4 or 5. The runner downloads such a unit and ends it kept (machine.Runner._keep_download_only).
+
 A planned unit carries curated_selection (the triage path and sha256, its decision record's and the review log head's
 sha256, the Catalog handoff and rows it was made from, the validator's sha256 and verdict, the rows kept and dropped by
 reason, the flags, and the sha256 of the selection and of the analysis inputs) and class_on_triaged_rows, and the
@@ -197,6 +208,12 @@ NOT_REPLANNED = frozenset({"done", "split_done", "downloading", "diagnosing", "r
 REOPENABLE = frozenset({"done", "split_done", "invalidated_after_done"})
 # Planning from triage files (plan --triage-dir) leaves a unit out for these too (curated.EXCLUSION_REASONS).
 TRIAGE_EXCLUSION_REASONS = curated.EXCLUSION_REASONS
+# plan --download-only-held (the author's decision of 2026-11-19), as the manifest and the summary state it.
+DOWNLOAD_ONLY_RULE = (
+    "a unit the triage holds (triage_missing, or triage_not_pass: it needs a person, abstained, is out of scope, holds "
+    "mzXML only, or its accession holds for another unit) is downloaded on the Catalog handoff's whole file list and "
+    "kept with its reasons, never run and its raw data never deleted by the campaign; the approval covers its download "
+    "(boundary 1) and its Class (boundary 3), never a run (4) or a deletion (5)")
 # The first Interactive that applies a curated selection (curated_selection_path, the integration contract's A).
 CURATED_SELECTION_INTERACTIVE = (0, 5, 69)
 ION_MOBILITY_INSTRUMENT = re.compile(r"tims|synapt|vion|6560|cyclic", re.IGNORECASE)
@@ -2075,6 +2092,7 @@ def build_manifest(
     library_paths: Mapping[str, str] | None = None,
     triage_dir: Path | None = None,
     reopen: Mapping[str, Mapping[str, Any]] | None = None,
+    download_only_held: bool = False,
 ) -> dict[str, Any]:
     """The manifest for one pool, or for a pilot of named units (`unit_ids`, pool "pilot"). `catalog` is a
     read-only Catalog; nothing is written anywhere.
@@ -2087,6 +2105,11 @@ def build_manifest(
     `reopen` (curated.read_reopen) names the done units of a --replan-from campaign to plan again, each with its reason
     code and evidence, into a workspace of its own (<unit_key>@<campaign_id>); it needs `triage_dir`, since a unit run
     again without a selection would run on the same files.
+    `download_only_held` (plan --download-only-held, the author's decision of 2026-11-19; needs `triage_dir`) plans a
+    unit the triage would leave out as triage_missing or triage_not_pass (a unit that needs a person, abstained or is out
+    of scope, an mzXML-only unit, ...) as a download-only unit instead: no curated selection (the Catalog handoff's whole
+    file list), and download_only {reasons, ...} (curated.download_only_record). The runner downloads it and ends it kept,
+    its raw data kept; it is never run. Every other exclusion stands.
 
     `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
     `ion_mobility_evidence` is the Catalog's helper, None for the fallback rule, or DETECT to look it up.
@@ -2110,6 +2133,8 @@ def build_manifest(
         # Class digests made by Catalog code older than one input per vendor container are not the
         # proposals the runner will be given (review contradiction 16).
         raise PlanError(f"Catalog {catalog_version} predates 0.6.0; its Class digests would not hold.")
+    if download_only_held and triage_dir is None:
+        raise PlanError("--download-only-held plans the units a triage holds; give the triage (--triage-dir).")
     if reopen and triage_dir is None:
         raise PlanError("--reopen plans done units again; give their triage (--triage-dir), or they would run on the same files.")
     if reopen and not replan:
@@ -2181,8 +2206,11 @@ def build_manifest(
             say(f"Class decided for {index} of {len(candidates)} units")
     triaged: dict[str, list[dict[str, Any]]] = {}
     triage_record: dict[str, Any] | None = None
+    held: dict[str, dict[str, Any]] = {}
     if triage_dir is not None:
-        remaining, triaged, triage_record = _plan_from_triage(Path(triage_dir), remaining, decisions, excluded, say)
+        remaining, triaged, triage_record = _plan_from_triage(
+            Path(triage_dir), remaining, decisions, excluded, say,
+            held=held if download_only_held else None, reopen=reopen)
     unknown_reopen = sorted(set(reopen or {}) - {unit["unit_id"] for unit in selected})
     if unknown_reopen:
         raise PlanError(f"--reopen names units this plan does not select: {', '.join(unknown_reopen[:10])}.")
@@ -2246,7 +2274,10 @@ def build_manifest(
                if fragmentation[unit["unit_id"]]["signal"] or fragmentation[unit["unit_id"]]["evidence"] == "not_read"
                else {}),
         })
-        if triage_dir is not None:
+        if str(unit["unit_id"]) in held:
+            # Downloaded and kept, never run: no curated selection, the handoff's whole file list (2026-11-19).
+            units[-1]["download_only"] = held[str(unit["unit_id"])]
+        elif triage_dir is not None:
             units[-1:] = _curated_units(units[-1], triaged.get(unit["unit_id"]) or [], campaign_id, replan, reopen)
     for order_index, unit in enumerate(units):
         unit["order_index"] = order_index
@@ -2297,6 +2328,9 @@ def build_manifest(
             "archive_floor_bytes_per_sample": ARCHIVE_FLOOR_BYTES_PER_SAMPLE,
             # Planned from triage files (2026-11-16): the further reasons a unit is left out.
             **({"triage_exclusion_reasons": list(TRIAGE_EXCLUSION_REASONS)} if triage_dir is not None else {}),
+            # plan --download-only-held (2026-11-19): the triage reasons planned download-only instead of left out.
+            **({"download_only_from": list(curated.DOWNLOAD_ONLY_FROM), "download_only_rule": DOWNLOAD_ONLY_RULE}
+               if download_only_held else {}),
             **({"units": requested, "pools": {name: SELECTION_RULES[name] for name in POOLS}} if pool == PILOT else {}),
         },
         "policy": campaign_policy.as_dict(),
@@ -2327,13 +2361,31 @@ def build_manifest(
 
 def _plan_from_triage(
     triage_dir: Path, remaining: list[dict[str, Any]], decisions: Mapping[str, Mapping[str, Any]],
-    excluded: list[dict[str, Any]], say: Callable[[str], None],
+    excluded: list[dict[str, Any]], say: Callable[[str], None], *, held: dict[str, dict[str, Any]] | None = None,
+    reopen: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, Any]]:
     """The units that pass their triage, the campaign unit entries of each, and the manifest's triage record.
 
     Each accession's set is judged once by scripts/validate-triage.py; a unit is planned only where its accession
     passes, every kept row names an archive member, and its approved Class keeps its contrast once cut to the kept
-    rows. Everything else is excluded with its reason and the validator's own words."""
+    rows. Everything else is excluded with its reason and the validator's own words.
+
+    With `held` (plan --download-only-held), a unit left out as triage_missing or triage_not_pass is planned all the
+    same, download-only: its download_only block goes into `held` by unit id (curated.download_only_record). A unit
+    --reopen names is never download-only, since it would download into the workspace of the run it replaces."""
+
+    def download_only(unit: Mapping[str, Any], folder: Path, reason: str, detail: str,
+                      validation: Mapping[str, Any] | None) -> bool:
+        if held is None or str(unit["unit_id"]) in (reopen or {}):
+            return False
+        record = curated.download_only_record(accession_dir=folder, triage_root=triage_dir, unit_id=str(unit["unit_id"]),
+                                              reason=reason, detail=detail, validation=validation)
+        if record is None:
+            return False
+        held[str(unit["unit_id"])] = record
+        kept.append(unit)
+        return True
+
     accessions: dict[str, dict[str, Any]] = {}
     sources: dict[str, Path | None] = {}
     kept: list[dict[str, Any]] = []
@@ -2342,6 +2394,8 @@ def _plan_from_triage(
         accession = str(unit["accession"])
         folder = triage_dir / accession
         if not folder.is_dir():
+            if download_only(unit, folder, curated.TRIAGE_MISSING, f"no triage directory {accession}", None):
+                continue
             excluded.append(_exclusion(unit, [curated.TRIAGE_MISSING], detail=f"no triage directory {accession}"))
             continue
         if accession not in accessions:
@@ -2356,6 +2410,9 @@ def _plan_from_triage(
             accession_dir=folder, triage_root=triage_dir, unit_id=str(unit["unit_id"]),
             validation=accessions[accession], catalog=sources[accession])
         if reason:
+            if download_only(unit, folder, reason, detail,
+                             accessions[accession] if reason == curated.TRIAGE_NOT_PASS else None):
+                continue
             excluded.append(_exclusion(unit, [reason], detail=detail))
             continue
         lost = []
@@ -2506,6 +2563,16 @@ def _totals(
     unknown = [item for item in objects if not item["size_known"]]
     kinds: dict[str, int] = {}
     pools: dict[str, int] = {}
+    # Download-only units (plan --download-only-held, 2026-11-19), counted apart from the units that run: their bytes are
+    # downloaded and kept. An object a run unit shares with one of them is in both counts (shared_with_run_units).
+    held = [unit for unit in units if unit.get("download_only")]
+    held_ids = {str(unit["unit_id"]) for unit in held}
+    run_ids = {str(unit["unit_id"]) for unit in units if not unit.get("download_only")}
+    held_objects = [item for item in objects if set(item.get("selected_consumer_unit_ids") or []) & held_ids]
+    held_reasons: dict[str, int] = {}
+    for unit in held:
+        reason = str(unit["download_only"].get("plan_reason") or "")
+        held_reasons[reason] = held_reasons.get(reason, 0) + 1
     for unit in units:
         kinds[unit["class_kind"]] = kinds.get(unit["class_kind"], 0) + 1
         pools[unit["selection_basis"]] = pools.get(unit["selection_basis"], 0) + 1
@@ -2527,6 +2594,18 @@ def _totals(
         "per_unit_known_bytes": sum(unit["known_bytes"] for unit in units),
         "class_kinds": dict(sorted(kinds.items())),
         "planned_by_pool": dict(sorted(pools.items())),
+        **({"run_units": len(units) - len(held), "download_only": {
+            "units": len(held),
+            "by_plan_reason": dict(sorted(held_reasons.items())),
+            "per_unit_known_bytes": sum(unit["known_bytes"] for unit in held),
+            "units_of_unknown_size": sum(1 for unit in held if not unit["size_known"]),
+            "distinct_objects": len(held_objects),
+            "distinct_bytes_known": sum(item["known_bytes"] for item in held_objects if item["size_known"]),
+            "distinct_bytes_lower_bound": sum(item["known_bytes"] for item in held_objects),
+            "shared_with_run_units": sum(1 for item in held_objects
+                                         if set(item.get("selected_consumer_unit_ids") or []) & run_ids),
+            "raw_data": "kept",
+        }} if held else {}),
     }
 
 
@@ -2728,6 +2807,18 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
             "review_log_head_sha256": chosen.get("review_log_head_sha256"),
             "class_on_triaged_rows": unit.get("class_on_triaged_rows"),
         }, key))
+    for unit in manifest.get("units") or []:
+        block = unit.get("download_only")
+        if not isinstance(block, Mapping):
+            continue
+        # The runner reads whether a unit is download-only from this event in the ledger, never again from the manifest
+        # file (machine.Runner._download_only), so an unreadable manifest can never make one a run unit.
+        events.append(("download_only_planned", {
+            "standing": curated.ACCEPTED_DECISION, "accession": unit["accession"], "unit_id": unit["unit_id"],
+            "rule": DOWNLOAD_ONLY_RULE, **{key: block.get(key) for key in (
+                "reasons", "plan_reason", "validator_verdict", "triage_status", "question_codes", "blocking_flags",
+                "excluded_row_reasons", "triage_relative_path", "triage_sha256")},
+        }, str(unit.get("unit_key", unit["unit_id"]))))
     for item in manifest.get("reopened") or []:
         events.append(("unit_reopened", {
             "standing": curated.ACCEPTED_DECISION, **{name: item.get(name) for name in ("reason_code", "evidence_sha256")},
@@ -2741,6 +2832,9 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
             "approved_by": approval.get("approved_by"), "covers": list(approval.get("covers") or []),
             "selections": dict(sorted(selections.items())),
             "validator_sha256": (triage.get("validator") or {}).get("sha256"),
+            # The units this approval covers for their download only (boundary 1), never a run or a deletion.
+            **({"download_only": sorted(str(key) for kind, _detail, key in events if kind == "download_only_planned")}
+               if any(kind == "download_only_planned" for kind, _detail, _key in events) else {}),
         }, None))
     return events
 
@@ -2847,7 +2941,9 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     lines.append(f"  raw retention {retention or 'not stated'}" + (
         ": each unit's raw data are deleted when the unit ends (boundary 5): once its outputs are validated, and also "
         "when it ends without validated outputs (failed after its retries, excluded or skipped), so they are not kept "
-        "for diagnosis" if retention == "delete_after_validated_output"
+        "for diagnosis" + ("; a download-only unit's raw data are kept" if any(
+            unit.get("download_only") for unit in manifest.get("units") or []) else "")
+        if retention == "delete_after_validated_output"
         else ": each unit's raw data are kept" if retention == "keep" else ""))
     lower = " at least" if totals["units_of_unknown_size"] else ""
     lines.append(f"  download groups {totals['download_groups']}, distinct objects {totals['distinct_objects']}")
@@ -2892,12 +2988,40 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
         lines += [str(line) for line in annotation["statement"]]
     else:
         lines.append("  libraries and annotation: not stated (the manifest was planned before the plan stated them)")
+    lines += download_only_text(manifest)
     lines += curated_selection_text(manifest)
     lines += template_pin_text(manifest)
     lines += correction["statement"]
     lines.append(multi_energy_aif_text((manifest.get("pins") or {}).get("console") or {}))
     lines.append(f"  manifest digest {digest}")
     return "\n".join(lines)
+
+
+def download_only_text(manifest: Mapping[str, Any]) -> list[str]:
+    """What the summary says of the download-only units (plan --download-only-held, 2026-11-19): how many, their bytes
+    apart from the run units', that their raw data are kept, what the approval covers for them, and per unit why."""
+    held = [unit for unit in manifest.get("units") or [] if unit.get("download_only")]
+    if not held:
+        return []
+    block = (manifest.get("totals") or {}).get("download_only") or {}
+    lower = " at least" if block.get("units_of_unknown_size") else ""
+    lines = [
+        f"  DOWNLOAD-ONLY {len(held)} unit(s), run units {len(manifest['units']) - len(held)}: "
+        + str((manifest.get("selection") or {}).get("download_only_rule") or DOWNLOAD_ONLY_RULE),
+        f"    download-only bytes:{lower} {block.get('distinct_bytes_known', 0) / 1000**4:.2f} TB distinct of known size "
+        f"({block.get('distinct_objects', 0)} objects, {block.get('shared_with_run_units', 0)} shared with run units), "
+        f"{block.get('per_unit_known_bytes', 0) / 1000**4:.2f} TB per unit; their raw data are KEPT whatever the "
+        "campaign's retention",
+        "    approving this manifest covers boundary 1 (download) for them, and never boundary 4 (a run) or 5 (a "
+        "deletion) for them",
+    ]
+    for reason, count in (block.get("by_plan_reason") or {}).items():
+        lines.append(f"    download-only {reason}: {count}")
+    for unit in held[:50]:
+        lines.append(f"    {unit.get('unit_key', unit['unit_id'])}: " + ", ".join(unit["download_only"].get("reasons") or []))
+    if len(held) > 50:
+        lines.append(f"    ... {len(held) - 50} more (the manifest lists every one)")
+    return lines
 
 
 def curated_selection_text(manifest: Mapping[str, Any]) -> list[str]:

@@ -49,8 +49,10 @@ from urllib.parse import quote
 # a patched Console). A ledger of schema 3 is brought to 4 when it is opened, its unit and transition tables made
 # anew with the wider list of states. 5 (2026-11-17): the terminal state invalidated_after_done, a curated unit that ran
 # and that a later cross-unit check of its download group refused (WS0 decision B); a ledger of schema 4 is brought to 5
-# the same way.
-SCHEMA_VERSION = 5
+# the same way. 6 (2026-11-20): the terminal state kept, a download-only unit (plan --download-only-held) whose raw data
+# were downloaded and are kept for a person's review, never run and never deleted by the campaign; a ledger of schema 5
+# is brought to 6 the same way.
+SCHEMA_VERSION = 6
 
 ACTIVE_STATES = (
     "pending", "class_settled", "handoff_ready",
@@ -80,9 +82,14 @@ DISPOSITION_HELD = "disposition_held"
 # of its download group refused (WS0 decision B, 2026-11-17). Terminal; its outputs and raw data are left as they are,
 # flagged invalid in its campaign record, the status export and the decision ledger, for a person to decide on.
 INVALIDATED_AFTER_DONE = "invalidated_after_done"
+# kept: a download-only unit (plan --download-only-held, the author's decision of 2026-11-19: in Pool A a doubtful or hard
+# unit may be downloaded and kept without a run, each recorded with its reason). Terminal, terminal_reason
+# download_only_kept; it never reaches a preflight or a Console, and its raw data are never deleted by the campaign.
+KEPT = "kept"
+DOWNLOAD_ONLY_KEPT = "download_only_kept"
 TERMINAL_STATES = (
     "done", "skipped", "excluded", "failed", "split_done", "stopped_no_approval", "stopped_policy_drift",
-    INVALIDATED_AFTER_DONE,
+    INVALIDATED_AFTER_DONE, KEPT,
 )
 STATES = ACTIVE_STATES + WAITING_STATES + TERMINAL_STATES
 # Where a unit waiting on something can resume: any state with work of its own.
@@ -560,12 +567,12 @@ class Ledger:
     # unit and transition (the states gate_held, contract_held), request (the action recheck_held) and runner
     # (the pauses backend, outage); 3 widened unit's threshold_step to the finer step and added the step rule's
     # columns; 4 widened the states of unit and transition (disposition_held); 5 widened them again
-    # (invalidated_after_done).
+    # (invalidated_after_done), and 6 again (kept).
     _REBUILT = {1: ("unit", "transition", "request", "runner"), 2: ("unit",), 3: ("unit", "transition"),
-                4: ("unit", "transition")}
+                4: ("unit", "transition"), 5: ("unit", "transition")}
 
     def _migrate(self, version: int) -> None:
-        """Bring a schema 1, 2, 3 or 4 ledger to SCHEMA_VERSION, in one transaction, keeping every row it holds.
+        """Bring a schema 1, 2, 3, 4 or 5 ledger to SCHEMA_VERSION, in one transaction, keeping every row it holds.
 
         SQLite cannot widen a CHECK constraint in place, so each table whose CHECK names a widened list is
         made anew from SCHEMA, filled from the old one by the old one's columns (a column a later schema

@@ -211,6 +211,16 @@ review log with only the fields section 2.4 names (by, question_code, answer, ch
 operator_request event (WS0 decision 8). Each decision step is a campaign event in the decision ledger
 (curated.DECISION_KINDS, each with its standing, with workspace-relative paths only), which campaign-runner.py
 decisions exports, append only and hash chained.
+
+DOWNLOAD-ONLY UNITS (plan --download-only-held, the author's decision of 2026-11-19). A unit the approval recorded as
+download-only (its download_only_planned event, read from the ledger, else the approved manifest's download_only) is
+downloaded as every unit is (its Class, its handoff, the disk guard, boundary 1, the shared download store and its
+claims), then, without a preflight or any Console start, ends kept (terminal_reason download_only_kept), raw disposition
+kept, with a download_only_kept event that names its reasons, its raw directory and its bytes. Its raw data are never
+deleted by the campaign, whatever the retention: _discard_raw keeps them for any ending (an operator's skip, an
+Interactive exclusion after the fetch), and its claims in the store are released without the boundary 5 approval, so the
+store never collects what its raw tree holds; a run unit of the same download group deletes only its own hardlinks.
+A kept unit is not retried (retry restarts only failed, excluded, skipped and stopped units).
 """
 
 from __future__ import annotations
@@ -268,6 +278,11 @@ INVALIDATED_AFTER_DONE_WARNING = (
     "invalidated after done: a later cross-unit check of its download group refused this unit after it had run; its "
     "outputs are kept but are not valid for redistribution, and a person decides (withdraw them, or re-triage and "
     "reopen the unit)"
+)
+# What the status export says of a download-only unit that ended kept (plan --download-only-held, 2026-11-19).
+KEPT_WARNING = (
+    "kept: a download-only unit, downloaded and kept for a person's review with its reasons; it was not run, and the "
+    "campaign never deletes its raw data"
 )
 # What the status export says of a unit in gate_held (the user's rule of 2026-10-02), and of one in
 # contract_held (that rule applied to a reply or a record the runner cannot read: "stop" is per unit).
@@ -624,6 +639,8 @@ class Runner:
         self._planned_transient = False
         # What the approval recorded of each curated unit in the ledger (its triage_recorded event), by unit key.
         self._approved: dict[str, dict[str, Any]] | None = None
+        # What the approval recorded of each download-only unit (its download_only_planned event), by unit key.
+        self._download_only_units: dict[str, dict[str, Any]] | None = None
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -717,6 +734,45 @@ class Runner:
             self._approved = {str(event["unit_key"]): _loads(event["detail_json"])
                               for event in self.ledger.events("triage_recorded") if event["unit_key"]}
         return self._approved.get(unit["unit_key"])
+
+    def _download_only(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The unit's download_only block as the approval recorded it (download_only_planned, in the ledger), else as the
+        approved manifest records it, or None for a unit that runs. The ledger first, so a manifest file that later
+        cannot be read can never make a download-only unit a run unit."""
+        if self._download_only_units is None:
+            self._download_only_units = {str(event["unit_key"]): _loads(event["detail_json"])
+                                         for event in self.ledger.events("download_only_planned") if event["unit_key"]}
+        recorded = self._download_only_units.get(unit["unit_key"])
+        if recorded is not None:
+            return recorded
+        planned = ((self._planned_units() or {}).get(unit["unit_key"]) or {}).get("download_only")
+        return dict(planned) if isinstance(planned, Mapping) else None
+
+    def _keep_download_only(self, unit: dict[str, Any], block: Mapping[str, Any]) -> bool:
+        """End a downloaded download-only unit kept: no preflight, no Console, its raw data kept for a person's review
+        (2026-11-19), with its reasons, raw directory and bytes in a download_only_kept event and its campaign record."""
+        manifest = self._manifest(unit) or {}
+        raw = str(manifest.get("raw_directory") or "")
+        size = int(unit.get("downloaded_bytes") or 0)
+        converted = (manifest.get("conversion_plan") or {}).get("outcome") if isinstance(manifest.get("conversion_plan"), Mapping) else None
+        detail = {
+            "standing": curated.DETERMINISTIC_CHECK, "reason": ledger_module.DOWNLOAD_ONLY_KEPT,
+            "reasons": list(block.get("reasons") or []), "plan_reason": block.get("plan_reason"),
+            "raw_directories": [raw] if raw else [], "downloaded_bytes": size,
+            "raw_retention": "kept", "campaign_retention": self.campaign["raw_retention_policy"],
+            # An Interactive whose campaign lease converts mzXML to mzML did so during the download; the conversion is
+            # recorded, never taken as the reviewed conversion the decision of 2026-11-19 leaves for later.
+            **({"interactive_conversion": converted} if converted else {}),
+        }
+        raw_detail = "download-only: kept for a person's review (2026-11-19); the campaign never deletes it"
+        self._write_record(unit, ledger_module.KEPT, ledger_module.DOWNLOAD_ONLY_KEPT, "kept", raw_detail)
+        self._event_once("download_only_kept", detail, unit["unit_key"])
+        self._move(unit, ledger_module.KEPT, terminal_reason=ledger_module.DOWNLOAD_ONLY_KEPT,
+                   terminal_detail=json.dumps({key: detail[key] for key in ("reasons", "plan_reason", "raw_directories",
+                                                                            "downloaded_bytes")},
+                                              ensure_ascii=False, sort_keys=True),
+                   raw_disposition="kept", raw_detail=raw_detail, detail={"step": "download_only"})
+        return True
 
     def _is_curated(self, unit: Mapping[str, Any]) -> bool:
         return self._approved_curated(unit) is not None or self._selection(unit) is not None
@@ -1889,7 +1945,9 @@ class Runner:
         event, and never changes how the unit ends."""
         if unit["role"] != "run" or not self._group_members(unit):
             return
-        deletes = self.campaign["raw_retention_policy"] == "delete_after_validated_output" and self._live("5")
+        # A download-only unit's raw data are never deleted by the campaign: its claims go without the approval.
+        deletes = (self.campaign["raw_retention_policy"] == "delete_after_validated_output" and self._live("5")
+                   and self._download_only(unit) is None)
         reason = "failed_terminal" if ending == "failed" else "excluded"
         result = self.ports.interactive.release_claims(
             workspace_root=self.campaign["workspace_root"], repository=unit["repository"], accession=unit["accession"],
@@ -2321,7 +2379,11 @@ class Runner:
         return bool(files) and verdict in ("agree", "disagree")
 
     def _state_downloaded(self, unit: dict[str, Any]) -> bool:
-        """The raw-header preflight; then Interactive's campaign_disposition says what the unit does."""
+        """The raw-header preflight; then Interactive's campaign_disposition says what the unit does. A download-only
+        unit ends kept here instead, before any preflight."""
+        held = self._download_only(unit)
+        if held is not None:
+            return self._keep_download_only(unit, held)
         if self._curated_guard(unit):
             return True
         selection = self._selection(unit)
@@ -2893,6 +2955,10 @@ class Runner:
         """One Console start, recorded before the call (the Console run and its attempt) and adopted
         from the unit manifest when the reply is lost."""
         diagnostic = kind == "tuning"
+        held = self._download_only(unit)
+        if held is not None:
+            # Never reached through the states; should a unit get here all the same, no Console starts for it.
+            return self._keep_download_only(unit, held)
         slot = self.ledger.slot()
         if slot is not None and slot["unit_key"] != unit["unit_key"]:
             return False
@@ -3751,6 +3817,8 @@ class Runner:
         manifest = self._manifest(unit) if unit["manifest_path"] else None
         if manifest is None:
             return "none", "no raw data were downloaded", None
+        if self._download_only(unit) is not None:
+            return "kept", f"download-only: the unit {ending}, its raw data kept for review (2026-11-19)", None
         release = _releases_hold(unit)
         if unit["role"] == "split_part":
             if release:
@@ -4149,6 +4217,8 @@ def unit_status(unit: Mapping[str, Any], hold: str | None = None, automatic_rt_f
         warnings.append(CONTRACT_HELD_WARNING + (f" (contract: {hold})" if hold else ""))
     elif unit["state"] == DISPOSITION_HELD:
         warnings.append(DISPOSITION_HELD_WARNING + (f" (disposition: {hold})" if hold else ""))
+    if unit["state"] == ledger_module.KEPT:
+        warnings.append(KEPT_WARNING)
     if automatic_rt_fallback:
         warnings.append(AUTOMATIC_RT_FALLBACK_WARNING)
     if unit["state"] != DISPOSITION_HELD and policy.energy_sets_differ(_loads(unit.get("disposition_json"))):
@@ -4251,6 +4321,11 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
     contract_held = [unit for unit in units if unit["state"] == "contract_held"]
     disposition_held = [unit for unit in units if unit["state"] == DISPOSITION_HELD]
     invalidated = [unit for unit in units if unit["state"] == INVALIDATED_AFTER_DONE]
+    kept = [unit for unit in units if unit["state"] == ledger_module.KEPT]
+    kept_for: dict[str, int] = {}
+    for unit in kept:
+        for code in _loads(unit.get("terminal_detail")).get("reasons") or ["unrecorded"]:
+            kept_for[str(code)] = kept_for.get(str(code), 0) + 1
     held_for = {}
     for unit in disposition_held:
         for code in _loads(unit.get("disposition_json")).get("reasons") or ["unrecorded"]:
@@ -4284,6 +4359,11 @@ def summary(ledger: ledger_module.Ledger) -> dict[str, Any]:
                                  "warning": INVALIDATED_AFTER_DONE_WARNING if invalidated else None},
         "raw_disposition": dict(sorted(raw.items())),
         "excluded_by_reason": dict(sorted(excluded_for.items())),
+        # Download-only units downloaded and kept for review, never run, their raw data never deleted (2026-11-19).
+        ledger_module.KEPT: {"units": len(kept), "unit_keys": [unit["unit_key"] for unit in kept],
+                             "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in kept),
+                             "reasons": dict(sorted(kept_for.items())),
+                             "warning": KEPT_WARNING if kept else None},
         # Still on the volume, against the rules: the disk guard sees them as used space, and so should the
         # person reading this.
         "raw_held": {"units": len(held), "downloaded_bytes": sum(int(unit["downloaded_bytes"] or 0) for unit in held),

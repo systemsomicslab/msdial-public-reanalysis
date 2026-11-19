@@ -251,9 +251,16 @@ SCHEMA_1_TABLES = (
 )
 
 
+def schema_5() -> str:
+    """The ledger's schema 5 (2026-11-17 to 2026-11-19): no kept state (the raw disposition kept stays)."""
+    text = ledger.SCHEMA.replace("'invalidated_after_done', 'kept'", "'invalidated_after_done'")
+    assert text != ledger.SCHEMA
+    return text
+
+
 def schema_4() -> str:
     """The ledger's schema 4 (2026-10-07 to 2026-11-16): no invalidated_after_done state."""
-    return ledger.SCHEMA.replace(", 'invalidated_after_done'", "")
+    return schema_5().replace(", 'invalidated_after_done'", "")
 
 
 def schema_3() -> str:
@@ -540,7 +547,8 @@ class SchemaFourMigrationTests(unittest.TestCase):
     def test_a_schema_4_ledger_is_migrated_with_every_row(self) -> None:
         with ledger.Ledger(self.old) as book:
             db = book.connection
-            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], "5")
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0],
+                             str(ledger.SCHEMA_VERSION))
             for table, rows in self.rows.items():
                 with self.subTest(table=table):
                     self.assertEqual([tuple(row) for row in db.execute(f"SELECT {self.columns[table]} FROM {table}")],
@@ -553,6 +561,67 @@ class SchemaFourMigrationTests(unittest.TestCase):
                             terminal_reason="attribution_refused", terminal_detail="{}")
             self.assertEqual(book.unit("u1")["state"], "invalidated_after_done")
             self.assertIn("invalidated_after_done", ledger.TERMINAL_STATES)
+
+
+
+class SchemaFiveMigrationTests(unittest.TestCase):
+    """A ledger of schema 5 is brought to schema 6 when it is opened: unit and transition take kept (a download-only unit,
+    2026-11-20), and every row is kept; a new ledger takes kept at once."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.world = fakes.World(Path(self.directory.name), ["u1"])
+        self.world.gate.exits.update(pre_cleanup=0, final=0)
+        self.world.run()
+        self.old = Path(self.directory.name) / "schema-5.sqlite"
+        source = sqlite3.connect(str(self.world.ledger_path))
+        target = sqlite3.connect(str(self.old))
+        try:
+            target.executescript(schema_5())
+            self.rows = {}
+            for table in SCHEMA_1_TABLES:
+                columns = [row[1] for row in target.execute(f"PRAGMA table_info({table})")]
+                rows = source.execute(f"SELECT {', '.join(columns)} FROM {table}").fetchall()
+                target.executemany(
+                    f"INSERT OR REPLACE INTO {table}({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", rows)
+                if table != "meta":
+                    self.rows[table] = (", ".join(columns), rows)
+            target.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+            target.commit()
+        finally:
+            source.close()
+            target.close()
+
+    def test_schema_5_refuses_the_kept_state(self) -> None:
+        connection = sqlite3.connect(str(self.old))
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+                connection.execute("UPDATE unit SET state = 'kept' WHERE unit_key = 'u1'")
+        finally:
+            connection.close()
+
+    def test_a_schema_5_ledger_is_migrated_and_takes_kept(self) -> None:
+        with ledger.Ledger(self.old) as book:
+            db = book.connection
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], "6")
+            for table, (columns, rows) in self.rows.items():
+                with self.subTest(table=table):
+                    self.assertEqual([tuple(row) for row in db.execute(f"SELECT {columns} FROM {table}")],
+                                     [tuple(row) for row in rows])
+            self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                db.execute("UPDATE transition SET to_state = 'done'")
+            db.execute("UPDATE unit SET state = 'kept', terminal_reason = 'download_only_kept' WHERE unit_key = 'u1'")
+            self.assertEqual(book.unit("u1")["state"], ledger.KEPT)
+
+    def test_a_new_ledger_takes_kept_and_its_reason_is_required(self) -> None:
+        self.assertIn(ledger.KEPT, ledger.TERMINAL_STATES)
+        with ledger.Ledger(self.world.ledger_path) as book:
+            db = book.connection
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "CHECK"):
+                db.execute("UPDATE unit SET state = 'kept', terminal_reason = NULL WHERE unit_key = 'u1'")
+            db.execute("UPDATE unit SET state = 'kept', terminal_reason = 'download_only_kept' WHERE unit_key = 'u1'")
 
 
 if __name__ == "__main__":
