@@ -251,8 +251,9 @@ POLARITY_OWN_DECISION = {
     "date": "2026-11-20",
     "decided_by": "author",
     "reason": POLARITY_SPLIT_REASON,
-    "statement": "A polarity-switching unit registered at one polarity, beside a unit of the other polarity over the "
-                 "same files, is run once at its own polarity.",
+    # The author's words in chat, verbatim, answering the recommendation to run each unit at its own polarity.
+    "statement": "13単位は推奨でお願いします (accepted recommendation: a polarity-switching unit registered at one "
+                 "polarity, beside a unit of the other polarity over the same files, is run once at its own polarity)",
 }
 POLARITY_OWN_KEYS = (*POLARITY_SPLIT_KEYS, "partner_unit_id")
 DERIVED_FROM_KEYS = ("kind", "triage_relative_path", "triage_sha256", "triage_record_sha256", "decision")
