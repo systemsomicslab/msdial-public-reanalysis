@@ -220,6 +220,27 @@ kept, with a download_only_kept event that names its reasons, its raw directory 
 deleted by the campaign, whatever the retention: _discard_raw keeps them for any ending (an operator's skip, an
 Interactive exclusion after the fetch), and its claims in the store are released without the boundary 5 approval, so the
 store never collects what its raw tree holds; a run unit of the same download group deletes only its own hardlinks.
+
+POLARITY-SPLIT UNITS (plan --polarity-split, the author's decision of 2026-11-19). The two children of a polarity-
+switching unit, <unit_id>-pos and <unit_id>-neg, are two run units of one Catalog unit and one download group, each in
+its own workspace with a curated selection derived from the parent's triage (curated_selection.polarity_split,
+recorded at the approval as polarity_split_planned). They run one after the other, as every unit does (one Console at a
+time; the plan puts them side by side, and with the wait below the child that downloads second runs first). Their raw
+data follow the rules of a shared
+download group, unchanged: both carry a selection, so the first to be preflighted waits until its sibling holds a unit
+manifest (or ended before its download) before the cross-unit check (WS0 decision B), and neither runs before both
+have downloaded; each downloads into its own workspace as hardlinks to the store's one copy, so a child's cleanup after
+its validated outputs, or its discard after a failure or an exclusion, deletes only its own hardlinks, and the bytes go
+once both children's trees are gone. Interactive (0.5.70) keys each child as <unit_id>-pos or <unit_id>-neg (its
+analysis_unit_id, its manifest and approval entry, its store claims), so the runner pre-claims and releases a child's
+claims under that key (_store_unit_id) and a sibling's release never takes them; Interactive deletes raw data only
+through these per-unit cleanup and discard calls. A child whose files hold no scan of its polarity is excluded at its
+preflight (polarity_split_no_scans_of_child_polarity) as any unit is, and its sibling still runs. A sibling that ended
+before its download (a failure, a skip) releases its claims as any unit of a group does, and the other child then
+downloads on its own. The check never compares the two children with each
+other, whose identical inputs at opposite polarities the decision allows (rule D would refuse the second); each is
+compared with the group's other units as before, and with none it is not applicable (polarity_split_sibling). The
+triaged handoff and the review log are read beside the parent's triage (curated.triage_home).
 A kept unit is not retried (retry restarts only failed, excluded, skipped and stopped units).
 """
 
@@ -641,6 +662,8 @@ class Runner:
         self._approved: dict[str, dict[str, Any]] | None = None
         # What the approval recorded of each download-only unit (its download_only_planned event), by unit key.
         self._download_only_units: dict[str, dict[str, Any]] | None = None
+        # What the approval recorded of each polarity-split child (its polarity_split_planned event), by unit key.
+        self._polarity_split_units: dict[str, dict[str, Any]] | None = None
 
     # ---- time and small helpers ------------------------------------------------------------------
 
@@ -773,6 +796,31 @@ class Runner:
                                               ensure_ascii=False, sort_keys=True),
                    raw_disposition="kept", raw_detail=raw_detail, detail={"step": "download_only"})
         return True
+
+    def _polarity_split(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The unit's polarity split as the approval recorded it (polarity_split_planned, in the ledger: parent_unit_id,
+        ion_mode, sibling_unit_key), else as the approved manifest records it, or None for a unit that is no child."""
+        if self._polarity_split_units is None:
+            self._polarity_split_units = {str(event["unit_key"]): _loads(event["detail_json"])
+                                          for event in self.ledger.events("polarity_split_planned") if event["unit_key"]}
+        found = self._polarity_split_units.get(unit["unit_key"])
+        if found is None:
+            planned = ((self._planned_units() or {}).get(unit["unit_key"]) or {}).get("polarity_split")
+            found = dict(planned) if isinstance(planned, Mapping) else None
+        return found
+
+    def _store_unit_id(self, unit: Mapping[str, Any]) -> str:
+        """The id a unit's claims in the download store carry: Interactive (0.5.70) keys a polarity-split child by its
+        run key, <unit_id>-pos or <unit_id>-neg (its analysis_unit_id), so each child holds claims of its own and a
+        sibling's release never takes them; any other unit by its Catalog unit id."""
+        return str(unit["unit_key"]) if self._polarity_split(unit) else str(unit["catalog_unit_id"])
+
+    def _polarity_siblings(self, unit: Mapping[str, Any], other: Mapping[str, Any]) -> bool:
+        """Whether two units are the two polarity-split children of one parent (2026-11-19)."""
+        mine, theirs = self._polarity_split(unit), self._polarity_split(other)
+        return bool(mine and theirs and mine.get("parent_unit_id") == theirs.get("parent_unit_id")
+                    and str(unit["catalog_unit_id"]) == str(other["catalog_unit_id"])
+                    and mine.get("ion_mode") != theirs.get("ion_mode"))
 
     def _is_curated(self, unit: Mapping[str, Any]) -> bool:
         return self._approved_curated(unit) is not None or self._selection(unit) is not None
@@ -907,9 +955,10 @@ class Runner:
         source = None
         difference: dict[str, Any] | None = None
         if triaged:
+            # A polarity-split child's triaged bytes are its parent's, beside the parent's triage (curated.triage_home).
+            home, home_sha256, home_record_sha256 = curated.triage_home(selection)
             for candidate in curated.triaged_handoff_candidates(
-                    Path(str(selection.get("triage_path") or "")), unit["catalog_unit_id"],
-                    selection.get("triage_record_sha256"), str(selection.get("triage_sha256") or "")):
+                    home, unit["catalog_unit_id"], home_record_sha256, str(home_sha256 or "")):
                 try:
                     if candidate.is_file() and curated.sha256_file(candidate) == triaged:
                         source = candidate
@@ -1915,13 +1964,13 @@ class Runner:
         if not siblings:
             return
         names = [str(item["catalog_unit_id"]) for item in siblings]
-        listed = self.ports.catalog.download_objects(names)
+        listed = self.ports.catalog.download_objects(list(dict.fromkeys(names)))
         result: Mapping[str, Any] = listed
         if listed.get("ok") is not False:
             urls = listed.get("units") or {}
             units = [
-                {"analysis_unit_id": name, "repository": item["repository"], "accession": item["accession"],
-                 "objects": [{"url": url} for url in urls.get(name) or []]}
+                {"analysis_unit_id": self._store_unit_id(item), "repository": item["repository"],
+                 "accession": item["accession"], "objects": [{"url": url} for url in urls.get(name) or []]}
                 for name, item in zip(names, siblings) if urls.get(name)
             ]
             if not units:
@@ -1951,7 +2000,7 @@ class Runner:
         reason = "failed_terminal" if ending == "failed" else "excluded"
         result = self.ports.interactive.release_claims(
             workspace_root=self.campaign["workspace_root"], repository=unit["repository"], accession=unit["accession"],
-            unit_id=str(unit["catalog_unit_id"]), reason=reason,
+            unit_id=self._store_unit_id(unit), reason=reason,
             authorization_path=self._authorization(unit) if deletes else "",
         )
         if result.get("ok") is False:
@@ -2335,8 +2384,9 @@ class Runner:
                         unit["unit_key"])
             return
         try:
-            curated.append_review_log(Path(str(selection["triage_path"])).parent, kind, selection.get("triage_sha256"),
-                                      self.stamp(), **self.redact(dict(fields)))
+            # A polarity-split child's entries go to its parent's accession, under the parent's decision id.
+            home, home_sha256, _record = curated.triage_home(selection)
+            curated.append_review_log(home.parent, kind, home_sha256, self.stamp(), **self.redact(dict(fields)))
         except (OSError, curated.TriageError) as error:
             self._event("review_log_not_appended", {"kind": kind, "detail": f"{type(error).__name__}: {error}"}, unit["unit_key"])
 
@@ -2736,10 +2786,24 @@ class Runner:
             # already ran (second review of PR #60, finding 2).
             others = [item for item in siblings if item["manifest_path"] and Path(str(item["manifest_path"])).is_file()
                       and (item["state"] not in ledger_module.TERMINAL_STATES or item["state"] in self._RAN_STATES)]
+            # A polarity-split child's sibling reads the same files at the other polarity, as the decision of 2026-11-19
+            # has it: the barrier above waited for it, so both hold their raw data before either runs, but the two are
+            # never compared (rule D would refuse the second for its identical inputs).
+            # Nor are two children compared with each other when a third unit of the group is checked.
+            polarity, compared = [], [unit]
+            for item in others:
+                if any(self._polarity_siblings(member, item) for member in compared):
+                    polarity.append(item["unit_key"])
+                else:
+                    compared.append(item)
+            others = compared[1:]
             if not others:
                 verdict = {"standing": curated.DETERMINISTIC_CHECK, "group": group, "units": [unit["unit_key"]],
-                           "verdict": "not_applicable", "reason": "single_member", "refused": {},
-                           "detail": "every sibling ended before its manifest held inputs; nothing to compare with"}
+                           "verdict": "not_applicable", "reason": "polarity_split_sibling" if polarity else "single_member",
+                           "refused": {},
+                           "detail": (f"compared with no unit: its only sibling with inputs is a polarity-split sibling "
+                                      f"({', '.join(polarity)}) on the same files at the other polarity (2026-11-19)")
+                           if polarity else "every sibling ended before its manifest held inputs; nothing to compare with"}
                 self._event("cross_unit_verdict", verdict, unit["unit_key"])
                 return None
             members = sorted([unit] + others, key=lambda item: (item["unit_key"] not in passed, item["order_index"], item["unit_key"]))

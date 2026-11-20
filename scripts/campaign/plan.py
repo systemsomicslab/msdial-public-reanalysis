@@ -105,6 +105,17 @@ other reason still leaves a unit out. The totals and the summary count download-
 the run units, and say their raw data are kept; approving such a manifest covers boundary 1 (and the Class, 3) for them,
 never 4 or 5. The runner downloads such a unit and ends it kept (machine.Runner._keep_download_only).
 
+POLARITY-SPLIT UNITS (plan --polarity-split, the author's decision of 2026-11-19: "Polarity switching units are
+analysed: for each file run a POS process and a NEG process separately"). With --triage-dir, a unit whose triage waits
+for a person on polarity_switching alone (validate-triage.py polarity_split_refusal: status needs_person, every question
+polarity_switching, no other blocking flag, unit ion mode switching, every such row naming its member) becomes two run
+units, <unit_id>-pos and <unit_id>-neg, in its own download group, each with the curated selection of a child payload
+derive_polarity_split writes under the campaign's handoffs\\<unit_key>\\ (curated.write_polarity_split_children), which
+the validator checks in place of the parent (--polarity-split) and must pass for that unit. Both use the unit's Class
+decision; the summary names the parents and counts their bytes once (POLARITY-SPLIT); the approval records
+polarity_split_planned per child. A unit the decision does not reach falls back as before: download-only with
+--download-only-held, else left out.
+
 A planned unit carries curated_selection (the triage path and sha256, its decision record's and the review log head's
 sha256, the Catalog handoff and rows it was made from, the validator's sha256 and verdict, the rows kept and dropped by
 reason, the flags, and the sha256 of the selection and of the analysis inputs) and class_on_triaged_rows, and the
@@ -246,6 +257,12 @@ MINIMUM_CATALOG_VERSION = (0, 6, 1)
 
 class PlanError(ValueError):
     """The plan cannot be made as asked; nothing was written."""
+
+
+POLARITY_SPLIT_MODES = ("positive", "negative")
+POLARITY_SPLIT_RULE = (
+    "the author's decision of 2026-11-19: a unit held only on polarity_switching runs twice on the same files, once "
+    "positive and once negative, one after the other; its raw data are deleted only after both have ended")
 
 
 def _version(text: str) -> tuple[int, ...]:
@@ -2093,6 +2110,7 @@ def build_manifest(
     triage_dir: Path | None = None,
     reopen: Mapping[str, Mapping[str, Any]] | None = None,
     download_only_held: bool = False,
+    polarity_split_dir: Path | None = None,
 ) -> dict[str, Any]:
     """The manifest for one pool, or for a pilot of named units (`unit_ids`, pool "pilot"). `catalog` is a
     read-only Catalog; nothing is written anywhere.
@@ -2110,6 +2128,9 @@ def build_manifest(
     of scope, an mzXML-only unit, ...) as a download-only unit instead: no curated selection (the Catalog handoff's whole
     file list), and download_only {reasons, ...} (curated.download_only_record). The runner downloads it and ends it kept,
     its raw data kept; it is never run. Every other exclusion stands.
+    `polarity_split_dir` (plan --polarity-split, 2026-11-19; needs `triage_dir`) is the folder whose handoffs\\ receives
+    the polarity-split children of each unit held on polarity_switching alone, planned as two run units (curated
+    write_polarity_split_children); the only thing the plan writes besides its manifest.
 
     `replan` is replan_states() of the prior campaigns whose unfinished units may be planned again.
     `ion_mobility_evidence` is the Catalog's helper, None for the fallback rule, or DETECT to look it up.
@@ -2135,6 +2156,8 @@ def build_manifest(
         raise PlanError(f"Catalog {catalog_version} predates 0.6.0; its Class digests would not hold.")
     if download_only_held and triage_dir is None:
         raise PlanError("--download-only-held plans the units a triage holds; give the triage (--triage-dir).")
+    if polarity_split_dir is not None and triage_dir is None:
+        raise PlanError("--polarity-split splits the units a triage holds on polarity_switching; give the triage (--triage-dir).")
     if reopen and triage_dir is None:
         raise PlanError("--reopen plans done units again; give their triage (--triage-dir), or they would run on the same files.")
     if reopen and not replan:
@@ -2210,7 +2233,7 @@ def build_manifest(
     if triage_dir is not None:
         remaining, triaged, triage_record = _plan_from_triage(
             Path(triage_dir), remaining, decisions, excluded, say,
-            held=held if download_only_held else None, reopen=reopen)
+            held=held if download_only_held else None, reopen=reopen, split_dir=polarity_split_dir)
     unknown_reopen = sorted(set(reopen or {}) - {unit["unit_id"] for unit in selected})
     if unknown_reopen:
         raise PlanError(f"--reopen names units this plan does not select: {', '.join(unknown_reopen[:10])}.")
@@ -2331,6 +2354,10 @@ def build_manifest(
             # plan --download-only-held (2026-11-19): the triage reasons planned download-only instead of left out.
             **({"download_only_from": list(curated.DOWNLOAD_ONLY_FROM), "download_only_rule": DOWNLOAD_ONLY_RULE}
                if download_only_held else {}),
+            # plan --polarity-split (2026-11-19): the decision that splits a unit held on polarity_switching alone.
+            **({"polarity_split_rule": POLARITY_SPLIT_RULE,
+                "polarity_split_decision": dict(curated.validator_module().POLARITY_SPLIT_DECISION)}
+               if polarity_split_dir is not None else {}),
             **({"units": requested, "pools": {name: SELECTION_RULES[name] for name in POOLS}} if pool == PILOT else {}),
         },
         "policy": campaign_policy.as_dict(),
@@ -2362,7 +2389,7 @@ def build_manifest(
 def _plan_from_triage(
     triage_dir: Path, remaining: list[dict[str, Any]], decisions: Mapping[str, Mapping[str, Any]],
     excluded: list[dict[str, Any]], say: Callable[[str], None], *, held: dict[str, dict[str, Any]] | None = None,
-    reopen: Mapping[str, Mapping[str, Any]] | None = None,
+    reopen: Mapping[str, Mapping[str, Any]] | None = None, split_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, Any]]:
     """The units that pass their triage, the campaign unit entries of each, and the manifest's triage record.
 
@@ -2372,7 +2399,13 @@ def _plan_from_triage(
 
     With `held` (plan --download-only-held), a unit left out as triage_missing or triage_not_pass is planned all the
     same, download-only: its download_only block goes into `held` by unit id (curated.download_only_record). A unit
-    --reopen names is never download-only, since it would download into the workspace of the run it replaces."""
+    --reopen names is never download-only, since it would download into the workspace of the run it replaces.
+
+    With `split_dir` (plan --polarity-split), a unit of an accession that does not pass whose own payload the decision
+    of 2026-11-19 splits (curated.polarity_split_refusal) has its two children written under <split_dir>\\handoffs\\
+    and validated in place of the parent, one validator run per polarity and accession; each child that passes for its
+    unit is an entry. A unit whose children do not both pass falls back to download-only or exclusion, as before, with
+    the children's findings in the detail. A unit --reopen names is never split."""
 
     def download_only(unit: Mapping[str, Any], folder: Path, reason: str, detail: str,
                       validation: Mapping[str, Any] | None) -> bool:
@@ -2390,6 +2423,63 @@ def _plan_from_triage(
     sources: dict[str, Path | None] = {}
     kept: list[dict[str, Any]] = []
     entries_of: dict[str, list[dict[str, Any]]] = {}
+    split_runs: dict[str, dict[str, dict[str, Any]]] = {}  # accession -> ion mode -> validation with its children
+    split_files: dict[str, dict[str, dict[str, Any]]] = {}  # unit id -> ion mode -> child (write_polarity_split_children)
+    split_records: dict[str, dict[str, Any]] = {}
+
+    def split_candidates(accession: str, folder: Path) -> list[str]:
+        """The units of the accession the plan selects whose payloads the decision splits, children written."""
+        found = []
+        for other in remaining:
+            uid = str(other["unit_id"])
+            if str(other["accession"]) != accession or uid in (reopen or {}):
+                continue
+            if uid not in split_files and not curated.polarity_split_refusal(folder, uid):
+                split_files[uid] = curated.write_polarity_split_children(
+                    accession_dir=folder, triage_root=triage_dir, unit_id=uid, out_dir=Path(split_dir))
+            if uid in split_files:
+                found.append(uid)
+        return found
+
+    def polarity_split(unit: Mapping[str, Any], folder: Path) -> tuple[list[dict[str, Any]] | None, str]:
+        """The unit's two polarity-split entries, or (None, why not)."""
+        accession, uid = str(unit["accession"]), str(unit["unit_id"])
+        if split_dir is None or uid in (reopen or {}):
+            return None, ""
+        refusal = curated.polarity_split_refusal(folder, uid)
+        if refusal:
+            return None, ""
+        candidates = split_candidates(accession, folder)
+        if accession not in split_runs:
+            split_runs[accession] = {}
+            for mode in POLARITY_SPLIT_MODES:
+                split_runs[accession][mode] = curated.run_validator(
+                    folder, polarity_split=[split_files[other][mode]["path"] for other in candidates])
+                say(f"triage {accession}: validate-triage.py with the {mode} polarity-split children of "
+                    f"{len(candidates)} unit(s) says {split_runs[accession][mode]['verdict']}")
+        entries, why = [], []
+        for mode in POLARITY_SPLIT_MODES:
+            found, reason, detail = curated.unit_entries(
+                accession_dir=folder, triage_root=triage_dir, unit_id=uid, validation=split_runs[accession][mode],
+                catalog=sources.get(accession), split=split_files[uid][mode])
+            if reason:
+                why.append(f"{mode}: {reason}: {detail}")
+                continue
+            entries += found
+        split_records[uid] = {
+            "accession": accession,
+            "children": {mode: {key: (str(value) if isinstance(value, Path) else value)
+                                for key, value in split_files[uid][mode].items() if key in ("relative_path", "ion_mode")}
+                         for mode in POLARITY_SPLIT_MODES},
+            "validations": {mode: {key: split_runs[accession][mode].get(key) for key in ("verdict", "exit_code", "report_sha256")}
+                            for mode in POLARITY_SPLIT_MODES},
+            "planned": not why,
+            **({"not_planned_because": why} if why else {}),
+        }
+        if why:
+            return None, "polarity split not planned (" + "; ".join(why) + ")"
+        return entries, ""
+
     for unit in remaining:
         accession = str(unit["accession"])
         folder = triage_dir / accession
@@ -2409,6 +2499,13 @@ def _plan_from_triage(
         entries, reason, detail = curated.unit_entries(
             accession_dir=folder, triage_root=triage_dir, unit_id=str(unit["unit_id"]),
             validation=accessions[accession], catalog=sources[accession])
+        if reason == curated.TRIAGE_NOT_PASS:
+            split, why = polarity_split(unit, folder)
+            if split is not None:
+                entries = split
+                reason = None
+            elif why:
+                detail = f"{detail}; {why}"
         if reason:
             if download_only(unit, folder, reason, detail,
                              accessions[accession] if reason == curated.TRIAGE_NOT_PASS else None):
@@ -2436,6 +2533,8 @@ def _plan_from_triage(
                         **({"problem": validation["problem"]} if validation.get("problem") else {})}
             for accession, validation in sorted(accessions.items())
         },
+        # plan --polarity-split: each unit the decision reached, its children and the validator's runs with them.
+        **({"polarity_split": dict(sorted(split_records.items()))} if split_dir is not None else {}),
     }
     return kept, entries_of, record
 
@@ -2451,7 +2550,9 @@ def _curated_units(
     reopened = (reopen or {}).get(str(unit["unit_id"]))
     for entry in entries:
         child = entry["child"]
-        key = str(unit["unit_id"]) if child is None else f"{unit['unit_id']}-{child['child_key']}"
+        split = entry["curated_selection"].get("polarity_split")
+        key = (curated.polarity_split_key(str(unit["unit_id"]), split["ion_mode"]) if split
+               else str(unit["unit_id"]) if child is None else f"{unit['unit_id']}-{child['child_key']}")
         item = copy.deepcopy(unit)
         item["unit_key"] = key
         item["workspace_name"] = f"{key}@{campaign_id}" if reopened else key
@@ -2466,6 +2567,12 @@ def _curated_units(
         if child is not None:
             item["ion_mode"] = str(child.get("ion_mode") or "").capitalize() or item["ion_mode"]
             item["acquisition_mode"] = str(child.get("acquisition_mode") or "") or item["acquisition_mode"]
+        if split:
+            # One polarity of a polarity-switching unit (2026-11-19): the parent and the sibling, for the summary, the
+            # approval's polarity_split_planned and the runner's cross-unit check.
+            item["ion_mode"] = str(split["ion_mode"]).capitalize()
+            item["polarity_split"] = {"parent_unit_id": str(unit["unit_id"]), "ion_mode": split["ion_mode"],
+                                      "sibling_unit_key": curated.polarity_split_key(str(unit["unit_id"]), split["sibling_ion_mode"])}
         if reopened:
             prior = (item.get("replanned_from") or {}).get("campaign_id")
             item["reopened_from"] = {"campaign_id": prior,
@@ -2567,6 +2674,9 @@ def _totals(
     # downloaded and kept. An object a run unit shares with one of them is in both counts (shared_with_run_units).
     held = [unit for unit in units if unit.get("download_only")]
     held_ids = {str(unit["unit_id"]) for unit in held}
+    # Polarity-split children (2026-11-19): two run units of one Catalog unit, on the same files; bytes counted once.
+    split = [unit for unit in units if unit.get("polarity_split")]
+    split_parents = {str(unit["unit_id"]): unit for unit in split}
     run_ids = {str(unit["unit_id"]) for unit in units if not unit.get("download_only")}
     held_objects = [item for item in objects if set(item.get("selected_consumer_unit_ids") or []) & held_ids]
     held_reasons: dict[str, int] = {}
@@ -2591,7 +2701,9 @@ def _totals(
         ),
         "units_of_unknown_size": sum(1 for unit in units if not unit["size_known"]),
         "units_with_archives": sum(1 for unit in units if unit["has_archive"]),
-        "per_unit_known_bytes": sum(unit["known_bytes"] for unit in units),
+        # Each planned unit's bytes, a polarity-split parent's once (its two children read the same files).
+        "per_unit_known_bytes": sum(unit["known_bytes"] for unit in units
+                                    if not (unit.get("polarity_split") or {}).get("ion_mode") == "negative"),
         "class_kinds": dict(sorted(kinds.items())),
         "planned_by_pool": dict(sorted(pools.items())),
         **({"run_units": len(units) - len(held), "download_only": {
@@ -2606,6 +2718,12 @@ def _totals(
                                          if set(item.get("selected_consumer_unit_ids") or []) & run_ids),
             "raw_data": "kept",
         }} if held else {}),
+        **({"polarity_split": {
+            "parents": len(split_parents),
+            "children": len(split),
+            "parent_known_bytes": sum(int(unit["known_bytes"] or 0) for unit in split_parents.values()),
+            "parents_of_unknown_size": sum(1 for unit in split_parents.values() if not unit["size_known"]),
+        }} if split else {}),
     }
 
 
@@ -2798,6 +2916,12 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
             "selection_canonical_form": chosen.get("selection_canonical_form"),
             "selection_listings": chosen.get("selection_listings"),
             "analysis_inputs_sha256": chosen.get("analysis_inputs_sha256"),
+            # A polarity-split child (2026-11-19): its triage is derived from the parent payload named here, which is
+            # the one in the triage directory (scripts/verify-decision-log.py checks the parent there).
+            **({"polarity_split": dict(chosen["polarity_split"]),
+                "derived_from": {name: (chosen.get("derived_from") or {}).get(name)
+                                 for name in ("kind", "triage_relative_path", "triage_sha256", "triage_record_sha256")}}
+               if isinstance(chosen.get("polarity_split"), Mapping) else {}),
         }, key))
         events.append(("triage_validated", {
             "standing": curated.DETERMINISTIC_CHECK, "accession": unit["accession"],
@@ -2819,6 +2943,23 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
                 "reasons", "plan_reason", "validator_verdict", "triage_status", "question_codes", "blocking_flags",
                 "excluded_row_reasons", "triage_relative_path", "triage_sha256")},
         }, str(unit.get("unit_key", unit["unit_id"]))))
+    for unit in manifest.get("units") or []:
+        block = unit.get("polarity_split")
+        chosen = unit.get("curated_selection")
+        if not isinstance(block, Mapping) or not isinstance(chosen, Mapping):
+            continue
+        # One polarity of a polarity-switching unit, linked to its parent and sibling (the decision of 2026-11-19).
+        events.append(("polarity_split_planned", {
+            "standing": curated.ACCEPTED_DECISION, "accession": unit["accession"], "unit_id": unit["unit_id"],
+            "parent_unit_id": block.get("parent_unit_id"), "ion_mode": block.get("ion_mode"),
+            "sibling_unit_key": block.get("sibling_unit_key"), "rule": POLARITY_SPLIT_RULE,
+            "decision": dict(curated.validator_module().POLARITY_SPLIT_DECISION),
+            "child_relative_path": chosen.get("triage_relative_path"), "child_sha256": chosen.get("triage_sha256"),
+            "parent_relative_path": (chosen.get("derived_from") or {}).get("triage_relative_path"),
+            "parent_sha256": (chosen.get("derived_from") or {}).get("triage_sha256"),
+            "parent_record_sha256": (chosen.get("derived_from") or {}).get("triage_record_sha256"),
+            "validator_verdict": (chosen.get("validator") or {}).get("verdict"),
+        }, str(unit.get("unit_key", unit["unit_id"]))))
     for item in manifest.get("reopened") or []:
         events.append(("unit_reopened", {
             "standing": curated.ACCEPTED_DECISION, **{name: item.get(name) for name in ("reason_code", "evidence_sha256")},
@@ -2835,6 +2976,8 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
             # The units this approval covers for their download only (boundary 1), never a run or a deletion.
             **({"download_only": sorted(str(key) for kind, _detail, key in events if kind == "download_only_planned")}
                if any(kind == "download_only_planned" for kind, _detail, _key in events) else {}),
+            **({"polarity_split": sorted(str(key) for kind, _detail, key in events if kind == "polarity_split_planned")}
+               if any(kind == "polarity_split_planned" for kind, _detail, _key in events) else {}),
         }, None))
     return events
 
@@ -2989,6 +3132,7 @@ def summary_text(manifest: Mapping[str, Any], digest: str) -> str:
     else:
         lines.append("  libraries and annotation: not stated (the manifest was planned before the plan stated them)")
     lines += download_only_text(manifest)
+    lines += polarity_split_text(manifest)
     lines += curated_selection_text(manifest)
     lines += template_pin_text(manifest)
     lines += correction["statement"]
@@ -3021,6 +3165,28 @@ def download_only_text(manifest: Mapping[str, Any]) -> list[str]:
         lines.append(f"    {unit.get('unit_key', unit['unit_id'])}: " + ", ".join(unit["download_only"].get("reasons") or []))
     if len(held) > 50:
         lines.append(f"    ... {len(held) - 50} more (the manifest lists every one)")
+    return lines
+
+
+def polarity_split_text(manifest: Mapping[str, Any]) -> list[str]:
+    """The POLARITY-SPLIT block of the summary: each parent, its two children and its bytes, counted once."""
+    split = [unit for unit in manifest.get("units") or [] if unit.get("polarity_split")]
+    if not split:
+        return []
+    block = (manifest.get("totals") or {}).get("polarity_split") or {}
+    parents: dict[str, list[Mapping[str, Any]]] = {}
+    for unit in split:
+        parents.setdefault(str(unit["unit_id"]), []).append(unit)
+    lines = [
+        f"POLARITY-SPLIT {block.get('parents', len(parents))} unit(s) into {block.get('children', len(split))} run units, "
+        f"{block.get('parent_known_bytes', 0) / 1e12:.3f} TB known (counted once): "
+        + str((manifest.get("selection") or {}).get("polarity_split_rule") or POLARITY_SPLIT_RULE),
+    ]
+    for parent, children in sorted(parents.items()):
+        first = children[0]
+        lines.append(f"    {first['repository']}/{first['accession']}/{parent} -> "
+                     + ", ".join(sorted(str(child.get("unit_key")) for child in children))
+                     + f" ({int(first['known_bytes'] or 0) / 1e9:.2f} GB, group {first['group_id']})")
     return lines
 
 

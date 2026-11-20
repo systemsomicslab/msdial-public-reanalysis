@@ -24,7 +24,9 @@ Refused, each as a finding of level "error":
 - D-ENTRY: a ledger line of a kind the export does not write (curated.DECISION_KINDS).
 - D-PATH: a ledger line that holds an absolute path (a drive letter, UNC or user profile path).
 - D-TRIAGE: a triage_recorded line whose triage_sha256 is no payload's sha256, or whose triage_relative_path names a
-  file that does not hash to it.
+  file that does not hash to it. For a polarity-split child (derived_from, the decision of 2026-11-19) the parent it
+  names is the payload checked so, and the child, under the campaign's handoffs folder, must hash to the line's
+  triage_sha256 where the directory holds it.
 - D-HEAD: a triage_validated line whose review_log_head_sha256 is not the sha256 of a line of its accession's review
   log (null passes: the log was empty when the plan was made).
 
@@ -300,7 +302,7 @@ def read_ledger(path: Path) -> tuple[list[bytes], list[dict[str, Any] | None]]:
 
 
 def check_ledger(report: Report, path: Path, lines: list[bytes], entries: list[dict[str, Any] | None],
-                 root: Path | None, accessions: Mapping[str, Accession]) -> None:
+                 root: Path | None, accessions: Mapping[str, Accession], directory: Path | None = None) -> None:
     where = path.name
     previous = None
     for index, (line, entry) in enumerate(zip(lines, entries), start=1):
@@ -331,6 +333,16 @@ def check_ledger(report: Report, path: Path, lines: list[bytes], entries: list[d
         if entry.get("kind") == "triage_recorded":
             sha = detail.get("triage_sha256")
             relative = str(detail.get("triage_relative_path") or "")
+            derived = detail.get("derived_from") if isinstance(detail.get("derived_from"), Mapping) else None
+            if derived is not None:
+                # A polarity-split child: the child sits under the campaign's handoffs\ and hashes to the line's sha256
+                # where it is there; the payload in the triage directory is its parent, checked as any triage is.
+                child = (Path(directory) / relative) if directory is not None and relative else None
+                if child is not None and child.is_file() and sha256_bytes(child.read_bytes()) != sha:
+                    report.add("error", "D-TRIAGE", where, f"line {index} (triage_recorded, {key}) names the polarity-split "
+                               f"child {relative}, which does not hash to {sha}", index)
+                sha = derived.get("triage_sha256")
+                relative = str(derived.get("triage_relative_path") or "")
             if relative:
                 folder_of[key] = relative.replace("\\", "/").rsplit("/", 1)[0] if "/" in relative.replace("\\", "/") else ""
             if root is None:
@@ -374,7 +386,7 @@ def verify(directory: Path, triage_dir: Path | None = None) -> Report:
         report.accessions[name] = {"payloads": len(accession.payloads), "review_log_lines": len(accession.lines),
                                    "review_log_head_sha256": accession.line_sha256[-1] if accession.line_sha256 else None}
     if ledger_path.is_file():
-        check_ledger(report, ledger_path, lines, entries, root, accessions)
+        check_ledger(report, ledger_path, lines, entries, root, accessions, directory)
     else:
         report.add("note", "D-CHAIN", ledger_path.name, "there is no decision ledger; only the review logs were checked")
     report.ledger = {"present": ledger_path.is_file(), "lines": len(lines),
