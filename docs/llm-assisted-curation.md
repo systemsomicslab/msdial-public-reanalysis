@@ -490,7 +490,7 @@ verdicts are recorded here, not in the review log:
 | `person_answer` | person_answer | the runner | `by`, `question_code`, `answer`, `channel`, and what the request did (`action`, `request_id`, `requested_at`, `state_before`, `state_after`, `result`) |
 | `download_only_planned` | accepted_decision | the approval (`approve`) | a unit planned download-only (`plan --download-only-held`, the decision of 2026-11-19): its `reasons` (plan reason, validator verdict, triage status, question codes, blocking flags, excluded-row reasons), the triage's relative path and sha256; the approval covers its download, never a run or a deletion |
 | `download_only_kept` | deterministic_check | the runner | a download-only unit downloaded and ended `kept` (terminal reason `download_only_kept`), with no preflight and no Console: its `reasons`, its raw directories (workspace-relative) and `downloaded_bytes`; its raw data are never deleted by the campaign |
-| `polarity_split_planned` | accepted_decision | the approval (`approve`) | one polarity of a polarity-switching unit (`plan --polarity-split`, the decision of 2026-11-19): `parent_unit_id`, `ion_mode`, `sibling_unit_key`, the decision, the child's path (under the campaign's `handoffs\`) and sha256, the parent payload's path, sha256 and record sha256, and the validator's verdict on the child |
+| `polarity_split_planned` | accepted_decision | the approval (`approve`) | one polarity of a polarity-switching unit (`plan --polarity-split`, the decision of 2026-11-19): `parent_unit_id`, `ion_mode`, `sibling_unit_key`, `partner_unit_id` for a unit run at its own polarity (the decision of 2026-11-20), the decision, the child's path (under the campaign's `handoffs\`) and sha256, the parent payload's path, sha256 and record sha256, and the validator's verdict on the child |
 
 **Polarity-split units (the author's decision of 2026-11-19).** "Polarity switching units are analysed: for each
 file run a POS process and a NEG process separately." With `plan --triage-dir ... --polarity-split` (combinable with
@@ -521,6 +521,23 @@ excluded unit, and its sibling still runs. The cross-unit check
 never compares the two children with each other (rule D would refuse the second for identical inputs). A unit the
 decision does not reach, or whose children do not pass, is planned as before: download-only with
 `--download-only-held`, else left out, its detail naming why.
+
+**Own-polarity units (the author's decision of 2026-11-20).** A repository may register a positive and a negative
+analysis over one set of polarity-switching files, which the Catalog lists as two units with different unit ids
+keeping the same files (Metabolomics Workbench ST003452 AN005668/AN005669, ST004572 AN007679/AN007680). Under the same
+`--polarity-split`, a unit held as above whose unit ion mode is `positive` or `negative`, or `switching` beside a
+partner of the opposite declared polarity, is not split in two: it becomes ONE run unit at its own polarity,
+`<unit_id>-pos` or `<unit_id>-neg` (`validate-triage.py` `polarity_own_refusal`, `polarity_derivations`). Its child is
+`derive_polarity_split` at that polarity with `polarity_split.partner_unit_id` added: the one other unit of the
+accession that leaves out exactly the same archive members for polarity switching at the opposite polarity, or null
+where there is none (Interactive 0.5.71 reads the field). `derived_from.decision` is the decision of 2026-11-20, and
+T-SPLIT holds the child to that derivation. T-UNIQ lets two units of one accession keep the same files only where both
+are such children, of opposite polarities, naming each other as partners. The two partners share their download group
+through their shared objects, so the barrier before the cross-unit check, the per-unit hardlink trees and the deletion
+of the shared bytes only after both partners have ended hold as for two children of one unit; the check never compares
+the partners with each other, and `polarity_split_planned` records `partner_unit_id` and the decision. The summary
+lists them in the POLARITY-SPLIT block as own-polarity units, and counts their shared bytes once. A held unit whose
+QC or blank members are also left out for the question is not reached by either decision and stays download-only.
 
 `scripts/verify-decision-log.py <campaign dir>` walks every review log and the ledger. It refuses a broken
 link; a `decision_id` without its payload; a revision whose `cause` names no entry of the stated kind; a

@@ -177,7 +177,7 @@
     },
     "notes": {"type": "string"},
     "polarity_split": {
-      "description": "Present only on a polarity-split child (the author's decision of 2026-11-19), which the campaign plan derives from a needs_person parent whose only question is polarity_switching (validate-triage.py derive_polarity_split): the child's polarity, the reason, the parent's unit id and the sibling's polarity. Never written by the triage agent; a triage file holding it is refused (T-SPLIT).",
+      "description": "Present only on a polarity-split child (the author's decision of 2026-11-19), which the campaign plan derives from a needs_person parent whose only question is polarity_switching (validate-triage.py derive_polarity_split): the child's polarity, the reason, the parent's unit id and the sibling's polarity; on a unit run at its own polarity beside a partner (2026-11-20) also partner_unit_id. Never written by the triage agent; a triage file holding it is refused (T-SPLIT).",
       "type": "object",
       "additionalProperties": false,
       "required": ["ion_mode", "reason", "parent_unit_id", "sibling_ion_mode"],
@@ -185,7 +185,8 @@
         "ion_mode": {"enum": ["positive", "negative"]},
         "reason": {"enum": ["polarity_switching"]},
         "parent_unit_id": {"type": "string", "minLength": 1},
-        "sibling_ion_mode": {"enum": ["positive", "negative"]}
+        "sibling_ion_mode": {"enum": ["positive", "negative"]},
+        "partner_unit_id": {"description": "Present only on the one child of a unit that runs at its own polarity (the author's decision of 2026-11-20): the other Catalog unit that leaves out the same polarity-switching files at the opposite polarity, or null where there is none. Interactive 0.5.71 reads it.", "type": ["string", "null"], "minLength": 1}
       }
     },
     "derived_from": {

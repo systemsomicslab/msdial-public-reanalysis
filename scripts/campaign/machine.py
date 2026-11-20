@@ -241,6 +241,11 @@ downloads on its own. The check never compares the two children with each
 other, whose identical inputs at opposite polarities the decision allows (rule D would refuse the second); each is
 compared with the group's other units as before, and with none it is not applicable (polarity_split_sibling). The
 triaged handoff and the review log are read beside the parent's triage (curated.triage_home).
+Two partner units run at their own polarities (the author's decision of 2026-11-20: two Catalog units a repository
+registered at opposite polarities over one set of polarity-switching files; polarity_split_planned names the partner)
+are treated as these siblings in every rule above: they share their download group by their shared objects, so the
+barrier, the per-unit hardlink trees and the deletion only after both have ended hold unchanged, and the check never
+compares the two with each other (_polarity_siblings).
 A kept unit is not retried (retry restarts only failed, excluded, skipped and stopped units).
 """
 
@@ -816,11 +821,16 @@ class Runner:
         return str(unit["unit_key"]) if self._polarity_split(unit) else str(unit["catalog_unit_id"])
 
     def _polarity_siblings(self, unit: Mapping[str, Any], other: Mapping[str, Any]) -> bool:
-        """Whether two units are the two polarity-split children of one parent (2026-11-19)."""
+        """Whether two units are the two polarity-split children of one parent (2026-11-19), or two partner units run
+        at their own opposite polarities naming each other (2026-11-20)."""
         mine, theirs = self._polarity_split(unit), self._polarity_split(other)
-        return bool(mine and theirs and mine.get("parent_unit_id") == theirs.get("parent_unit_id")
-                    and str(unit["catalog_unit_id"]) == str(other["catalog_unit_id"])
-                    and mine.get("ion_mode") != theirs.get("ion_mode"))
+        if not (mine and theirs and mine.get("ion_mode") != theirs.get("ion_mode")):
+            return False
+        partners = (mine.get("partner_unit_id") == str(other["catalog_unit_id"])
+                    and theirs.get("partner_unit_id") == str(unit["catalog_unit_id"])
+                    and str(unit["catalog_unit_id"]) != str(other["catalog_unit_id"]))
+        return bool(partners or (mine.get("parent_unit_id") == theirs.get("parent_unit_id")
+                                 and str(unit["catalog_unit_id"]) == str(other["catalog_unit_id"])))
 
     def _is_curated(self, unit: Mapping[str, Any]) -> bool:
         return self._approved_curated(unit) is not None or self._selection(unit) is not None

@@ -116,6 +116,15 @@ decision; the summary names the parents and counts their bytes once (POLARITY-SP
 polarity_split_planned per child. A unit the decision does not reach falls back as before: download-only with
 --download-only-held, else left out.
 
+OWN-POLARITY UNITS (the same option, the author's decision of 2026-11-20). A repository may register a positive and a
+negative analysis over one set of polarity-switching files, two Catalog units over the same files. A unit held as
+above whose unit ion mode is positive or negative, or switching beside a partner of the opposite declared polarity
+(validate-triage.py polarity_own_refusal, polarity_partner), becomes ONE run unit at its own polarity, <unit_id>-pos or
+<unit_id>-neg: its child names the partner unit in polarity_split.partner_unit_id (null where none), and the plan's
+polarity_split block names the partner's run key as sibling_unit_key. The two partners share their download group by
+their shared objects, so their raw data go only after both have ended, as for two children of one unit; the summary
+lists them under POLARITY-SPLIT as own-polarity units, and a partner's bytes are counted once.
+
 A planned unit carries curated_selection (the triage path and sha256, its decision record's and the review log head's
 sha256, the Catalog handoff and rows it was made from, the validator's sha256 and verdict, the rows kept and dropped by
 reason, the flags, and the sha256 of the selection and of the analysis inputs) and class_on_triaged_rows, and the
@@ -263,6 +272,10 @@ POLARITY_SPLIT_MODES = ("positive", "negative")
 POLARITY_SPLIT_RULE = (
     "the author's decision of 2026-11-19: a unit held only on polarity_switching runs twice on the same files, once "
     "positive and once negative, one after the other; its raw data are deleted only after both have ended")
+POLARITY_OWN_RULE = (
+    "the author's decision of 2026-11-20: a unit held only on polarity_switching that the repository registers at one "
+    "polarity, beside a partner unit of the other polarity over the same files, runs once at its own polarity; the "
+    "shared raw data are deleted only after both partners have ended")
 
 
 def _version(text: str) -> tuple[int, ...]:
@@ -2356,7 +2369,9 @@ def build_manifest(
                if download_only_held else {}),
             # plan --polarity-split (2026-11-19): the decision that splits a unit held on polarity_switching alone.
             **({"polarity_split_rule": POLARITY_SPLIT_RULE,
-                "polarity_split_decision": dict(curated.validator_module().POLARITY_SPLIT_DECISION)}
+                "polarity_split_decision": dict(curated.validator_module().POLARITY_SPLIT_DECISION),
+                "polarity_own_rule": POLARITY_OWN_RULE,
+                "polarity_own_decision": dict(curated.validator_module().POLARITY_OWN_DECISION)}
                if polarity_split_dir is not None else {}),
             **({"units": requested, "pools": {name: SELECTION_RULES[name] for name in POOLS}} if pool == PILOT else {}),
         },
@@ -2453,12 +2468,17 @@ def _plan_from_triage(
         if accession not in split_runs:
             split_runs[accession] = {}
             for mode in POLARITY_SPLIT_MODES:
-                split_runs[accession][mode] = curated.run_validator(
-                    folder, polarity_split=[split_files[other][mode]["path"] for other in candidates])
+                # One run per polarity with every child of that polarity: two of a split unit, one of an own-polarity
+                # unit (2026-11-20), whose partner of the other polarity stands as its parent in this run.
+                children = [split_files[other][mode]["path"] for other in candidates if mode in split_files[other]]
+                if not children:
+                    continue
+                split_runs[accession][mode] = curated.run_validator(folder, polarity_split=children)
                 say(f"triage {accession}: validate-triage.py with the {mode} polarity-split children of "
-                    f"{len(candidates)} unit(s) says {split_runs[accession][mode]['verdict']}")
+                    f"{len(children)} unit(s) says {split_runs[accession][mode]['verdict']}")
+        modes = [mode for mode in POLARITY_SPLIT_MODES if mode in split_files[uid]]
         entries, why = [], []
-        for mode in POLARITY_SPLIT_MODES:
+        for mode in modes:
             found, reason, detail = curated.unit_entries(
                 accession_dir=folder, triage_root=triage_dir, unit_id=uid, validation=split_runs[accession][mode],
                 catalog=sources.get(accession), split=split_files[uid][mode])
@@ -2469,10 +2489,12 @@ def _plan_from_triage(
         split_records[uid] = {
             "accession": accession,
             "children": {mode: {key: (str(value) if isinstance(value, Path) else value)
-                                for key, value in split_files[uid][mode].items() if key in ("relative_path", "ion_mode")}
-                         for mode in POLARITY_SPLIT_MODES},
+                                for key, value in split_files[uid][mode].items()
+                                if key in ("relative_path", "ion_mode", "partner_unit_id")}
+                         for mode in modes},
             "validations": {mode: {key: split_runs[accession][mode].get(key) for key in ("verdict", "exit_code", "report_sha256")}
-                            for mode in POLARITY_SPLIT_MODES},
+                            for mode in modes},
+            **({"own_polarity": True} if len(modes) == 1 else {}),
             "planned": not why,
             **({"not_planned_because": why} if why else {}),
         }
@@ -2571,8 +2593,13 @@ def _curated_units(
             # One polarity of a polarity-switching unit (2026-11-19): the parent and the sibling, for the summary, the
             # approval's polarity_split_planned and the runner's cross-unit check.
             item["ion_mode"] = str(split["ion_mode"]).capitalize()
+            # A unit run at its own polarity (2026-11-20): its sibling is its partner's run of the other polarity.
+            own = "partner_unit_id" in split
+            sibling = (split["partner_unit_id"] if own else str(unit["unit_id"]))
             item["polarity_split"] = {"parent_unit_id": str(unit["unit_id"]), "ion_mode": split["ion_mode"],
-                                      "sibling_unit_key": curated.polarity_split_key(str(unit["unit_id"]), split["sibling_ion_mode"])}
+                                      "sibling_unit_key": curated.polarity_split_key(str(sibling), split["sibling_ion_mode"])
+                                      if sibling else None,
+                                      **({"partner_unit_id": split["partner_unit_id"]} if own else {})}
         if reopened:
             prior = (item.get("replanned_from") or {}).get("campaign_id")
             item["reopened_from"] = {"campaign_id": prior,
@@ -2675,8 +2702,16 @@ def _totals(
     held = [unit for unit in units if unit.get("download_only")]
     held_ids = {str(unit["unit_id"]) for unit in held}
     # Polarity-split children (2026-11-19): two run units of one Catalog unit, on the same files; bytes counted once.
+    # Partner units run at their own polarities (2026-11-20) read one set of files too: the negative one's bytes are
+    # counted with the positive one's where both are planned.
     split = [unit for unit in units if unit.get("polarity_split")]
-    split_parents = {str(unit["unit_id"]): unit for unit in split}
+    planned_keys = {str(unit.get("unit_key")) for unit in units}
+
+    def counted_once(unit: Mapping[str, Any]) -> bool:
+        block = unit.get("polarity_split") or {}
+        return block.get("ion_mode") == "negative" and str(block.get("sibling_unit_key")) in planned_keys
+
+    split_parents = {str(unit["unit_id"]): unit for unit in split if not counted_once(unit)}
     run_ids = {str(unit["unit_id"]) for unit in units if not unit.get("download_only")}
     held_objects = [item for item in objects if set(item.get("selected_consumer_unit_ids") or []) & held_ids]
     held_reasons: dict[str, int] = {}
@@ -2702,8 +2737,7 @@ def _totals(
         "units_of_unknown_size": sum(1 for unit in units if not unit["size_known"]),
         "units_with_archives": sum(1 for unit in units if unit["has_archive"]),
         # Each planned unit's bytes, a polarity-split parent's once (its two children read the same files).
-        "per_unit_known_bytes": sum(unit["known_bytes"] for unit in units
-                                    if not (unit.get("polarity_split") or {}).get("ion_mode") == "negative"),
+        "per_unit_known_bytes": sum(unit["known_bytes"] for unit in units if not counted_once(unit)),
         "class_kinds": dict(sorted(kinds.items())),
         "planned_by_pool": dict(sorted(pools.items())),
         **({"run_units": len(units) - len(held), "download_only": {
@@ -2719,8 +2753,9 @@ def _totals(
             "raw_data": "kept",
         }} if held else {}),
         **({"polarity_split": {
-            "parents": len(split_parents),
+            "parents": len({str(unit["unit_id"]) for unit in split}),
             "children": len(split),
+            "own_polarity": sum(1 for unit in split if "partner_unit_id" in unit["polarity_split"]),
             "parent_known_bytes": sum(int(unit["known_bytes"] or 0) for unit in split_parents.values()),
             "parents_of_unknown_size": sum(1 for unit in split_parents.values() if not unit["size_known"]),
         }} if split else {}),
@@ -2952,8 +2987,11 @@ def decision_events(manifest: Mapping[str, Any], digest: str, approval: Mapping[
         events.append(("polarity_split_planned", {
             "standing": curated.ACCEPTED_DECISION, "accession": unit["accession"], "unit_id": unit["unit_id"],
             "parent_unit_id": block.get("parent_unit_id"), "ion_mode": block.get("ion_mode"),
-            "sibling_unit_key": block.get("sibling_unit_key"), "rule": POLARITY_SPLIT_RULE,
-            "decision": dict(curated.validator_module().POLARITY_SPLIT_DECISION),
+            "sibling_unit_key": block.get("sibling_unit_key"),
+            # A unit run at its own polarity (2026-11-20) names its partner and carries that decision.
+            **({"partner_unit_id": block.get("partner_unit_id"), "rule": POLARITY_OWN_RULE,
+                "decision": dict(curated.validator_module().POLARITY_OWN_DECISION)} if "partner_unit_id" in block else
+               {"rule": POLARITY_SPLIT_RULE, "decision": dict(curated.validator_module().POLARITY_SPLIT_DECISION)}),
             "child_relative_path": chosen.get("triage_relative_path"), "child_sha256": chosen.get("triage_sha256"),
             "parent_relative_path": (chosen.get("derived_from") or {}).get("triage_relative_path"),
             "parent_sha256": (chosen.get("derived_from") or {}).get("triage_sha256"),
@@ -3177,13 +3215,25 @@ def polarity_split_text(manifest: Mapping[str, Any]) -> list[str]:
     parents: dict[str, list[Mapping[str, Any]]] = {}
     for unit in split:
         parents.setdefault(str(unit["unit_id"]), []).append(unit)
+    own = {parent for parent, children in parents.items()
+           if len(children) == 1 and "partner_unit_id" in children[0]["polarity_split"]}
     lines = [
         f"POLARITY-SPLIT {block.get('parents', len(parents))} unit(s) into {block.get('children', len(split))} run units, "
         f"{block.get('parent_known_bytes', 0) / 1e12:.3f} TB known (counted once): "
         + str((manifest.get("selection") or {}).get("polarity_split_rule") or POLARITY_SPLIT_RULE),
     ]
+    if own:
+        lines.append(f"  own polarity: {len(own)} of them run once at their own polarity beside a partner unit over the "
+                     "same files: " + str((manifest.get("selection") or {}).get("polarity_own_rule") or POLARITY_OWN_RULE))
     for parent, children in sorted(parents.items()):
         first = children[0]
+        if parent in own:
+            block_ = first["polarity_split"]
+            lines.append(f"    {first['repository']}/{first['accession']}/{parent} -> {first.get('unit_key')} (own polarity, "
+                         f"partner {block_.get('partner_unit_id') or 'none'}"
+                         + (f" as {block_.get('sibling_unit_key')}" if block_.get("partner_unit_id") else "")
+                         + f"; {int(first['known_bytes'] or 0) / 1e9:.2f} GB, group {first['group_id']})")
+            continue
         lines.append(f"    {first['repository']}/{first['accession']}/{parent} -> "
                      + ", ".join(sorted(str(child.get("unit_key")) for child in children))
                      + f" ({int(first['known_bytes'] or 0) / 1e9:.2f} GB, group {first['group_id']})")

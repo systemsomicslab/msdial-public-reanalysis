@@ -227,6 +227,17 @@ CATALOG_ROLES = ("catalog_handoff", "catalog_samples", "catalog_unit")
 # --polarity-split beside its parent's accession: the parent's file, record, derivation and revision are checked as
 # they are, the child must be exactly what derive_polarity_split makes of that parent (T-SPLIT), and every content
 # check then runs on the child, the decision standing as the answer to polarity_switching.
+#
+# OWN POLARITY (the author's decision of 2026-11-20). A repository may register a positive and a negative analysis over
+# one set of polarity-switching files (Metabolomics Workbench: two Catalog units, two unit ids, the same files). Such a
+# unit is not split in two: it runs once, at its own polarity, and its partner runs the other. A unit held as above
+# reaches this rule (polarity_own_refusal) where its unit ion mode is positive or negative, or where it is switching
+# and a partner holds the same files at the opposite polarity (its own polarity then its declared ion mode). Its
+# partner (polarity_partner) is the one other unit of the accession that leaves out for polarity switching exactly the
+# archive members it does, at the opposite polarity (its unit ion mode, else its declared one); with none it is null.
+# The derivation is derive_polarity_split at the unit's own polarity with polarity_split.partner_unit_id added (the
+# field Interactive 0.5.71 reads) and the decision of 2026-11-20 in derived_from. T-UNIQ lets two units keep the same
+# files only where both are such children of opposite polarities naming each other.
 POLARITY_SPLIT_REASON = "polarity_switching"
 POLARITY_SPLIT_MODES = ("positive", "negative")
 POLARITY_SPLIT_DECISION = {
@@ -236,6 +247,15 @@ POLARITY_SPLIT_DECISION = {
     "statement": "Polarity switching units are analysed: for each file run a POS process and a NEG process separately.",
 }
 POLARITY_SPLIT_KEYS = ("ion_mode", "reason", "parent_unit_id", "sibling_ion_mode")
+POLARITY_OWN_DECISION = {
+    "date": "2026-11-20",
+    "decided_by": "author",
+    "reason": POLARITY_SPLIT_REASON,
+    # The author's words in chat, verbatim, answering the recommendation to run each unit at its own polarity.
+    "statement": "13単位は推奨でお願いします (accepted recommendation: a polarity-switching unit registered at one "
+                 "polarity, beside a unit of the other polarity over the same files, is run once at its own polarity)",
+}
+POLARITY_OWN_KEYS = (*POLARITY_SPLIT_KEYS, "partner_unit_id")
 DERIVED_FROM_KEYS = ("kind", "triage_relative_path", "triage_sha256", "triage_record_sha256", "decision")
 
 
@@ -255,8 +275,9 @@ def polarity_split_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         item.get("reason") == POLARITY_SPLIT_REASON or (item.get("reason") == "needs_person" and item.get("row_index") in asked))]
 
 
-def polarity_split_refusal(payload: Mapping[str, Any] | None) -> str:
-    """Why a parent payload is not split by polarity under the decision of 2026-11-19, or "" where it is."""
+def _polarity_hold_refusal(payload: Mapping[str, Any] | None) -> str:
+    """Why a payload is not held on polarity switching alone (every condition of the split but the unit ion mode), or
+    ""."""
     if not isinstance(payload, Mapping) or payload.get("schema") != SCHEMA_V2_ID:
         return f"not a {SCHEMA_V2_ID} payload"
     if payload.get("polarity_split") is not None:
@@ -268,9 +289,6 @@ def polarity_split_refusal(payload: Mapping[str, Any] | None) -> str:
         return "its questions are " + (", ".join(sorted(codes)) or "none") + f", not {POLARITY_SPLIT_REASON} alone"
     if payload.get("children"):
         return "a unit with children is not split by polarity"
-    ion = normalise_ion((payload.get("unit_technical") or {}).get("ion_mode"))
-    if ion != "switching":
-        return f"its unit ion mode is {ion}, not switching"
     flags = {str(f.get("code")) for f in payload.get("flags") or [] if isinstance(f, Mapping)}
     if POLARITY_SPLIT_REASON not in flags:
         return f"no {POLARITY_SPLIT_REASON} flag"
@@ -295,11 +313,110 @@ def polarity_split_refusal(payload: Mapping[str, Any] | None) -> str:
     return ""
 
 
+def _unit_polarity(payload: Mapping[str, Any]) -> str | None:
+    """A unit's own polarity: its unit ion mode where positive or negative, else its declared one, else None."""
+    technical = payload.get("unit_technical") or {}
+    for value in (technical.get("ion_mode"), (technical.get("declared") or {}).get("ion_mode")):
+        ion = normalise_ion(value)
+        if ion in POLARITY_SPLIT_MODES:
+            return ion
+    return None
+
+
+def _split_members(payload: Mapping[str, Any]) -> frozenset[str]:
+    return frozenset(str(item.get("member_path")) for item in polarity_split_rows(payload) if item.get("member_path"))
+
+
+def polarity_partner(payload: Mapping[str, Any], accession: Mapping[str, Any] | None) -> tuple[str | None, str]:
+    """(the unit's partner, why there is no single one): the one other unit of `accession` ({unit_id: payload}, the
+    current payloads) that leaves out for polarity switching exactly the archive members this unit does, at the opposite
+    polarity. (None, "") where there is none; (None, why) where one of another polarity, or more than one, does."""
+    members, mine = _split_members(payload), _unit_polarity(payload)
+    if not members or mine is None:
+        return None, ""
+    same = sorted(str(unit) for unit, other in (accession or {}).items()
+                  if unit != payload.get("unit_id") and isinstance(other, Mapping) and other.get("polarity_split") is None
+                  and _split_members(other) == members)
+    theirs = POLARITY_SPLIT_MODES[1 - POLARITY_SPLIT_MODES.index(mine)]
+    opposite = [unit for unit in same if _unit_polarity(accession[unit]) == theirs]  # type: ignore[index]
+    if len(opposite) != len(same):
+        return None, ("unit(s) " + ", ".join(unit for unit in same if unit not in opposite)
+                      + f" leave out the same files at no {theirs} polarity")
+    if len(opposite) > 1:
+        return None, f"{len(opposite)} units of the other polarity leave out the same files: {', '.join(opposite)}"
+    return (opposite[0] if opposite else None), ""
+
+
+def polarity_own_refusal(payload: Mapping[str, Any] | None, accession: Mapping[str, Any] | None) -> str:
+    """Why a payload does not run once at its own polarity under the decision of 2026-11-20, or "" where it does."""
+    refusal = _polarity_hold_refusal(payload)
+    if refusal:
+        return refusal
+    assert payload is not None
+    ion = normalise_ion((payload.get("unit_technical") or {}).get("ion_mode"))
+    partner, ambiguous = polarity_partner(payload, accession)
+    if ambiguous:
+        return ambiguous
+    if ion in POLARITY_SPLIT_MODES or (ion == "switching" and partner is not None):
+        return ""
+    if ion == "switching":
+        return "its unit ion mode is switching and no unit of the other polarity leaves out the same files"
+    return f"its unit ion mode is {ion}, not positive, negative or switching beside a partner"
+
+
+def polarity_split_refusal(payload: Mapping[str, Any] | None, accession: Mapping[str, Any] | None = None) -> str:
+    """Why a parent payload is not split by polarity under the decision of 2026-11-19, or "" where it is. With
+    `accession` ({unit_id: payload}), a unit that runs at its own polarity beside a partner (2026-11-20) is not split."""
+    refusal = _polarity_hold_refusal(payload)
+    if refusal:
+        return refusal
+    assert payload is not None
+    ion = normalise_ion((payload.get("unit_technical") or {}).get("ion_mode"))
+    if ion != "switching":
+        return f"its unit ion mode is {ion}, not switching"
+    if accession is not None and not polarity_own_refusal(payload, accession):
+        return (f"it runs at its own polarity beside its partner {polarity_partner(payload, accession)[0]} "
+                f"(the decision of {POLARITY_OWN_DECISION['date']})")
+    return ""
+
+
+def polarity_derivations(payload: Mapping[str, Any] | None, accession: Mapping[str, Any] | None
+                         ) -> tuple[list[tuple[str, dict[str, Any]]], str]:
+    """The children the decisions make of a parent, [(ion mode, derive_polarity_split options)]: two for a split
+    (2026-11-19), one at its own polarity naming its partner (2026-11-20); ([], why) where neither reaches it."""
+    if not polarity_split_refusal(payload, accession):
+        return [(mode, {}) for mode in POLARITY_SPLIT_MODES], ""
+    refusal = polarity_own_refusal(payload, accession)
+    if refusal:
+        return [], refusal
+    assert payload is not None
+    return [(str(_unit_polarity(payload)), {"partner_unit_id": polarity_partner(payload, accession)[0]})], ""
+
+
+def accession_payloads(triage_dir: Path) -> dict[str, Any]:
+    """The accession's current payloads by unit id (current_triage_files), as read; unreadable ones left out."""
+    out: dict[str, Any] = {}
+    for path in current_triage_files(Path(triage_dir)):
+        try:
+            data = json.loads(path.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("unit_id"), str) and "polarity_split" not in data:
+            out[data["unit_id"]] = data
+    return out
+
+
+_SPLIT_IN_TWO: Any = object()
+
+
 def derive_polarity_split(
     payload: Mapping[str, Any], ion_mode: str, *, triage_relative_path: str, triage_sha256: str,
-    triage_record_sha256: str | None,
+    triage_record_sha256: str | None, partner_unit_id: Any = _SPLIT_IN_TWO,
 ) -> dict[str, Any]:
-    """The child payload of `ion_mode` (positive or negative) of a parent that polarity_split_refusal passes."""
+    """The child payload of `ion_mode` (positive or negative) of a parent that polarity_split_refusal passes; with
+    `partner_unit_id` (a unit id or None), the one child of a parent that runs at its own polarity (2026-11-20)."""
+    own = partner_unit_id is not _SPLIT_IN_TWO
+    decision = POLARITY_OWN_DECISION if own else POLARITY_SPLIT_DECISION
     if ion_mode not in POLARITY_SPLIT_MODES:
         raise ValueError(f"a polarity-split child is positive or negative, not {ion_mode!r}")
     out = copy.deepcopy(dict(payload))
@@ -317,7 +434,7 @@ def derive_polarity_split(
             "evidence": [{"source": "catalog_row", "field": "raw_file", "value": item["raw_file"]}],
             "confidence": item["confidence"],
             "rationale": (f"Kept for the {ion_mode} run of a polarity-switching file under the author's decision of "
-                          f"{POLARITY_SPLIT_DECISION['date']}; left out before as {item['reason']}: {item['detail']}"),
+                          f"{decision['date']}; left out before as {item['reason']}: {item['detail']}"),
         })
         if item.get("rule_id"):
             row["rule_id"] = item["rule_id"]
@@ -330,10 +447,11 @@ def derive_polarity_split(
     out["polarity_split"] = {
         "ion_mode": ion_mode, "reason": POLARITY_SPLIT_REASON, "parent_unit_id": str(payload["unit_id"]),
         "sibling_ion_mode": POLARITY_SPLIT_MODES[1 - POLARITY_SPLIT_MODES.index(ion_mode)],
+        **({"partner_unit_id": partner_unit_id} if own else {}),
     }
     out["derived_from"] = {
         "kind": "polarity_split", "triage_relative_path": triage_relative_path, "triage_sha256": triage_sha256,
-        "triage_record_sha256": triage_record_sha256, "decision": dict(POLARITY_SPLIT_DECISION),
+        "triage_record_sha256": triage_record_sha256, "decision": dict(decision),
     }
     return out
 
@@ -344,8 +462,14 @@ def polarity_split_shape_problems(payload: Mapping[str, Any]) -> list[str]:
     if not isinstance(split, Mapping):
         return ["polarity_split is not an object"]
     problems = []
-    if sorted(split) != sorted(POLARITY_SPLIT_KEYS):
-        problems.append(f"polarity_split has keys {sorted(split)}, not {sorted(POLARITY_SPLIT_KEYS)}")
+    own = "partner_unit_id" in split
+    keys = POLARITY_OWN_KEYS if own else POLARITY_SPLIT_KEYS
+    decision = POLARITY_OWN_DECISION if own else POLARITY_SPLIT_DECISION
+    if sorted(split) != sorted(keys):
+        problems.append(f"polarity_split has keys {sorted(split)}, not {sorted(keys)}")
+    partner = split.get("partner_unit_id")
+    if own and partner is not None and (not isinstance(partner, str) or not partner or partner == payload.get("unit_id")):
+        problems.append(f"polarity_split.partner_unit_id {partner!r} is neither null nor another unit's id")
     mode = split.get("ion_mode")
     if mode not in POLARITY_SPLIT_MODES:
         problems.append(f"polarity_split.ion_mode is {mode!r}, not positive or negative")
@@ -370,34 +494,43 @@ def polarity_split_shape_problems(payload: Mapping[str, Any]) -> list[str]:
         problems.append(f"a polarity-split child keeps its {POLARITY_SPLIT_REASON} flag")
     derived = payload.get("derived_from")
     if not isinstance(derived, Mapping) or sorted(derived) != sorted(DERIVED_FROM_KEYS) \
-            or derived.get("kind") != "polarity_split" or derived.get("decision") != POLARITY_SPLIT_DECISION:
+            or derived.get("kind") != "polarity_split" or derived.get("decision") != decision:
         problems.append("derived_from does not name the parent payload and the decision of "
-                        f"{POLARITY_SPLIT_DECISION['date']} ({', '.join(DERIVED_FROM_KEYS)})")
+                        f"{decision['date']} ({', '.join(DERIVED_FROM_KEYS)})")
     return problems
 
 
 def check_polarity_split(report: "Report", unit: str, parent: Mapping[str, Any], parent_sha256: str,
-                         parent_relative_path: str, record_sha256: str | None, child: Any) -> bool:
+                         parent_relative_path: str, record_sha256: str | None, child: Any,
+                         accession: Mapping[str, Any] | None = None) -> bool:
     """Whether `child` may stand for its parent in the checks (T-SPLIT): a payload of the right shape that is exactly
-    what derive_polarity_split makes of this parent, which the decision must reach."""
+    what derive_polarity_split makes of this parent, which a decision must reach. `accession` ({unit_id: payload}, the
+    directory's current payloads) decides between a split in two and one child at the unit's own polarity."""
     if not isinstance(child, dict):
         report.add("error", "T-SPLIT", unit, "the polarity-split child is not one JSON object")
         return False
     if child.get("unit_id") != unit:
         report.add("error", "T-SPLIT", unit, f"the polarity-split child is of unit {child.get('unit_id')!r}, not {unit}")
         return False
-    refusal = polarity_split_refusal(parent)
+    accession = {**(accession or {}), unit: parent}
+    derivations, refusal = polarity_derivations(parent, accession)
     if refusal:
         report.add("error", "T-SPLIT", unit, f"the decision of {POLARITY_SPLIT_DECISION['date']} does not split this "
-                   f"unit: {refusal}")
+                   f"unit, nor does that of {POLARITY_OWN_DECISION['date']} run it at its own polarity: {refusal}")
         return False
     problems = polarity_split_shape_problems(child)
     for problem in problems:
         report.add("error", "T-SPLIT", unit, problem)
     if problems:
         return False
+    options = dict(derivations).get(child["polarity_split"]["ion_mode"])
+    if options is None or ("partner_unit_id" in options) != ("partner_unit_id" in child["polarity_split"]):
+        made = ", ".join(mode + (f" at its own polarity (partner {o['partner_unit_id']})" if "partner_unit_id" in o else "")
+                         for mode, o in derivations)
+        report.add("error", "T-SPLIT", unit, f"the polarity-split child is not one the decisions make of its parent ({made})")
+        return False
     expected = derive_polarity_split(parent, child["polarity_split"]["ion_mode"], triage_relative_path=parent_relative_path,
-                                     triage_sha256=parent_sha256, triage_record_sha256=record_sha256)
+                                     triage_sha256=parent_sha256, triage_record_sha256=record_sha256, **options)
     if canonical_json(expected) != canonical_json(child):
         differ = sorted(key for key in set(expected) | set(child) if expected.get(key) != child.get(key))
         report.add("error", "T-SPLIT", unit, "the polarity-split child is not what the decision makes of its parent "
@@ -2179,7 +2312,8 @@ def validate(
             child_path, child_data = split_children.pop(unit)
             record = path.with_name(path.name[: -len(".json")] + RECORD_SUFFIX)
             record_sha = sha256_bytes(record.read_bytes()) if record.is_file() else None
-            if check_polarity_split(report, unit, data, decision_id, f"{triage_dir.name}/{path.name}", record_sha, child_data):
+            if check_polarity_split(report, unit, data, decision_id, f"{triage_dir.name}/{path.name}", record_sha, child_data,
+                                    accession_payloads(triage_dir)):
                 child_problems = schema_errors(child_data, schema, schema)
                 for problem in child_problems[:20]:
                     report.add("error", "T-SCHEMA", unit, f"{child_path.name}: {problem}")
@@ -2865,7 +2999,14 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
 
         return has(a, b) and has(b, a)
 
-    # T-UNIQ: no file kept by two units unless both declare it. One finding per pair of units.
+    def partners(a: str, b: str) -> bool:
+        """Two children at their own opposite polarities naming each other as partners (the decision of 2026-11-20)."""
+        one, other = triages[a].get("polarity_split"), triages[b].get("polarity_split")
+        return (isinstance(one, Mapping) and isinstance(other, Mapping) and one.get("partner_unit_id") == b
+                and other.get("partner_unit_id") == a and one.get("ion_mode") in POLARITY_SPLIT_MODES
+                and other.get("ion_mode") == one.get("sibling_ion_mode") and one.get("ion_mode") == other.get("sibling_ion_mode"))
+
+    # T-UNIQ: no file kept by two units unless both declare it, or both are partners (2026-11-20). One finding per pair.
     undeclared: dict[tuple[str, str], list[str]] = defaultdict(list)
     for holders in files.values():
         units = sorted({h.unit for h in holders})
@@ -2873,7 +3014,7 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
             report.add("error", "T-UNIQ", units[0], f"{holders[0].path} is kept twice by the same unit")
         for i, a in enumerate(units):
             for b in units[i + 1 :]:
-                if not declared_share(a, b, holders):
+                if not declared_share(a, b, holders) and not partners(a, b):
                     undeclared[(a, b)].append(holders[0].path)
     for (a, b), paths in sorted(undeclared.items()):
         report.add("error", "T-UNIQ", a, f"{len(paths)} file(s) kept by both {a} and {b} without shared_with on both (first: {sorted(paths)[0]})")
@@ -2885,6 +3026,8 @@ def _check_cross_unit(report: Report, triages: dict[str, dict[str, Any]], listed
         if keys:
             sets[keys].append(unit)
     for keys, units in sets.items():
+        if len(units) == 2 and partners(*units):
+            continue
         if len(units) > 1:
             report.add("error", "T-UNIQ", units[0], f"units {', '.join(sorted(units))} keep the identical set of {len(keys)} files")
 
