@@ -460,3 +460,32 @@ class RunnerTests(cs._Root):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApprovalReviewLogOfChildrenTests(unittest.TestCase):
+    """The approval's digest_approval entry for a polarity-split or own-polarity child goes to the parent triage's
+    review log (derived_from), not to a path under the triage folder named after the child's copy in handoffs."""
+
+    def test_a_childs_approval_is_logged_once_in_the_parents_review_log(self) -> None:
+        import importlib.util, tempfile
+        from pathlib import Path as _Path
+        root = _Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location("campaign_runner_for_log", root / "scripts" / "campaign-runner.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        with tempfile.TemporaryDirectory() as tmp:
+            triage = _Path(tmp) / "triage"
+            (triage / "ST000001").mkdir(parents=True)
+            parent_sha = "c" * 64
+            child = lambda pol, sha: {"triage_relative_path": f"handoffs/u1-{pol}/u1.polarity-split.json", "triage_sha256": sha,
+                                      "derived_from": {"kind": "polarity_split", "triage_relative_path": "ST000001/u1.json",
+                                                       "triage_sha256": parent_sha}}
+            manifest = {"triage": {"directory": str(triage)},
+                        "units": [{"curated_selection": child("pos", "a" * 64)}, {"curated_selection": child("neg", "b" * 64)}]}
+            approval = {"approved_at": "2026-11-20T00:00:00+00:00", "approval_id": "x", "approved_by": "p"}
+            runner._log_digest_approval(manifest, "sha256:" + "d" * 64, approval)
+            log = triage / "ST000001" / "review-log.jsonl"
+            lines = log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn(parent_sha, lines[0])
+            self.assertFalse((triage / "handoffs").exists())

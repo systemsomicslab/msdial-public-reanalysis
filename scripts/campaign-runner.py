@@ -599,14 +599,19 @@ def _log_digest_approval(manifest: dict, digest: str, approval: dict) -> None:
         chosen = unit.get("curated_selection")
         if not isinstance(chosen, dict):
             continue
-        folder = root / Path(str(chosen.get("triage_relative_path") or "")).parent
+        # A polarity-split or own-polarity child is a derived copy in the campaign's handoffs folder; its decision, and the
+        # review log, are the parent triage's (derived_from), not the copy's.
+        derived = chosen.get("derived_from") if isinstance(chosen.get("derived_from"), dict) else {}
+        relative = derived.get("triage_relative_path") or chosen.get("triage_relative_path") or ""
+        triage_sha256 = derived.get("triage_sha256") if derived.get("triage_relative_path") else chosen.get("triage_sha256")
+        folder = root / Path(str(relative)).parent
         # One entry per decision (the children of one triage share it), with only the fields section 2.4 names.
-        key = (str(folder), str(chosen.get("triage_sha256")))
+        key = (str(folder), str(triage_sha256))
         if key in written:
             continue
         written.add(key)
         try:
-            curated.append_review_log(folder, "digest_approval", chosen.get("triage_sha256"), approval["approved_at"],
+            curated.append_review_log(folder, "digest_approval", triage_sha256, approval["approved_at"],
                                       manifest_digest=digest, approval_id=approval["approval_id"], by=approval["approved_by"])
         except OSError as error:
             print(f"The approval is recorded; the review log of {folder.name} could not be appended: {error}", file=sys.stderr)
