@@ -258,6 +258,25 @@ class IdentityAndEligibilityTests(unittest.TestCase):
             report = verifier.verify(builder.root, "before-production")
             self.assertEqual(verifier.FAIL, _status(report, "ID-1"))
 
+    def test_a_campaign_suffixed_workspace_of_the_unit_passes(self):
+        # A campaign planning a unit again beside an earlier campaign's workspace names it <unit>@<campaign>.
+        with tempfile.TemporaryDirectory() as directory:
+            builder = WorkspaceBuilder(Path(directory), unit_id=f"{UNIT_ID}@stage-x").provenance(unit_id=UNIT_ID)
+            (builder.root / "provenance" / "campaign-authorization.json").write_text(
+                json.dumps({"campaign_id": "stage-x"}), encoding="utf-8")
+            report = verifier.verify(builder.root, "before-production")
+            self.assertEqual(verifier.PASS, _status(report, "ID-1"))
+
+    def test_a_suffix_that_is_not_the_authorizing_campaign_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            builder = WorkspaceBuilder(Path(directory), unit_id=f"{UNIT_ID}@stage-x").provenance(unit_id=UNIT_ID)
+            (builder.root / "provenance" / "campaign-authorization.json").write_text(
+                json.dumps({"campaign_id": "stage-y"}), encoding="utf-8")
+            report = verifier.verify(builder.root, "before-production")
+            self.assertEqual(verifier.FAIL, _status(report, "ID-1"))
+            no_record = WorkspaceBuilder(Path(directory) / "b", unit_id=f"{UNIT_ID}@stage-x").provenance(unit_id=UNIT_ID)
+            self.assertEqual(verifier.FAIL, _status(verifier.verify(no_record.root, "before-production"), "ID-1"))
+
     def test_an_ineligible_unit_is_refused(self):
         # execution_allowed is written by the server and read by nothing; reading it here is what
         # makes it a gate again.

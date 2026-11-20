@@ -285,6 +285,16 @@ def _read_csv_rows(path: Path) -> tuple[list[dict] | None, str]:
 # identity
 # --------------------------------------------------------------------------------------------
 
+def _campaign_workspace_suffix(workspace: Path) -> str:
+    """The campaign_id of provenance/campaign-authorization.json in this workspace, or "" (no campaign, unreadable)."""
+    try:
+        record = json.loads((Path(workspace) / "provenance" / "campaign-authorization.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    value = record.get("campaign_id") if isinstance(record, dict) else None
+    return value.strip() if isinstance(value, str) else ""
+
+
 def check_unit_identity(report: Report, provenance: dict | None, reason: str) -> None:
     """The workspace directory must be the analysis unit the manifest names.
 
@@ -317,6 +327,16 @@ def check_unit_identity(report: Report, provenance: dict | None, reason: str) ->
             directory=directory, accession=project.get("accession"),
             manifest_schema=provenance.get("schema"),
         )
+        return
+    campaign_id = _campaign_workspace_suffix(report.workspace)
+    if unit_id != directory and campaign_id and directory == f"{unit_id}@{campaign_id}":
+        # A campaign that plans a unit again beside an earlier campaign's workspace of it (a reopened or replanned
+        # unit) names the new workspace <unit_id>@<campaign_id>, the workspace_unit_key its campaign authorization
+        # carries; the suffix tells the attempts apart and names no other unit.
+        report.add("ID-1", stage, "Workspace is the analysis unit its manifest names", PASS,
+                   f"analysis_unit_id {unit_id} matches the workspace directory, whose @{campaign_id} suffix is the "
+                   f"campaign named by provenance/campaign-authorization.json.",
+                   directory=directory, analysis_unit_id=unit_id, campaign_id=campaign_id)
         return
     if unit_id != directory:
         report.add(
